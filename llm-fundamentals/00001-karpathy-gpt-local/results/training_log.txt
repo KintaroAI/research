@@ -1,0 +1,92 @@
+Downloading Tiny Shakespeare dataset...
+Downloaded to /home/user/research/llm-fundamentals/00001-karpathy-gpt-local/input.txt
+Dataset: 1,115,394 characters
+Device: cuda
+Vocabulary size: 65
+Train: 1,003,854 tokens, Val: 111,540 tokens
+
+============================================================
+GPT Training - Based on Andrej Karpathy's tutorial
+============================================================
+
+Model parameters: 209,729 (0.21M)
+Config: n_embd=64, n_head=4, n_layer=4, block_size=32
+
+Starting training...
+
+step     0: train loss 4.4116, val loss 4.4022
+step   100: train loss 2.6568, val loss 2.6670
+step   200: train loss 2.5091, val loss 2.5059
+step   300: train loss 2.4198, val loss 2.4338
+step   400: train loss 2.3503, val loss 2.3568
+step   500: train loss 2.2965, val loss 2.3128
+step   600: train loss 2.2408, val loss 2.2496
+step   700: train loss 2.2055, val loss 2.2194
+step   800: train loss 2.1636, val loss 2.1865
+step   900: train loss 2.1242, val loss 2.1506
+step  1000: train loss 2.1025, val loss 2.1301
+step  1100: train loss 2.0694, val loss 2.1186
+step  1200: train loss 2.0374, val loss 2.0793
+step  1300: train loss 2.0243, val loss 2.0633
+step  1400: train loss 1.9922, val loss 2.0374
+step  1500: train loss 1.9712, val loss 2.0302
+step  1600: train loss 1.9628, val loss 2.0483
+step  1700: train loss 1.9409, val loss 2.0139
+step  1800: train loss 1.9088, val loss 1.9958
+step  1900: train loss 1.9091, val loss 1.9896
+step  2000: train loss 1.8846, val loss 1.9965
+step  2100: train loss 1.8721, val loss 1.9762
+step  2200: train loss 1.8603, val loss 1.9630
+step  2300: train loss 1.8562, val loss 1.9524
+step  2400: train loss 1.8420, val loss 1.9427
+step  2500: train loss 1.8145, val loss 1.9428
+step  2600: train loss 1.8262, val loss 1.9422
+step  2700: train loss 1.8088, val loss 1.9335
+step  2800: train loss 1.8025, val loss 1.9221
+step  2900: train loss 1.8013, val loss 1.9257
+step  3000: train loss 1.7970, val loss 1.9234
+step  3100: train loss 1.7716, val loss 1.9208
+step  3200: train loss 1.7571, val loss 1.9141
+step  3300: train loss 1.7584, val loss 1.9100
+step  3400: train loss 1.7580, val loss 1.8974
+step  3500: train loss 1.7421, val loss 1.8995
+step  3600: train loss 1.7255, val loss 1.8873
+step  3700: train loss 1.7287, val loss 1.8834
+step  3800: train loss 1.7203, val loss 1.8904
+step  3900: train loss 1.7219, val loss 1.8735
+step  4000: train loss 1.7131, val loss 1.8610
+step  4100: train loss 1.7120, val loss 1.8745
+step  4200: train loss 1.7049, val loss 1.8652
+step  4300: train loss 1.7027, val loss 1.8507
+step  4400: train loss 1.7049, val loss 1.8662
+step  4500: train loss 1.6895, val loss 1.8446
+step  4600: train loss 1.6854, val loss 1.8332
+step  4700: train loss 1.6846, val loss 1.8388
+step  4800: train loss 1.6693, val loss 1.8407
+step  4900: train loss 1.6697, val loss 1.8350
+step  4999: train loss 1.6667, val loss 1.8243
+
+============================================================
+Training complete! Generating sample...
+============================================================
+
+
+And they bride will to lovest made the was toe.
+Stir-day mead, and bartht he us hath be?
+Fediless, enjrice, you, not, where
+When whom tofting Back my would but
+With ensent, will is that Glost and the news!
+Fere me, lesing that this me; crients!
+Or news hithy mount, us.
+But and gods, bettle, demety?
+
+KING RIARD HENRY VI:
+So thou strong in him, whose mower;
+See the danterty af so;
+And his live, I male of while Prive my of.
+
+HENRY BOLINGS:
+You ards become and to die courtear tear repts
+Infortuce th
+
+Model saved to /home/user/research/llm-fundamentals/00001-karpathy-gpt-local/artifacts/model.pt
