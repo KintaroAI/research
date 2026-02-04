@@ -130,3 +130,5 @@ tensorboard/
 
 # Keep small config examples
 !**/config/*.example.*
+gpu_probe
+*.bin
