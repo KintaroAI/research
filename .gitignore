@@ -11,6 +11,7 @@
 **/*credential*
 **/*token*
 !**/token*.py  # Allow files about tokenization
+!**/token*.h   # Allow tokenizer headers
 
 # API keys patterns
 **/api_key*
