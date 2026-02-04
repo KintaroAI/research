@@ -117,6 +117,19 @@ With the 7.3M parameter model on TinyStories:
 
 Training speed on RTX 4090: ~95ms/step with batch=32, seq=256
 
+## Inference
+
+After training, generate text with the standalone inference binary:
+
+```bash
+./generate -e checkpoint.bin -n 256
+```
+
+Flags:
+- `-e` — checkpoint path (default: checkpoint.bin)
+- `-n` — number of tokens to generate (default: 256)
+- `-s` — random seed (default: current time)
+
 ## File Structure
 
 ```
@@ -126,7 +139,8 @@ Training speed on RTX 4090: ~95ms/step with batch=32, seq=256
 ├── create_model.py      # Generate random model weights
 ├── prepare_data.py      # Download & tokenize TinyStories
 └── src/
-    ├── train_gpt2_fp32.cu  # Main training code (CUDA)
+    ├── train_gpt2_fp32.cu  # Training code (CUDA)
+    ├── generate.cu         # Inference code (CUDA)
     └── llmc/
         ├── dataloader.h    # Data loading utilities
         ├── tokenizer.h     # Tokenizer utilities

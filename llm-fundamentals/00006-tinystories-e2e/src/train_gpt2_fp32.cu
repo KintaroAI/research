@@ -1731,7 +1731,7 @@ int main(int argc, char *argv[]) {
         }
 
         // once in a while do model inference to print generated text
-        if (step > 0 && step % sample_every == 0 || last_step) {
+        if ((sample_every > 0 && step > 0 && step % sample_every == 0) || last_step) {
             // fill up gen_tokens with the GPT2_EOT, which kicks off the generation
             for(int i = 0; i < B * T; ++i) {
                 gen_tokens[i] = GPT2_EOT;

@@ -1,4 +1,4 @@
-# Makefile for TinyStories E2E Training
+# Makefile for TinyStories E2E Training & Inference
 # Requires: CUDA toolkit, nvcc compiler
 
 NVCC = nvcc
@@ -6,11 +6,15 @@ NVCC_FLAGS = -O3 -Isrc
 CUDA_LIBS = -lcublas -lcuda
 
 # Default target
-all: train
+all: train generate
 
 # Build the training binary
 train: src/train_gpt2_fp32.cu src/llmc/*.h
 	$(NVCC) $(NVCC_FLAGS) -o train src/train_gpt2_fp32.cu $(CUDA_LIBS)
+
+# Build the inference binary
+generate: src/generate.cu src/llmc/*.h
+	$(NVCC) $(NVCC_FLAGS) -o generate src/generate.cu $(CUDA_LIBS)
 
 # Download and prepare data
 data: prepare_data.py
@@ -36,16 +40,28 @@ tokenizer:
 	fi
 
 # Full setup: data + model + tokenizer + compile
-setup: data model tokenizer train
-	@echo "Setup complete! Run: ./train -e model.bin -c checkpoint.bin -n 10000"
+setup: data model tokenizer all
+	@echo "Setup complete!"
+	@echo "  Train: ./train -e model.bin -c checkpoint.bin -n 10000"
+	@echo "  Generate: ./generate -e checkpoint.bin -n 256"
 
 # Quick train (small test)
-quick: train tokenizer
+quick: all tokenizer
 	./train -e model.bin -c checkpoint.bin -n 100 -b 8 -t 256 -v 50 -s 50
+
+# Quick test inference
+test-generate: generate tokenizer
+	@if [ -f checkpoint.bin ]; then \
+		./generate -e checkpoint.bin -n 64; \
+	elif [ -f model.bin ]; then \
+		./generate -e model.bin -n 64; \
+	else \
+		echo "No model found. Run 'make model' or train first."; \
+	fi
 
 # Clean build artifacts
 clean:
-	rm -f train
+	rm -f train generate
 
 # Clean all generated files
 cleanall: clean
