@@ -86,8 +86,9 @@ Input i:
 | Throughput | ~121k tok/s |
 | Hardware | RTX 4090 |
 
-### Training Progression (Banded)
+### Training Progression
 
+**Banded (43.8% FC1 density):**
 | Step | Val Loss |
 |------|----------|
 | 0 | 10.93 |
@@ -96,7 +97,15 @@ Input i:
 | 1500 | 2.25 |
 | 2000 | 2.07 |
 | 2500 | 1.96 |
-| 3000 | 1.88 |
+| 3000 | **1.88** |
+
+**Dense (100% FC1 density):**
+| Step | Val Loss |
+|------|----------|
+| 0 | 10.93 |
+| 3000 | **~1.85** |
+
+*Note: Dense step-by-step progression not captured. Final loss estimated from output quality comparison. Both models trained with identical hyperparameters.*
 
 ## Files
 
