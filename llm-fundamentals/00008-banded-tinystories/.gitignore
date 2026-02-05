@@ -1,0 +1,22 @@
+# Binaries
+train
+train_banded
+generate
+generate_banded
+
+# Checkpoints and model files
+checkpoint*.bin
+model*.bin
+gpt2_tokenizer.bin
+
+# Data (large files)
+data/
+
+# Logs
+*.txt
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.tar.gz
