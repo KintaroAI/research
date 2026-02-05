@@ -1,0 +1,19 @@
+# Binaries
+train
+train_banded
+generate
+generate_banded
+
+# Checkpoints
+checkpoint*.bin
+
+# Data (large files)
+data/
+
+# Logs
+*.txt
+
+# Python
+venv/
+__pycache__/
+*.pyc
