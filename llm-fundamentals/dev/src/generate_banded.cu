@@ -1,6 +1,7 @@
 /*
-GPT-2 Inference with Banded Sparsity on FC1
-Use same mask as training - the model checkpoint already has masked weights.
+GPT-2 Inference for Banded Sparsity Checkpoints
+Supports checkpoints trained with banded sparsity on FC1, FC2, or both.
+No runtime masking needed - the weights in the checkpoint are already sparse.
 */
 
 #include <stdio.h>
@@ -547,13 +548,14 @@ void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
         float* ln2_rstd = acts.ln2_rstd + l * B * T;
         layernorm_forward(ln2_out, ln2_mean, ln2_rstd, residual2, params.ln2w + l*C, params.ln2b + l*C, B, T, C);
         
-        // FC1 - weights are already sparse from training
+        // FC1 - weights may be sparse from training (if trained with -1 > 0)
         float* fch = acts.fch + l * B * T * 4 * C;
         matmul_forward(fch, ln2_out, params.fcw + l*4*C*C, params.fcb + l*4*C, B, T, C, 4*C);
         
         float* fch_gelu = acts.fch_gelu + l * B * T * 4 * C;
         gelu_forward(fch_gelu, fch, B*T*4*C);
         
+        // FC2 - weights may be sparse from training (if trained with -2 > 0)
         float* fcproj = acts.fcproj + l * B * T * C;
         matmul_forward(fcproj, fch_gelu, params.fcprojw + l*C*4*C, params.fcprojb + l*C, B, T, 4*C, C);
         
@@ -635,7 +637,7 @@ int main(int argc, char *argv[]) {
     printf("Model: %s\n", model_path);
     printf("Tokens: %d\n", num_tokens);
     printf("Seed: %llu\n", rng_state);
-    printf("Note: FC1 weights are pre-masked (banded sparsity from training)\n");
+    printf("Note: FC weights are pre-masked (banded sparsity from training)\n");
     printf("---\n");
     
     int deviceIdx = 0;
