@@ -1,6 +1,6 @@
 # Binaries
-train
-train_banded
+train*
+train_banded*
 generate
 generate_banded
 

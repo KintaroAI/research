@@ -3,12 +3,15 @@
 NVCC = nvcc
 NVCC_FLAGS = -O3 -lcublas -lm
 
-all: train train_banded generate generate_banded
+all: train train_banded train_banded_fc2 generate generate_banded
 
 train: src/train_gpt2_fp32.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
 train_banded: src/train_gpt2_fp32_banded.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+train_banded_fc2: src/train_gpt2_fp32_banded_fc2.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
 generate: src/generate.cu
@@ -18,7 +21,7 @@ generate_banded: src/generate_banded.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
 clean:
-	rm -f train train_banded generate generate_banded
+	rm -f train train_banded train_banded_fc2 generate generate_banded
 
 # Setup: create venv and prepare data
 setup: venv data
