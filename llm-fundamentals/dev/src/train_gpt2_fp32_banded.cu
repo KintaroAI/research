@@ -1,7 +1,13 @@
 /*
-GPT-2 Transformer with Banded Sparsity on FC1 (MLP up-projection)
-Experiment: Apply diagonal band mask to fcw weights.
+GPT-2 Transformer with Configurable Banded Sparsity on FC1 and/or FC2
+Experiment: Apply diagonal band mask to fcw (FC1) and/or fcprojw (FC2) weights.
 Based on train_gpt2_fp32.cu from llm.c
+
+Usage:
+  ./train_banded -1 256 -2 256    # Both FC1 and FC2 with bandwidth 256
+  ./train_banded -1 0 -2 128      # Only FC2 with bandwidth 128 (FC1 dense)
+  ./train_banded -1 256 -2 0      # Only FC1 with bandwidth 256 (FC2 dense)
+  ./train_banded                   # Both dense (no sparsity, same as original)
 */
 
 #include <stdio.h>
@@ -52,15 +58,17 @@ namespace cg = cooperative_groups;
 
 // ----------------------------------------------------------------------------
 // Banded sparsity configuration
-// FC1 weights are (L, 4*C, C) - we apply band mask
+// FC1 weights are (L, 4*C, C) - up-projection
+// FC2 weights are (L, C, 4*C) - down-projection
+// Bandwidth = 0 means dense (no sparsity)
 
-int BAND_ENABLED = 1;  // Set to 0 to disable banding for comparison
-int BANDWIDTH = 256;   // Tunable: each input connects to ~BANDWIDTH outputs
+int BANDWIDTH_FC1 = 0;   // Bandwidth for FC1 (C -> 4C), 0 = dense
+int BANDWIDTH_FC2 = 0;   // Bandwidth for FC2 (4C -> C), 0 = dense
 
-// Kernel to create banded mask for FC1 weights
+// Kernel to create banded mask for FC1 weights (up-projection)
 // mask shape: (OC, C) where OC = 4*C
-// For output j, input i is connected if |i * (OC/C) - j| <= bandwidth/2
-__global__ void create_band_mask_kernel(float* mask, int C, int OC, int bandwidth) {
+// For input i, output j is connected if |j - i * (OC/C)| <= bandwidth/2
+__global__ void create_band_mask_fc1_kernel(float* mask, int C, int OC, int bandwidth) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= OC * C) return;
     
@@ -73,6 +81,26 @@ __global__ void create_band_mask_kernel(float* mask, int C, int OC, int bandwidt
     
     // Check if output j is within bandwidth of center
     float dist = fabsf((float)j - j_center);
+    mask[idx] = (dist <= half_bw) ? 1.0f : 0.0f;
+}
+
+// Kernel to create banded mask for FC2 weights (down-projection)
+// FC2 (fcprojw) shape: (C, 4*C) - maps from 4C inputs to C outputs
+// For output j, input i is connected if |i - j * (IC/OC)| <= bandwidth/2
+__global__ void create_band_mask_fc2_kernel(float* mask, int OC, int IC, int bandwidth) {
+    // OC = C (output channels), IC = 4*C (input channels)
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= OC * IC) return;
+    
+    int j = idx / IC;  // output channel (row), 0 to C-1
+    int i = idx % IC;  // input channel (col), 0 to 4C-1
+    
+    // Map output j to center input position (j maps to i_center = j * 4)
+    float i_center = (float)j * IC / OC;
+    float half_bw = bandwidth / 2.0f;
+    
+    // Check if input i is within bandwidth of center
+    float dist = fabsf((float)i - i_center);
     mask[idx] = (dist <= half_bw) ? 1.0f : 0.0f;
 }
 
@@ -758,8 +786,8 @@ void matmul_backward_masked(float* dinp, float* dweight, float* dbias,
     cublasCheck(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, C, B*T, OC, &one, weight, C, dout, OC, &zero, dinp, C));
     cublasCheck(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, C, OC, B*T, &one, inp, C, dout, OC, &one, dweight, C));
     
-    // Apply mask to weight gradients
-    if (mask != NULL && BAND_ENABLED) {
+    // Apply mask to weight gradients if mask is provided
+    if (mask != NULL) {
         int N = OC * C;
         int block_size = 256;
         int grid_size = CEIL_DIV(N, block_size);
@@ -1030,8 +1058,9 @@ typedef struct {
     int* targets;
     float mean_loss;
     float* cpu_losses;
-    // Banded sparsity mask for FC1 weights
-    float* fc_mask;  // (L, 4*C, C) mask for fcw
+    // Banded sparsity masks
+    float* fc1_mask;  // (L, 4*C, C) mask for fcw (FC1), NULL if dense
+    float* fc2_mask;  // (L, C, 4*C) mask for fcprojw (FC2), NULL if dense
 } GPT2;
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1079,26 +1108,23 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->batch_size = 0;
     model->seq_len = 0;
     model->mean_loss = -1.0f;
-    model->fc_mask = NULL;
+    model->fc1_mask = NULL;
+    model->fc2_mask = NULL;
 }
 
-// Initialize banded sparsity mask for FC1 weights
-void init_fc_mask(GPT2 *model) {
-    int L = model->config.num_layers;
-    int C = model->config.channels;
-    int OC = 4 * C;
-    size_t mask_size = L * OC * C;
+// Helper to initialize and report a single mask
+float* init_single_mask(int L, int rows, int cols, int bandwidth, const char* name,
+                        void (*create_kernel)(float*, int, int, int)) {
+    size_t mask_size = (size_t)L * rows * cols;
+    float* mask;
+    cudaCheck(cudaMalloc((void**)&mask, mask_size * sizeof(float)));
     
-    // Allocate mask on GPU
-    cudaCheck(cudaMalloc((void**)&model->fc_mask, mask_size * sizeof(float)));
-    
-    // Create mask for each layer
     int block_size = 256;
-    int grid_size = CEIL_DIV(OC * C, block_size);
+    int grid_size = CEIL_DIV(rows * cols, block_size);
     
     for (int l = 0; l < L; l++) {
-        float* layer_mask = model->fc_mask + l * OC * C;
-        create_band_mask_kernel<<<grid_size, block_size>>>(layer_mask, C, OC, BANDWIDTH);
+        float* layer_mask = mask + l * rows * cols;
+        create_kernel<<<grid_size, block_size>>>(layer_mask, rows, cols, bandwidth);
     }
     cudaCheck(cudaGetLastError());
     cudaCheck(cudaDeviceSynchronize());
@@ -1108,21 +1134,107 @@ void init_fc_mask(GPT2 *model) {
     int h_count = 0;
     cudaCheck(cudaMalloc((void**)&d_count, sizeof(int)));
     cudaCheck(cudaMemset(d_count, 0, sizeof(int)));
-    
     grid_size = CEIL_DIV(mask_size, block_size);
-    count_nonzero_kernel<<<grid_size, block_size>>>(model->fc_mask, d_count, mask_size);
+    count_nonzero_kernel<<<grid_size, block_size>>>(mask, d_count, mask_size);
     cudaCheck(cudaMemcpy(&h_count, d_count, sizeof(int), cudaMemcpyDeviceToHost));
     cudaCheck(cudaFree(d_count));
     
     float density = (float)h_count / mask_size * 100.0f;
-    printf("| FC1 banded mask       | bandwidth=%d, density=%.1f%%                       |\n", BANDWIDTH, density);
-    printf("| FC1 connections       | %d / %zu (per layer: %d / %d)              |\n", 
-           h_count, mask_size, h_count / L, OC * C);
+    printf("| %s banded mask       | bandwidth=%d, density=%.1f%%                       |\n", name, bandwidth, density);
+    printf("| %s connections       | %d / %zu (per layer: %d / %d)              |\n", 
+           name, h_count, mask_size, h_count / L, rows * cols);
     
-    // NOTE: Don't mask initial weights - causes numerical instability (inf loss)
-    // Instead, only mask gradients during backward and apply mask after optimizer step
-    // The sparse structure will emerge during training
-    printf("| FC1 mask mode         | gradients + post-update only                       |\n");
+    return mask;
+}
+
+// Wrapper for FC1 mask creation
+void create_fc1_mask_wrapper(float* mask, int C, int OC, int bandwidth) {
+    int block_size = 256;
+    int grid_size = CEIL_DIV(OC * C, block_size);
+    create_band_mask_fc1_kernel<<<grid_size, block_size>>>(mask, C, OC, bandwidth);
+}
+
+// Wrapper for FC2 mask creation
+void create_fc2_mask_wrapper(float* mask, int OC, int IC, int bandwidth) {
+    int block_size = 256;
+    int grid_size = CEIL_DIV(OC * IC, block_size);
+    create_band_mask_fc2_kernel<<<grid_size, block_size>>>(mask, OC, IC, bandwidth);
+}
+
+// Initialize banded sparsity masks based on bandwidth settings
+void init_fc_masks(GPT2 *model) {
+    int L = model->config.num_layers;
+    int C = model->config.channels;
+    int block_size = 256;
+    
+    // FC1 mask: (L, 4*C, C) - up-projection
+    if (BANDWIDTH_FC1 > 0) {
+        int OC = 4 * C;  // output channels
+        size_t fc1_mask_size = (size_t)L * OC * C;
+        cudaCheck(cudaMalloc((void**)&model->fc1_mask, fc1_mask_size * sizeof(float)));
+        
+        int grid_size = CEIL_DIV(OC * C, block_size);
+        for (int l = 0; l < L; l++) {
+            float* layer_mask = model->fc1_mask + l * OC * C;
+            create_band_mask_fc1_kernel<<<grid_size, block_size>>>(layer_mask, C, OC, BANDWIDTH_FC1);
+        }
+        cudaCheck(cudaGetLastError());
+        cudaCheck(cudaDeviceSynchronize());
+        
+        // Report FC1 sparsity
+        int* d_count;
+        int h_count = 0;
+        cudaCheck(cudaMalloc((void**)&d_count, sizeof(int)));
+        cudaCheck(cudaMemset(d_count, 0, sizeof(int)));
+        grid_size = CEIL_DIV(fc1_mask_size, block_size);
+        count_nonzero_kernel<<<grid_size, block_size>>>(model->fc1_mask, d_count, fc1_mask_size);
+        cudaCheck(cudaMemcpy(&h_count, d_count, sizeof(int), cudaMemcpyDeviceToHost));
+        cudaCheck(cudaFree(d_count));
+        
+        float density = (float)h_count / fc1_mask_size * 100.0f;
+        printf("| FC1 banded mask       | bandwidth=%d, density=%.1f%%                       |\n", BANDWIDTH_FC1, density);
+        printf("| FC1 connections       | %d / %zu (per layer: %d / %d)              |\n", 
+               h_count, fc1_mask_size, h_count / L, OC * C);
+    } else {
+        printf("| FC1                   | DENSE (bandwidth=0)                                |\n");
+    }
+    
+    // FC2 mask: (L, C, 4*C) - down-projection
+    if (BANDWIDTH_FC2 > 0) {
+        int IC = 4 * C;  // input channels
+        int OC = C;      // output channels
+        size_t fc2_mask_size = (size_t)L * OC * IC;
+        cudaCheck(cudaMalloc((void**)&model->fc2_mask, fc2_mask_size * sizeof(float)));
+        
+        int grid_size = CEIL_DIV(OC * IC, block_size);
+        for (int l = 0; l < L; l++) {
+            float* layer_mask = model->fc2_mask + l * OC * IC;
+            create_band_mask_fc2_kernel<<<grid_size, block_size>>>(layer_mask, OC, IC, BANDWIDTH_FC2);
+        }
+        cudaCheck(cudaGetLastError());
+        cudaCheck(cudaDeviceSynchronize());
+        
+        // Report FC2 sparsity
+        int* d_count;
+        int h_count = 0;
+        cudaCheck(cudaMalloc((void**)&d_count, sizeof(int)));
+        cudaCheck(cudaMemset(d_count, 0, sizeof(int)));
+        grid_size = CEIL_DIV(fc2_mask_size, block_size);
+        count_nonzero_kernel<<<grid_size, block_size>>>(model->fc2_mask, d_count, fc2_mask_size);
+        cudaCheck(cudaMemcpy(&h_count, d_count, sizeof(int), cudaMemcpyDeviceToHost));
+        cudaCheck(cudaFree(d_count));
+        
+        float density = (float)h_count / fc2_mask_size * 100.0f;
+        printf("| FC2 banded mask       | bandwidth=%d, density=%.1f%%                       |\n", BANDWIDTH_FC2, density);
+        printf("| FC2 connections       | %d / %zu (per layer: %d / %d)              |\n", 
+               h_count, fc2_mask_size, h_count / L, OC * IC);
+    } else {
+        printf("| FC2                   | DENSE (bandwidth=0)                                |\n");
+    }
+    
+    if (BANDWIDTH_FC1 > 0 || BANDWIDTH_FC2 > 0) {
+        printf("| Mask mode             | gradients + post-update only                       |\n");
+    }
 }
 
 void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1192,7 +1304,6 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
     }
 
     cudaCheck(cudaMemcpy(model->inputs, inputs, B * T * sizeof(int), cudaMemcpyHostToDevice));
-
     if (targets != NULL) {
         cudaCheck(cudaMemcpy(model->targets, targets, B * T * sizeof(int), cudaMemcpyHostToDevice));
     }
@@ -1242,12 +1353,14 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
         residual_forward(l_residual2, residual, l_attproj, B*T*C);
         layernorm_forward(l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2, l_ln2w, l_ln2b, B, T, C);
         
-        // FC1: This is where we apply the banded mask
-        // The weights l_fcw are already masked, so forward pass works normally
+        // FC1: up-projection (weights may be masked)
         matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C);
         
         gelu_forward(l_fch_gelu, l_fch, B*T*4*C);
+        
+        // FC2: down-projection (weights may be masked)
         matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C);
+        
         residual_forward(l_residual3, l_residual2, l_fcproj, B*T*C);
     }
 
@@ -1350,12 +1463,15 @@ void gpt2_backward(GPT2 *model) {
         float* dl_preatt = grads_acts.preatt;
         float* scratch = acts.output;
 
-        matmul_backward(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, B, T, 4*C, C);
+        // FC2 backward: apply mask to weight gradients if enabled
+        float* l_fc2_mask = (model->fc2_mask != NULL) ? model->fc2_mask + l * C * 4*C : NULL;
+        matmul_backward_masked(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, l_fc2_mask, B, T, 4*C, C);
+        
         gelu_backward(dl_bt4c, l_fch, dl_bt4c, B*T*4*C);
         
-        // FC1 backward: apply mask to weight gradients
-        float* l_fc_mask = (model->fc_mask != NULL && BAND_ENABLED) ? model->fc_mask + l * 4*C * C : NULL;
-        matmul_backward_masked(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc_mask, B, T, C, 4 * C);
+        // FC1 backward: apply mask to weight gradients if enabled
+        float* l_fc1_mask = (model->fc1_mask != NULL) ? model->fc1_mask + l * 4*C * C : NULL;
+        matmul_backward_masked(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc1_mask, B, T, C, 4 * C);
         
         layernorm_backward(dresidual, dl_ln2w, dl_ln2b, dl_btc, l_residual2, l_ln2w, l_ln2_mean, l_ln2_rstd, B, T, C);
         matmul_backward(dl_btc, dl_attprojw, dl_attprojb, dresidual, l_atty, l_attprojw, B, T, C, C);
@@ -1388,20 +1504,35 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
                                               learning_rate, beta1, beta2, beta1_correction, beta2_correction, eps, weight_decay);
     cudaCheck(cudaGetLastError());
     
-    // Re-apply mask to FC1 weights after update (to ensure sparsity is maintained)
-    if (model->fc_mask != NULL && BAND_ENABLED) {
-        int L = model->config.num_layers;
-        int C = model->config.channels;
+    // Re-apply masks to weights after update (to ensure sparsity is maintained)
+    int L = model->config.num_layers;
+    int C = model->config.channels;
+    block_size = 256;
+    
+    // FC1 mask
+    if (model->fc1_mask != NULL) {
         int OC = 4 * C;
-        block_size = 256;
         for (int l = 0; l < L; l++) {
             float* layer_fcw = model->params.fcw + l * OC * C;
-            float* layer_mask = model->fc_mask + l * OC * C;
+            float* layer_mask = model->fc1_mask + l * OC * C;
             int grid_size = CEIL_DIV(OC * C, block_size);
             apply_mask_kernel<<<grid_size, block_size>>>(layer_fcw, layer_mask, OC * C);
         }
-        cudaCheck(cudaGetLastError());
     }
+    
+    // FC2 mask
+    if (model->fc2_mask != NULL) {
+        int IC = 4 * C;
+        int OC = C;
+        for (int l = 0; l < L; l++) {
+            float* layer_fcprojw = model->params.fcprojw + l * OC * IC;
+            float* layer_mask = model->fc2_mask + l * OC * IC;
+            int grid_size = CEIL_DIV(OC * IC, block_size);
+            apply_mask_kernel<<<grid_size, block_size>>>(layer_fcprojw, layer_mask, OC * IC);
+        }
+    }
+    
+    cudaCheck(cudaGetLastError());
 }
 
 void gpt2_free(GPT2 *model) {
@@ -1414,8 +1545,11 @@ void gpt2_free(GPT2 *model) {
     cudaCheck(cudaFree(model->inputs));
     cudaCheck(cudaFree(model->targets));
     cudaFreeHost(model->cpu_losses);
-    if (model->fc_mask != NULL) {
-        cudaCheck(cudaFree(model->fc_mask));
+    if (model->fc1_mask != NULL) {
+        cudaCheck(cudaFree(model->fc1_mask));
+    }
+    if (model->fc2_mask != NULL) {
+        cudaCheck(cudaFree(model->fc2_mask));
     }
 }
 
@@ -1494,8 +1628,8 @@ void error_usage() {
     fprintf(stderr, "  -m <int>    val_max_steps, up to how many val batches to estimate val loss? (default = 20)\n");
     fprintf(stderr, "  -s <int>    sample_every, how often we inference the model (default = 20)\n");
     fprintf(stderr, "  -g <int>    genT, how many steps of inference we do (default = 64)\n");
-    fprintf(stderr, "  -w <int>    bandwidth for banded sparsity (default = 256)\n");
-    fprintf(stderr, "  -d <int>    disable banding (0=banded, 1=dense) (default = 0)\n");
+    fprintf(stderr, "  -1 <int>    FC1 bandwidth for banded sparsity (default = 0, dense)\n");
+    fprintf(stderr, "  -2 <int>    FC2 bandwidth for banded sparsity (default = 0, dense)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -1533,16 +1667,20 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'm') { val_max_steps = atoi(argv[i+1]); }
         else if (argv[i][1] == 's') { sample_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'g') { genT = atoi(argv[i+1]); }
-        else if (argv[i][1] == 'w') { BANDWIDTH = atoi(argv[i+1]); }
-        else if (argv[i][1] == 'd') { BAND_ENABLED = (atoi(argv[i+1]) == 0) ? 1 : 0; }
+        else if (argv[i][1] == '1') { BANDWIDTH_FC1 = atoi(argv[i+1]); }
+        else if (argv[i][1] == '2') { BANDWIDTH_FC2 = atoi(argv[i+1]); }
         else { error_usage(); }
     }
     
     printf("+-----------------------+----------------------------------------------------+\n");
     printf("| Parameter             | Value                                              |\n");
     printf("+-----------------------+----------------------------------------------------+\n");
-    printf("| BANDED SPARSITY       | %s (bandwidth=%d)                          |\n", 
-           BAND_ENABLED ? "ENABLED" : "DISABLED", BANDWIDTH);
+    printf("| FC1 bandwidth         | %-50d |\n", BANDWIDTH_FC1);
+    printf("| FC2 bandwidth         | %-50d |\n", BANDWIDTH_FC2);
+    printf("| Sparsity mode         | %-50s |\n", 
+           (BANDWIDTH_FC1 == 0 && BANDWIDTH_FC2 == 0) ? "DENSE (no sparsity)" :
+           (BANDWIDTH_FC1 > 0 && BANDWIDTH_FC2 > 0) ? "BANDED (FC1 + FC2)" :
+           (BANDWIDTH_FC1 > 0) ? "BANDED (FC1 only)" : "BANDED (FC2 only)");
     printf("| model path            | %-50s |\n", model_path);
     printf("| checkpoint path       | %-50s |\n", checkpoint_path == NULL ? "NULL" : checkpoint_path);
     printf("| checkpoint_every      | %-50d |\n", checkpoint_every);
@@ -1583,9 +1721,9 @@ int main(int argc, char *argv[]) {
     printf("| num_parameters        | %-50zu |\n", model.num_parameters);
     printf("+-----------------------+----------------------------------------------------+\n");
 
-    // Initialize banded sparsity mask
-    if (BAND_ENABLED) {
-        init_fc_mask(&model);
+    // Initialize banded sparsity masks if any bandwidth > 0
+    if (BANDWIDTH_FC1 > 0 || BANDWIDTH_FC2 > 0) {
+        init_fc_masks(&model);
     }
     printf("+-----------------------+----------------------------------------------------+\n");
 
