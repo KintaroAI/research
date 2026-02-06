@@ -133,31 +133,113 @@ When both layers are sparse:
 
 ---
 
+## Model Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Channels (C) | 128 |
+| Layers (L) | 4 |
+| Heads (NH) | 4 |
+| Vocab Size | 50257 |
+| Max Seq Len | 256 |
+| Parameters | ~7M |
+
+## Training Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Batch Size | 16 |
+| Sequence Length | 256 |
+| Learning Rate | 3e-4 |
+| Steps | 5000 |
+| Val Every | 500 steps |
+| Dataset | TinyStories |
+
+---
+
 ## Reproduction
 
+This experiment is **self-contained** — all source code is included.
+
+### Quick Start
+
 ```bash
-# Build
-cd ../dev && make train_banded
+cd 00009-banded-fc-comparison
 
-# Run all experiments
-cd ../00009-banded-fc-comparison
+# 1. Setup environment and download data
+make setup    # Creates venv, installs deps, downloads TinyStories (~1.5GB)
+
+# 2. Create initial model checkpoint  
+make model    # Creates model.bin (~28MB)
+
+# 3. Build training binary
+make train_banded
+
+# 4. Run all experiments (10 configurations × 5000 steps each)
 chmod +x scripts/run_all.sh
-./scripts/run_all.sh ../dev/train_banded ../dev/model.bin
+./scripts/run_all.sh ./train_banded model.bin
 
-# Parse results
+# 5. Parse results
 ./scripts/parse_logs.sh > parsed_logs.csv
 ```
+
+### Run Individual Experiments
+
+```bash
+# Baseline (dense)
+./train_banded -e model.bin -1 0 -2 0 -n 5000 -b 16 -t 256 -v 500 -o log_baseline.txt
+
+# FC1 only (bandwidth 256)
+./train_banded -e model.bin -1 256 -2 0 -n 5000 -b 16 -t 256 -v 500 -o log_fc1_bw256.txt
+
+# FC2 only (bandwidth 256) — BEST RESULT
+./train_banded -e model.bin -1 0 -2 256 -n 5000 -b 16 -t 256 -v 500 -o log_fc2_bw256.txt
+
+# Both FC1+FC2 (bandwidth 256)
+./train_banded -e model.bin -1 256 -2 256 -n 5000 -b 16 -t 256 -v 500 -o log_both_bw256.txt
+```
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `-e` | Model checkpoint to load |
+| `-c` | Checkpoint output path |
+| `-1` | FC1 bandwidth (0 = dense) |
+| `-2` | FC2 bandwidth (0 = dense) |
+| `-n` | Max training steps |
+| `-b` | Batch size |
+| `-t` | Sequence length |
+| `-v` | Validate every N steps |
+| `-o` | Output log file |
+
+---
 
 ## Files
 
 ```
 00009-banded-fc-comparison/
-├── README.md           # This file (results)
-├── PLAN.md             # Experiment plan
-├── parsed_logs.csv     # Raw results
-├── logs/               # Training logs
-├── checkpoints/        # Model checkpoints
-└── scripts/
-    ├── run_all.sh      # Automation script
-    └── parse_logs.sh   # Log parser
+├── README.md              # Results and analysis (this file)
+├── PLAN.md                # Original experiment plan
+├── parsed_logs.csv        # Raw experiment results
+├── Makefile               # Build and experiment targets
+├── create_model.py        # Script to create model.bin
+├── prepare_data.py        # Script to download/tokenize TinyStories
+├── scripts/
+│   ├── run_all.sh         # Run all 10 experiment configurations
+│   └── parse_logs.sh      # Extract validation loss from logs
+└── src/
+    ├── train_gpt2_fp32_banded.cu   # Training code with configurable sparsity
+    ├── generate_banded.cu          # Inference code
+    └── llmc/
+        ├── dataloader.h   # Data loading utilities
+        ├── tokenizer.h    # GPT-2 tokenizer decoding
+        ├── utils.h        # File I/O utilities
+        └── rand.h         # Mersenne Twister RNG
 ```
+
+## Dependencies
+
+- CUDA toolkit (nvcc)
+- cuBLAS
+- Python 3.8+ with: `tiktoken`, `numpy`, `requests`, `tqdm`, `torch`
