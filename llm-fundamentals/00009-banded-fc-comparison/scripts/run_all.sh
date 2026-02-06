@@ -35,7 +35,9 @@ run_exp() {
         -c checkpoints/ckpt_${name}.bin \
         -n $STEPS -b $BATCH -t $SEQ \
         -v $VAL_EVERY -s $SAMPLE_EVERY \
-        -o logs/log_${name}.txt
+        -o logs/log_${name}.txt \
+        -i ../dev/data/tinystories/TinyStories_train.bin \
+        -j ../dev/data/tinystories/TinyStories_val.bin
     echo ">>> Completed: $name"
     echo ""
 }
