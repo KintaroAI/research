@@ -148,28 +148,27 @@ The C training code from `dev/` is adapted with:
 ## Dependencies
 
 - CUDA toolkit (nvcc + cuBLAS)
-- Python 3.8+ with: `numpy`
-
-```bash
-pip install numpy
-```
+- Python 3.8+ with a virtual environment activated (e.g., `source venv/bin/activate`) and the following packages installed:
+    - `numpy` (`pip install numpy`)
+    - `torch` (`pip install torch`)
 
 ## Quick Start
 
 ```bash
 cd 00010-delayed-generalization
 
-# 1. Generate dataset
+# 1. Generate dataset (ensure venv is active)
 python3 generate_dataset.py
 
-# 2. Create model checkpoint
+# 2. Create model checkpoint (ensure venv is active)
 python3 create_model.py
 
 # 3. Build training binary
 make train
 
 # 4. Train (expect ~100K steps, watch for val loss dropping)
-./train -e model.bin -n 100000 -b 512 -t 5 -v 100 -l 0.001 -w 1.0 -s 0 -o log.txt
+#    (ensure venv is active when running train)
+./train -e model.bin -i data/train.bin -j data/val.bin -t 5 -b 512 -n 100000 -l 0.001 -w 1.0 -s 0 -o log.txt
 ```
 
 ---
