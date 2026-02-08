@@ -122,10 +122,10 @@ The model's generalization on position 3 is what creates the delayed generalizat
 
 ## Key Modifications to dev/ Code
 
-The C training code from `dev/` is adapted with:
-1. **Weight decay CLI flag** (`-w`): configurable weight decay (default 1.0 for this experiment)
-2. **β₂ = 0.98**: changed from default 0.999 to match the paper
-3. **No text generation**: sample_every disabled (tokens are abstract symbols, not text)
+The C training code is the **unmodified dev/ version** with experiment-specific flags at invocation:
+1. **Weight decay** (`-w 1.0`): strong regularization per the paper (dev default is 0.0)
+2. **β₂** (`-a 0.98`): Adam beta2 per the paper (dev default is 0.999)
+3. **No text generation** (`-s 0`): sampling disabled (tokens are abstract symbols, not text)
 
 ---
 
@@ -138,9 +138,10 @@ The C training code from `dev/` is adapted with:
 ├── create_model.py          # Create model.bin with tiny architecture
 ├── Makefile                 # Build and run targets
 └── src/
-    ├── train_gpt2_fp32.cu   # Training code (adapted from dev/)
+    ├── train_gpt2_fp32.cu   # Training code (identical copy from dev/)
     └── llmc/
         ├── dataloader.h     # Data loading (from dev/)
+        ├── tokenizer.h      # Tokenizer (from dev/, unused with -s 0)
         ├── utils.h          # File I/O utilities (from dev/)
         └── rand.h           # RNG (from dev/)
 ```
@@ -168,7 +169,7 @@ make train
 
 # 4. Train (expect ~100K steps, watch for val loss dropping)
 #    (ensure venv is active when running train)
-./train -e model.bin -i data/train.bin -j data/val.bin -t 5 -b 512 -n 100000 -l 0.001 -w 1.0 -s 0 -o log.txt
+./train -e model.bin -i data/train.bin -j data/val.bin -t 5 -b 512 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -o log.txt
 ```
 
 ---

@@ -1583,6 +1583,8 @@ void error_usage() {
     fprintf(stderr, "  -b <int>    batch size B (default = 4)\n");
     fprintf(stderr, "  -t <int>    sequence length T (default = 1024)\n");
     fprintf(stderr, "  -l <float>  learning rate (default = 3e-4f)\n");
+    fprintf(stderr, "  -w <float>  weight decay (default = 0.0)\n");
+    fprintf(stderr, "  -a <float>  Adam beta2 (default = 0.999)\n");
     fprintf(stderr, "  -v <int>    val_loss_every, how often we evaluate val loss (default = 20)\n");
     fprintf(stderr, "  -m <int>    val_max_steps, up to how many val batches to estimate val loss? (default = 20)\n");
     fprintf(stderr, "  -s <int>    sample_every, how often we inference the model (default = 20)\n");
@@ -1605,6 +1607,8 @@ int main(int argc, char *argv[]) {
     int T = 1024; // sequence length max
     int max_steps = -1;  // -1 = use train_num_batches (1 epoch)
     float learning_rate = 3e-4f;
+    float weight_decay = 0.0f;
+    float beta2 = 0.999f;
     int val_loss_every = 20; // every how many steps do we eval validation loss?
     int val_max_steps = 20; // how many batches max do we eval for validation loss?
     int sample_every = 20; // every how many steps to do inference?
@@ -1624,6 +1628,8 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 't') { T = atoi(argv[i+1]); }
         else if (argv[i][1] == 'n') { max_steps = atoi(argv[i+1]); }
         else if (argv[i][1] == 'l') { learning_rate = atof(argv[i+1]); }
+        else if (argv[i][1] == 'w') { weight_decay = atof(argv[i+1]); }
+        else if (argv[i][1] == 'a') { beta2 = atof(argv[i+1]); }
         else if (argv[i][1] == 'v') { val_loss_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'm') { val_max_steps = atoi(argv[i+1]); }
         else if (argv[i][1] == 's') { sample_every = atoi(argv[i+1]); }
@@ -1642,7 +1648,9 @@ int main(int argc, char *argv[]) {
     printf("| max_steps             | %-50d |\n", max_steps);
     printf("| batch size B          | %-50d |\n", B);
     printf("| sequence length T     | %-50d |\n", T);
-    printf("| learning rate         | %-50f |\n", learning_rate);
+    printf("| learning rate         | %-50e |\n", learning_rate);
+    printf("| weight decay          | %-50f |\n", weight_decay);
+    printf("| beta2                 | %-50f |\n", beta2);
     printf("| val_loss_every        | %-50d |\n", val_loss_every);
     printf("| val_max_steps         | %-50d |\n", val_max_steps);
     printf("| sample_every          | %-50d |\n", sample_every);
@@ -1731,7 +1739,7 @@ int main(int argc, char *argv[]) {
         }
 
         // once in a while do model inference to print generated text
-        if ((sample_every > 0 && step > 0 && step % sample_every == 0) || last_step) {
+        if (sample_every > 0 && ((step > 0 && step % sample_every == 0) || last_step)) {
             // fill up gen_tokens with the GPT2_EOT, which kicks off the generation
             for(int i = 0; i < B * T; ++i) {
                 gen_tokens[i] = GPT2_EOT;
@@ -1779,7 +1787,7 @@ int main(int argc, char *argv[]) {
         gpt2_forward(&model, train_loader.inputs, train_loader.targets, B, T);
         gpt2_zero_grad(&model);
         gpt2_backward(&model);
-        gpt2_update(&model, learning_rate, 0.9f, 0.999f, 1e-8f, 0.0f, step+1);
+        gpt2_update(&model, learning_rate, 0.9f, beta2, 1e-8f, weight_decay, step+1);
         cudaCheck(cudaDeviceSynchronize()); // finish all CUDA work to get correct precise timings
         clock_gettime(CLOCK_MONOTONIC, &end);
         double time_elapsed_s = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;

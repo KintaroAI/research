@@ -1,13 +1,5 @@
 /*
 GPT-2 Transformer Neural Net trained in raw CUDA
-Adapted for delayed generalization (modular arithmetic) experiment.
-
-Key changes from dev/:
-- No tokenizer dependency (tokens are abstract symbols, not text)
-- Weight decay CLI flag (-w) for strong regularization (default 1.0)
-- β₂ = 0.98 (paper default)
-- Defaults: B=512, T=5 for modular arithmetic equations
-
 Non-trivial notes to be aware of:
 
 We are being clever in the backward pass to conserve memory.
@@ -36,6 +28,8 @@ the layernorms are connected to the residuals so we += in layernorm backward.
 // our own utilities
 // defines: fopenCheck, freadCheck, fcloseCheck, fseekCheck, mallocCheck
 #include "llmc/utils.h"
+// defines: tokenizer_init, tokenizer_decode, tokenizer_free
+#include "llmc/tokenizer.h"
 // defines: dataloader_init, dataloader_reset, dataloader_next_batch, dataloader_free
 #include "llmc/dataloader.h"
 
@@ -1508,6 +1502,41 @@ void gpt2_free(GPT2 *model) {
 #ifndef TESTING
 // if we are TESTING (see test_gpt2.cu), we'll skip the int main below
 // ----------------------------------------------------------------------------
+// sampler: takes probabilities and samples integers from them
+
+#define GPT2_EOT 50256
+
+unsigned int random_u32(unsigned long long *state) {
+    // xorshift rng: https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    return (*state * 0x2545F4914F6CDD1Dull) >> 32;
+}
+float random_f32(unsigned long long *state) { // random float32 in [0,1)
+    return (random_u32(state) >> 8) / 16777216.0f;
+}
+
+int sample_softmax(const float* logits, int n, float coin) {
+    // sample index from logits (converted to probabilities using softmax)
+    // coin is a random number in [0, 1), usually from random_f32()
+    double norm = 0;
+    for (int i = 0; i < n; i++) {
+        norm += expf(logits[i]);
+    }
+    // instead of dividing all exp(logits), we can just multiply coin.
+    coin *= norm;
+    float cdf = 0.0f;
+    for (int i = 0; i < n; i++) {
+        cdf += expf(logits[i]);
+        if (coin < cdf) {
+            return i;
+        }
+    }
+    return n - 1; // in case of rounding errors
+}
+
+// ----------------------------------------------------------------------------
 // Logger lite, will probably grow/change some over time
 
 typedef struct {
@@ -1547,17 +1576,19 @@ void error_usage() {
     fprintf(stderr, "  -e <string> model checkpoint path to load (default = model.bin)\n");
     fprintf(stderr, "  -c <string> checkpoint output path for saving (default = NULL, no saving)\n");
     fprintf(stderr, "  -k <int>    checkpoint_every, save checkpoint every N steps (default = 0, disabled)\n");
-    fprintf(stderr, "  -i <string> train data filename pattern (default = data/train.bin)\n");
-    fprintf(stderr, "  -j <string> val data filename pattern (default = data/val.bin)\n");
+    fprintf(stderr, "  -i <string> train data filename pattern (default = data/tinystories/TinyStories_train.bin)\n");
+    fprintf(stderr, "  -j <string> val data filename pattern (default = data/tinystories/TinyStories_val.bin)\n");
     fprintf(stderr, "  -o <string> output log file (default = NULL)\n");
     fprintf(stderr, "  -n <int>    max_steps, maximum training steps (default = -1, use 1 epoch)\n");
-    fprintf(stderr, "  -b <int>    batch size B (default = 512)\n");
-    fprintf(stderr, "  -t <int>    sequence length T (default = 5)\n");
-    fprintf(stderr, "  -l <float>  learning rate (default = 1e-3)\n");
-    fprintf(stderr, "  -w <float>  weight decay (default = 1.0)\n");
-    fprintf(stderr, "  -v <int>    val_loss_every, how often we evaluate val loss (default = 100)\n");
+    fprintf(stderr, "  -b <int>    batch size B (default = 4)\n");
+    fprintf(stderr, "  -t <int>    sequence length T (default = 1024)\n");
+    fprintf(stderr, "  -l <float>  learning rate (default = 3e-4f)\n");
+    fprintf(stderr, "  -w <float>  weight decay (default = 0.0)\n");
+    fprintf(stderr, "  -a <float>  Adam beta2 (default = 0.999)\n");
+    fprintf(stderr, "  -v <int>    val_loss_every, how often we evaluate val loss (default = 20)\n");
     fprintf(stderr, "  -m <int>    val_max_steps, up to how many val batches to estimate val loss? (default = 20)\n");
-    fprintf(stderr, "  -s <int>    sample_every, how often we print a sample (default = 0, disabled)\n");
+    fprintf(stderr, "  -s <int>    sample_every, how often we inference the model (default = 20)\n");
+    fprintf(stderr, "  -g <int>    genT, how many steps of inference we do (default = 64)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -1566,21 +1597,22 @@ void error_usage() {
 int main(int argc, char *argv[]) {
 
     // read in the (optional) command line arguments
-    // defaults tuned for modular arithmetic / delayed generalization experiment
-    const char* train_data_pattern = "data/train.bin";
-    const char* val_data_pattern = "data/val.bin";
+    const char* train_data_pattern = "data/tinystories/TinyStories_train.bin";
+    const char* val_data_pattern = "data/tinystories/TinyStories_val.bin";
     const char* output_log_file = NULL;
     const char* model_path = "model.bin";
     const char* checkpoint_path = NULL;  // where to save checkpoints
     int checkpoint_every = 0;  // save checkpoint every N steps (0 = disabled)
-    int B = 512; // batch size (large for small T=5 sequences)
-    int T = 5; // sequence length: a OP b EQ c
+    int B = 4; // batch size
+    int T = 1024; // sequence length max
     int max_steps = -1;  // -1 = use train_num_batches (1 epoch)
-    float learning_rate = 1e-3f;
-    float weight_decay = 1.0f; // strong weight decay per the paper
-    int val_loss_every = 100; // every how many steps do we eval validation loss?
+    float learning_rate = 3e-4f;
+    float weight_decay = 0.0f;
+    float beta2 = 0.999f;
+    int val_loss_every = 20; // every how many steps do we eval validation loss?
     int val_max_steps = 20; // how many batches max do we eval for validation loss?
-    int sample_every = 0; // disabled by default (abstract tokens, not text)
+    int sample_every = 20; // every how many steps to do inference?
+    int genT = 64; // number of steps of inference we will do
     for (int i = 1; i < argc; i+=2) {
         if (i + 1 >= argc) { error_usage(); } // must have arg after flag
         if (argv[i][0] != '-') { error_usage(); } // must start with dash
@@ -1597,9 +1629,11 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'n') { max_steps = atoi(argv[i+1]); }
         else if (argv[i][1] == 'l') { learning_rate = atof(argv[i+1]); }
         else if (argv[i][1] == 'w') { weight_decay = atof(argv[i+1]); }
+        else if (argv[i][1] == 'a') { beta2 = atof(argv[i+1]); }
         else if (argv[i][1] == 'v') { val_loss_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'm') { val_max_steps = atoi(argv[i+1]); }
         else if (argv[i][1] == 's') { sample_every = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'g') { genT = atoi(argv[i+1]); }
         else { error_usage(); }
     }
     printf("+-----------------------+----------------------------------------------------+\n");
@@ -1616,9 +1650,11 @@ int main(int argc, char *argv[]) {
     printf("| sequence length T     | %-50d |\n", T);
     printf("| learning rate         | %-50e |\n", learning_rate);
     printf("| weight decay          | %-50f |\n", weight_decay);
+    printf("| beta2                 | %-50f |\n", beta2);
     printf("| val_loss_every        | %-50d |\n", val_loss_every);
     printf("| val_max_steps         | %-50d |\n", val_max_steps);
     printf("| sample_every          | %-50d |\n", sample_every);
+    printf("| genT                  | %-50d |\n", genT);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // set up the device
@@ -1668,6 +1704,15 @@ int main(int argc, char *argv[]) {
     Logger logger;
     logger_init(&logger, output_log_file);
 
+    // build the Tokenizer
+    Tokenizer tokenizer;
+    tokenizer_init(&tokenizer, "gpt2_tokenizer.bin");
+
+    // some memory for generating samples from the model
+    unsigned long long rng_state = 1337;
+    int* gen_tokens = (int*)mallocCheck(B * T * sizeof(int));
+    float* cpu_logits = (float*)mallocCheck(model.config.vocab_size * sizeof(float));
+
     // train
     struct timespec start, end;
     double total_sum_iteration_time_s = 0.0;
@@ -1693,9 +1738,41 @@ int main(int argc, char *argv[]) {
             gpt2_save_checkpoint(&model, checkpoint_path);
         }
 
-        // once in a while print token IDs as a sanity check (no tokenizer needed)
-        if (sample_every > 0 && step > 0 && step % sample_every == 0) {
-            printf("sample at step %d: [token generation not applicable for abstract symbols]\n", step);
+        // once in a while do model inference to print generated text
+        if (sample_every > 0 && ((step > 0 && step % sample_every == 0) || last_step)) {
+            // fill up gen_tokens with the GPT2_EOT, which kicks off the generation
+            for(int i = 0; i < B * T; ++i) {
+                gen_tokens[i] = GPT2_EOT;
+            }
+            // now sample from the model autoregressively
+            printf("generating:\n---\n");
+            for (int t = 1; t < genT; t++) {
+                // note that inference is very wasteful here because for each token
+                // we re-calculate the forward pass for all of (B,T) positions from scratch
+                // but the inference here is just for sanity checking anyway
+                // and we can maybe optimize a bit more later, with careful tests
+                gpt2_forward(&model, gen_tokens, NULL, B, T);
+                // furthermore, below we're only using b=0 (i.e. the first row) of all B rows
+                // we're in principle running B "inference streams" in parallel here
+                // only using position 0 because it's a bit faster (copy less probs from GPU -> CPU)
+                // get the V-dimensional vector probs[0, t-1, :]
+                float* logits = model.acts.output + (t - 1) * model.config.padded_vocab_size;
+                // move probs back to CPU and sample (note we only move the first vocab_size logits, ignoring the padding)
+                cudaCheck(cudaMemcpy(cpu_logits, logits, model.config.vocab_size * sizeof(float), cudaMemcpyDeviceToHost));
+                float coin = random_f32(&rng_state);
+                int next_token = sample_softmax(cpu_logits, model.config.vocab_size, coin);
+                gen_tokens[t] = next_token;
+                // print the generated token, either using the Tokenizer or a fallback
+                if (tokenizer.init_ok) {
+                    const char* token_str = tokenizer_decode(&tokenizer, next_token);
+                    safe_printf(token_str);
+                } else {
+                    // fall back to printing the token id
+                    printf("%d ", next_token);
+                }
+                fflush(stdout);
+            }
+            printf("\n---\n");
         }
 
         // bit confusing: we want to make sure to eval and sample on 0th iteration
@@ -1710,8 +1787,7 @@ int main(int argc, char *argv[]) {
         gpt2_forward(&model, train_loader.inputs, train_loader.targets, B, T);
         gpt2_zero_grad(&model);
         gpt2_backward(&model);
-        // AdamW with β₁=0.9, β₂=0.98 (paper default), configurable weight decay
-        gpt2_update(&model, learning_rate, 0.9f, 0.98f, 1e-8f, weight_decay, step+1);
+        gpt2_update(&model, learning_rate, 0.9f, beta2, 1e-8f, weight_decay, step+1);
         cudaCheck(cudaDeviceSynchronize()); // finish all CUDA work to get correct precise timings
         clock_gettime(CLOCK_MONOTONIC, &end);
         double time_elapsed_s = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
@@ -1731,7 +1807,10 @@ int main(int argc, char *argv[]) {
     // free
     dataloader_free(&train_loader);
     dataloader_free(&val_loader);
+    tokenizer_free(&tokenizer);
     gpt2_free(&model);
+    free(cpu_logits);
+    free(gen_tokens);
     cublasCheck(cublasDestroy(cublas_handle));
     logger_free(&logger);
 
