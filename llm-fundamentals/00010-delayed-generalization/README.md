@@ -32,6 +32,7 @@ a + b ≡ c  (mod 97)
 - **Training split**: 50% of equations → ~4,705 train, ~4,704 val
 - **Data format**: Equations are concatenated into a flat token stream in llm.c shard format
 - With T=8, each batch row contains exactly one equation
+- With B=4688, each step processes 4688/4704 = 99.7% of training equations (full-batch)
 
 ---
 
@@ -60,11 +61,17 @@ a + b ≡ c  (mod 97)
 | Learning rate | 1e-3 |
 | β₁, β₂ | 0.9, 0.98 |
 | Weight decay | 1.0 |
-| Batch size B | 512 |
+| Batch size B | 4688 (full-batch) |
 | Sequence length T | 8 |
 | Max steps | 100,000 |
 | Validation every | 100 steps |
 | Training code | C/CUDA (adapted from dev/) |
+
+**Why full-batch?** The paper uses full-batch gradient descent (all training
+equations in every step). With mini-batches (e.g. B=512), the task-relevant
+gradient signal is too weak relative to weight decay (wd=1.0), preventing
+generalization. B=4688 is the largest multiple of 16 that satisfies
+B×T+1 ≤ train_tokens (the matmul kernel requires B×T to be a multiple of 128).
 
 ---
 
@@ -127,9 +134,10 @@ The model's generalization on position 4 is what creates the delayed generalizat
 ## Key Modifications to dev/ Code
 
 The C training code is the **unmodified dev/ version** with experiment-specific flags at invocation:
-1. **Weight decay** (`-w 1.0`): strong regularization per the paper (dev default is 0.0)
-2. **β₂** (`-a 0.98`): Adam beta2 per the paper (dev default is 0.999)
-3. **No text generation** (`-s 0`): sampling disabled (tokens are abstract symbols, not text)
+1. **Full-batch training** (`-b 4688`): processes (nearly) all training equations per step, matching the paper's full-batch gradient descent. B=4688 is the largest multiple of 16 that satisfies the dataloader's B×T+1 ≤ num_tokens constraint.
+2. **Weight decay** (`-w 1.0`): strong regularization per the paper (dev default is 0.0)
+3. **β₂** (`-a 0.98`): Adam beta2 per the paper (dev default is 0.999)
+4. **No text generation** (`-s 0`): sampling disabled (tokens are abstract symbols, not text)
 
 ---
 
@@ -172,8 +180,8 @@ python3 create_model.py
 make train
 
 # 4. Train (expect ~100K steps, watch for val loss dropping)
-#    (ensure venv is active when running train)
-./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 512 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -o log.txt
+#    B=4688 = full-batch training (paper requirement)
+./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -o log.txt
 ```
 
 ---
