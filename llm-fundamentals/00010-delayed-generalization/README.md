@@ -186,6 +186,40 @@ make train
 
 ---
 
+## Experiment Log
+
+### Attempt 1: Mini-batch training (B=512)
+
+**Config**: `./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 512 -n 1000000 -l 0.001 -w 1.0 -a 0.98 -s 0`
+
+**Result**: ❌ No generalization even after 1M steps. Training loss drops (memorization), but validation loss never decreases.
+
+**Analysis**: The paper uses **full-batch gradient descent** (all ~4704 training equations per step). With B=512, each step sees only 10.9% of training data. Combined with strong weight decay (1.0), the task-relevant gradient (only position 4 out of 8 per equation) is too weak relative to regularization. Weight decay wins the tug-of-war, preventing the model from developing generalized representations.
+
+### Attempt 2: Full-batch training (B=4688)
+
+**Config**: `./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 10000000 -l 0.001 -w 1.0 -a 0.98 -s 0`
+
+**Result**: ❌ No generalization. Same behavior as B=512.
+
+**Analysis**: Full-batch alone is not sufficient. Remaining differences from the paper:
+
+1. **Loss dilution from padding tokens**: The paper's equation format is `a ○ b = c` (5 tokens). Our format `BOS a OP b EQ c EOS EOS` (8 tokens, padded for T%4==0) means the actual task signal (predicting `c` at position 4) is only **1/8 = 12.5%** of the total gradient. Worse, positions 0 and 2 have **irreducible loss** (~log(97) each) that generates large, permanent noise gradients. In the paper's 5-token format, position 1 (`○` → `b`) is the only irreducible position, so the task signal is ~1/4 = 25% — **2× stronger**.
+
+2. **Weight tying**: The llm.c code hardcodes `wte` as the output projection (weight tying). The paper likely uses separate input embeddings and output projection. Weight tying constrains the embedding to serve double duty, potentially hindering the modular arithmetic representations.
+
+3. **Loss on all positions vs answer-only**: Many grokking reproductions compute loss **only on the answer token** (`c`). Our llm.c training code computes loss uniformly on all 8 positions. The irreducible noise from positions 0 and 2 dominates the gradient, especially with the 1/(B×T) averaging that makes each position's contribution very small.
+
+### Remaining ideas (not yet tried)
+
+- **Mask loss to answer-only**: Modify `fused_classifier_kernel3` (or the `dlosses` input) to zero out loss at all positions except position 4 (the answer). This would match how most grokking reproductions work.
+- **Reduce sequence to T=4**: Use format `a b c PAD` (drop OP/EQ/BOS/EOS) so the task signal is 1/4 of the total, and only 2/4 positions have irreducible loss.
+- **Lower weight decay**: Try wd=0.1–0.5 to compensate for the diluted task gradient.
+- **Remove weight tying**: Add a separate `lm_head` parameter to the checkpoint format and CUDA code.
+- **Port to PyTorch**: Bypass llm.c constraints entirely — implement in PyTorch with loss masking, no weight tying, and the paper's exact 5-token format.
+
+---
+
 ## Status
 
-🔬 **Setting up** — data generation & C code adaptation in progress.
+🔴 **Blocked** — grokking not reproduced. The llm.c training infrastructure imposes constraints (loss on all positions, weight tying, T%4 padding) that dilute the task signal. See Experiment Log above for details and next steps.
