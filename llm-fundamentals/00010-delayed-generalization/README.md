@@ -26,12 +26,12 @@ We learn the binary operation:
 a + b ≡ c  (mod 97)
 ```
 
-- **Vocabulary**: 97 residues (0–96) + 2 special tokens (OP=97, EQ=98) → **99 tokens** (padded to 128 for llm.c)
-- **Equation format**: 5-token sequences: `a OP b EQ c`
+- **Vocabulary**: 97 residues (0–96) + 4 special tokens (OP=97, EQ=98, BOS=99, EOS=100) → **101 tokens** (padded to 128 for llm.c)
+- **Equation format**: 8-token sequences: `BOS a OP b EQ c EOS EOS`
 - **Total equations**: 97 × 97 = **9,409**
 - **Training split**: 50% of equations → ~4,705 train, ~4,704 val
 - **Data format**: Equations are concatenated into a flat token stream in llm.c shard format
-- With T=5, each batch row contains exactly one equation
+- With T=8, each batch row contains exactly one equation
 
 ---
 
@@ -45,8 +45,8 @@ a + b ≡ c  (mod 97)
 | Attention heads (n_head) | 4 |
 | Head dimension | 32 |
 | FFN hidden dim | 512 (4 × n_embd) |
-| Max sequence length (block_size) | 5 |
-| Vocabulary size | 99 (padded to 128) |
+| Max sequence length (block_size) | 8 |
+| Vocabulary size | 101 (padded to 128) |
 | Positional encoding | Learned |
 | Total parameters | ~400K |
 
@@ -61,7 +61,7 @@ a + b ≡ c  (mod 97)
 | β₁, β₂ | 0.9, 0.98 |
 | Weight decay | 1.0 |
 | Batch size B | 512 |
-| Sequence length T | 5 |
+| Sequence length T | 8 |
 | Max steps | 100,000 |
 | Validation every | 100 steps |
 | Training code | C/CUDA (adapted from dev/) |
@@ -106,17 +106,21 @@ Based on the paper:
 
 The equations are concatenated as a flat token stream:
 ```
-a1 OP b1 EQ c1 a2 OP b2 EQ c2 a3 OP b3 EQ c3 ...
+BOS a1 OP b1 EQ c1 EOS EOS BOS a2 OP b2 EQ c2 EOS EOS ...
 ```
 
-With T=5, each row in a batch sees exactly one equation:
-- Position 0: sees `a` → predicts `OP` (trivial)
-- Position 1: sees `a OP` → predicts `b` (random)
-- Position 2: sees `a OP b` → predicts `EQ` (trivial)
-- Position 3: sees `a OP b EQ` → predicts `c = (a+b) mod 97` ← **the hard task**
-- Position 4: sees `a OP b EQ c` → predicts next `a'` (random)
+With T=8, each row in a batch sees exactly one equation:
+- Position 0 (BOS): predicts `a` (random, ~log(97) loss)
+- Position 1 (a): predicts `OP` (trivial)
+- Position 2 (OP): predicts `b` (random)
+- Position 3 (b): predicts `EQ` (trivial)
+- Position 4 (EQ): predicts `c = (a+b) mod 97` ← **the hard task**
+- Position 5 (c): predicts `EOS` (trivial)
+- Position 6 (EOS): predicts `EOS` (trivial)
 
-The model's generalization on position 3 is what creates the delayed generalization signature.
+The model's generalization on position 4 is what creates the delayed generalization signature.
+
+**Why T=8?** Padding from 5 to 8 ensures T is divisible by 4, which is required by the CUDA `float4` vectorized loads in the softmax kernels. The BOS/EOS tokens add minimal overhead — the model learns to predict them trivially.
 
 ---
 
@@ -169,7 +173,7 @@ make train
 
 # 4. Train (expect ~100K steps, watch for val loss dropping)
 #    (ensure venv is active when running train)
-./train -e model.bin -i data/train.bin -j data/val.bin -t 5 -b 512 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -o log.txt
+./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 512 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -o log.txt
 ```
 
 ---

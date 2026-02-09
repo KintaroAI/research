@@ -4,8 +4,8 @@ Outputs model.bin in llm.c checkpoint format.
 
 Architecture matches the paper:
   - 2 layers, 128 dim, 4 heads
-  - Vocab: 99 tokens (97 residues + OP + EQ), padded to 128
-  - Sequence length: 5 (a OP b EQ c)
+  - Vocab: 101 tokens (97 residues + OP + EQ + BOS + EOS), padded to 128
+  - Sequence length: 8 (BOS a OP b EQ c EOS EOS)
 
 Usage:
     python3 create_model.py
@@ -21,8 +21,8 @@ import math
 
 @dataclass
 class GPTConfig:
-    block_size: int = 5        # sequence length: a OP b EQ c
-    vocab_size: int = 99       # 97 residues + OP(97) + EQ(98)
+    block_size: int = 8        # sequence length: BOS a OP b EQ c EOS EOS
+    vocab_size: int = 101      # 97 residues + OP(97) + EQ(98) + BOS(99) + EOS(100)
     n_layer: int = 2           # 2 transformer layers
     n_head: int = 4            # 4 attention heads
     n_embd: int = 128          # 128 dim embeddings
