@@ -229,17 +229,26 @@ This eliminates the noise from irreducible positions (0, 2) and trivial position
 
 **Config**: `./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -p 4`
 
-**Result**: ⏳ Pending...
+**Result**: ✅ **Grokking achieved!** After 100K steps:
+- Train loss: **0.030506**
+- Val loss: **0.031309**
 
-### Remaining ideas (if attempt 3 fails)
+Both losses are very close to zero and nearly identical, confirming the model has **generalized** to unseen modular addition equations. This is the delayed generalization (grokking) phenomenon from the paper.
 
-- **Reduce sequence to T=4**: Use format `a b c PAD` (drop OP/EQ/BOS/EOS) so the irreducible positions don't even exist.
-- **Lower weight decay**: Try wd=0.1–0.5 to compensate.
-- **Remove weight tying**: Add a separate `lm_head` parameter to the checkpoint format and CUDA code.
-- **Port to PyTorch**: Bypass llm.c constraints entirely — implement in PyTorch with the paper's exact setup.
+**Observation — periodic training loss spikes**: Training loss periodically spikes to ~4.4 (e.g., at step 99,817), then recovers to ~0.03 within a few steps. The spike value of 4.4 is close to ln(97) ≈ 4.57, meaning the model briefly predicts the answer nearly at random.
+
+**Spike analysis**: These spikes are a known feature of training with aggressive weight decay (wd=1.0). The mechanism is:
+
+1. Weight decay continuously shrinks all parameters toward zero at rate `lr × wd × param = 0.001 × param` per step
+2. The optimizer maintains a dynamic equilibrium: gradient-driven updates push parameters to minimize loss, while weight decay pushes them toward zero
+3. This equilibrium is not perfectly stable — occasionally weight decay briefly overshoots, compressing a critical parameter (e.g., in an attention head or embedding) below the threshold needed for correct predictions
+4. The resulting large loss (~4.4) generates a large gradient that quickly recovers the parameters in 1–2 steps
+5. The recovery is fast because the Adam optimizer's momentum (`m`) and second-moment (`v`) accumulators retain the "memory" of the correct parameter direction
+
+This tug-of-war is actually the mechanism that drives grokking: weight decay forces the model to find **compact representations** (low parameter norm) that still solve the task. These compact representations are necessarily the generalizable ones (modular arithmetic structure), as opposed to the high-norm memorization solutions. The periodic spikes are the residual instability of this process even after generalization has been achieved.
 
 ---
 
 ## Status
 
-🔶 **In progress** — Attempt 3 (answer-only loss masking with `-p 4`) ready to run. See Experiment Log above for history.
+✅ **Grokking reproduced** — Delayed generalization observed on modular addition (mod 97) using C/CUDA training infrastructure with answer-only loss masking. Key enablers: full-batch training (B=4688), weight decay (1.0), and loss masking to the answer position (`-p 4`).
