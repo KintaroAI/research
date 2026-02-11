@@ -1111,6 +1111,9 @@ typedef struct {
     int* targets; // the target tokens for the current forward pass
     float mean_loss; // after a forward pass with targets, will be populated with the mean loss
     float* cpu_losses; // CPU buffer to copy the losses to, allocated with cudaMallocHost
+    // loss masking: only compute loss/gradient at a specific position in each sequence
+    int task_position; // if >= 0, only this position contributes to loss/gradient (-1 = all positions)
+    float* dlosses_mask; // GPU buffer: dlosses[b*T+task_position] = 1/B, rest = 0
 } GPT2;
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1167,6 +1170,8 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->batch_size = 0;
     model->seq_len = 0;
     model->mean_loss = -1.0f; // -1.0f will designate no loss
+    model->task_position = -1; // default: loss on all positions
+    model->dlosses_mask = NULL;
 }
 
 void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1318,15 +1323,35 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
 
     // also forward the cross-entropy loss function if we have the targets
     if (targets != NULL) {
-        // fused classifier: does the forward pass and first part of the backward pass
-        // we're passing dlosses = NULL, which will default them to 1.0f/(B*T), i.e. uniform loss
-        fused_classifier3(acts.output, acts.losses, NULL, model->targets, B, T, V, Vp);
-        // for convenience also evaluate the mean loss (TODO re-think this compute+sync point)
-        // move the (B,T) losses to CPU
+        // lazily allocate the dlosses mask if task_position is set
+        if (model->task_position >= 0 && model->dlosses_mask == NULL) {
+            int tp = model->task_position;
+            assert(tp < T);
+            float* dlosses_cpu = (float*)calloc(B * T, sizeof(float));
+            for (int b = 0; b < B; b++) {
+                dlosses_cpu[b * T + tp] = 1.0f / B; // only the answer position gets gradient
+            }
+            cudaCheck(cudaMalloc((void**)&model->dlosses_mask, B * T * sizeof(float)));
+            cudaCheck(cudaMemcpy(model->dlosses_mask, dlosses_cpu, B * T * sizeof(float), cudaMemcpyHostToDevice));
+            free(dlosses_cpu);
+            printf("loss masking enabled: only position %d contributes to loss/gradient\n", tp);
+        }
+        // fused classifier: forward loss + first part of backward
+        // dlosses_mask is NULL (uniform 1/(B*T)) or the task-position mask (1/B at position tp, 0 elsewhere)
+        fused_classifier3(acts.output, acts.losses, model->dlosses_mask, model->targets, B, T, V, Vp);
+        // move the (B,T) losses to CPU and compute mean loss
         cudaCheck(cudaMemcpy(model->cpu_losses, acts.losses, B * T * sizeof(float), cudaMemcpyDeviceToHost));
         float mean_loss = 0.0f;
-        for (int i=0; i<B*T; i++) { mean_loss += model->cpu_losses[i]; }
-        mean_loss /= B*T;
+        if (model->task_position >= 0) {
+            // only average the loss at the task position across the batch
+            int tp = model->task_position;
+            for (int b = 0; b < B; b++) { mean_loss += model->cpu_losses[b * T + tp]; }
+            mean_loss /= B;
+        } else {
+            // original: average over all positions
+            for (int i = 0; i < B*T; i++) { mean_loss += model->cpu_losses[i]; }
+            mean_loss /= B*T;
+        }
         model->mean_loss = mean_loss;
 
     } else {
@@ -1497,6 +1522,7 @@ void gpt2_free(GPT2 *model) {
     cudaCheck(cudaFree(model->inputs));
     cudaCheck(cudaFree(model->targets));
     cudaFreeHost(model->cpu_losses);
+    if (model->dlosses_mask != NULL) { cudaCheck(cudaFree(model->dlosses_mask)); }
 }
 
 #ifndef TESTING
@@ -1589,6 +1615,7 @@ void error_usage() {
     fprintf(stderr, "  -m <int>    val_max_steps, up to how many val batches to estimate val loss? (default = 20)\n");
     fprintf(stderr, "  -s <int>    sample_every, how often we inference the model (default = 20)\n");
     fprintf(stderr, "  -g <int>    genT, how many steps of inference we do (default = 64)\n");
+    fprintf(stderr, "  -p <int>    task_position, only compute loss at this seq position (default = -1, all)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -1613,6 +1640,7 @@ int main(int argc, char *argv[]) {
     int val_max_steps = 20; // how many batches max do we eval for validation loss?
     int sample_every = 20; // every how many steps to do inference?
     int genT = 64; // number of steps of inference we will do
+    int task_position = -1; // -1 = loss on all positions; >= 0 = loss only at this position
     for (int i = 1; i < argc; i+=2) {
         if (i + 1 >= argc) { error_usage(); } // must have arg after flag
         if (argv[i][0] != '-') { error_usage(); } // must start with dash
@@ -1634,6 +1662,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'm') { val_max_steps = atoi(argv[i+1]); }
         else if (argv[i][1] == 's') { sample_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'g') { genT = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'p') { task_position = atoi(argv[i+1]); }
         else { error_usage(); }
     }
     printf("+-----------------------+----------------------------------------------------+\n");
@@ -1655,6 +1684,7 @@ int main(int argc, char *argv[]) {
     printf("| val_max_steps         | %-50d |\n", val_max_steps);
     printf("| sample_every          | %-50d |\n", sample_every);
     printf("| genT                  | %-50d |\n", genT);
+    printf("| task_position         | %-50d |\n", task_position);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // set up the device
@@ -1676,6 +1706,7 @@ int main(int argc, char *argv[]) {
     // build the GPT-2 model from a checkpoint
     GPT2 model;
     gpt2_build_from_checkpoint(&model, model_path);
+    model.task_position = task_position; // set loss masking position (-1 = all)
     printf("| max_sequence_length T | %-50d |\n", model.config.max_seq_len);
     printf("| vocab_size V          | %-50d |\n", model.config.vocab_size);
     printf("| padded_vocab_size Vp  | %-50d |\n", model.config.padded_vocab_size);
