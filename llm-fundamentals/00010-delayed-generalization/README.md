@@ -133,11 +133,17 @@ The model's generalization on position 4 is what creates the delayed generalizat
 
 ## Key Modifications to dev/ Code
 
-The C training code is the **unmodified dev/ version** with experiment-specific flags at invocation:
+The C training code is the dev/ version with the following experiment-specific modifications:
+
+**Code changes** (in `src/train_gpt2_fp32.cu`):
+1. **Loss masking** (`-p <int>` flag): Added `task_position` field to GPT2 struct. When `-p 4` is passed, allocates a `dlosses` mask on GPU that zeros out loss/gradient for all positions except position 4 (the answer). The mean loss is also computed only over position 4. This gives the task signal 100% of the gradient instead of 12.5%.
+
+**Invocation flags**:
 1. **Full-batch training** (`-b 4688`): processes (nearly) all training equations per step, matching the paper's full-batch gradient descent. B=4688 is the largest multiple of 16 that satisfies the dataloader's B×T+1 ≤ num_tokens constraint.
-2. **Weight decay** (`-w 1.0`): strong regularization per the paper (dev default is 0.0)
-3. **β₂** (`-a 0.98`): Adam beta2 per the paper (dev default is 0.999)
-4. **No text generation** (`-s 0`): sampling disabled (tokens are abstract symbols, not text)
+2. **Answer-only loss** (`-p 4`): only position 4 (the answer token `c`) contributes to loss and gradient.
+3. **Weight decay** (`-w 1.0`): strong regularization per the paper (dev default is 0.0)
+4. **β₂** (`-a 0.98`): Adam beta2 per the paper (dev default is 0.999)
+5. **No text generation** (`-s 0`): sampling disabled (tokens are abstract symbols, not text)
 
 ---
 
@@ -150,7 +156,7 @@ The C training code is the **unmodified dev/ version** with experiment-specific 
 ├── create_model.py          # Create model.bin with tiny architecture
 ├── Makefile                 # Build and run targets
 └── src/
-    ├── train_gpt2_fp32.cu   # Training code (identical copy from dev/)
+    ├── train_gpt2_fp32.cu   # Training code (from dev/, with -p loss masking added)
     └── llmc/
         ├── dataloader.h     # Data loading (from dev/)
         ├── tokenizer.h      # Tokenizer (from dev/, unused with -s 0)
@@ -181,7 +187,8 @@ make train
 
 # 4. Train (expect ~100K steps, watch for val loss dropping)
 #    B=4688 = full-batch training (paper requirement)
-./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -o log.txt
+#    -p 4 = loss only at position 4 (the answer token)
+./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -p 4 -o log.txt
 ```
 
 ---
@@ -200,26 +207,39 @@ make train
 
 **Config**: `./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 10000000 -l 0.001 -w 1.0 -a 0.98 -s 0`
 
-**Result**: ❌ No generalization. Same behavior as B=512.
+**Result**: ❌ No generalization after 10M steps. Train loss converges to ~1.12, val loss stays at ~1.38.
 
-**Analysis**: Full-batch alone is not sufficient. Remaining differences from the paper:
+**Observed loss values at step 10M**:
+- `trl:1.1228` — training loss
+- `tel:1.3767` — validation loss
 
-1. **Loss dilution from padding tokens**: The paper's equation format is `a ○ b = c` (5 tokens). Our format `BOS a OP b EQ c EOS EOS` (8 tokens, padded for T%4==0) means the actual task signal (predicting `c` at position 4) is only **1/8 = 12.5%** of the total gradient. Worse, positions 0 and 2 have **irreducible loss** (~log(97) each) that generates large, permanent noise gradients. In the paper's 5-token format, position 1 (`○` → `b`) is the only irreducible position, so the task signal is ~1/4 = 25% — **2× stronger**.
+The train loss of ~1.12 is consistent with memorization of the answer position (loss ≈ 0 there) while the 6 non-task positions contribute irreducible/trivial losses that average to ~1.12 across all 8 positions. The val loss being higher confirms the model memorized training answers but didn't generalize.
 
-2. **Weight tying**: The llm.c code hardcodes `wte` as the output projection (weight tying). The paper likely uses separate input embeddings and output projection. Weight tying constrains the embedding to serve double duty, potentially hindering the modular arithmetic representations.
+**Analysis**: Full-batch alone is not sufficient. The core problem is **loss dilution**: the actual task signal (predicting `c` at position 4) is only **1/8 = 12.5%** of the total gradient. Positions 0 and 2 have irreducible loss (~log(97) ≈ 4.57 each, since `a` and `b` are random residues), generating large permanent noise gradients that dominate the useful signal.
 
-3. **Loss on all positions vs answer-only**: Many grokking reproductions compute loss **only on the answer token** (`c`). Our llm.c training code computes loss uniformly on all 8 positions. The irreducible noise from positions 0 and 2 dominates the gradient, especially with the 1/(B×T) averaging that makes each position's contribution very small.
+### Attempt 3: Answer-only loss masking (`-p 4`)
 
-### Remaining ideas (not yet tried)
+**Approach**: Added `-p <int>` flag to `train_gpt2_fp32.cu` to mask loss and gradient to a single sequence position. With `-p 4`, only position 4 (the answer token `c` in `BOS a OP b EQ c EOS EOS`) contributes to:
+- The **gradient** (via `dlosses` mask: `dlosses[b*T+4] = 1/B`, rest = 0)
+- The **reported loss** (mean loss computed only over position 4 across the batch)
 
-- **Mask loss to answer-only**: Modify `fused_classifier_kernel3` (or the `dlosses` input) to zero out loss at all positions except position 4 (the answer). This would match how most grokking reproductions work.
-- **Reduce sequence to T=4**: Use format `a b c PAD` (drop OP/EQ/BOS/EOS) so the task signal is 1/4 of the total, and only 2/4 positions have irreducible loss.
-- **Lower weight decay**: Try wd=0.1–0.5 to compensate for the diluted task gradient.
+This eliminates the noise from irreducible positions (0, 2) and trivial positions (1, 3, 5, 6), giving the task signal 100% of the gradient instead of 12.5%.
+
+**Implementation**: Modified `fused_classifier3` to receive a `dlosses` mask buffer instead of NULL. The mask is lazily allocated on first forward pass with targets.
+
+**Config**: `./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 100000 -l 0.001 -w 1.0 -a 0.98 -s 0 -p 4`
+
+**Result**: ⏳ Pending...
+
+### Remaining ideas (if attempt 3 fails)
+
+- **Reduce sequence to T=4**: Use format `a b c PAD` (drop OP/EQ/BOS/EOS) so the irreducible positions don't even exist.
+- **Lower weight decay**: Try wd=0.1–0.5 to compensate.
 - **Remove weight tying**: Add a separate `lm_head` parameter to the checkpoint format and CUDA code.
-- **Port to PyTorch**: Bypass llm.c constraints entirely — implement in PyTorch with loss masking, no weight tying, and the paper's exact 5-token format.
+- **Port to PyTorch**: Bypass llm.c constraints entirely — implement in PyTorch with the paper's exact setup.
 
 ---
 
 ## Status
 
-🔴 **Blocked** — grokking not reproduced. The llm.c training infrastructure imposes constraints (loss on all positions, weight tying, T%4 padding) that dilute the task signal. See Experiment Log above for details and next steps.
+🔶 **In progress** — Attempt 3 (answer-only loss masking with `-p 4`) ready to run. See Experiment Log above for history.
