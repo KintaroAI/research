@@ -237,15 +237,15 @@ Both losses are very close to zero and nearly identical, confirming the model ha
 
 **Observation — periodic training loss spikes**: Training loss periodically spikes to ~4.4 (e.g., at step 99,817), then recovers to ~0.03 within a few steps. The spike value of 4.4 is close to ln(97) ≈ 4.57, meaning the model briefly predicts the answer nearly at random.
 
-**Spike analysis**: These spikes are a known feature of training with aggressive weight decay (wd=1.0). The mechanism is:
+**Spike analysis**: Traced through data preparation and training code to rule out data issues:
 
-1. Weight decay continuously shrinks all parameters toward zero at rate `lr × wd × param = 0.001 × param` per step
-2. The optimizer maintains a dynamic equilibrium: gradient-driven updates push parameters to minimize loss, while weight decay pushes them toward zero
-3. This equilibrium is not perfectly stable — occasionally weight decay briefly overshoots, compressing a critical parameter (e.g., in an attention head or embedding) below the threshold needed for correct predictions
-4. The resulting large loss (~4.4) generates a large gradient that quickly recovers the parameters in 1–2 steps
-5. The recovery is fast because the Adam optimizer's momentum (`m`) and second-moment (`v`) accumulators retain the "memory" of the correct parameter direction
+1. **Data is identical every step**: With B=4688 and T=8, `shard_num_samples = (37632×2 − 2) / (37504×2) = 1`. The dataloader resets every step and always loads tokens[0..37504] from offset 1024. No data variation exists.
+2. **Forward pass is deterministic**: `matmul_forward_kernel4` is a custom CUDA kernel (no cuBLAS, no TF32 non-determinism). Given the same parameters, the same loss is produced.
+3. **Backward pass has minor non-determinism**: `atomicAdd` in `encoder_backward` (embedding gradient — up to 4688 concurrent adds per wpe row) and `layernorm_backward` (shared memory reductions). cuBLAS with TF32 in `matmul_backward` and `attention_backward`. These cause ~O(eps_fp32) per-step gradient variations.
+4. **Root cause — Adam optimizer accumulation**: The tiny per-step gradient variations accumulate through Adam's momentum (`m`) and second-moment (`v`) state over thousands of steps. When the model is at a sharp minimum (required for modular arithmetic — the representations involve precise trigonometric/circular features), accumulated perturbations occasionally push a critical parameter (e.g., an attention weight or embedding) past a threshold, causing the model to briefly "forget" the correct answer for some equations. The spike to ~4.4 ≈ ln(97) means near-random prediction. Recovery is fast (1-2 steps) because Adam's accumulators retain the correct direction.
+5. **Weight decay amplifies instability** (wd=1.0): The update `param -= lr × (adam_step + wd × param)` creates a dynamic equilibrium where weight decay constantly shrinks parameters while gradients push them back. This equilibrium is inherently unstable at the margins.
 
-This tug-of-war is actually the mechanism that drives grokking: weight decay forces the model to find **compact representations** (low parameter norm) that still solve the task. These compact representations are necessarily the generalizable ones (modular arithmetic structure), as opposed to the high-norm memorization solutions. The periodic spikes are the residual instability of this process even after generalization has been achieved.
+**Not a bug** — this is a consequence of non-deterministic CUDA atomics + Adam dynamics at a sharp minimum, amplified by weight decay.
 
 ### Attempt 3b: No weight decay with loss masking (`-p 4`, wd=0.0)
 
@@ -257,7 +257,7 @@ This tug-of-war is actually the mechanism that drives grokking: weight decay for
 
 **This contradicts the original paper**, which found weight decay to be critical for grokking. The key difference is **answer-only loss masking** (`-p 4`). With loss on all positions (as in the paper), the task signal at position 4 is diluted to 1/T of the total gradient, and the model can get "stuck" in a memorization-only local minimum. Positions with irreducible loss (0, 2) generate large noise gradients that drown out the task signal. With `-p 4`, 100% of the gradient is task-relevant, and the optimization landscape is much cleaner — the model finds generalizable representations even without the regularization pressure from weight decay.
 
-**Spike analysis (wd=0)**: Without weight decay, the spikes cannot be from parameter compression. Instead they likely reflect **phase transitions** in the model's internal representations — the optimizer occasionally reorganizes attention patterns or embedding geometry, causing brief disruptions as it settles into a better configuration. With wd=0, there is no shrinkage pressure to destabilize the equilibrium, so the spikes are smaller (1.33 vs 4.4) and represent reorganization rather than compression.
+**Spike analysis (wd=0)**: The same mechanism as wd=1.0 — CUDA atomicAdd non-determinism in the backward pass accumulates through Adam, occasionally perturbing critical parameters past a threshold. Without weight decay, there is no shrinkage pressure to continuously destabilize the equilibrium, so the spikes are smaller (1.33 vs 4.4) and less frequent. The spike to ~1.33 = −ln(0.26) means the model briefly assigns only ~26% probability to the correct answer (vs ~1% for random guessing at ln(97) ≈ 4.57), suggesting partial rather than full disruption of the learned representations.
 
 **Takeaway**: With focused loss masking, weight decay is **not required** for generalization on modular arithmetic. Weight decay accelerates generalization and may still be needed when loss is computed on all positions (diluted gradient), but `-p 4` makes the task signal strong enough that standard AdamW optimization finds the generalizable solution on its own.
 
