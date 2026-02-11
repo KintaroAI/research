@@ -247,8 +247,22 @@ Both losses are very close to zero and nearly identical, confirming the model ha
 
 This tug-of-war is actually the mechanism that drives grokking: weight decay forces the model to find **compact representations** (low parameter norm) that still solve the task. These compact representations are necessarily the generalizable ones (modular arithmetic structure), as opposed to the high-norm memorization solutions. The periodic spikes are the residual instability of this process even after generalization has been achieved.
 
+### Attempt 3b: No weight decay with loss masking (`-p 4`, wd=0.0)
+
+**Config**: `./train -e model.bin -i data/train.bin -j data/val.bin -t 8 -b 4688 -n 100000 -l 0.001 -w 0.0 -a 0.98 -s 0 -p 4`
+
+**Result**: ✅ **Also generalizes!** Both train and val loss drop to near zero.
+
+**Observation — spikes to ~1.33**: Training loss periodically spike to ~1.33, then drop back to near zero. Validation loss spikes as well. Unlike the wd=1.0 spikes (~4.4 ≈ ln(97), i.e. fully random), these smaller spikes (~1.33) suggest the model briefly becomes **partially confused** (assigning ~26% probability to the correct answer, vs ~1% for random guessing), not fully random.
+
+**This contradicts the original paper**, which found weight decay to be critical for grokking. The key difference is **answer-only loss masking** (`-p 4`). With loss on all positions (as in the paper), the task signal at position 4 is diluted to 1/T of the total gradient, and the model can get "stuck" in a memorization-only local minimum. Positions with irreducible loss (0, 2) generate large noise gradients that drown out the task signal. With `-p 4`, 100% of the gradient is task-relevant, and the optimization landscape is much cleaner — the model finds generalizable representations even without the regularization pressure from weight decay.
+
+**Spike analysis (wd=0)**: Without weight decay, the spikes cannot be from parameter compression. Instead they likely reflect **phase transitions** in the model's internal representations — the optimizer occasionally reorganizes attention patterns or embedding geometry, causing brief disruptions as it settles into a better configuration. With wd=0, there is no shrinkage pressure to destabilize the equilibrium, so the spikes are smaller (1.33 vs 4.4) and represent reorganization rather than compression.
+
+**Takeaway**: With focused loss masking, weight decay is **not required** for generalization on modular arithmetic. Weight decay accelerates generalization and may still be needed when loss is computed on all positions (diluted gradient), but `-p 4` makes the task signal strong enough that standard AdamW optimization finds the generalizable solution on its own.
+
 ---
 
 ## Status
 
-✅ **Grokking reproduced** — Delayed generalization observed on modular addition (mod 97) using C/CUDA training infrastructure with answer-only loss masking. Key enablers: full-batch training (B=4688), weight decay (1.0), and loss masking to the answer position (`-p 4`).
+✅ **Grokking reproduced** — Delayed generalization observed on modular addition (mod 97) using C/CUDA training infrastructure with answer-only loss masking. Generalizes both with wd=1.0 and wd=0.0 when using `-p 4`. Key enablers: full-batch training (B=4688) and loss masking to the answer position (`-p 4`).
