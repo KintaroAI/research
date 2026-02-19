@@ -1203,6 +1203,255 @@ void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
            (256 * sizeof(int) + model->num_parameters * sizeof(float)) / (1024.0 * 1024.0));
 }
 
+// ----------------------------------------------------------------------------
+// Snapshot system for training visualization
+// Saves binary snapshots of model state (params, grads, activations, norms)
+// that can be loaded by the Python visualization toolkit.
+
+float snapshot_compute_l2_norm(const float* data, size_t n) {
+    double sum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        sum += (double)data[i] * (double)data[i];
+    }
+    return (float)sqrt(sum);
+}
+
+void snapshot_write_manifest(const char* snapshot_dir, GPT2 *model, int B, int T) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/manifest.json", snapshot_dir);
+    FILE* f = fopenCheck(path, "w");
+
+    GPT2Config cfg = model->config;
+    int L = cfg.num_layers;
+    int NH = cfg.num_heads;
+    int C = cfg.channels;
+    size_t num_params = model->num_parameters;
+
+    // Compute section byte offsets
+    size_t offset = 0;
+
+    size_t params_offset = offset;
+    size_t params_floats = num_params;
+    offset += params_floats * sizeof(float);
+
+    size_t grads_offset = offset;
+    size_t grads_floats = num_params;
+    offset += grads_floats * sizeof(float);
+
+    size_t att_floats = (size_t)L * NH * T * T;
+    size_t att_offset = offset;
+    offset += att_floats * sizeof(float);
+
+    size_t encoded_floats = (size_t)T * C;
+    size_t encoded_offset = offset;
+    offset += encoded_floats * sizeof(float);
+
+    size_t residual3_floats = (size_t)L * T * C;
+    size_t residual3_offset = offset;
+    offset += residual3_floats * sizeof(float);
+
+    size_t param_norms_offset = offset;
+    offset += NUM_PARAMETER_TENSORS * sizeof(float);
+
+    size_t grad_norms_offset = offset;
+    offset += NUM_PARAMETER_TENSORS * sizeof(float);
+
+    size_t m_norms_offset = offset;
+    offset += NUM_PARAMETER_TENSORS * sizeof(float);
+
+    size_t v_norms_offset = offset;
+    offset += NUM_PARAMETER_TENSORS * sizeof(float);
+
+    size_t scalars_offset = offset;
+    size_t scalars_floats = 3;
+    offset += scalars_floats * sizeof(float);
+
+    size_t total_size = offset;
+
+    // Write JSON manifest
+    fprintf(f, "{\n");
+    fprintf(f, "    \"format_version\": 1,\n");
+    fprintf(f, "    \"config\": {\n");
+    fprintf(f, "        \"max_seq_len\": %d,\n", cfg.max_seq_len);
+    fprintf(f, "        \"vocab_size\": %d,\n", cfg.vocab_size);
+    fprintf(f, "        \"padded_vocab_size\": %d,\n", cfg.padded_vocab_size);
+    fprintf(f, "        \"num_layers\": %d,\n", cfg.num_layers);
+    fprintf(f, "        \"num_heads\": %d,\n", cfg.num_heads);
+    fprintf(f, "        \"channels\": %d\n", cfg.channels);
+    fprintf(f, "    },\n");
+    fprintf(f, "    \"batch_size\": %d,\n", B);
+    fprintf(f, "    \"seq_len\": %d,\n", T);
+    fprintf(f, "    \"num_parameters\": %zu,\n", num_params);
+    fprintf(f, "    \"parameter_names\": [\"wte\", \"wpe\", \"ln1w\", \"ln1b\", \"qkvw\", \"qkvb\", \"attprojw\", \"attprojb\", \"ln2w\", \"ln2b\", \"fcw\", \"fcb\", \"fcprojw\", \"fcprojb\", \"lnfw\", \"lnfb\"],\n");
+    fprintf(f, "    \"parameter_sizes\": [");
+    for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+        fprintf(f, "%zu%s", model->param_sizes[i], i < NUM_PARAMETER_TENSORS - 1 ? ", " : "");
+    }
+    fprintf(f, "],\n");
+    fprintf(f, "    \"sections\": {\n");
+    fprintf(f, "        \"params\":        {\"offset\": %zu, \"num_floats\": %zu},\n", params_offset, params_floats);
+    fprintf(f, "        \"grads\":         {\"offset\": %zu, \"num_floats\": %zu},\n", grads_offset, grads_floats);
+    fprintf(f, "        \"att_b0\":        {\"offset\": %zu, \"num_floats\": %zu, \"shape\": [%d, %d, %d, %d]},\n", att_offset, att_floats, L, NH, T, T);
+    fprintf(f, "        \"encoded_b0\":    {\"offset\": %zu, \"num_floats\": %zu, \"shape\": [%d, %d]},\n", encoded_offset, encoded_floats, T, C);
+    fprintf(f, "        \"residual3_b0\":  {\"offset\": %zu, \"num_floats\": %zu, \"shape\": [%d, %d, %d]},\n", residual3_offset, residual3_floats, L, T, C);
+    fprintf(f, "        \"param_norms\":   {\"offset\": %zu, \"num_floats\": %d},\n", param_norms_offset, NUM_PARAMETER_TENSORS);
+    fprintf(f, "        \"grad_norms\":    {\"offset\": %zu, \"num_floats\": %d},\n", grad_norms_offset, NUM_PARAMETER_TENSORS);
+    fprintf(f, "        \"m_norms\":       {\"offset\": %zu, \"num_floats\": %d},\n", m_norms_offset, NUM_PARAMETER_TENSORS);
+    fprintf(f, "        \"v_norms\":       {\"offset\": %zu, \"num_floats\": %d},\n", v_norms_offset, NUM_PARAMETER_TENSORS);
+    fprintf(f, "        \"scalars\":       {\"offset\": %zu, \"num_floats\": %zu, \"fields\": [\"step\", \"train_loss\", \"learning_rate\"]}\n", scalars_offset, scalars_floats);
+    fprintf(f, "    },\n");
+    fprintf(f, "    \"snapshot_size_bytes\": %zu\n", total_size);
+    fprintf(f, "}\n");
+
+    fcloseCheck(f);
+    printf("snapshot manifest written to %s (%.2f MB per snapshot)\n", path, total_size / (1024.0 * 1024.0));
+}
+
+void gpt2_save_snapshot(GPT2 *model, const char* snapshot_dir, int step,
+                        float train_loss, float learning_rate) {
+    // Save a binary snapshot of model state for visualization.
+    // Called after forward+backward+update; params, grads, and key activations are valid.
+    // Note: params are post-update, while grads/activations are from the pre-update forward/backward.
+
+    int B = model->batch_size;
+    int T = model->seq_len;
+    int L = model->config.num_layers;
+    int NH = model->config.num_heads;
+    int C = model->config.channels;
+    size_t num_params = model->num_parameters;
+
+    // Write manifest on first call
+    static int manifest_written = 0;
+    if (!manifest_written) {
+        create_dir_if_not_exists(snapshot_dir);
+        snapshot_write_manifest(snapshot_dir, model, B, T);
+        manifest_written = 1;
+    }
+
+    // Open snapshot file
+    char path[512];
+    snprintf(path, sizeof(path), "%s/step_%08d.bin", snapshot_dir, step);
+    FILE* f = fopenCheck(path, "wb");
+
+    // Allocate reusable CPU buffer (largest needed = num_params)
+    float* cpu_buf = (float*)mallocCheck(num_params * sizeof(float));
+    size_t poffset; // for iterating param tensor boundaries
+
+    // --- Section: params ---
+    cudaCheck(cudaMemcpy(cpu_buf, model->params_memory, num_params * sizeof(float), cudaMemcpyDeviceToHost));
+    fwrite(cpu_buf, sizeof(float), num_params, f);
+    // Compute per-tensor param norms while data is in cpu_buf
+    float param_norms[NUM_PARAMETER_TENSORS];
+    poffset = 0;
+    for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+        param_norms[i] = snapshot_compute_l2_norm(cpu_buf + poffset, model->param_sizes[i]);
+        poffset += model->param_sizes[i];
+    }
+
+    // --- Section: grads ---
+    float grad_norms[NUM_PARAMETER_TENSORS];
+    if (model->grads_memory != NULL) {
+        cudaCheck(cudaMemcpy(cpu_buf, model->grads_memory, num_params * sizeof(float), cudaMemcpyDeviceToHost));
+    } else {
+        memset(cpu_buf, 0, num_params * sizeof(float));
+    }
+    fwrite(cpu_buf, sizeof(float), num_params, f);
+    poffset = 0;
+    for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+        grad_norms[i] = snapshot_compute_l2_norm(cpu_buf + poffset, model->param_sizes[i]);
+        poffset += model->param_sizes[i];
+    }
+
+    // --- Section: att_b0 (attention weights, batch 0 only) ---
+    // att layout on GPU: (L, B, NH, T, T). We extract batch 0 from each layer.
+    size_t att_layer_floats = (size_t)NH * T * T;
+    float* act_buf = (float*)mallocCheck(att_layer_floats * sizeof(float));
+    if (model->acts_memory != NULL) {
+        for (int l = 0; l < L; l++) {
+            float* att_gpu = model->acts.att + (size_t)l * B * NH * T * T; // batch 0 starts here
+            cudaCheck(cudaMemcpy(act_buf, att_gpu, att_layer_floats * sizeof(float), cudaMemcpyDeviceToHost));
+            fwrite(act_buf, sizeof(float), att_layer_floats, f);
+        }
+    } else {
+        memset(act_buf, 0, att_layer_floats * sizeof(float));
+        for (int l = 0; l < L; l++) {
+            fwrite(act_buf, sizeof(float), att_layer_floats, f);
+        }
+    }
+    free(act_buf);
+
+    // --- Section: encoded_b0 (token+position embeddings, batch 0) ---
+    // encoded layout: (B, T, C). Batch 0 is the first T*C floats.
+    size_t enc_floats = (size_t)T * C;
+    float* enc_buf = (float*)mallocCheck(enc_floats * sizeof(float));
+    if (model->acts_memory != NULL) {
+        cudaCheck(cudaMemcpy(enc_buf, model->acts.encoded, enc_floats * sizeof(float), cudaMemcpyDeviceToHost));
+    } else {
+        memset(enc_buf, 0, enc_floats * sizeof(float));
+    }
+    fwrite(enc_buf, sizeof(float), enc_floats, f);
+    free(enc_buf);
+
+    // --- Section: residual3_b0 (residual stream output, batch 0, all layers) ---
+    // residual3 layout: (L, B, T, C). Extract batch 0 from each layer.
+    size_t res_layer_floats = (size_t)T * C;
+    float* res_buf = (float*)mallocCheck(res_layer_floats * sizeof(float));
+    if (model->acts_memory != NULL) {
+        for (int l = 0; l < L; l++) {
+            float* res_gpu = model->acts.residual3 + (size_t)l * B * T * C;
+            cudaCheck(cudaMemcpy(res_buf, res_gpu, res_layer_floats * sizeof(float), cudaMemcpyDeviceToHost));
+            fwrite(res_buf, sizeof(float), res_layer_floats, f);
+        }
+    } else {
+        memset(res_buf, 0, res_layer_floats * sizeof(float));
+        for (int l = 0; l < L; l++) {
+            fwrite(res_buf, sizeof(float), res_layer_floats, f);
+        }
+    }
+    free(res_buf);
+
+    // --- Section: param_norms, grad_norms ---
+    fwrite(param_norms, sizeof(float), NUM_PARAMETER_TENSORS, f);
+    fwrite(grad_norms, sizeof(float), NUM_PARAMETER_TENSORS, f);
+
+    // --- Section: m_norms (Adam first moment) ---
+    float opt_norms[NUM_PARAMETER_TENSORS];
+    if (model->m_memory != NULL) {
+        cudaCheck(cudaMemcpy(cpu_buf, model->m_memory, num_params * sizeof(float), cudaMemcpyDeviceToHost));
+        poffset = 0;
+        for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+            opt_norms[i] = snapshot_compute_l2_norm(cpu_buf + poffset, model->param_sizes[i]);
+            poffset += model->param_sizes[i];
+        }
+    } else {
+        memset(opt_norms, 0, sizeof(opt_norms));
+    }
+    fwrite(opt_norms, sizeof(float), NUM_PARAMETER_TENSORS, f);
+
+    // --- Section: v_norms (Adam second moment) ---
+    if (model->v_memory != NULL) {
+        cudaCheck(cudaMemcpy(cpu_buf, model->v_memory, num_params * sizeof(float), cudaMemcpyDeviceToHost));
+        poffset = 0;
+        for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+            opt_norms[i] = snapshot_compute_l2_norm(cpu_buf + poffset, model->param_sizes[i]);
+            poffset += model->param_sizes[i];
+        }
+    } else {
+        memset(opt_norms, 0, sizeof(opt_norms));
+    }
+    fwrite(opt_norms, sizeof(float), NUM_PARAMETER_TENSORS, f);
+
+    // --- Section: scalars ---
+    float scalars[3] = { (float)step, train_loss, learning_rate };
+    fwrite(scalars, sizeof(float), 3, f);
+
+    // Cleanup
+    free(cpu_buf);
+    fcloseCheck(f);
+}
+
+// ----------------------------------------------------------------------------
+
 void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
     // targets are optional and could be NULL
 
@@ -1616,6 +1865,8 @@ void error_usage() {
     fprintf(stderr, "  -s <int>    sample_every, how often we inference the model (default = 20)\n");
     fprintf(stderr, "  -g <int>    genT, how many steps of inference we do (default = 64)\n");
     fprintf(stderr, "  -p <int>    task_position, only compute loss at this seq position (default = -1, all)\n");
+    fprintf(stderr, "  -d <string> snapshot output directory for visualization (default = NULL, disabled)\n");
+    fprintf(stderr, "  -f <int>    snapshot_every, save snapshot every N steps (default = 100)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -1641,6 +1892,8 @@ int main(int argc, char *argv[]) {
     int sample_every = 20; // every how many steps to do inference?
     int genT = 64; // number of steps of inference we will do
     int task_position = -1; // -1 = loss on all positions; >= 0 = loss only at this position
+    const char* snapshot_dir = NULL;  // snapshot output directory for visualization
+    int snapshot_every = 100;  // save snapshot every N steps
     for (int i = 1; i < argc; i+=2) {
         if (i + 1 >= argc) { error_usage(); } // must have arg after flag
         if (argv[i][0] != '-') { error_usage(); } // must start with dash
@@ -1663,6 +1916,8 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 's') { sample_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'g') { genT = atoi(argv[i+1]); }
         else if (argv[i][1] == 'p') { task_position = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'd') { snapshot_dir = argv[i+1]; }
+        else if (argv[i][1] == 'f') { snapshot_every = atoi(argv[i+1]); }
         else { error_usage(); }
     }
     printf("+-----------------------+----------------------------------------------------+\n");
@@ -1685,6 +1940,8 @@ int main(int argc, char *argv[]) {
     printf("| sample_every          | %-50d |\n", sample_every);
     printf("| genT                  | %-50d |\n", genT);
     printf("| task_position         | %-50d |\n", task_position);
+    printf("| snapshot_dir          | %-50s |\n", snapshot_dir == NULL ? "NULL" : snapshot_dir);
+    printf("| snapshot_every        | %-50d |\n", snapshot_every);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // set up the device
@@ -1826,6 +2083,12 @@ int main(int argc, char *argv[]) {
         int tokens_per_second = (B * T) / time_elapsed_s;
         printf("step %4d/%d: train loss %f (%f ms, %d tok/s)\n", step + 1, train_num_batches, model.mean_loss, time_elapsed_s * 1000, tokens_per_second);
         logger_log_train(&logger, step, model.mean_loss);
+
+        // save snapshot for visualization
+        if (snapshot_dir != NULL && snapshot_every > 0 &&
+            (step % snapshot_every == 0 || step == train_num_batches - 1)) {
+            gpt2_save_snapshot(&model, snapshot_dir, step, model.mean_loss, learning_rate);
+        }
     }
     // add a total average, for optimizations that are only mild improvements
     printf("total average iteration time: %f ms\n", total_sum_iteration_time_s / train_num_batches * 1000);
