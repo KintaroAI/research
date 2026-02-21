@@ -1,8 +1,9 @@
 # Experiment: [Name]
 
-**Date:** YYYY-MM-DD  
-**Status:** 🔬 In Progress | ✅ Complete | ❌ Failed | ⏸️ Paused  
-**Author:** 
+**Date:** YYYY-MM-DD
+**Status:** 🔬 In Progress | ✅ Complete | ❌ Failed | ⏸️ Paused
+**Author:**
+**Source:** `exp/NNNNN` (`<commit-hash>`)
 
 ## Goal
 
@@ -31,10 +32,12 @@ param1: value1
 param2: value2
 ```
 
-## How to Run
+## Reproduction
 
 ```bash
-# Commands to reproduce this experiment
+cd llm-fundamentals/dev
+./build_from_tag.sh exp/NNNNN .
+# ... exact data gen + training commands ...
 ```
 
 ## Results

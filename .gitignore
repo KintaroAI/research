@@ -10,8 +10,10 @@
 **/*secret*
 **/*credential*
 **/*token*
-!**/token*.py  # Allow files about tokenization
-!**/token*.h   # Allow tokenizer headers
+# Allow files about tokenization
+!**/token*.py
+# Allow tokenizer headers
+!**/token*.h
 
 # API keys patterns
 **/api_key*
