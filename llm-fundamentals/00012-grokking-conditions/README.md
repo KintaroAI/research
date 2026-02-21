@@ -1,5 +1,9 @@
 # Experiment 12: Conditions for Grokking on Modular Arithmetic
 
+**Date:** 2025-02-19
+**Status:** Complete
+**Source:** `exp/00012` (`cd8d567`)
+
 ## Hypothesis
 
 Classic grokking (delayed generalization) on modular addition requires specific conditions. We systematically vary four factors — batch size, weight decay, model depth, and loss masking — to identify which are necessary and sufficient.
@@ -161,6 +165,7 @@ No changes to CUDA training code. All experiments used existing `train` binary f
 
 ```bash
 cd llm-fundamentals/dev
+./build_from_tag.sh exp/00012 .
 source venv/bin/activate
 
 # Generate 50/50 data (for full-batch runs)
@@ -171,8 +176,6 @@ python ../00010-delayed-generalization/generate_dataset.py \
 python create_model.py --preset grokking --prime 97 --n-layer 1 -o model_grok.bin
 cp model_grok.bin model_grok_wd0.bin
 cp model_grok.bin model_grok_wd1.bin
-
-make train
 
 # Run 7: no -p4, wd=0 (pure memorization)
 ./train -e model_grok_wd0.bin \
@@ -186,7 +189,3 @@ make train
     -t 8 -b 4703 -n 50000 -v 500 \
     -l 0.001 -w 1.0 -a 0.98 -s 0 -q 1337
 ```
-
-## Status
-
-Complete. Grokking (delayed generalization) was NOT observed under any tested condition. The -p 4 masking makes the task too easy (instant generalization), and without it the model either memorizes (wd=0) or generalizes immediately (wd=1) without the delayed transition phase.
