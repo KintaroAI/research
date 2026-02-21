@@ -44,6 +44,80 @@ cublasHandle_t cublas_handle;
 
 namespace cg = cooperative_groups;
 
+int SORT_WINDOW = 0;  // Sort layer window size, 0 = disabled
+
+// ----------------------------------------------------------------------------
+// Sort layer forward kernel (inference only, no backward needed)
+
+__global__ void sort_forward_kernel(
+    float* out, float* sort_att, const float* inp,
+    float alpha, float inv_tau,
+    int B, int T, int C, int W
+) {
+    cg::thread_block block = cg::this_thread_block();
+    cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+
+    int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+    if (idx >= B * T) { return; }
+
+    int t = idx % T;
+    const float* x_i = inp + idx * C;
+    int w_start = (t - W + 1) > 0 ? (t - W + 1) : 0;
+    int w_len = t - w_start + 1;
+
+    extern __shared__ float shared[];
+    float* sim = shared + warp.meta_group_rank() * W;
+
+    float scale = rsqrtf((float)C) * inv_tau;
+    float maxval = -FLT_MAX;
+    for (int w = 0; w < w_len; w++) {
+        int j = w_start + w;
+        const float* x_j = inp + (idx - t + j) * C;
+        float dot = 0.0f;
+        for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+            dot += x_i[c] * x_j[c];
+        }
+        dot = cg::reduce(warp, dot, cg::plus<float>{});
+        float s = dot * scale;
+        if (warp.thread_rank() == 0) { sim[w] = s; maxval = fmaxf(maxval, s); }
+    }
+    maxval = __shfl_sync(0xffffffff, maxval, 0);
+
+    if (warp.thread_rank() == 0) {
+        float sumexp = 0.0f;
+        for (int w = 0; w < w_len; w++) { sim[w] = expf(sim[w] - maxval); sumexp += sim[w]; }
+        float inv_sum = 1.0f / (sumexp + 1e-8f);
+        for (int w = 0; w < w_len; w++) { sim[w] *= inv_sum; }
+    }
+    warp.sync();
+
+    if (warp.thread_rank() == 0) {
+        float* att_dst = sort_att + idx * W;
+        for (int w = 0; w < W; w++) { att_dst[w] = (w < w_len) ? sim[w] : 0.0f; }
+    }
+
+    float* o = out + idx * C;
+    for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+        float blend = 0.0f;
+        for (int w = 0; w < w_len; w++) {
+            int j = w_start + w;
+            blend += sim[w] * inp[(idx - t + j) * C + c];
+        }
+        o[c] = (1.0f - alpha) * x_i[c] + alpha * blend;
+    }
+}
+
+void sort_forward(float* out, float* sort_att, const float* inp,
+                  float alpha, float inv_tau, int B, int T, int C, int W) {
+    const int block_size = 512;
+    const int num_warps_per_block = block_size / 32;
+    const int grid_size = CEIL_DIV(B * T, num_warps_per_block);
+    size_t shared_mem = num_warps_per_block * W * sizeof(float);
+    sort_forward_kernel<<<grid_size, block_size, shared_mem>>>(
+        out, sort_att, inp, alpha, inv_tau, B, T, C, W);
+    cudaCheck(cudaGetLastError());
+}
+
 // ----------------------------------------------------------------------------
 // Forward-pass kernels
 
@@ -345,6 +419,8 @@ typedef struct {
     float* lnf_mean;
     float* lnf_rstd;
     float* output;
+    float* sort_out;  // (L, B, T, C) — only when SORT_WINDOW > 0
+    float* sort_att;  // (L, B, T, W) — only when SORT_WINDOW > 0
 } ActivationTensors;
 
 typedef struct {
@@ -360,6 +436,8 @@ typedef struct {
     int* inputs;
     int batch_size;
     int seq_len;
+    // Sort layer params (loaded from sidecar file)
+    float* sort_params_memory;  // GPU: 2*L floats (alpha_raw[L], tau_raw[L])
 } GPT2;
 
 void fill_in_parameter_sizes(size_t* param_sizes, GPT2Config config) {
@@ -432,11 +510,15 @@ void fill_in_activation_sizes(size_t* act_sizes, int B, int T, GPT2Config config
     act_sizes[18] = B * T;
     act_sizes[19] = B * T;
     act_sizes[20] = B * T * Vp;
+    act_sizes[21] = (SORT_WINDOW > 0) ? L * B * T * C : 0;            // sort_out
+    act_sizes[22] = (SORT_WINDOW > 0) ? (size_t)L * B * T * SORT_WINDOW : 0; // sort_att
 }
+
+#define NUM_ACT_TENSORS 23
 
 float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) {
     size_t num_activations = 0;
-    for (int i = 0; i < 21; i++) {
+    for (int i = 0; i < NUM_ACT_TENSORS; i++) {
         num_activations += act_sizes[i];
     }
     float* acts_memory;
@@ -446,10 +528,11 @@ float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) 
         &acts->encoded, &acts->ln1, &acts->ln1_mean, &acts->ln1_rstd, &acts->qkv, &acts->atty,
         &acts->qkvr, &acts->att, &acts->attproj, &acts->residual2, &acts->ln2, &acts->ln2_mean,
         &acts->ln2_rstd, &acts->fch, &acts->fch_gelu, &acts->fcproj, &acts->residual3,
-        &acts->lnf, &acts->lnf_mean, &acts->lnf_rstd, &acts->output
+        &acts->lnf, &acts->lnf_mean, &acts->lnf_rstd, &acts->output,
+        &acts->sort_out, &acts->sort_att
     };
     float* ptr = acts_memory;
-    for (int i = 0; i < 21; i++) {
+    for (int i = 0; i < NUM_ACT_TENSORS; i++) {
         *(ptrs[i]) = ptr;
         ptr += act_sizes[i];
     }
@@ -488,6 +571,46 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->inputs = NULL;
     model->batch_size = 0;
     model->seq_len = 0;
+    model->sort_params_memory = NULL;
+}
+
+void gpt2_load_sort_params(GPT2 *model, const char* checkpoint_path) {
+    // Load sort layer params from sidecar file (<checkpoint>.sort)
+    char sort_path[512];
+    snprintf(sort_path, sizeof(sort_path), "%s.sort", checkpoint_path);
+    FILE* f = fopen(sort_path, "rb");
+    if (f == NULL) {
+        fprintf(stderr, "Error: sort layer enabled (-r %d) but sidecar file '%s' not found.\n", SORT_WINDOW, sort_path);
+        fprintf(stderr, "Train with -r %d first to generate the sidecar.\n", SORT_WINDOW);
+        exit(1);
+    }
+    int sort_header[2];
+    freadCheck(sort_header, sizeof(int), 2, f);
+    int file_window = sort_header[0];
+    int file_L = sort_header[1];
+    int L = model->config.num_layers;
+    if (file_L != L) {
+        fprintf(stderr, "Error: sort sidecar has L=%d but model has L=%d\n", file_L, L);
+        exit(1);
+    }
+    if (file_window != SORT_WINDOW) {
+        printf("Warning: sort sidecar has window=%d, CLI has -r %d. Using sidecar value.\n", file_window, SORT_WINDOW);
+        SORT_WINDOW = file_window;
+    }
+    float* sort_cpu = (float*)mallocCheck(2 * L * sizeof(float));
+    freadCheck(sort_cpu, sizeof(float), 2 * L, f);
+    fclose(f);
+    cudaCheck(cudaMalloc((void**)&model->sort_params_memory, 2 * L * sizeof(float)));
+    cudaCheck(cudaMemcpy(model->sort_params_memory, sort_cpu, 2 * L * sizeof(float), cudaMemcpyHostToDevice));
+    printf("Sort params loaded from %s (window=%d, %d params)\n", sort_path, SORT_WINDOW, 2 * L);
+    // Print alpha values for visibility
+    for (int l = 0; l < L && l < 3; l++) {
+        float alpha = 1.0f / (1.0f + expf(-sort_cpu[l]));
+        printf("  layer %d: alpha=%.4f (raw=%.4f), tau=%.4f (raw=%.4f)\n",
+               l, alpha, sort_cpu[l], expf(sort_cpu[L + l]), sort_cpu[L + l]);
+    }
+    if (L > 3) printf("  ... (%d more layers)\n", L - 3);
+    free(sort_cpu);
 }
 
 void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
@@ -521,8 +644,20 @@ void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
 
     encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C);
 
+    // Bulk-copy sort params to CPU
+    float* sort_params_cpu = NULL;
+    if (SORT_WINDOW > 0 && model->sort_params_memory != NULL) {
+        sort_params_cpu = (float*)mallocCheck(2 * L * sizeof(float));
+        cudaCheck(cudaMemcpy(sort_params_cpu, model->sort_params_memory, 2 * L * sizeof(float), cudaMemcpyDeviceToHost));
+    }
+
     for (int l = 0; l < L; l++) {
-        float* residual = (l == 0) ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+        float* residual;
+        if (SORT_WINDOW > 0) {
+            residual = (l == 0) ? acts.encoded : acts.sort_out + (l-1) * B * T * C;
+        } else {
+            residual = (l == 0) ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+        }
 
         float* ln1_out = acts.ln1 + l * B * T * C;
         float* ln1_mean = acts.ln1_mean + l * B * T;
@@ -559,9 +694,26 @@ void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
 
         float* residual3 = acts.residual3 + l * B * T * C;
         residual_forward(residual3, residual2, fcproj, B*T*C);
+
+        if (SORT_WINDOW > 0 && sort_params_cpu != NULL) {
+            float* l_sort_out = acts.sort_out + l * B * T * C;
+            float* l_sort_att = acts.sort_att + l * B * T * SORT_WINDOW;
+            float alpha_raw = sort_params_cpu[l];
+            float tau_raw = sort_params_cpu[L + l];
+            float alpha = 1.0f / (1.0f + expf(-alpha_raw));
+            float inv_tau = expf(-tau_raw);
+            sort_forward(l_sort_out, l_sort_att, residual3, alpha, inv_tau, B, T, C, SORT_WINDOW);
+        }
     }
 
-    float* residual = acts.residual3 + (L-1) * B * T * C;
+    if (sort_params_cpu != NULL) { free(sort_params_cpu); }
+
+    float* residual;
+    if (SORT_WINDOW > 0) {
+        residual = acts.sort_out + (L-1) * B * T * C;
+    } else {
+        residual = acts.residual3 + (L-1) * B * T * C;
+    }
     layernorm_forward(acts.lnf, acts.lnf_mean, acts.lnf_rstd, residual, params.lnfw, params.lnfb, B, T, C);
     matmul_forward(acts.output, acts.lnf, params.wte, NULL, B, T, C, Vp);
 }
@@ -570,6 +722,7 @@ void gpt2_free(GPT2 *model) {
     if (model->params_memory != NULL) cudaCheck(cudaFree(model->params_memory));
     if (model->acts_memory != NULL) cudaCheck(cudaFree(model->acts_memory));
     if (model->inputs != NULL) cudaCheck(cudaFree(model->inputs));
+    if (model->sort_params_memory != NULL) cudaCheck(cudaFree(model->sort_params_memory));
 }
 
 // ----------------------------------------------------------------------------
@@ -609,6 +762,7 @@ void error_usage() {
     fprintf(stderr, "  -n <int>    number of tokens to generate (default = 256)\n");
     fprintf(stderr, "  -p <string> prompt text (default = empty)\n");
     fprintf(stderr, "  -s <int>    random seed (default = time)\n");
+    fprintf(stderr, "  -r <int>    sort layer window size (default = 0, disabled)\n");
     exit(1);
 }
 
@@ -627,6 +781,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'n') num_tokens = atoi(argv[i+1]);
         else if (argv[i][1] == 'p') prompt = argv[i+1];
         else if (argv[i][1] == 's') rng_state = atoll(argv[i+1]);
+        else if (argv[i][1] == 'r') SORT_WINDOW = atoi(argv[i+1]);
         else error_usage();
     }
 
@@ -650,6 +805,9 @@ int main(int argc, char *argv[]) {
 
     GPT2 model;
     gpt2_build_from_checkpoint(&model, model_path);
+    if (SORT_WINDOW > 0) {
+        gpt2_load_sort_params(&model, model_path);
+    }
     int T = model.config.max_seq_len;
     int V = model.config.vocab_size;
     int Vp = model.config.padded_vocab_size;

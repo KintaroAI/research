@@ -1589,8 +1589,24 @@ void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
     free(params_memory_cpu);
     
     fcloseCheck(model_file);
-    printf("checkpoint saved (%zu parameters, %.2f MB)\n", model->num_parameters, 
+    printf("checkpoint saved (%zu parameters, %.2f MB)\n", model->num_parameters,
            (256 * sizeof(int) + model->num_parameters * sizeof(float)) / (1024.0 * 1024.0));
+
+    // Save sort layer params as sidecar file if active
+    if (SORT_WINDOW > 0 && model->sort_params_memory != NULL) {
+        char sort_path[512];
+        snprintf(sort_path, sizeof(sort_path), "%s.sort", checkpoint_path);
+        FILE *sort_file = fopenCheck(sort_path, "wb");
+        int sort_header[2] = { SORT_WINDOW, model->config.num_layers };
+        fwrite(sort_header, sizeof(int), 2, sort_file);
+        int L = model->config.num_layers;
+        float* sort_cpu = (float*)mallocCheck(2 * L * sizeof(float));
+        cudaCheck(cudaMemcpy(sort_cpu, model->sort_params_memory, 2 * L * sizeof(float), cudaMemcpyDeviceToHost));
+        fwrite(sort_cpu, sizeof(float), 2 * L, sort_file);
+        free(sort_cpu);
+        fcloseCheck(sort_file);
+        printf("sort params saved to %s (window=%d, %d params)\n", sort_path, SORT_WINDOW, 2 * L);
+    }
 }
 
 // ----------------------------------------------------------------------------
