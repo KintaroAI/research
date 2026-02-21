@@ -1,8 +1,8 @@
 # Experiment 13: W&B Integration
 
 **Date:** 2026-02-21
-**Status:** In Progress
-**Source:** *tagged on completion as `exp/00013`*
+**Status:** Complete
+**Source:** `exp/00013`
 **W&B:** [gpt2-cuda project](https://wandb.ai/kintaroai-dot-com/gpt2-cuda) · [validation run](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/xh7gwaeb)
 
 ## Goal
