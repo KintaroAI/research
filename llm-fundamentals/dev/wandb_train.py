@@ -111,6 +111,21 @@ def run(wandb_args, train_cmd):
     # Initialize wandb
     use_wandb = HAS_WANDB
     if use_wandb:
+        # Patch email in API-fetched user settings to avoid leaking personal
+        # email in public run metadata. wandb fetches email from the API during
+        # init and writes it to wandb-metadata.json; the env var and Settings
+        # kwarg are both overwritten by this API response. Monkey-patching
+        # _load_user_settings is the only reliable intercept point.
+        PUBLIC_EMAIL = 'kin@kintaroai.com'
+        _wl = wandb.setup()
+        _orig_load = _wl._load_user_settings
+        def _patched_load(_orig=_orig_load):
+            result = _orig()
+            if result and 'email' in result:
+                result['email'] = PUBLIC_EMAIL
+            return result
+        _wl._load_user_settings = _patched_load
+
         wandb.init(
             project=wandb_args.project,
             name=wandb_args.name,
@@ -118,6 +133,8 @@ def run(wandb_args, train_cmd):
             tags=wandb_args.tags,
             entity=wandb_args.entity,
             config={'command': ' '.join(train_cmd)},
+            settings=wandb.Settings(disable_git=True),
+            save_code=False,
         )
     else:
         print("WARNING: wandb not installed. Running without logging.", file=sys.stderr)
