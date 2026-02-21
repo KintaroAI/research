@@ -19,7 +19,7 @@ setup:
 
 data:
 	cd $(DEV) && ./venv/bin/python gen_modular_data.py \
-		--prime 97 --op add --train-frac 0.5 --val-frac 0.5 \
+		--prime 97 --op add --train-frac 0.5 \
 		--seed 42 --output-dir data/modular
 
 model:
@@ -30,7 +30,7 @@ run: $(DEV)/train
 		--project gpt2-cuda --name "wandb-test" -- \
 		./train -e model_grok.bin \
 		-i data/modular/train.bin -j data/modular/val.bin -x data/modular/test.bin \
-		-t 8 -b 4703 -n 5000 -v 500 -s 0 \
+		-t 8 -b 256 -n 5000 -v 500 -s 0 \
 		-l 0.001 -w 1.0 -a 0.98 -q 1337
 
 $(DEV)/train:
