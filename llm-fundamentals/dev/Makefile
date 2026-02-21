@@ -12,8 +12,16 @@ train: src/train_gpt2_fp32.cu
 generate: src/generate.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
+test_gpt2_fp32: src/test_gpt2_fp32.cu src/train_gpt2_fp32.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+# Run test: requires gpt2_124M.bin and gpt2_124M_debug_state.bin
+# Generate with: ./venv/bin/python train_gpt2.py --model gpt2 --write_tensors 1 --num_iterations 0
+test: test_gpt2_fp32
+	./test_gpt2_fp32
+
 clean:
-	rm -f train generate
+	rm -f train generate test_gpt2_fp32
 
 # Setup: create venv and prepare data
 setup: venv data
@@ -58,4 +66,4 @@ experiment_asymmetric: train data
 	@echo "Training BANDED FC1=128 FC2=512..."
 	./train -e model.bin -c checkpoint_asym.bin -1 128 -2 512 -n 2000 -b 16 -t 256 -v 200 -s 500 -o log_banded_asym.txt
 
-.PHONY: all clean setup venv data model experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric
+.PHONY: all clean setup venv data model test experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric
