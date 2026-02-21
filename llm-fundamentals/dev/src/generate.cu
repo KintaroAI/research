@@ -1,7 +1,7 @@
 /*
 GPT-2 Inference in CUDA
-Minimal standalone text generation from a trained checkpoint.
-Adapted from llm.c by Andrej Karpathy (MIT License).
+Supports both dense and banded sparsity checkpoints.
+No runtime masking needed - banded weights in the checkpoint are already sparse.
 */
 
 #include <stdio.h>
@@ -20,9 +20,6 @@ Adapted from llm.c by Andrej Karpathy (MIT License).
 
 #include "llmc/utils.h"
 #include "llmc/tokenizer.h"
-
-// ----------------------------------------------------------------------------
-// CUDA utils
 
 #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
 
@@ -48,13 +45,12 @@ cublasHandle_t cublas_handle;
 namespace cg = cooperative_groups;
 
 // ----------------------------------------------------------------------------
-// Forward-pass kernels only
+// Forward-pass kernels
 
 __device__ inline float4 add_float4(const float4& a, const float4& b) {
     return make_float4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
 }
 
-// Encoder forward: token + position embeddings
 __global__ void encoder_forward_kernel3(float4* out,
                                const int* inp, const float4* wte, const float4* wpe,
                                int B, int T, int C) {
@@ -71,7 +67,6 @@ __global__ void encoder_forward_kernel3(float4* out,
     }
 }
 
-// LayerNorm forward
 __global__ void layernorm_forward_kernel3(float* __restrict__ out, float* __restrict__ mean, float* __restrict__ rstd,
                                     const float*  __restrict__ inp, const float*  __restrict__ weight,
                                     const float* __restrict__ bias, int N, int C) {
@@ -105,7 +100,6 @@ __global__ void layernorm_forward_kernel3(float* __restrict__ out, float* __rest
     }
 }
 
-// Permute for attention
 __global__ void permute_kernel(float* q, float* k, float* v,
                                const float* inp,
                                int B, int N, int NH, int d) {
@@ -124,7 +118,6 @@ __global__ void permute_kernel(float* q, float* k, float* v,
     }
 }
 
-// Unpermute after attention
 __global__ void unpermute_kernel(float* inp, float *out, int B, int N, int NH, int d) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < B * NH * N * d) {
@@ -139,7 +132,6 @@ __global__ void unpermute_kernel(float* inp, float *out, int B, int N, int NH, i
     }
 }
 
-// Softmax for attention
 __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const float* inp, int N, int T) {
     assert(blockDim.x <= 1024);
     extern __shared__ float shared[];
@@ -148,7 +140,7 @@ __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const
     int warpId = threadIdx.x / 32;
     int laneId = threadIdx.x % 32;
     int warpsInBlock = blockDim.x / 32;
-    
+
     const float* x = inp + idx * T;
     float maxval = -INFINITY;
     for (int i = tid; i < T; i += blockDim.x) {
@@ -168,7 +160,7 @@ __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const
     }
     __syncthreads();
     maxval = shared[0];
-    
+
     float sumval = 0.0f;
     for (int i = tid; i < T; i += blockDim.x) {
         sumval += (i <= idx % T) ? expf((x[i] - maxval) * inv_temperature) : 0.0f;
@@ -187,13 +179,12 @@ __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const
     }
     __syncthreads();
     sumval = shared[0];
-    
+
     for (int i = tid; i < T; i += blockDim.x) {
         out[idx * T + i] = (i <= idx % T) ? expf((x[i] - maxval) * inv_temperature) / sumval : 0.0f;
     }
 }
 
-// Residual connection
 __global__ void residual_forward_kernel(float* out, float* inp1, float* inp2, int N) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
@@ -201,7 +192,6 @@ __global__ void residual_forward_kernel(float* out, float* inp1, float* inp2, in
     }
 }
 
-// GELU activation
 __global__ void gelu_forward_kernel(float* out, const float* inp, int N) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
@@ -211,81 +201,11 @@ __global__ void gelu_forward_kernel(float* out, const float* inp, int N) {
     }
 }
 
-// Output projection with softmax (inference only - no loss)
-__global__ void output_forward_kernel(float* probs, const float* logits, int B, int T, int V, int Vp) {
-    // Just copy logits to probs for sampling (softmax done in CPU sampling)
+__global__ void add_bias_kernel(float* out, const float* bias, int N, int OC) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < B * T * Vp) {
-        int bt = idx / Vp;
-        int v = idx % Vp;
-        if (v < V) {
-            probs[idx] = logits[idx];
-        } else {
-            probs[idx] = -INFINITY;
-        }
-    }
-}
-
-// Matmul kernel
-__global__ void __launch_bounds__(16*16, 2) matmul_forward_kernel4(float* out,
-                                    const float* inp, const float* weight, const float* bias,
-                                    int BT, int C, int OC) {
-    int blockRow = blockIdx.x;
-    int blockCol = blockIdx.y;
-    int row = threadIdx.x / 16;
-    int col = threadIdx.x % 16;
-    
-    __shared__ float lhs_s[64][17];
-    __shared__ float rhs_s[64][17];
-    
-    inp += blockRow * 64;
-    weight += blockCol * 64;
-    out += blockRow * 64 * OC + blockCol * 64;
-    
-    float thread_results[16] = {0.0f};
-    
-    for (int bkIdx = 0; bkIdx < C; bkIdx += 64) {
-        lhs_s[threadIdx.x / 16 + (threadIdx.x % 16) * 4][threadIdx.x / 16] = inp[(threadIdx.x % 16) * 4 * C + bkIdx + threadIdx.x / 16];
-        lhs_s[threadIdx.x / 16 + (threadIdx.x % 16) * 4 + 1][threadIdx.x / 16] = inp[((threadIdx.x % 16) * 4 + 1) * C + bkIdx + threadIdx.x / 16];
-        lhs_s[threadIdx.x / 16 + (threadIdx.x % 16) * 4 + 2][threadIdx.x / 16] = inp[((threadIdx.x % 16) * 4 + 2) * C + bkIdx + threadIdx.x / 16];
-        lhs_s[threadIdx.x / 16 + (threadIdx.x % 16) * 4 + 3][threadIdx.x / 16] = inp[((threadIdx.x % 16) * 4 + 3) * C + bkIdx + threadIdx.x / 16];
-        rhs_s[threadIdx.x / 16][threadIdx.x % 16 + (threadIdx.x / 16) * 4] = weight[(threadIdx.x % 16 + (threadIdx.x / 16) * 4) * C + bkIdx + threadIdx.x / 16];
-        rhs_s[threadIdx.x / 16][threadIdx.x % 16 + (threadIdx.x / 16) * 4 + 1] = weight[(threadIdx.x % 16 + (threadIdx.x / 16) * 4 + 1) * C + bkIdx + threadIdx.x / 16];
-        rhs_s[threadIdx.x / 16][threadIdx.x % 16 + (threadIdx.x / 16) * 4 + 2] = weight[(threadIdx.x % 16 + (threadIdx.x / 16) * 4 + 2) * C + bkIdx + threadIdx.x / 16];
-        rhs_s[threadIdx.x / 16][threadIdx.x % 16 + (threadIdx.x / 16) * 4 + 3] = weight[(threadIdx.x % 16 + (threadIdx.x / 16) * 4 + 3) * C + bkIdx + threadIdx.x / 16];
-        
-        __syncthreads();
-        for (int dotIdx = 0; dotIdx < 64; ++dotIdx) {
-            float tmp = lhs_s[row * 4][dotIdx];
-            float tmp1 = lhs_s[row * 4 + 1][dotIdx];
-            float tmp2 = lhs_s[row * 4 + 2][dotIdx];
-            float tmp3 = lhs_s[row * 4 + 3][dotIdx];
-            thread_results[0] += tmp * rhs_s[dotIdx][col * 4];
-            thread_results[1] += tmp * rhs_s[dotIdx][col * 4 + 1];
-            thread_results[2] += tmp * rhs_s[dotIdx][col * 4 + 2];
-            thread_results[3] += tmp * rhs_s[dotIdx][col * 4 + 3];
-            thread_results[4] += tmp1 * rhs_s[dotIdx][col * 4];
-            thread_results[5] += tmp1 * rhs_s[dotIdx][col * 4 + 1];
-            thread_results[6] += tmp1 * rhs_s[dotIdx][col * 4 + 2];
-            thread_results[7] += tmp1 * rhs_s[dotIdx][col * 4 + 3];
-            thread_results[8] += tmp2 * rhs_s[dotIdx][col * 4];
-            thread_results[9] += tmp2 * rhs_s[dotIdx][col * 4 + 1];
-            thread_results[10] += tmp2 * rhs_s[dotIdx][col * 4 + 2];
-            thread_results[11] += tmp2 * rhs_s[dotIdx][col * 4 + 3];
-            thread_results[12] += tmp3 * rhs_s[dotIdx][col * 4];
-            thread_results[13] += tmp3 * rhs_s[dotIdx][col * 4 + 1];
-            thread_results[14] += tmp3 * rhs_s[dotIdx][col * 4 + 2];
-            thread_results[15] += tmp3 * rhs_s[dotIdx][col * 4 + 3];
-        }
-        __syncthreads();
-    }
-    
-    for (int resIdxM = 0; resIdxM < 4; resIdxM++) {
-        for (int resIdxN = 0; resIdxN < 4; resIdxN++) {
-            float val = thread_results[resIdxM * 4 + resIdxN];
-            if (bias != NULL) val += bias[blockCol * 64 + col * 4 + resIdxN];
-            out[(row * 4 + resIdxM) * OC + col * 4 + resIdxN] = val;
-        }
+    if (idx < N) {
+        int oc = idx % OC;
+        out[idx] += bias[oc];
     }
 }
 
@@ -308,19 +228,7 @@ void layernorm_forward(float* out, float* mean, float* rstd, float* inp, float* 
     cudaCheck(cudaGetLastError());
 }
 
-// Simple bias-add kernel
-__global__ void add_bias_kernel(float* out, const float* bias, int N, int OC) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < N) {
-        int oc = idx % OC;
-        out[idx] += bias[oc];
-    }
-}
-
 void matmul_forward(float* out, float* inp, float* weight, float* bias, int B, int T, int C, int OC) {
-    // Use cuBLAS for simplicity and correctness
-    // out = inp @ weight.T + bias
-    // inp: (B*T, C), weight: (OC, C), out: (B*T, OC)
     int BT = B * T;
     float alpha = 1.0f, beta = 0.0f;
     cublasCheck(cublasSgemm(cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, OC, BT, C, &alpha, weight, C, inp, C, &beta, out, OC));
@@ -339,33 +247,29 @@ void attention_forward(float* out, float* qkvr, float* att,
     float* q = qkvr + 0 * B * T * C;
     float* k = qkvr + 1 * B * T * C;
     float* v = qkvr + 2 * B * T * C;
-    
+
     int total_threads = B * NH * T * HS;
     int num_blocks = CEIL_DIV(total_threads, block_size);
     permute_kernel<<<num_blocks, block_size>>>(q, k, v, inp, B, T, NH, HS);
     cudaCheck(cudaGetLastError());
-    
-    // attention scores via cuBLAS batched matmul
+
     float scale = 1.0f / sqrtf(HS);
     float zero = 0.0f;
     cublasCheck(cublasSgemmStridedBatched(cublas_handle,
         CUBLAS_OP_T, CUBLAS_OP_N, T, T, HS, &scale,
         k, HS, T * HS, q, HS, T * HS, &zero, att, T, T * T, B * NH));
-    
-    // softmax
+
     int softmax_block_size = 256;
     int grid_size = B * NH * T;
     size_t shared_mem_size = softmax_block_size / 32 * sizeof(float);
     softmax_forward_kernel5<<<grid_size, softmax_block_size, shared_mem_size>>>(att, 1.0f, att, B * NH * T, T);
     cudaCheck(cudaGetLastError());
-    
-    // attention output via cuBLAS
+
     float one = 1.0f;
     cublasCheck(cublasSgemmStridedBatched(cublas_handle,
         CUBLAS_OP_N, CUBLAS_OP_N, HS, T, T, &one,
         v, HS, T * HS, att, T, T * T, &zero, q, HS, T * HS, B * NH));
-    
-    // unpermute
+
     num_blocks = CEIL_DIV(B * T * C, block_size);
     unpermute_kernel<<<num_blocks, block_size>>>(q, out, B, T, NH, HS);
     cudaCheck(cudaGetLastError());
@@ -488,7 +392,7 @@ float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes
     }
     float* params_memory;
     cudaCheck(cudaMalloc((void**)&params_memory, num_parameters * sizeof(float)));
-    
+
     float** ptrs[] = {
         &params->wte, &params->wpe, &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
         &params->attprojw, &params->attprojb, &params->ln2w, &params->ln2b, &params->fcw, &params->fcb,
@@ -507,27 +411,27 @@ void fill_in_activation_sizes(size_t* act_sizes, int B, int T, GPT2Config config
     int NH = config.num_heads;
     int L = config.num_layers;
     int Vp = config.padded_vocab_size;
-    act_sizes[0] = B * T * C;           // encoded
-    act_sizes[1] = L * B * T * C;       // ln1
-    act_sizes[2] = L * B * T;           // ln1_mean
-    act_sizes[3] = L * B * T;           // ln1_rstd
-    act_sizes[4] = L * B * T * 3 * C;   // qkv
-    act_sizes[5] = L * B * T * C;       // atty
-    act_sizes[6] = L * B * T * 3 * C;   // qkvr
-    act_sizes[7] = L * B * NH * T * T;  // att
-    act_sizes[8] = L * B * T * C;       // attproj
-    act_sizes[9] = L * B * T * C;       // residual2
-    act_sizes[10] = L * B * T * C;      // ln2
-    act_sizes[11] = L * B * T;          // ln2_mean
-    act_sizes[12] = L * B * T;          // ln2_rstd
-    act_sizes[13] = L * B * T * 4 * C;  // fch
-    act_sizes[14] = L * B * T * 4 * C;  // fch_gelu
-    act_sizes[15] = L * B * T * C;      // fcproj
-    act_sizes[16] = L * B * T * C;      // residual3
-    act_sizes[17] = B * T * C;          // lnf
-    act_sizes[18] = B * T;              // lnf_mean
-    act_sizes[19] = B * T;              // lnf_rstd
-    act_sizes[20] = B * T * Vp;         // output
+    act_sizes[0] = B * T * C;
+    act_sizes[1] = L * B * T * C;
+    act_sizes[2] = L * B * T;
+    act_sizes[3] = L * B * T;
+    act_sizes[4] = L * B * T * 3 * C;
+    act_sizes[5] = L * B * T * C;
+    act_sizes[6] = L * B * T * 3 * C;
+    act_sizes[7] = L * B * NH * T * T;
+    act_sizes[8] = L * B * T * C;
+    act_sizes[9] = L * B * T * C;
+    act_sizes[10] = L * B * T * C;
+    act_sizes[11] = L * B * T;
+    act_sizes[12] = L * B * T;
+    act_sizes[13] = L * B * T * 4 * C;
+    act_sizes[14] = L * B * T * 4 * C;
+    act_sizes[15] = L * B * T * C;
+    act_sizes[16] = L * B * T * C;
+    act_sizes[17] = B * T * C;
+    act_sizes[18] = B * T;
+    act_sizes[19] = B * T;
+    act_sizes[20] = B * T * Vp;
 }
 
 float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) {
@@ -537,7 +441,7 @@ float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) 
     }
     float* acts_memory;
     cudaCheck(cudaMalloc((void**)&acts_memory, num_activations * sizeof(float)));
-    
+
     float** ptrs[] = {
         &acts->encoded, &acts->ln1, &acts->ln1_mean, &acts->ln1_rstd, &acts->qkv, &acts->atty,
         &acts->qkvr, &acts->att, &acts->attproj, &acts->residual2, &acts->ln2, &acts->ln2_mean,
@@ -558,28 +462,28 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     freadCheck(model_header, sizeof(int), 256, model_file);
     if (model_header[0] != 20240326) { fprintf(stderr, "Bad magic model file\n"); exit(1); }
     if (model_header[1] != 3) { fprintf(stderr, "Bad version in model file\n"); exit(1); }
-    
+
     model->config.max_seq_len = model_header[2];
     model->config.vocab_size = model_header[3];
     model->config.num_layers = model_header[4];
     model->config.num_heads = model_header[5];
     model->config.channels = model_header[6];
     model->config.padded_vocab_size = model_header[7];
-    
+
     fill_in_parameter_sizes(model->param_sizes, model->config);
-    
+
     size_t num_parameters = 0;
     for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) num_parameters += model->param_sizes[i];
     model->num_parameters = num_parameters;
-    
+
     model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes);
-    
+
     float* params_cpu = (float*)mallocCheck(num_parameters * sizeof(float));
     freadCheck(params_cpu, sizeof(float), num_parameters, model_file);
     cudaCheck(cudaMemcpy(model->params_memory, params_cpu, num_parameters * sizeof(float), cudaMemcpyHostToDevice));
     free(params_cpu);
     fcloseCheck(model_file);
-    
+
     model->acts_memory = NULL;
     model->inputs = NULL;
     model->batch_size = 0;
@@ -591,73 +495,72 @@ void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
         printf("Error: model was not initialized properly.\n");
         exit(1);
     }
-    
+
     GPT2Config config = model->config;
     int V = config.vocab_size;
     int Vp = config.padded_vocab_size;
     int L = config.num_layers;
     int NH = config.num_heads;
     int C = config.channels;
-    
-    // Allocate activations if needed
+
     if (B != model->batch_size || T != model->seq_len) {
         if (model->acts_memory != NULL) cudaCheck(cudaFree(model->acts_memory));
         if (model->inputs != NULL) cudaCheck(cudaFree(model->inputs));
-        
+
         model->batch_size = B;
         model->seq_len = T;
         fill_in_activation_sizes(model->act_sizes, B, T, config);
         model->acts_memory = malloc_and_point_activations(&model->acts, model->act_sizes);
         cudaCheck(cudaMalloc((void**)&model->inputs, B * T * sizeof(int)));
     }
-    
+
     cudaCheck(cudaMemcpy(model->inputs, inputs, B * T * sizeof(int), cudaMemcpyHostToDevice));
-    
+
     ParameterTensors params = model->params;
     ActivationTensors acts = model->acts;
-    
+
     encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C);
-    
+
     for (int l = 0; l < L; l++) {
         float* residual = (l == 0) ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
-        
+
         float* ln1_out = acts.ln1 + l * B * T * C;
         float* ln1_mean = acts.ln1_mean + l * B * T;
         float* ln1_rstd = acts.ln1_rstd + l * B * T;
         layernorm_forward(ln1_out, ln1_mean, ln1_rstd, residual, params.ln1w + l*C, params.ln1b + l*C, B, T, C);
-        
+
         float* qkv = acts.qkv + l * B * T * 3 * C;
         matmul_forward(qkv, ln1_out, params.qkvw + l*3*C*C, params.qkvb + l*3*C, B, T, C, 3*C);
-        
+
         float* atty = acts.atty + l * B * T * C;
         float* qkvr = acts.qkvr + l * B * T * 3 * C;
         float* att = acts.att + l * B * NH * T * T;
         attention_forward(atty, qkvr, att, qkv, B, T, C, NH);
-        
+
         float* attproj = acts.attproj + l * B * T * C;
         matmul_forward(attproj, atty, params.attprojw + l*C*C, params.attprojb + l*C, B, T, C, C);
-        
+
         float* residual2 = acts.residual2 + l * B * T * C;
         residual_forward(residual2, residual, attproj, B*T*C);
-        
+
         float* ln2_out = acts.ln2 + l * B * T * C;
         float* ln2_mean = acts.ln2_mean + l * B * T;
         float* ln2_rstd = acts.ln2_rstd + l * B * T;
         layernorm_forward(ln2_out, ln2_mean, ln2_rstd, residual2, params.ln2w + l*C, params.ln2b + l*C, B, T, C);
-        
+
         float* fch = acts.fch + l * B * T * 4 * C;
         matmul_forward(fch, ln2_out, params.fcw + l*4*C*C, params.fcb + l*4*C, B, T, C, 4*C);
-        
+
         float* fch_gelu = acts.fch_gelu + l * B * T * 4 * C;
         gelu_forward(fch_gelu, fch, B*T*4*C);
-        
+
         float* fcproj = acts.fcproj + l * B * T * C;
         matmul_forward(fcproj, fch_gelu, params.fcprojw + l*C*4*C, params.fcprojb + l*C, B, T, 4*C, C);
-        
+
         float* residual3 = acts.residual3 + l * B * T * C;
         residual_forward(residual3, residual2, fcproj, B*T*C);
     }
-    
+
     float* residual = acts.residual3 + (L-1) * B * T * C;
     layernorm_forward(acts.lnf, acts.lnf_mean, acts.lnf_rstd, residual, params.lnfw, params.lnfb, B, T, C);
     matmul_forward(acts.output, acts.lnf, params.wte, NULL, B, T, C, Vp);
@@ -714,7 +617,7 @@ int main(int argc, char *argv[]) {
     int num_tokens = 256;
     const char* prompt = "";
     unsigned long long rng_state = 0;
-    
+
     for (int i = 1; i < argc; i += 2) {
         if (i + 1 >= argc) error_usage();
         if (argv[i][0] != '-') error_usage();
@@ -725,15 +628,15 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 's') rng_state = atoll(argv[i+1]);
         else error_usage();
     }
-    
+
     if (rng_state == 0) rng_state = (unsigned long long)time(NULL);
-    
+
+    printf("=== GPT-2 Inference ===\n");
     printf("Model: %s\n", model_path);
     printf("Tokens: %d\n", num_tokens);
     printf("Seed: %llu\n", rng_state);
     printf("---\n");
-    
-    // Setup CUDA
+
     int deviceIdx = 0;
     cudaCheck(cudaSetDevice(deviceIdx));
     cublasCheck(cublasCreate(&cublas_handle));
@@ -743,41 +646,36 @@ int main(int argc, char *argv[]) {
     cublas_compute_type = enable_tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
     cublasMath_t cublas_math_mode = enable_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
     cublasCheck(cublasSetMathMode(cublas_handle, cublas_math_mode));
-    
-    // Load model
+
     GPT2 model;
     gpt2_build_from_checkpoint(&model, model_path);
     int T = model.config.max_seq_len;
     int V = model.config.vocab_size;
     int Vp = model.config.padded_vocab_size;
-    
+
     printf("Model loaded: %zu parameters\n", model.num_parameters);
-    printf("Vocab: %d, MaxSeq: %d\n", V, T);
+    printf("Vocab: %d, MaxSeq: %d, Channels: %d\n", V, T, model.config.channels);
     printf("---\n");
-    
-    // Load tokenizer
+
     Tokenizer tokenizer;
     tokenizer_init(&tokenizer, "gpt2_tokenizer.bin");
-    
-    // Setup generation buffer
+
     int* gen_tokens = (int*)mallocCheck(T * sizeof(int));
     float* cpu_logits = (float*)mallocCheck(V * sizeof(float));
-    
-    // Initialize with EOT token
+
     for (int i = 0; i < T; i++) gen_tokens[i] = GPT2_EOT;
-    
-    // Generate
+
     printf("Generating:\n");
     for (int t = 1; t < num_tokens && t < T; t++) {
         gpt2_forward(&model, gen_tokens, 1, T);
-        
+
         float* logits = model.acts.output + (t - 1) * Vp;
         cudaCheck(cudaMemcpy(cpu_logits, logits, V * sizeof(float), cudaMemcpyDeviceToHost));
-        
+
         float coin = random_f32(&rng_state);
         int next_token = sample_softmax(cpu_logits, V, coin);
         gen_tokens[t] = next_token;
-        
+
         if (tokenizer.init_ok) {
             const char* token_str = tokenizer_decode(&tokenizer, next_token);
             printf("%s", token_str);
@@ -787,13 +685,12 @@ int main(int argc, char *argv[]) {
         fflush(stdout);
     }
     printf("\n---\n");
-    
-    // Cleanup
+
     free(gen_tokens);
     free(cpu_logits);
     tokenizer_free(&tokenizer);
     gpt2_free(&model);
     cublasCheck(cublasDestroy(cublas_handle));
-    
+
     return 0;
 }
