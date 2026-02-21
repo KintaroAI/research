@@ -168,10 +168,20 @@ pip install torch numpy
 
 ## Progress
 
-| Experiment | Date | Status | Key Finding |
-|------------|------|--------|-------------|
-| [00001-karpathy-gpt-local](./00001-karpathy-gpt-local/) | 2026-02-03 | 🔬 In Progress | Baseline implementation |
-| [00010-delayed-generalization](./00010-delayed-generalization/) | 2026-02-07 | 🔬 In Progress | Reproduce delayed generalization on modular addition (mod 97) |
+| Experiment | Status | Key Finding |
+|------------|--------|-------------|
+| [00001-karpathy-gpt-local](./00001-karpathy-gpt-local/) | Complete | Char-level GPT (210K params) learns Shakespeare structure in ~3 min on RTX 4090 |
+| [00002-llama2c-shakespeare](./00002-llama2c-shakespeare/) | Complete | 870K param Llama2 with custom BPE reaches 1.79 train loss; 1401 tok/s C inference |
+| [00003-llmc-full-c](./00003-llmc-full-c/) | Complete | Pure C training pipeline; GPT-2 124M finetune val loss 5.33 to 4.29 in 40 steps |
+| [00004-cuda-probe](./00004-cuda-probe/) | Complete | RTX 4090 verified: 128 SMs, 23.5 GB VRAM, ~255B elem/s throughput |
+| [00005-from-scratch-cuda](./00005-from-scratch-cuda/) | Complete | 7.3M param model trained from scratch in C/CUDA (581K tok/s) |
+| [00006-tinystories-e2e](./00006-tinystories-e2e/) | Complete | Self-contained CUDA trainer on TinyStories; loss ~10.5 to 4.5 after 10K steps |
+| [00007-banded-sparsity](./00007-banded-sparsity/) | Complete | Diagonal band on FC1 maintains quality at ~44% density (bandwidth 256-512) |
+| [00008-banded-tinystories](./00008-banded-tinystories/) | Complete | Banded FC1 sweet spot at 25-45% density; below 15% fails |
+| [00009-banded-fc-comparison](./00009-banded-fc-comparison/) | Complete | FC2 sparsity improves val loss (-2.4% at BW=256); FC1 hurts even at BW=1024 |
+| [00010-delayed-generalization](./00010-delayed-generalization/) | Complete | Grokking reproduced on mod 97 with answer-only loss masking (-p 4) |
+| [00011-sort-layer](./00011-sort-layer/) | Complete | Learnable correlation-based blending gives +1.1% quality on TinyStories; +40% overhead |
+| [00012-grokking-conditions](./00012-grokking-conditions/) | Complete | No delayed generalization; -p 4 dominates; wd=0 memorizes, wd=1 generalizes instantly |
 
 ## Improvement Ideas: Encouraging Delayed Generalization
 
