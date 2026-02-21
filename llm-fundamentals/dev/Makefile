@@ -52,7 +52,7 @@ setup: venv data
 venv:
 	python3 -m venv venv
 	./venv/bin/pip install --upgrade pip
-	./venv/bin/pip install tiktoken numpy requests tqdm torch
+	./venv/bin/pip install tiktoken numpy requests tqdm torch wandb
 
 data: venv
 	./venv/bin/python prepare_data.py
