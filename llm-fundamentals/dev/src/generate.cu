@@ -612,6 +612,7 @@ void error_usage() {
     exit(1);
 }
 
+#ifndef TESTING
 int main(int argc, char *argv[]) {
     const char* model_path = "checkpoint.bin";
     int num_tokens = 256;
@@ -694,3 +695,4 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+#endif

@@ -15,13 +15,32 @@ generate: src/generate.cu
 test_gpt2_fp32: src/test_gpt2_fp32.cu src/train_gpt2_fp32.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
+test_banded_sparsity: src/test_banded_sparsity.cu src/train_gpt2_fp32.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+test_task_position: src/test_task_position.cu src/train_gpt2_fp32.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+test_checkpoint: src/test_checkpoint.cu src/train_gpt2_fp32.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+test_generate: src/test_generate.cu src/generate.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
 # Run test: requires gpt2_124M.bin and gpt2_124M_debug_state.bin
 # Generate with: ./venv/bin/python train_gpt2.py --model gpt2 --write_tensors 1 --num_iterations 0
 test: test_gpt2_fp32
 	./test_gpt2_fp32
 
+test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate
+	./test_gpt2_fp32
+	./test_banded_sparsity
+	./test_task_position
+	./test_checkpoint
+	./test_generate
+
 clean:
-	rm -f train generate test_gpt2_fp32
+	rm -f train generate test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate
 
 # Setup: create venv and prepare data
 setup: venv data
@@ -66,4 +85,4 @@ experiment_asymmetric: train data
 	@echo "Training BANDED FC1=128 FC2=512..."
 	./train -e model.bin -c checkpoint_asym.bin -1 128 -2 512 -n 2000 -b 16 -t 256 -v 200 -s 500 -o log_banded_asym.txt
 
-.PHONY: all clean setup venv data model test experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric
+.PHONY: all clean setup venv data model test test_all experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric

@@ -2,6 +2,10 @@
 train
 generate
 test_gpt2_fp32
+test_banded_sparsity
+test_task_position
+test_checkpoint
+test_generate
 
 # Checkpoints and model files
 checkpoint*.bin
