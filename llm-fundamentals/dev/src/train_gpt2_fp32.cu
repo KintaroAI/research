@@ -80,6 +80,7 @@ namespace cg = cooperative_groups;
 
 int BANDWIDTH_FC1 = 0;   // Bandwidth for FC1 (C -> 4C), 0 = dense
 int BANDWIDTH_FC2 = 0;   // Bandwidth for FC2 (4C -> C), 0 = dense
+int SORT_WINDOW = 0;     // Sort layer window size, 0 = disabled
 
 // Kernel to create banded mask for FC1 weights (up-projection)
 // mask shape: (OC, C) where OC = 4*C
@@ -143,6 +144,266 @@ __global__ void count_nonzero_kernel(const float* mask, int* count, int N) {
     if (threadIdx.x == 0) {
         atomicAdd(count, block_count);
     }
+}
+
+// ----------------------------------------------------------------------------
+// Sort layer: correlation-based local blending (thalamus-inspired)
+// Operates on the residual stream between layers. Each position looks at a
+// causal window of neighbors, measures similarity, and gently blends them.
+// Controlled by SORT_WINDOW global (0=disabled, >0=window size).
+// Per-layer learnable params: alpha (mixing strength) and tau (temperature)
+
+__global__ void sort_forward_kernel(
+    float* out,             // (B, T, C) sorted output
+    float* sort_att,        // (B, T, W) attention weights (saved for backward)
+    const float* inp,       // (B, T, C) input residual stream
+    float alpha,            // sigmoid(alpha_raw), mixing strength in [0,1]
+    float inv_tau,          // 1/tau = exp(-tau_raw), inverse temperature
+    int B, int T, int C, int W
+) {
+    cg::thread_block block = cg::this_thread_block();
+    cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+
+    // One warp per (batch, time) position
+    int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+    if (idx >= B * T) { return; }
+
+    int t = idx % T;
+    const float* x_i = inp + idx * C;
+
+    // Causal window: positions [w_start, t] inclusive
+    int w_start = (t - W + 1) > 0 ? (t - W + 1) : 0;
+    int w_len = t - w_start + 1;
+
+    // Shared memory for similarity scores, one buffer per warp in this block
+    extern __shared__ float shared[];
+    float* sim = shared + warp.meta_group_rank() * W;
+
+    // --- Phase 1: Dot-product similarity to each neighbor ---
+    float scale = rsqrtf((float)C) * inv_tau;
+    float maxval = -FLT_MAX;
+
+    for (int w = 0; w < w_len; w++) {
+        int j = w_start + w;
+        const float* x_j = inp + (idx - t + j) * C;  // same batch, position j
+
+        // Distributed dot product across warp threads
+        float dot = 0.0f;
+        for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+            dot += x_i[c] * x_j[c];
+        }
+        dot = cg::reduce(warp, dot, cg::plus<float>{});
+
+        float s = dot * scale;
+        if (warp.thread_rank() == 0) {
+            sim[w] = s;
+            maxval = fmaxf(maxval, s);
+        }
+    }
+    // Broadcast maxval to all threads in warp
+    maxval = __shfl_sync(0xffffffff, maxval, 0);
+
+    // --- Phase 2: Softmax over window ---
+    if (warp.thread_rank() == 0) {
+        float sumexp = 0.0f;
+        for (int w = 0; w < w_len; w++) {
+            sim[w] = expf(sim[w] - maxval);
+            sumexp += sim[w];
+        }
+        float inv_sum = 1.0f / (sumexp + 1e-8f);
+        for (int w = 0; w < w_len; w++) {
+            sim[w] *= inv_sum;
+        }
+    }
+    warp.sync();
+
+    // Save attention weights for backward
+    if (warp.thread_rank() == 0) {
+        float* att_dst = sort_att + idx * W;
+        for (int w = 0; w < W; w++) {
+            att_dst[w] = (w < w_len) ? sim[w] : 0.0f;
+        }
+    }
+
+    // --- Phase 3: Weighted blend + residual mix ---
+    // out[i] = (1 - alpha) * x[i] + alpha * sum_j(w[j] * x[j])
+    float* o = out + idx * C;
+    for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+        float blend = 0.0f;
+        for (int w = 0; w < w_len; w++) {
+            int j = w_start + w;
+            blend += sim[w] * inp[(idx - t + j) * C + c];
+        }
+        o[c] = (1.0f - alpha) * x_i[c] + alpha * blend;
+    }
+}
+
+// Sort forward launcher
+void sort_forward(float* out, float* sort_att, const float* inp,
+                  float alpha, float inv_tau,
+                  int B, int T, int C, int W) {
+    const int block_size = 512;  // 16 warps per block
+    const int num_warps_per_block = block_size / 32;
+    const int grid_size = CEIL_DIV(B * T, num_warps_per_block);
+    size_t shared_mem = num_warps_per_block * W * sizeof(float);
+    sort_forward_kernel<<<grid_size, block_size, shared_mem>>>(
+        out, sort_att, inp, alpha, inv_tau, B, T, C, W);
+    cudaCheck(cudaGetLastError());
+}
+
+__global__ void sort_backward_kernel(
+    float* dinp,            // (B, T, C) gradient w.r.t. input (accumulate)
+    float* dalpha_raw,      // scalar gradient for alpha_raw (atomicAdd)
+    float* dtau_raw,        // scalar gradient for tau_raw (atomicAdd)
+    const float* dout,      // (B, T, C) incoming gradient
+    const float* inp,       // (B, T, C) original input from forward
+    const float* sort_att,  // (B, T, W) saved attention weights
+    float alpha,            // sigmoid(alpha_raw)
+    float inv_tau,          // exp(-tau_raw)
+    int B, int T, int C, int W
+) {
+    cg::thread_block block = cg::this_thread_block();
+    cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+
+    int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+    if (idx >= B * T) { return; }
+
+    int t = idx % T;
+    int w_start = (t - W + 1) > 0 ? (t - W + 1) : 0;
+    int w_len = t - w_start + 1;
+
+    const float* x_i = inp + idx * C;
+    const float* dout_i = dout + idx * C;
+    float* dinp_i = dinp + idx * C;
+
+    float scale = rsqrtf((float)C) * inv_tau;
+
+    // Load saved attention weights into shared memory
+    extern __shared__ float shared[];
+    int wid = warp.meta_group_rank();
+    float* w_buf = shared + wid * 2 * W;        // attention weights
+    float* dw_buf = shared + wid * 2 * W + W;   // dw buffer
+
+    if (warp.thread_rank() == 0) {
+        const float* att_src = sort_att + idx * W;
+        for (int w = 0; w < w_len; w++) {
+            w_buf[w] = att_src[w];
+        }
+    }
+    warp.sync();
+
+    // --- Phase 1: Direct residual gradient ---
+    // dinp[i] += (1 - alpha) * dout[i]
+    for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+        atomicAdd(&dinp_i[c], (1.0f - alpha) * dout_i[c]);
+    }
+
+    // --- Phase 2: Compute dw[w] = dot(alpha * dout[i], x[j]) ---
+    float local_dalpha = 0.0f;
+
+    for (int w = 0; w < w_len; w++) {
+        int j = w_start + w;
+        const float* x_j = inp + (idx - t + j) * C;
+
+        float dot_dout_xj = 0.0f;
+        float dot_dout_xi = 0.0f;
+        for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+            dot_dout_xj += dout_i[c] * x_j[c];
+            if (w == 0) {
+                dot_dout_xi += dout_i[c] * x_i[c];
+            }
+        }
+        dot_dout_xj = cg::reduce(warp, dot_dout_xj, cg::plus<float>{});
+        if (w == 0) {
+            dot_dout_xi = cg::reduce(warp, dot_dout_xi, cg::plus<float>{});
+        }
+
+        if (warp.thread_rank() == 0) {
+            dw_buf[w] = alpha * dot_dout_xj;
+            local_dalpha += w_buf[w] * dot_dout_xj;
+            if (w == w_len - 1) {
+                local_dalpha -= dot_dout_xi;
+            }
+        }
+    }
+    warp.sync();
+
+    // --- Phase 3: Softmax backward ---
+    // ds[w] = w[w] * (dw[w] - sum_k w[k]*dw[k])
+    if (warp.thread_rank() == 0) {
+        float sum_wdw = 0.0f;
+        for (int w = 0; w < w_len; w++) {
+            sum_wdw += w_buf[w] * dw_buf[w];
+        }
+        for (int w = 0; w < w_len; w++) {
+            dw_buf[w] = w_buf[w] * (dw_buf[w] - sum_wdw);
+        }
+    }
+    warp.sync();
+
+    // --- Phase 4: Value gradient + key gradient to dinp[j] ---
+    // Query gradient into dinp[i]
+    for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+        float q_grad = 0.0f;
+        for (int w = 0; w < w_len; w++) {
+            int j = w_start + w;
+            float x_jc = inp[(idx - t + j) * C + c];
+            q_grad += dw_buf[w] * scale * x_jc;
+        }
+        atomicAdd(&dinp_i[c], q_grad);
+    }
+
+    // Scatter value + key gradients to dinp[j]
+    for (int w = 0; w < w_len; w++) {
+        int j = w_start + w;
+        float* dinp_j = dinp + (idx - t + j) * C;
+        float wj = w_buf[w];
+        float ds_j = dw_buf[w];
+
+        for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+            float val_grad = wj * alpha * dout_i[c];
+            float key_grad = ds_j * scale * x_i[c];
+            atomicAdd(&dinp_j[c], val_grad + key_grad);
+        }
+    }
+
+    // --- Phase 5: Parameter gradients ---
+    float local_dtau = 0.0f;
+    for (int w = 0; w < w_len; w++) {
+        int j = w_start + w;
+        const float* x_j = inp + (idx - t + j) * C;
+
+        float dot = 0.0f;
+        for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+            dot += x_i[c] * x_j[c];
+        }
+        dot = cg::reduce(warp, dot, cg::plus<float>{});
+
+        if (warp.thread_rank() == 0) {
+            local_dtau += dw_buf[w] * dot * rsqrtf((float)C) * (-inv_tau);
+        }
+    }
+
+    // Accumulate parameter gradients
+    if (warp.thread_rank() == 0) {
+        atomicAdd(dalpha_raw, local_dalpha * alpha * (1.0f - alpha));
+        atomicAdd(dtau_raw, local_dtau);
+    }
+}
+
+// Sort backward launcher
+void sort_backward(float* dinp, float* dalpha_raw, float* dtau_raw,
+                   const float* dout, const float* inp, const float* sort_att,
+                   float alpha, float inv_tau,
+                   int B, int T, int C, int W) {
+    const int block_size = 512;
+    const int num_warps_per_block = block_size / 32;
+    const int grid_size = CEIL_DIV(B * T, num_warps_per_block);
+    size_t shared_mem = num_warps_per_block * 2 * W * sizeof(float);
+    sort_backward_kernel<<<grid_size, block_size, shared_mem>>>(
+        dinp, dalpha_raw, dtau_raw, dout, inp, sort_att,
+        alpha, inv_tau, B, T, C, W);
+    cudaCheck(cudaGetLastError());
 }
 
 // ----------------------------------------------------------------------------
@@ -1077,7 +1338,7 @@ float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes
     return params_memory;
 }
 
-#define NUM_ACTIVATION_TENSORS 21
+#define NUM_ACTIVATION_TENSORS 23
 typedef struct {
     float* encoded; // (B, T, C)
     float* ln1; // (L, B, T, C)
@@ -1107,6 +1368,9 @@ typedef struct {
     // general scratchpad buffer. Allocation is made large enough to hold (B, T, 3C),
     // (B, NH, T, T), and (B, T, V) shaped tensors.
     float* output;
+    // sort layer activations (allocated only when SORT_WINDOW > 0)
+    float* sort_out; // (L, B, T, C)
+    float* sort_att; // (L, B, T, SORT_WINDOW)
 } ActivationTensors;
 
 void fill_in_activation_sizes(size_t* act_sizes, int B, int T, GPT2Config config) {
@@ -1135,6 +1399,8 @@ void fill_in_activation_sizes(size_t* act_sizes, int B, int T, GPT2Config config
     act_sizes[18] = B * T; // losses
     act_sizes[19] = L * B * T * 3*C; // qkvr
     act_sizes[20] = B * T * max(3*C, max(NH*T, Vp)); // output / scratch
+    act_sizes[21] = (SORT_WINDOW > 0) ? L * B * T * C : 0; // sort_out
+    act_sizes[22] = (SORT_WINDOW > 0) ? (size_t)L * B * T * SORT_WINDOW : 0; // sort_att
 }
 
 // Backward pass is conceptually quite different from forward, because we can discard
@@ -1177,7 +1443,8 @@ float* malloc_and_point_activations(ActivationTensors* acts, const size_t* act_s
         &acts->encoded, &acts->ln1, &acts->ln1_mean, &acts->ln1_rstd, &acts->atty,
         &acts->att, &acts->attproj, &acts->residual2, &acts->ln2, &acts->ln2_mean,
         &acts->ln2_rstd, &acts->fch, &acts->fch_gelu, &acts->fcproj, &acts->residual3, &acts->lnf,
-        &acts->lnf_mean, &acts->lnf_rstd, &acts->losses, &acts->qkvr, &acts->output
+        &acts->lnf_mean, &acts->lnf_rstd, &acts->losses, &acts->qkvr, &acts->output,
+        &acts->sort_out, &acts->sort_att
     };
     return malloc_and_point(ptrs, act_sizes, NUM_ACTIVATION_TENSORS);
 }
@@ -1224,6 +1491,12 @@ typedef struct {
     // Banded sparsity masks
     float* fc1_mask;  // (L, 4*C, C) mask for fcw (FC1), NULL if dense
     float* fc2_mask;  // (L, C, 4*C) mask for fcprojw (FC2), NULL if dense
+    // Sort layer state (separate from main params to preserve checkpoint format)
+    int sort_window;
+    float* sort_params_memory;  // GPU: 2*L floats (alpha_raw[L], tau_raw[L])
+    float* sort_grads_memory;   // GPU: 2*L floats
+    float* sort_m_memory;       // GPU: 2*L floats (AdamW)
+    float* sort_v_memory;       // GPU: 2*L floats (AdamW)
 } GPT2;
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1284,6 +1557,11 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->dlosses_mask = NULL;
     model->fc1_mask = NULL;
     model->fc2_mask = NULL;
+    model->sort_window = 0;
+    model->sort_params_memory = NULL;
+    model->sort_grads_memory = NULL;
+    model->sort_m_memory = NULL;
+    model->sort_v_memory = NULL;
 }
 
 void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1640,6 +1918,27 @@ void init_fc_masks(GPT2 *model) {
     }
 }
 
+void init_sort_layer(GPT2 *model) {
+    int L = model->config.num_layers;
+    model->sort_window = SORT_WINDOW;
+
+    // Allocate 2*L floats: alpha_raw[0..L-1], tau_raw[0..L-1]
+    size_t sort_param_count = 2 * L;
+    cudaCheck(cudaMalloc((void**)&model->sort_params_memory, sort_param_count * sizeof(float)));
+
+    // Initialize on CPU then copy: alpha_raw=-2.0 (sigmoid≈0.12), tau_raw=0.0 (temp=1.0)
+    float* init_cpu = (float*)mallocCheck(sort_param_count * sizeof(float));
+    for (int l = 0; l < L; l++) {
+        init_cpu[l] = -2.0f;       // alpha_raw
+        init_cpu[L + l] = 0.0f;    // tau_raw
+    }
+    cudaCheck(cudaMemcpy(model->sort_params_memory, init_cpu, sort_param_count * sizeof(float), cudaMemcpyHostToDevice));
+    free(init_cpu);
+
+    printf("| Sort layer            | window=%d, params=%zu (2 per layer)               |\n", SORT_WINDOW, sort_param_count);
+    printf("| Sort init             | alpha_raw=-2.0 (sig=0.12), tau_raw=0.0 (T=1.0)    |\n");
+}
+
 // ----------------------------------------------------------------------------
 
 void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
@@ -1705,9 +2004,20 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
     float* residual;
     encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C); // encoding goes into residual[0]
 
+    // Bulk-copy sort params to CPU (one memcpy instead of 2*L)
+    float* sort_params_cpu = NULL;
+    if (SORT_WINDOW > 0 && model->sort_params_memory != NULL) {
+        sort_params_cpu = (float*)mallocCheck(2 * L * sizeof(float));
+        cudaCheck(cudaMemcpy(sort_params_cpu, model->sort_params_memory, 2 * L * sizeof(float), cudaMemcpyDeviceToHost));
+    }
+
     for (int l = 0; l < L; l++) {
 
-        residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+        if (SORT_WINDOW > 0) {
+            residual = l == 0 ? acts.encoded : acts.sort_out + (l-1) * B * T * C;
+        } else {
+            residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+        }
 
         // get the pointers of the weights for this layer
         float* l_ln1w = params.ln1w + l * C;
@@ -1754,9 +2064,26 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
         gelu_forward(l_fch_gelu, l_fch, B*T*4*C);
         matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C);
         residual_forward(l_residual3, l_residual2, l_fcproj, B*T*C);
+
+        // Sort layer: correlation-based blending of residual stream
+        if (SORT_WINDOW > 0 && sort_params_cpu != NULL) {
+            float* l_sort_out = acts.sort_out + l * B * T * C;
+            float* l_sort_att = acts.sort_att + l * B * T * SORT_WINDOW;
+            float alpha_raw = sort_params_cpu[l];
+            float tau_raw = sort_params_cpu[L + l];
+            float alpha = 1.0f / (1.0f + expf(-alpha_raw));
+            float inv_tau = expf(-tau_raw);
+            sort_forward(l_sort_out, l_sort_att, l_residual3, alpha, inv_tau, B, T, C, SORT_WINDOW);
+        }
     }
 
-    residual = acts.residual3 + (L-1) * B * T * C; // last residual is in residual3
+    if (sort_params_cpu != NULL) { free(sort_params_cpu); }
+
+    if (SORT_WINDOW > 0) {
+        residual = acts.sort_out + (L-1) * B * T * C;
+    } else {
+        residual = acts.residual3 + (L-1) * B * T * C; // last residual is in residual3
+    }
     layernorm_forward(acts.lnf, acts.lnf_mean, acts.lnf_rstd, residual, params.lnfw, params.lnfb, B, T, C);
     matmul_forward(acts.output, acts.lnf, params.wte, NULL, B, T, C, Vp);
 
@@ -1802,6 +2129,10 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
 void gpt2_zero_grad(GPT2 *model) {
     if (model->grads_acts_memory != NULL) { cudaCheck(cudaMemset(model->grads_acts_memory, 0, model->num_grad_acts * sizeof(float))); }
     if (model->grads_memory != NULL) { cudaCheck(cudaMemset(model->grads_memory, 0, model->num_parameters * sizeof(float))); }
+    if (model->sort_grads_memory != NULL) {
+        int L = model->config.num_layers;
+        cudaCheck(cudaMemset(model->sort_grads_memory, 0, 2 * L * sizeof(float)));
+    }
 }
 
 void gpt2_backward(GPT2 *model) {
@@ -1834,6 +2165,13 @@ void gpt2_backward(GPT2 *model) {
         gpt2_zero_grad(model);
     }
 
+    // lazily allocate sort gradient memory
+    if (SORT_WINDOW > 0 && model->sort_grads_memory == NULL && model->sort_params_memory != NULL) {
+        int sort_L = model->config.num_layers;
+        cudaCheck(cudaMalloc((void**)&model->sort_grads_memory, 2 * sort_L * sizeof(float)));
+        cudaCheck(cudaMemset(model->sort_grads_memory, 0, 2 * sort_L * sizeof(float)));
+    }
+
     // convenience shortcuts
     int B = model->batch_size;
     int T = model->seq_len;
@@ -1855,13 +2193,29 @@ void gpt2_backward(GPT2 *model) {
     // next: backward the classifier matmul
     matmul_backward(grads_acts.bt4c, grads.wte, NULL, acts.output, acts.lnf, params.wte, B, T, C, Vp);
     // backward the final layernorm
-    float* residual = acts.residual3 + (L-1) * B * T * C; // last residual is in residual3
+    float* residual;
+    if (SORT_WINDOW > 0) {
+        residual = acts.sort_out + (L-1) * B * T * C;
+    } else {
+        residual = acts.residual3 + (L-1) * B * T * C; // last residual is in residual3
+    }
     float* dresidual = grads_acts.residual3; // the main buffer holding the gradient in the backward pass
     layernorm_backward(dresidual, grads.lnfw, grads.lnfb, grads_acts.bt4c, residual, params.lnfw, acts.lnf_mean, acts.lnf_rstd, B, T, C);
 
+    // Bulk-copy sort params to CPU for backward (same as forward)
+    float* sort_params_cpu_bw = NULL;
+    if (SORT_WINDOW > 0 && model->sort_params_memory != NULL) {
+        sort_params_cpu_bw = (float*)mallocCheck(2 * L * sizeof(float));
+        cudaCheck(cudaMemcpy(sort_params_cpu_bw, model->sort_params_memory, 2 * L * sizeof(float), cudaMemcpyDeviceToHost));
+    }
+
     // now backward all the layers
     for (int l = L-1; l >= 0; l--) {
-        residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+        if (SORT_WINDOW > 0) {
+            residual = l == 0 ? acts.encoded : acts.sort_out + (l-1) * B * T * C;
+        } else {
+            residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+        }
 
         // get the pointers of the weights for this layer
         float* l_ln1w = params.ln1w + l * C;
@@ -1909,6 +2263,24 @@ void gpt2_backward(GPT2 *model) {
         // re-use scratch buffer of the forward pass
         float* scratch = acts.output;
 
+        // Sort layer backward: convert gradient w.r.t. sort_out[l] to gradient w.r.t. residual3[l]
+        if (SORT_WINDOW > 0 && sort_params_cpu_bw != NULL) {
+            float* l_residual3 = acts.residual3 + l * B * T * C;
+            float* l_sort_att = acts.sort_att + l * B * T * SORT_WINDOW;
+            float* dalpha_raw = model->sort_grads_memory + l;
+            float* dtau_raw = model->sort_grads_memory + L + l;
+            float alpha_raw = sort_params_cpu_bw[l];
+            float tau_raw = sort_params_cpu_bw[L + l];
+            float alpha = 1.0f / (1.0f + expf(-alpha_raw));
+            float inv_tau = expf(-tau_raw);
+            // dresidual holds grad w.r.t. sort_out[l]. Copy to scratch, zero dresidual,
+            // then sort_backward accumulates grad w.r.t. residual3[l] into dresidual.
+            cudaCheck(cudaMemcpy(scratch, dresidual, B * T * C * sizeof(float), cudaMemcpyDeviceToDevice));
+            cudaCheck(cudaMemset(dresidual, 0, B * T * C * sizeof(float)));
+            sort_backward(dresidual, dalpha_raw, dtau_raw, scratch, l_residual3, l_sort_att,
+                          alpha, inv_tau, B, T, C, SORT_WINDOW);
+        }
+
         // backprop this layer
         // FC2 backward: apply mask to weight gradients if banded sparsity enabled
         float* l_fc2_mask = (model->fc2_mask != NULL) ? model->fc2_mask + l * C * 4*C : NULL;
@@ -1930,6 +2302,7 @@ void gpt2_backward(GPT2 *model) {
         layernorm_backward(dresidual, dl_ln1w, dl_ln1b, dl_btc, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B, T, C);
     }
     encoder_backward(grads.wte, grads.wpe, dresidual, model->inputs, B, T, C);
+    if (sort_params_cpu_bw != NULL) { free(sort_params_cpu_bw); }
 }
 
 void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, float eps, float weight_decay, int t) {
@@ -1982,6 +2355,24 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         }
     }
 
+    // Sort layer params: separate AdamW with 10x learning rate, no weight decay
+    if (SORT_WINDOW > 0 && model->sort_params_memory != NULL && model->sort_grads_memory != NULL) {
+        size_t sort_n = 2 * L;
+        // lazily allocate optimizer state for sort params
+        if (model->sort_m_memory == NULL) {
+            cudaCheck(cudaMalloc((void**)&model->sort_m_memory, sort_n * sizeof(float)));
+            cudaCheck(cudaMalloc((void**)&model->sort_v_memory, sort_n * sizeof(float)));
+            cudaCheck(cudaMemset(model->sort_m_memory, 0, sort_n * sizeof(float)));
+            cudaCheck(cudaMemset(model->sort_v_memory, 0, sort_n * sizeof(float)));
+        }
+        int sort_blocks = CEIL_DIV(sort_n, 512);
+        adamw_kernel2<<<sort_blocks, 512>>>(model->sort_params_memory, model->sort_grads_memory,
+                                            model->sort_m_memory, model->sort_v_memory,
+                                            sort_n,
+                                            learning_rate * 10.0f, beta1, beta2,
+                                            beta1_correction, beta2_correction, eps, 0.0f);
+    }
+
     cudaCheck(cudaGetLastError());
 }
 
@@ -1998,6 +2389,10 @@ void gpt2_free(GPT2 *model) {
     if (model->dlosses_mask != NULL) { cudaCheck(cudaFree(model->dlosses_mask)); }
     if (model->fc1_mask != NULL) { cudaCheck(cudaFree(model->fc1_mask)); }
     if (model->fc2_mask != NULL) { cudaCheck(cudaFree(model->fc2_mask)); }
+    if (model->sort_params_memory != NULL) { cudaCheck(cudaFree(model->sort_params_memory)); }
+    if (model->sort_grads_memory != NULL) { cudaCheck(cudaFree(model->sort_grads_memory)); }
+    if (model->sort_m_memory != NULL) { cudaCheck(cudaFree(model->sort_m_memory)); }
+    if (model->sort_v_memory != NULL) { cudaCheck(cudaFree(model->sort_v_memory)); }
 }
 
 #ifndef TESTING
@@ -2095,6 +2490,7 @@ void error_usage() {
     fprintf(stderr, "  -f <int>    snapshot_every, save snapshot every N steps (default = 100)\n");
     fprintf(stderr, "  -1 <int>    FC1 bandwidth for banded sparsity (default = 0, dense)\n");
     fprintf(stderr, "  -2 <int>    FC2 bandwidth for banded sparsity (default = 0, dense)\n");
+    fprintf(stderr, "  -r <int>    sort layer window size (default = 0, disabled)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -2148,6 +2544,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'f') { snapshot_every = atoi(argv[i+1]); }
         else if (argv[i][1] == '1') { BANDWIDTH_FC1 = atoi(argv[i+1]); }
         else if (argv[i][1] == '2') { BANDWIDTH_FC2 = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'r') { SORT_WINDOW = atoi(argv[i+1]); }
         else { error_usage(); }
     }
     printf("+-----------------------+----------------------------------------------------+\n");
@@ -2178,6 +2575,7 @@ int main(int argc, char *argv[]) {
            (BANDWIDTH_FC1 == 0 && BANDWIDTH_FC2 == 0) ? "DENSE (no sparsity)" :
            (BANDWIDTH_FC1 > 0 && BANDWIDTH_FC2 > 0) ? "BANDED (FC1 + FC2)" :
            (BANDWIDTH_FC1 > 0) ? "BANDED (FC1 only)" : "BANDED (FC2 only)");
+    printf("| Sort window           | %-50d |\n", SORT_WINDOW);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // set up the device
@@ -2211,6 +2609,10 @@ int main(int argc, char *argv[]) {
     // Initialize banded sparsity masks if any bandwidth > 0
     if (BANDWIDTH_FC1 > 0 || BANDWIDTH_FC2 > 0) {
         init_fc_masks(&model);
+    }
+    // Initialize sort layer if enabled
+    if (SORT_WINDOW > 0) {
+        init_sort_layer(&model);
     }
     printf("+-----------------------+----------------------------------------------------+\n");
 

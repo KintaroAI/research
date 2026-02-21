@@ -27,20 +27,24 @@ test_checkpoint: src/test_checkpoint.cu src/train_gpt2_fp32.cu
 test_generate: src/test_generate.cu src/generate.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
+test_sort_layer: src/test_sort_layer.cu src/train_gpt2_fp32.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
 # Run test: requires gpt2_124M.bin and gpt2_124M_debug_state.bin
 # Generate with: ./venv/bin/python train_gpt2.py --model gpt2 --write_tensors 1 --num_iterations 0
 test: test_gpt2_fp32
 	./test_gpt2_fp32
 
-test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate
+test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer
 	./test_gpt2_fp32
 	./test_banded_sparsity
 	./test_task_position
 	./test_checkpoint
 	./test_generate
+	./test_sort_layer
 
 clean:
-	rm -f train generate test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate
+	rm -f train generate test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer
 
 # Setup: create venv and prepare data
 setup: venv data
