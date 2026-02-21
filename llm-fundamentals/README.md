@@ -182,6 +182,7 @@ pip install torch numpy
 | [00010-delayed-generalization](./00010-delayed-generalization/) | Complete | Grokking reproduced on mod 97 with answer-only loss masking (-p 4) |
 | [00011-sort-layer](./00011-sort-layer/) | Complete | Learnable correlation-based blending gives +1.1% quality on TinyStories; +40% overhead |
 | [00012-grokking-conditions](./00012-grokking-conditions/) | Complete | No delayed generalization; -p 4 dominates; wd=0 memorizes, wd=1 generalizes instantly |
+| [00013-wandb-integration](./00013-wandb-integration/) | Complete | Python wrapper logs all training metrics to W&B in real-time; zero C code changes |
 
 ## Improvement Ideas: Encouraging Delayed Generalization
 
