@@ -6,8 +6,9 @@ Usage:
     python prepare_data.py
 
 Downloads ~1.5GB, produces:
-    data/tinystories/TinyStories_train.bin (~1.8GB, 925M tokens)
-    data/tinystories/TinyStories_val.bin   (~38MB, 19M tokens)
+    data/tinystories/TinyStories_train.bin (~1.7GB, ~887M tokens)
+    data/tinystories/TinyStories_val.bin   (~38MB, ~19M tokens)
+    data/tinystories/TinyStories_test.bin  (~38MB, ~19M tokens)
 """
 
 import os
@@ -114,12 +115,13 @@ def write_datafile(filename, toks):
 
 
 def tokenize(shard_filenames):
-    """Tokenize all shards into train/val splits"""
-    # shard 0 = validation, rest = training
+    """Tokenize all shards into train/val/test splits"""
+    # shard 0 = validation, shard 1 = test, rest = training
     val_shards = [shard_filenames[0]]
-    train_shards = shard_filenames[1:]
-    
-    for split_name, split_shards in [("val", val_shards), ("train", train_shards)]:
+    test_shards = [shard_filenames[1]]
+    train_shards = shard_filenames[2:]
+
+    for split_name, split_shards in [("val", val_shards), ("test", test_shards), ("train", train_shards)]:
         print(f"\nTokenizing {split_name} split ({len(split_shards)} shards)...")
         
         all_tokens = []

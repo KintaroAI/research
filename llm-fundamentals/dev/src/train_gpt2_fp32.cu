@@ -2475,6 +2475,19 @@ void logger_log_train(Logger *logger, int step, float train_loss) {
     }
 }
 
+void logger_log_eval(Logger *logger, int step, float val_loss, float avg_train, float gap) {
+    if (logger->logfile != NULL) {
+        fprintf(logger->logfile, "s:%d evl:%.4f avt:%.4f gap:%.4f\n", step, val_loss, avg_train, gap);
+    }
+}
+
+void logger_log_test(Logger *logger, int step, float test_loss) {
+    if (logger->logfile != NULL) {
+        fprintf(logger->logfile, "s:%d tsl:%.4f\n", step, test_loss);
+        fflush(logger->logfile);
+    }
+}
+
 void logger_free(Logger *logger) {
     if (logger->logfile != NULL) { fclose(logger->logfile); }
 }
@@ -2507,6 +2520,8 @@ void error_usage() {
     fprintf(stderr, "  -1 <int>    FC1 bandwidth for banded sparsity (default = 0, dense)\n");
     fprintf(stderr, "  -2 <int>    FC2 bandwidth for banded sparsity (default = 0, dense)\n");
     fprintf(stderr, "  -r <int>    sort layer window size (default = 0, disabled)\n");
+    fprintf(stderr, "  -x <string> test data filename pattern (default = NULL, no test set)\n");
+    fprintf(stderr, "  -q <int>    RNG seed for reproducibility (default = 1337)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -2534,6 +2549,8 @@ int main(int argc, char *argv[]) {
     int task_position = -1; // -1 = loss on all positions; >= 0 = loss only at this position
     const char* snapshot_dir = NULL;  // snapshot output directory for visualization
     int snapshot_every = 100;  // save snapshot every N steps
+    const char* test_data_pattern = NULL;  // test set (evaluated only at end)
+    unsigned int rng_seed = 1337;  // RNG seed for reproducibility
     for (int i = 1; i < argc; i+=2) {
         if (i + 1 >= argc) { error_usage(); } // must have arg after flag
         if (argv[i][0] != '-') { error_usage(); } // must start with dash
@@ -2561,6 +2578,8 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == '1') { BANDWIDTH_FC1 = atoi(argv[i+1]); }
         else if (argv[i][1] == '2') { BANDWIDTH_FC2 = atoi(argv[i+1]); }
         else if (argv[i][1] == 'r') { SORT_WINDOW = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'x') { test_data_pattern = argv[i+1]; }
+        else if (argv[i][1] == 'q') { rng_seed = (unsigned int)atoi(argv[i+1]); }
         else { error_usage(); }
     }
     printf("+-----------------------+----------------------------------------------------+\n");
@@ -2592,6 +2611,8 @@ int main(int argc, char *argv[]) {
            (BANDWIDTH_FC1 > 0 && BANDWIDTH_FC2 > 0) ? "BANDED (FC1 + FC2)" :
            (BANDWIDTH_FC1 > 0) ? "BANDED (FC1 only)" : "BANDED (FC2 only)");
     printf("| Sort window           | %-50d |\n", SORT_WINDOW);
+    printf("| test data pattern     | %-50s |\n", test_data_pattern == NULL ? "NULL" : test_data_pattern);
+    printf("| rng_seed              | %-50u |\n", rng_seed);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // set up the device
@@ -2634,14 +2655,23 @@ int main(int argc, char *argv[]) {
 
     // build DataLoaders for both train and val
     DataLoader train_loader, val_loader;
-    dataloader_init(&train_loader, train_data_pattern, B, T, 0, 1, 1);
-    dataloader_init(&val_loader, val_data_pattern, B, T, 0, 1, 0);
+    dataloader_init(&train_loader, train_data_pattern, B, T, 0, 1, 1, rng_seed);
+    dataloader_init(&val_loader, val_data_pattern, B, T, 0, 1, 0, rng_seed);
     int train_num_batches = train_loader.num_tokens / (B*T); // 1 epoch worth of batches
     if (max_steps > 0) { train_num_batches = max_steps; }  // override with max_steps if provided
     int val_num_batches = val_loader.num_tokens / (B*T);
     if (val_num_batches > val_max_steps) { val_num_batches = val_max_steps; }
+    DataLoader test_loader;
+    int test_num_batches = 0;
+    int has_test_set = (test_data_pattern != NULL);
+    if (has_test_set) {
+        dataloader_init(&test_loader, test_data_pattern, B, T, 0, 1, 0, rng_seed);
+        test_num_batches = test_loader.num_tokens / (B*T);
+        if (test_num_batches > val_max_steps) { test_num_batches = val_max_steps; }
+    }
     printf("| train_num_batches     | %-50d |\n", train_num_batches);
     printf("| val_num_batches       | %-50d |\n", val_num_batches);
+    printf("| test_num_batches      | %-50d |\n", test_num_batches);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // print model parameter allocations from gpt2_build_from_checkpoint down here to not mess up our table above
@@ -2656,13 +2686,15 @@ int main(int argc, char *argv[]) {
     tokenizer_init(&tokenizer, "gpt2_tokenizer.bin");
 
     // some memory for generating samples from the model
-    unsigned long long rng_state = 1337;
+    unsigned long long rng_state = rng_seed;
     int* gen_tokens = (int*)mallocCheck(B * T * sizeof(int));
     float* cpu_logits = (float*)mallocCheck(model.config.vocab_size * sizeof(float));
 
     // train
     struct timespec start, end;
     double total_sum_iteration_time_s = 0.0;
+    float train_loss_sum = 0.0f;
+    int train_loss_count = 0;
     for (int step = 0; step <= train_num_batches; step++) {
         int last_step = step == train_num_batches;
 
@@ -2676,8 +2708,14 @@ int main(int argc, char *argv[]) {
                 val_loss += model.mean_loss;
             }
             val_loss /= val_num_batches;
-            printf("val loss %f\n", val_loss);
+            float avg_train = (train_loss_count > 0) ? train_loss_sum / train_loss_count : val_loss;
+            float gap = val_loss - avg_train;
+            printf("val loss %f (avg_train %f, gap %+f)\n", val_loss, avg_train, gap);
             logger_log_val(&logger, step, val_loss);
+            logger_log_eval(&logger, step, val_loss, avg_train, gap);
+            // reset running average for next interval
+            train_loss_sum = 0.0f;
+            train_loss_count = 0;
         }
 
         // save checkpoint if configured
@@ -2726,7 +2764,21 @@ int main(int argc, char *argv[]) {
         // but also after the very last iteration. so we loop for step <= train_num_batches
         // instead of just < train_num_batches (one extra due to <=), only to do
         // the validation/sampling one last time, and then we break right here as we're done.
-        if (last_step) { break; }
+        if (last_step) {
+            if (has_test_set) {
+                float test_loss = 0.0f;
+                dataloader_reset(&test_loader);
+                for (int i = 0; i < test_num_batches; i++) {
+                    dataloader_next_batch(&test_loader);
+                    gpt2_forward(&model, test_loader.inputs, test_loader.targets, B, T);
+                    test_loss += model.mean_loss;
+                }
+                test_loss /= test_num_batches;
+                printf("test loss %f\n", test_loss);
+                logger_log_test(&logger, step, test_loss);
+            }
+            break;
+        }
 
         // do a training step
         clock_gettime(CLOCK_MONOTONIC, &start);
@@ -2742,6 +2794,8 @@ int main(int argc, char *argv[]) {
         int tokens_per_second = (B * T) / time_elapsed_s;
         printf("step %4d/%d: train loss %f (%f ms, %d tok/s)\n", step + 1, train_num_batches, model.mean_loss, time_elapsed_s * 1000, tokens_per_second);
         logger_log_train(&logger, step, model.mean_loss);
+        train_loss_sum += model.mean_loss;
+        train_loss_count++;
 
         // save snapshot for visualization
         if (snapshot_dir != NULL && snapshot_every > 0 &&
@@ -2760,6 +2814,7 @@ int main(int argc, char *argv[]) {
     // free
     dataloader_free(&train_loader);
     dataloader_free(&val_loader);
+    if (has_test_set) { dataloader_free(&test_loader); }
     tokenizer_free(&tokenizer);
     gpt2_free(&model);
     free(cpu_logits);

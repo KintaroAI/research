@@ -89,4 +89,7 @@ experiment_asymmetric: train data
 	@echo "Training BANDED FC1=128 FC2=512..."
 	./train -e model.bin -c checkpoint_asym.bin -1 128 -2 512 -n 2000 -b 16 -t 256 -v 200 -s 500 -o log_banded_asym.txt
 
-.PHONY: all clean setup venv data model test test_all experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric
+compare:
+	./venv/bin/python compare_runs.py $(LOGS)
+
+.PHONY: all clean setup venv data model test test_all experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric compare

@@ -145,7 +145,8 @@ void dataloader_init(DataLoader *loader,
                      size_t T,
                      int process_rank,
                      int num_processes,
-                     int should_shuffle) {
+                     int should_shuffle,
+                     unsigned int seed) {
     loader->process_rank = process_rank;
     loader->num_processes = num_processes;
     loader->B = B;
@@ -169,7 +170,7 @@ void dataloader_init(DataLoader *loader,
 
     if (should_shuffle) {
         mt19937_state shuffle_rng;
-        manual_seed(&shuffle_rng, 42 + process_rank);
+        manual_seed(&shuffle_rng, seed + process_rank);
         loader->shuffle_rng = shuffle_rng;
         loader->shard_indices = (int*)mallocCheck(loader->glob_result.gl_pathc * sizeof(int));
         init_identity_permutation(loader->shard_indices, (int) loader->glob_result.gl_pathc);
