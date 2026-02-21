@@ -3,9 +3,13 @@ Create a small GPT model from scratch for training.
 Outputs model.bin in llm.c checkpoint format.
 
 Usage:
-    python create_model.py
+    python create_model.py                              # TinyStories default
+    python create_model.py --preset grokking --prime 97 -o model_grok.bin
+    python create_model.py --block-size 128 --n-layer 6 -o custom.bin
 
-Edit GPTConfig to change model size.
+Presets:
+    tinystories  block_size=256, vocab=50257, n_layer=4, n_head=4, n_embd=128
+    grokking     block_size=8, vocab=P+4, n_layer=2, n_head=4, n_embd=128
 """
 import struct
 import torch
@@ -221,28 +225,52 @@ def write_model(model, filename):
     else:
         print(f"✗ Size mismatch!")
 
+PRESETS = {
+    'tinystories': dict(block_size=256, vocab_size=50257, n_layer=4, n_head=4, n_embd=128),
+    'grokking':    dict(block_size=8,   vocab_size=None,  n_layer=2, n_head=4, n_embd=128),
+}
+
 if __name__ == "__main__":
-    # Create small config
-    config = GPTConfig(
-        block_size=256,
-        vocab_size=50257,
-        n_layer=4,
-        n_head=4,
-        n_embd=128
-    )
-    
-    # Count params
+    import argparse
+    parser = argparse.ArgumentParser(description="Create a small GPT model checkpoint")
+    parser.add_argument("--preset", choices=list(PRESETS.keys()), default="tinystories",
+                        help="Preset config (default: tinystories)")
+    parser.add_argument("--prime", type=int, default=97,
+                        help="Prime for grokking preset, sets vocab=P+4 (default: 97)")
+    parser.add_argument("--block-size", type=int, default=None, help="Sequence length")
+    parser.add_argument("--vocab-size", type=int, default=None, help="Vocabulary size")
+    parser.add_argument("--n-layer", type=int, default=None, help="Number of layers")
+    parser.add_argument("--n-head", type=int, default=None, help="Number of attention heads")
+    parser.add_argument("--n-embd", type=int, default=None, help="Embedding dimension")
+    parser.add_argument("-o", "--output", type=str, default="model.bin",
+                        help="Output filename (default: model.bin)")
+    args = parser.parse_args()
+
+    # Start from preset
+    preset = dict(PRESETS[args.preset])
+    if args.preset == 'grokking' and preset['vocab_size'] is None:
+        preset['vocab_size'] = args.prime + 4
+
+    # Explicit flags override preset
+    if args.block_size is not None: preset['block_size'] = args.block_size
+    if args.vocab_size is not None: preset['vocab_size'] = args.vocab_size
+    if args.n_layer is not None:    preset['n_layer'] = args.n_layer
+    if args.n_head is not None:     preset['n_head'] = args.n_head
+    if args.n_embd is not None:     preset['n_embd'] = args.n_embd
+
+    config = GPTConfig(**preset)
+
     model = GPT(config)
     n_params = sum(p.numel() for p in model.parameters())
-    
-    print(f"Model config:")
+    padded_vocab = ((config.vocab_size + 63) // 64) * 64
+
+    print(f"Model config ({args.preset}):")
     print(f"  block_size: {config.block_size}")
-    print(f"  vocab_size: {config.vocab_size}")
-    print(f"  n_layer: {config.n_layer}")
-    print(f"  n_head: {config.n_head}")
-    print(f"  n_embd: {config.n_embd}")
+    print(f"  vocab_size: {config.vocab_size} (padded to {padded_vocab})")
+    print(f"  n_layer:    {config.n_layer}")
+    print(f"  n_head:     {config.n_head}")
+    print(f"  n_embd:     {config.n_embd}")
     print(f"  Parameters: {n_params:,} ({n_params/1e6:.1f}M)")
     print()
-    
-    # Save model
-    write_model(model, "model.bin")
+
+    write_model(model, args.output)
