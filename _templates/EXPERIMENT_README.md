@@ -1,9 +1,8 @@
 # Experiment: [Name]
 
 **Date:** YYYY-MM-DD
-**Status:** 🔬 In Progress | ✅ Complete | ❌ Failed | ⏸️ Paused
-**Author:**
-**Source:** `exp/NNNNN` (`<commit-hash>`)
+**Status:** In Progress
+**Source:** *tagged on completion as `exp/NNNNN`*
 
 ## Goal
 
@@ -27,18 +26,13 @@ Describe the experimental approach.
 Key hyperparameters and settings:
 
 ```yaml
-# Or reference config/experiment.yaml
 param1: value1
 param2: value2
 ```
 
-## Reproduction
+## Log
 
-```bash
-cd llm-fundamentals/dev
-./build_from_tag.sh exp/NNNNN .
-# ... exact data gen + training commands ...
-```
+Record progress, intermediate results, and observations as the experiment runs.
 
 ## Results
 
@@ -49,10 +43,7 @@ cd llm-fundamentals/dev
 | Metric 1 | X.XX | Y.YY | |
 
 ### Visualizations
-<!-- Include or reference plots in results/ -->
-
-### Raw Output
-See `results/` for detailed outputs.
+<!-- Include or reference plots -->
 
 ## Analysis
 
@@ -68,7 +59,3 @@ What do the results mean? Did they match our hypothesis?
 
 - [ ] Follow-up experiment idea 1
 - [ ] Follow-up experiment idea 2
-
-## Notes
-
-Any additional observations, gotchas, or things to remember.

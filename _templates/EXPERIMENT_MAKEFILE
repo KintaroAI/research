@@ -1,0 +1,30 @@
+# Makefile for experiment NNNNN-experiment-name
+#
+# Reproduces the full experiment from a clean state.
+# Assumes llm-fundamentals/dev/ has been built from the exp/NNNNN tag:
+#   cd llm-fundamentals/dev && ./build_from_tag.sh exp/NNNNN .
+#
+# Usage:
+#   make setup    — generate data and model
+#   make run      — run training
+#   make all      — setup + run
+
+DEV = ../dev
+
+.PHONY: all setup data model run
+
+all: setup run
+
+setup: data model
+
+data:
+	# Example: cd $(DEV) && python gen_modular_data.py --op add --mod 97
+	@echo "TODO: fill in data generation commands"
+
+model:
+	# Example: cd $(DEV) && python create_model.py --preset grokking --prime 97
+	@echo "TODO: fill in model creation commands"
+
+run:
+	# Example: cd $(DEV) && ./train -e model.bin -b 64 -n 10000
+	@echo "TODO: fill in training commands"
