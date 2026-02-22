@@ -124,10 +124,13 @@ python wandb_train.py --project gpt2-cuda --group seq-eval --name eval4-sq_sum -
     -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_sq_sum
 ```
 
-**How eval-only works:** With `-n 0`, the training loop runs step=0 which is
-`last_step=true`, so it does val eval and exits. We point `-j` at each task's val
-data to get the loss. The `-p 4` flag ensures loss is computed only at the answer
-position (matching training). No C changes needed.
+**How eval-only works:** With `-n 0`, `max_steps` doesn't override
+`train_num_batches` (the check is `max_steps > 0`), so the loop runs a full
+epoch. However, val eval runs at step 0 before any training — this first
+`val loss` line is the eval result. For small datasets (grokking/formal tasks)
+the loop finishes quickly. We point `-j` at each task's val data to get the
+loss. The `-p 4` flag ensures loss is computed only at the answer position
+(matching training). No C changes needed.
 
 ### Step 4: Record results
 
@@ -364,14 +367,6 @@ Key metrics (same interpretation as Phase 2a):
 - **Diagonal**: learning ability (should reach low loss)
 - **Below diagonal**: retention (should stay low if representations are stable)
 - **Forgetting**: increase in a task's val loss between phases
-
----
-
-## Phase 1: TinyStories
-
-Natural language generalization on TinyStories (train/val/test splits).
-See [GENERALIZATION_PROTOCOL.md](GENERALIZATION_PROTOCOL.md) for the full
-procedure including multi-seed averaging and matched-train-loss comparisons.
 
 ---
 

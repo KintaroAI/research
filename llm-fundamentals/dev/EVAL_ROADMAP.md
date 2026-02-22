@@ -48,15 +48,15 @@ sequence, evaluate retention) is now the primary eval for architectural comparis
 
 **See:** [EVAL.md](EVAL.md) Phase 2a for the full sequential evaluation protocol.
 
-### 2b. Formal language tasks
+### 2b. Formal language tasks -- DONE
 
-- **Parity:** sequence of 0/1 tokens, predict parity of the sequence
-- **Copy/reverse:** input sequence followed by separator, model must reproduce/reverse
-- **Majority:** predict the most common token in a sequence
+`gen_formal_data.py` generates binary data for 4 tasks (parity, copy, reverse,
+majority) with exhaustive enumeration and 50/50 train/val split. The `-P` flag
+enables multi-position loss for copy/reverse. Experiment 00015 validated standalone
+learnability: copy, reverse, and majority are learnable; parity-8 does not grok
+in 50k steps. The sequential eval protocol is documented in EVAL.md Phase 2b.
 
-**Implementation:** Same approach — Python data generator, .bin output, task-position
-masking for the answer token(s). These test whether architectural changes affect the
-model's ability to learn specific algorithmic primitives.
+**See:** [EVAL.md](EVAL.md) Phase 2b for the full sequential evaluation protocol.
 
 ### 2c. In-context learning probes
 
@@ -129,7 +129,7 @@ existing test-set evaluation loop.
 |----------|------|--------|-----|--------|
 | 1 | 2a. Modular arithmetic | **Done** | Direct grokking measurement, sequential eval protocol | Small |
 | 2 | 1a. Held-out domain perplexity | **Done** | Easy win, just need more eval data | Small |
-| 3 | 2b. Formal language tasks | Not started | Controlled generalization measurement | Small |
+| 3 | 2b. Formal language tasks | **Done** | Controlled generalization measurement | Small |
 | 4 | 3a. Scaling curves | Partial | Most principled architecture comparison | Medium |
 | 5 | 1b. Compression ratio | Not started | Novel metric, minimal code | Small |
 | 6 | 2c. ICL probes | Not started | Tests emergent capability | Medium |
