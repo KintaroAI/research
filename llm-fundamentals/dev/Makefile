@@ -45,6 +45,10 @@ test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint
 
 clean:
 	rm -f train generate test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer
+	rm -f checkpoint*.bin checkpoint*.bin.sort model*.bin
+	rm -f log_*.txt
+	rm -f gpt2_124M*.bin gpt2_tokenizer.bin
+	rm -rf data/
 
 # Setup: create venv and prepare data
 setup: venv data

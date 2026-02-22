@@ -16,6 +16,7 @@ If wandb is not installed, prints a warning and runs the command without logging
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -133,6 +134,7 @@ def run(wandb_args, train_cmd):
             tags=wandb_args.tags,
             entity=wandb_args.entity,
             config={'command': ' '.join(train_cmd)},
+            dir=os.environ.get('WANDB_DIR', os.path.expanduser('~/.local/share/wandb')),
             settings=wandb.Settings(disable_git=True),
             save_code=False,
         )
