@@ -45,6 +45,7 @@ cublasHandle_t cublas_handle;
 namespace cg = cooperative_groups;
 
 int SORT_WINDOW = 0;  // Sort layer window size, 0 = disabled
+int EMBED_BLEND_WINDOW = 0;  // Embed blend window size, 0 = disabled
 
 // ----------------------------------------------------------------------------
 // Sort layer forward kernel (inference only, no backward needed)
@@ -115,6 +116,48 @@ void sort_forward(float* out, float* sort_att, const float* inp,
     size_t shared_mem = num_warps_per_block * W * sizeof(float);
     sort_forward_kernel<<<grid_size, block_size, shared_mem>>>(
         out, sort_att, inp, alpha, inv_tau, B, T, C, W);
+    cudaCheck(cudaGetLastError());
+}
+
+// ----------------------------------------------------------------------------
+// Embed blend forward kernel (inference only)
+
+__global__ void embed_blend_forward_kernel(
+    float* out, const float* inp, const float* w, float alpha,
+    int B, int T, int C, int W
+) {
+    cg::thread_block block = cg::this_thread_block();
+    cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+
+    extern __shared__ float shared[];
+    float* sw = shared;
+    if (threadIdx.x < W) { sw[threadIdx.x] = w[threadIdx.x]; }
+    __syncthreads();
+
+    int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+    if (idx >= B * T) { return; }
+
+    int t = idx % T;
+    int w_len = (t + 1 < W) ? (t + 1) : W;
+
+    float* out_bt = out + idx * C;
+    for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+        float blend = 0.0f;
+        for (int d = 0; d < w_len; d++) {
+            blend += sw[d] * inp[(idx - d) * C + c];
+        }
+        out_bt[c] = (1.0f - alpha) * inp[idx * C + c] + alpha * blend;
+    }
+}
+
+void embed_blend_forward(float* out, const float* inp, const float* w_gpu,
+                         float alpha, int B, int T, int C, int W) {
+    const int block_size = 512;
+    const int num_warps_per_block = block_size / 32;
+    const int grid_size = CEIL_DIV(B * T, num_warps_per_block);
+    size_t shared_mem = W * sizeof(float);
+    embed_blend_forward_kernel<<<grid_size, block_size, shared_mem>>>(
+        out, inp, w_gpu, alpha, B, T, C, W);
     cudaCheck(cudaGetLastError());
 }
 
@@ -421,6 +464,7 @@ typedef struct {
     float* output;
     float* sort_out;  // (L, B, T, C) — only when SORT_WINDOW > 0
     float* sort_att;  // (L, B, T, W) — only when SORT_WINDOW > 0
+    float* embed_blend;  // (B, T, C) — only when EMBED_BLEND_WINDOW > 0
 } ActivationTensors;
 
 typedef struct {
@@ -430,7 +474,7 @@ typedef struct {
     float* params_memory;
     size_t num_parameters;
     ActivationTensors acts;
-    size_t act_sizes[23];
+    size_t act_sizes[24];
     float* acts_memory;
     size_t num_activations;
     int* inputs;
@@ -438,6 +482,8 @@ typedef struct {
     int seq_len;
     // Sort layer params (loaded from sidecar file)
     float* sort_params_memory;  // GPU: 2*L floats (alpha_raw[L], tau_raw[L])
+    // Embed blend params (loaded from sidecar file)
+    float* embed_blend_params_memory;  // GPU: W+1 floats (w_raw[W], alpha_raw)
 } GPT2;
 
 void fill_in_parameter_sizes(size_t* param_sizes, GPT2Config config) {
@@ -512,9 +558,10 @@ void fill_in_activation_sizes(size_t* act_sizes, int B, int T, GPT2Config config
     act_sizes[20] = B * T * Vp;
     act_sizes[21] = (SORT_WINDOW > 0) ? L * B * T * C : 0;            // sort_out
     act_sizes[22] = (SORT_WINDOW > 0) ? (size_t)L * B * T * SORT_WINDOW : 0; // sort_att
+    act_sizes[23] = (EMBED_BLEND_WINDOW > 0) ? B * T * C : 0;       // embed_blend
 }
 
-#define NUM_ACT_TENSORS 23
+#define NUM_ACT_TENSORS 24
 
 float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) {
     size_t num_activations = 0;
@@ -529,7 +576,7 @@ float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes) 
         &acts->qkvr, &acts->att, &acts->attproj, &acts->residual2, &acts->ln2, &acts->ln2_mean,
         &acts->ln2_rstd, &acts->fch, &acts->fch_gelu, &acts->fcproj, &acts->residual3,
         &acts->lnf, &acts->lnf_mean, &acts->lnf_rstd, &acts->output,
-        &acts->sort_out, &acts->sort_att
+        &acts->sort_out, &acts->sort_att, &acts->embed_blend
     };
     float* ptr = acts_memory;
     for (int i = 0; i < NUM_ACT_TENSORS; i++) {
@@ -572,6 +619,7 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->batch_size = 0;
     model->seq_len = 0;
     model->sort_params_memory = NULL;
+    model->embed_blend_params_memory = NULL;
 }
 
 void gpt2_load_sort_params(GPT2 *model, const char* checkpoint_path) {
@@ -613,6 +661,39 @@ void gpt2_load_sort_params(GPT2 *model, const char* checkpoint_path) {
     free(sort_cpu);
 }
 
+void gpt2_load_blend_params(GPT2 *model, const char* checkpoint_path) {
+    char blend_path[512];
+    snprintf(blend_path, sizeof(blend_path), "%s.blend", checkpoint_path);
+    FILE* f = fopen(blend_path, "rb");
+    if (f == NULL) {
+        fprintf(stderr, "Error: embed blend enabled (-G %d) but sidecar file '%s' not found.\n", EMBED_BLEND_WINDOW, blend_path);
+        fprintf(stderr, "Train with -G %d first to generate the sidecar.\n", EMBED_BLEND_WINDOW);
+        exit(1);
+    }
+    int blend_header[2];
+    freadCheck(blend_header, sizeof(int), 2, f);
+    int file_window = blend_header[0];
+    int file_count = blend_header[1];
+    if (file_window != EMBED_BLEND_WINDOW) {
+        printf("Warning: blend sidecar has window=%d, CLI has -G %d. Using sidecar value.\n", file_window, EMBED_BLEND_WINDOW);
+        EMBED_BLEND_WINDOW = file_window;
+    }
+    int W = EMBED_BLEND_WINDOW;
+    if (file_count != W + 1) {
+        fprintf(stderr, "Error: blend sidecar has %d params, expected %d\n", file_count, W + 1);
+        exit(1);
+    }
+    float* blend_cpu = (float*)mallocCheck((W + 1) * sizeof(float));
+    freadCheck(blend_cpu, sizeof(float), W + 1, f);
+    fclose(f);
+    cudaCheck(cudaMalloc((void**)&model->embed_blend_params_memory, (W + 1) * sizeof(float)));
+    cudaCheck(cudaMemcpy(model->embed_blend_params_memory, blend_cpu, (W + 1) * sizeof(float), cudaMemcpyHostToDevice));
+    float alpha = 1.0f / (1.0f + expf(-blend_cpu[W]));
+    printf("Blend params loaded from %s (window=%d, alpha=%.4f, alpha_raw=%.4f)\n",
+           blend_path, W, alpha, blend_cpu[W]);
+    free(blend_cpu);
+}
+
 void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
     if (model->params_memory == NULL) {
         printf("Error: model was not initialized properly.\n");
@@ -644,6 +725,32 @@ void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
 
     encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C);
 
+    // Embed blend: position-based causal blending of embeddings
+    float* layer0_residual = acts.encoded;
+    if (EMBED_BLEND_WINDOW > 0 && model->embed_blend_params_memory != NULL) {
+        int W = EMBED_BLEND_WINDOW;
+        float* blend_params_cpu = (float*)mallocCheck((W + 1) * sizeof(float));
+        cudaCheck(cudaMemcpy(blend_params_cpu, model->embed_blend_params_memory, (W + 1) * sizeof(float), cudaMemcpyDeviceToHost));
+        // Compute softmax(w_raw) on CPU
+        float maxw = blend_params_cpu[0];
+        for (int d = 1; d < W; d++) maxw = fmaxf(maxw, blend_params_cpu[d]);
+        float* w_cpu = (float*)mallocCheck(W * sizeof(float));
+        float sumexp = 0.0f;
+        for (int d = 0; d < W; d++) {
+            w_cpu[d] = expf(blend_params_cpu[d] - maxw);
+            sumexp += w_cpu[d];
+        }
+        for (int d = 0; d < W; d++) w_cpu[d] /= sumexp;
+        float alpha = 1.0f / (1.0f + expf(-blend_params_cpu[W]));
+        // Copy w to GPU (use start of output buffer as scratch)
+        float* w_gpu = acts.output;
+        cudaCheck(cudaMemcpy(w_gpu, w_cpu, W * sizeof(float), cudaMemcpyHostToDevice));
+        embed_blend_forward(acts.embed_blend, acts.encoded, w_gpu, alpha, B, T, C, W);
+        layer0_residual = acts.embed_blend;
+        free(blend_params_cpu);
+        free(w_cpu);
+    }
+
     // Bulk-copy sort params to CPU
     float* sort_params_cpu = NULL;
     if (SORT_WINDOW > 0 && model->sort_params_memory != NULL) {
@@ -654,9 +761,9 @@ void gpt2_forward(GPT2 *model, int* inputs, int B, int T) {
     for (int l = 0; l < L; l++) {
         float* residual;
         if (SORT_WINDOW > 0) {
-            residual = (l == 0) ? acts.encoded : acts.sort_out + (l-1) * B * T * C;
+            residual = (l == 0) ? layer0_residual : acts.sort_out + (l-1) * B * T * C;
         } else {
-            residual = (l == 0) ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+            residual = (l == 0) ? layer0_residual : acts.residual3 + (l-1) * B * T * C;
         }
 
         float* ln1_out = acts.ln1 + l * B * T * C;
@@ -723,6 +830,7 @@ void gpt2_free(GPT2 *model) {
     if (model->acts_memory != NULL) cudaCheck(cudaFree(model->acts_memory));
     if (model->inputs != NULL) cudaCheck(cudaFree(model->inputs));
     if (model->sort_params_memory != NULL) cudaCheck(cudaFree(model->sort_params_memory));
+    if (model->embed_blend_params_memory != NULL) cudaCheck(cudaFree(model->embed_blend_params_memory));
 }
 
 // ----------------------------------------------------------------------------
@@ -763,6 +871,7 @@ void error_usage() {
     fprintf(stderr, "  -p <string> prompt text (default = empty)\n");
     fprintf(stderr, "  -s <int>    random seed (default = time)\n");
     fprintf(stderr, "  -r <int>    sort layer window size (default = 0, disabled)\n");
+    fprintf(stderr, "  -G <int>    embed blend window size (default = 0, disabled)\n");
     exit(1);
 }
 
@@ -782,6 +891,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'p') prompt = argv[i+1];
         else if (argv[i][1] == 's') rng_state = atoll(argv[i+1]);
         else if (argv[i][1] == 'r') SORT_WINDOW = atoi(argv[i+1]);
+        else if (argv[i][1] == 'G') EMBED_BLEND_WINDOW = atoi(argv[i+1]);
         else error_usage();
     }
 
@@ -807,6 +917,9 @@ int main(int argc, char *argv[]) {
     gpt2_build_from_checkpoint(&model, model_path);
     if (SORT_WINDOW > 0) {
         gpt2_load_sort_params(&model, model_path);
+    }
+    if (EMBED_BLEND_WINDOW > 0) {
+        gpt2_load_blend_params(&model, model_path);
     }
     int T = model.config.max_seq_len;
     int V = model.config.vocab_size;

@@ -81,6 +81,7 @@ namespace cg = cooperative_groups;
 int BANDWIDTH_FC1 = 0;   // Bandwidth for FC1 (C -> 4C), 0 = dense
 int BANDWIDTH_FC2 = 0;   // Bandwidth for FC2 (4C -> C), 0 = dense
 int SORT_WINDOW = 0;     // Sort layer window size, 0 = disabled
+int EMBED_BLEND_WINDOW = 0;  // Embed blend window size, 0 = disabled
 
 // Kernel to create banded mask for FC1 weights (up-projection)
 // mask shape: (OC, C) where OC = 4*C
@@ -403,6 +404,137 @@ void sort_backward(float* dinp, float* dalpha_raw, float* dtau_raw,
     sort_backward_kernel<<<grid_size, block_size, shared_mem>>>(
         dinp, dalpha_raw, dtau_raw, dout, inp, sort_att,
         alpha, inv_tau, B, T, C, W);
+    cudaCheck(cudaGetLastError());
+}
+
+// ----------------------------------------------------------------------------
+// Embed blend layer: position-based causal 1D convolution on embeddings
+// Applied once after encoder_forward. Uses positional distance only (no content).
+// Controlled by EMBED_BLEND_WINDOW global (0=disabled, >0=window size).
+// Learnable params: w_raw[W] (softmax → distance weights) and alpha_raw (sigmoid → mix).
+
+__global__ void embed_blend_forward_kernel(
+    float* out,           // (B, T, C) blended output
+    const float* inp,     // (B, T, C) input (encoded embeddings)
+    const float* w,       // (W,) softmax distance weights (precomputed on CPU)
+    float alpha,          // sigmoid(alpha_raw), mixing strength
+    int B, int T, int C, int W
+) {
+    cg::thread_block block = cg::this_thread_block();
+    cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+
+    // Load w into shared memory
+    extern __shared__ float shared[];
+    float* sw = shared;
+    if (threadIdx.x < W) { sw[threadIdx.x] = w[threadIdx.x]; }
+    __syncthreads();
+
+    int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+    if (idx >= B * T) { return; }
+
+    int t = idx % T;
+    int w_len = (t + 1 < W) ? (t + 1) : W; // min(W, t+1) causal positions
+
+    float* out_bt = out + idx * C;
+
+    for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+        float blend = 0.0f;
+        for (int d = 0; d < w_len; d++) {
+            blend += sw[d] * inp[(idx - d) * C + c];
+        }
+        out_bt[c] = (1.0f - alpha) * inp[idx * C + c] + alpha * blend;
+    }
+}
+
+// Embed blend forward launcher
+void embed_blend_forward(float* out, const float* inp, const float* w_gpu,
+                         float alpha, int B, int T, int C, int W) {
+    const int block_size = 512;
+    const int num_warps_per_block = block_size / 32;
+    const int grid_size = CEIL_DIV(B * T, num_warps_per_block);
+    size_t shared_mem = W * sizeof(float);
+    embed_blend_forward_kernel<<<grid_size, block_size, shared_mem>>>(
+        out, inp, w_gpu, alpha, B, T, C, W);
+    cudaCheck(cudaGetLastError());
+}
+
+__global__ void embed_blend_backward_kernel(
+    float* dinp,            // (B, T, C) gradient w.r.t. input (accumulate via atomicAdd)
+    float* dw,              // (W,) gradient w.r.t. softmax weights (atomicAdd)
+    float* dalpha_raw_ptr,  // (1,) gradient w.r.t. alpha_raw (atomicAdd)
+    const float* dout,      // (B, T, C) incoming gradient
+    const float* inp,       // (B, T, C) original input (encoded)
+    const float* w,         // (W,) softmax distance weights (precomputed)
+    float alpha,            // sigmoid(alpha_raw)
+    int B, int T, int C, int W
+) {
+    cg::thread_block block = cg::this_thread_block();
+    cg::thread_block_tile<32> warp = cg::tiled_partition<32>(block);
+
+    // Load w into shared memory
+    extern __shared__ float shared[];
+    float* sw = shared;
+    if (threadIdx.x < W) { sw[threadIdx.x] = w[threadIdx.x]; }
+    __syncthreads();
+
+    int idx = blockIdx.x * warp.meta_group_size() + warp.meta_group_rank();
+    if (idx >= B * T) { return; }
+
+    int t = idx % T;
+    int w_len = (t + 1 < W) ? (t + 1) : W;
+
+    const float* dout_bt = dout + idx * C;
+    const float* inp_bt = inp + idx * C;
+
+    // Phase 1: scatter gradients to dinp + accumulate dalpha
+    float local_dalpha = 0.0f;
+    for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+        float dout_c = dout_bt[c];
+        float inp_c = inp_bt[c];
+
+        // Residual gradient: dinp[t,c] += (1-alpha) * dout[t,c]
+        atomicAdd(&dinp[idx * C + c], (1.0f - alpha) * dout_c);
+
+        // Blend scatter + dalpha accumulation
+        float blend_c = 0.0f;
+        for (int d = 0; d < w_len; d++) {
+            float inp_d_c = inp[(idx - d) * C + c];
+            // dinp[t-d, c] += alpha * w[d] * dout[t,c]
+            atomicAdd(&dinp[(idx - d) * C + c], alpha * sw[d] * dout_c);
+            blend_c += sw[d] * inp_d_c;
+        }
+        local_dalpha += (blend_c - inp_c) * dout_c;
+    }
+
+    // Phase 2: dw[d] = alpha * Σ_c inp[t-d,c] * dout[t,c] (warp reduce per d)
+    for (int d = 0; d < w_len; d++) {
+        float dw_local = 0.0f;
+        for (int c = warp.thread_rank(); c < C; c += warp.size()) {
+            dw_local += inp[(idx - d) * C + c] * dout_bt[c];
+        }
+        dw_local = cg::reduce(warp, dw_local, cg::plus<float>{});
+        if (warp.thread_rank() == 0) {
+            atomicAdd(&dw[d], alpha * dw_local);
+        }
+    }
+
+    // Phase 3: dalpha_raw with sigmoid derivative
+    local_dalpha = cg::reduce(warp, local_dalpha, cg::plus<float>{});
+    if (warp.thread_rank() == 0) {
+        atomicAdd(dalpha_raw_ptr, local_dalpha * alpha * (1.0f - alpha));
+    }
+}
+
+// Embed blend backward launcher
+void embed_blend_backward(float* dinp, float* dw, float* dalpha_raw_ptr,
+                          const float* dout, const float* inp, const float* w_gpu,
+                          float alpha, int B, int T, int C, int W) {
+    const int block_size = 512;
+    const int num_warps_per_block = block_size / 32;
+    const int grid_size = CEIL_DIV(B * T, num_warps_per_block);
+    size_t shared_mem = W * sizeof(float);
+    embed_blend_backward_kernel<<<grid_size, block_size, shared_mem>>>(
+        dinp, dw, dalpha_raw_ptr, dout, inp, w_gpu, alpha, B, T, C, W);
     cudaCheck(cudaGetLastError());
 }
 
@@ -1338,7 +1470,7 @@ float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes
     return params_memory;
 }
 
-#define NUM_ACTIVATION_TENSORS 23
+#define NUM_ACTIVATION_TENSORS 24
 typedef struct {
     float* encoded; // (B, T, C)
     float* ln1; // (L, B, T, C)
@@ -1371,6 +1503,8 @@ typedef struct {
     // sort layer activations (allocated only when SORT_WINDOW > 0)
     float* sort_out; // (L, B, T, C)
     float* sort_att; // (L, B, T, SORT_WINDOW)
+    // embed blend activation (allocated only when EMBED_BLEND_WINDOW > 0)
+    float* embed_blend; // (B, T, C)
 } ActivationTensors;
 
 void fill_in_activation_sizes(size_t* act_sizes, int B, int T, GPT2Config config) {
@@ -1401,6 +1535,7 @@ void fill_in_activation_sizes(size_t* act_sizes, int B, int T, GPT2Config config
     act_sizes[20] = B * T * max(3*C, max(NH*T, Vp)); // output / scratch
     act_sizes[21] = (SORT_WINDOW > 0) ? L * B * T * C : 0; // sort_out
     act_sizes[22] = (SORT_WINDOW > 0) ? (size_t)L * B * T * SORT_WINDOW : 0; // sort_att
+    act_sizes[23] = (EMBED_BLEND_WINDOW > 0) ? B * T * C : 0; // embed_blend
 }
 
 // Backward pass is conceptually quite different from forward, because we can discard
@@ -1444,7 +1579,7 @@ float* malloc_and_point_activations(ActivationTensors* acts, const size_t* act_s
         &acts->att, &acts->attproj, &acts->residual2, &acts->ln2, &acts->ln2_mean,
         &acts->ln2_rstd, &acts->fch, &acts->fch_gelu, &acts->fcproj, &acts->residual3, &acts->lnf,
         &acts->lnf_mean, &acts->lnf_rstd, &acts->losses, &acts->qkvr, &acts->output,
-        &acts->sort_out, &acts->sort_att
+        &acts->sort_out, &acts->sort_att, &acts->embed_blend
     };
     return malloc_and_point(ptrs, act_sizes, NUM_ACTIVATION_TENSORS);
 }
@@ -1498,6 +1633,12 @@ typedef struct {
     float* sort_grads_memory;   // GPU: 2*L floats
     float* sort_m_memory;       // GPU: 2*L floats (AdamW)
     float* sort_v_memory;       // GPU: 2*L floats (AdamW)
+    // Embed blend state (sidecar, like sort layer)
+    int embed_blend_window;
+    float* embed_blend_params_memory;  // GPU: W+1 floats (w_raw[W], alpha_raw)
+    float* embed_blend_grads_memory;   // GPU: W+1 floats
+    float* embed_blend_m_memory;       // GPU: W+1 floats (AdamW)
+    float* embed_blend_v_memory;       // GPU: W+1 floats (AdamW)
 } GPT2;
 
 void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1564,6 +1705,11 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->sort_grads_memory = NULL;
     model->sort_m_memory = NULL;
     model->sort_v_memory = NULL;
+    model->embed_blend_window = 0;
+    model->embed_blend_params_memory = NULL;
+    model->embed_blend_grads_memory = NULL;
+    model->embed_blend_m_memory = NULL;
+    model->embed_blend_v_memory = NULL;
 }
 
 void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
@@ -1608,6 +1754,22 @@ void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
         free(sort_cpu);
         fcloseCheck(sort_file);
         printf("sort params saved to %s (window=%d, %d params)\n", sort_path, SORT_WINDOW, 2 * L);
+    }
+
+    // Save embed blend params as sidecar file if active
+    if (EMBED_BLEND_WINDOW > 0 && model->embed_blend_params_memory != NULL) {
+        char blend_path[512];
+        snprintf(blend_path, sizeof(blend_path), "%s.blend", checkpoint_path);
+        FILE *blend_file = fopenCheck(blend_path, "wb");
+        int W = EMBED_BLEND_WINDOW;
+        int blend_header[2] = { W, W + 1 };  // window size, param count
+        fwrite(blend_header, sizeof(int), 2, blend_file);
+        float* blend_cpu = (float*)mallocCheck((W + 1) * sizeof(float));
+        cudaCheck(cudaMemcpy(blend_cpu, model->embed_blend_params_memory, (W + 1) * sizeof(float), cudaMemcpyDeviceToHost));
+        fwrite(blend_cpu, sizeof(float), W + 1, blend_file);
+        free(blend_cpu);
+        fcloseCheck(blend_file);
+        printf("blend params saved to %s (window=%d, %d params)\n", blend_path, W, W + 1);
     }
 }
 
@@ -1957,6 +2119,27 @@ void init_sort_layer(GPT2 *model) {
     printf("| Sort init             | alpha_raw=-2.0 (sig=0.12), tau_raw=0.0 (T=1.0)    |\n");
 }
 
+void init_embed_blend(GPT2 *model) {
+    int W = EMBED_BLEND_WINDOW;
+    model->embed_blend_window = W;
+
+    // Allocate W+1 floats: w_raw[0..W-1], alpha_raw
+    size_t blend_param_count = W + 1;
+    cudaCheck(cudaMalloc((void**)&model->embed_blend_params_memory, blend_param_count * sizeof(float)));
+
+    // Initialize on CPU: w_raw=0 (uniform softmax), alpha_raw=-2.0 (sigmoid≈0.12)
+    float* init_cpu = (float*)mallocCheck(blend_param_count * sizeof(float));
+    for (int d = 0; d < W; d++) {
+        init_cpu[d] = 0.0f;   // w_raw: uniform after softmax
+    }
+    init_cpu[W] = -2.0f;      // alpha_raw: sigmoid(-2) ≈ 0.12
+    cudaCheck(cudaMemcpy(model->embed_blend_params_memory, init_cpu, blend_param_count * sizeof(float), cudaMemcpyHostToDevice));
+    free(init_cpu);
+
+    printf("| Embed blend           | window=%d, params=%zu (W dist + 1 alpha)           |\n", W, blend_param_count);
+    printf("| Blend init            | w_raw=0 (uniform), alpha_raw=-2.0 (sig=0.12)       |\n");
+}
+
 // ----------------------------------------------------------------------------
 
 void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
@@ -2022,6 +2205,34 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
     float* residual;
     encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C); // encoding goes into residual[0]
 
+    // Embed blend: position-based causal blending of embeddings
+    float* layer0_residual = acts.encoded;
+    if (EMBED_BLEND_WINDOW > 0 && model->embed_blend_params_memory != NULL) {
+        int W = EMBED_BLEND_WINDOW;
+        // Copy raw params to CPU
+        float* blend_params_cpu = (float*)mallocCheck((W + 1) * sizeof(float));
+        cudaCheck(cudaMemcpy(blend_params_cpu, model->embed_blend_params_memory, (W + 1) * sizeof(float), cudaMemcpyDeviceToHost));
+        // Compute softmax(w_raw) on CPU
+        float maxw = blend_params_cpu[0];
+        for (int d = 1; d < W; d++) maxw = fmaxf(maxw, blend_params_cpu[d]);
+        float* w_cpu = (float*)mallocCheck(W * sizeof(float));
+        float sumexp = 0.0f;
+        for (int d = 0; d < W; d++) {
+            w_cpu[d] = expf(blend_params_cpu[d] - maxw);
+            sumexp += w_cpu[d];
+        }
+        for (int d = 0; d < W; d++) w_cpu[d] /= sumexp;
+        // Compute sigmoid(alpha_raw) on CPU
+        float alpha = 1.0f / (1.0f + expf(-blend_params_cpu[W]));
+        // Copy softmax weights to GPU scratch (reuse first W floats of acts.output)
+        float* w_gpu = acts.output;
+        cudaCheck(cudaMemcpy(w_gpu, w_cpu, W * sizeof(float), cudaMemcpyHostToDevice));
+        embed_blend_forward(acts.embed_blend, acts.encoded, w_gpu, alpha, B, T, C, W);
+        layer0_residual = acts.embed_blend;
+        free(blend_params_cpu);
+        free(w_cpu);
+    }
+
     // Bulk-copy sort params to CPU (one memcpy instead of 2*L)
     float* sort_params_cpu = NULL;
     if (SORT_WINDOW > 0 && model->sort_params_memory != NULL) {
@@ -2032,9 +2243,9 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
     for (int l = 0; l < L; l++) {
 
         if (SORT_WINDOW > 0) {
-            residual = l == 0 ? acts.encoded : acts.sort_out + (l-1) * B * T * C;
+            residual = l == 0 ? layer0_residual : acts.sort_out + (l-1) * B * T * C;
         } else {
-            residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+            residual = l == 0 ? layer0_residual : acts.residual3 + (l-1) * B * T * C;
         }
 
         // get the pointers of the weights for this layer
@@ -2161,6 +2372,10 @@ void gpt2_zero_grad(GPT2 *model) {
         int L = model->config.num_layers;
         cudaCheck(cudaMemset(model->sort_grads_memory, 0, 2 * L * sizeof(float)));
     }
+    if (model->embed_blend_grads_memory != NULL) {
+        int W = model->embed_blend_window;
+        cudaCheck(cudaMemset(model->embed_blend_grads_memory, 0, (W + 1) * sizeof(float)));
+    }
 }
 
 void gpt2_backward(GPT2 *model) {
@@ -2200,6 +2415,13 @@ void gpt2_backward(GPT2 *model) {
         cudaCheck(cudaMemset(model->sort_grads_memory, 0, 2 * sort_L * sizeof(float)));
     }
 
+    // lazily allocate embed blend gradient memory
+    if (EMBED_BLEND_WINDOW > 0 && model->embed_blend_grads_memory == NULL && model->embed_blend_params_memory != NULL) {
+        int W = EMBED_BLEND_WINDOW;
+        cudaCheck(cudaMalloc((void**)&model->embed_blend_grads_memory, (W + 1) * sizeof(float)));
+        cudaCheck(cudaMemset(model->embed_blend_grads_memory, 0, (W + 1) * sizeof(float)));
+    }
+
     // convenience shortcuts
     int B = model->batch_size;
     int T = model->seq_len;
@@ -2237,12 +2459,16 @@ void gpt2_backward(GPT2 *model) {
         cudaCheck(cudaMemcpy(sort_params_cpu_bw, model->sort_params_memory, 2 * L * sizeof(float), cudaMemcpyDeviceToHost));
     }
 
+    // Determine layer 0 residual (same as forward)
+    float* bw_layer0_residual = (EMBED_BLEND_WINDOW > 0 && model->embed_blend_params_memory != NULL)
+        ? acts.embed_blend : acts.encoded;
+
     // now backward all the layers
     for (int l = L-1; l >= 0; l--) {
         if (SORT_WINDOW > 0) {
-            residual = l == 0 ? acts.encoded : acts.sort_out + (l-1) * B * T * C;
+            residual = l == 0 ? bw_layer0_residual : acts.sort_out + (l-1) * B * T * C;
         } else {
-            residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+            residual = l == 0 ? bw_layer0_residual : acts.residual3 + (l-1) * B * T * C;
         }
 
         // get the pointers of the weights for this layer
@@ -2329,6 +2555,53 @@ void gpt2_backward(GPT2 *model) {
         // layernorm backward does += to dresidual, so it correctly accumulates gradient for the Attention block above
         layernorm_backward(dresidual, dl_ln1w, dl_ln1b, dl_btc, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B, T, C);
     }
+    // Embed blend backward: convert grad w.r.t. embed_blend to grad w.r.t. encoded
+    if (EMBED_BLEND_WINDOW > 0 && model->embed_blend_params_memory != NULL) {
+        int W = EMBED_BLEND_WINDOW;
+        // Read raw params from GPU and recompute softmax/sigmoid
+        float* blend_params_cpu = (float*)mallocCheck((W + 1) * sizeof(float));
+        cudaCheck(cudaMemcpy(blend_params_cpu, model->embed_blend_params_memory, (W + 1) * sizeof(float), cudaMemcpyDeviceToHost));
+        float maxw = blend_params_cpu[0];
+        for (int d = 1; d < W; d++) maxw = fmaxf(maxw, blend_params_cpu[d]);
+        float* w_cpu = (float*)mallocCheck(W * sizeof(float));
+        float sumexp = 0.0f;
+        for (int d = 0; d < W; d++) {
+            w_cpu[d] = expf(blend_params_cpu[d] - maxw);
+            sumexp += w_cpu[d];
+        }
+        for (int d = 0; d < W; d++) w_cpu[d] /= sumexp;
+        float alpha_raw = blend_params_cpu[W];
+        float alpha = 1.0f / (1.0f + expf(-alpha_raw));
+
+        // Copy softmax weights to GPU scratch
+        float* scratch = acts.output;
+        float* w_gpu = scratch;
+        cudaCheck(cudaMemcpy(w_gpu, w_cpu, W * sizeof(float), cudaMemcpyHostToDevice));
+
+        // dresidual holds grad w.r.t. embed_blend. Copy to temp, zero, backward.
+        float* dout_temp = scratch + W;  // safe: acts.output is B*T*max(3C,NH*T,Vp) >> B*T*C + W
+        cudaCheck(cudaMemcpy(dout_temp, dresidual, B * T * C * sizeof(float), cudaMemcpyDeviceToDevice));
+        cudaCheck(cudaMemset(dresidual, 0, B * T * C * sizeof(float)));
+
+        embed_blend_backward(dresidual,
+                            model->embed_blend_grads_memory,      // dw[0..W-1]
+                            model->embed_blend_grads_memory + W,  // dalpha_raw
+                            dout_temp, acts.encoded, w_gpu, alpha, B, T, C, W);
+
+        // Softmax backward on CPU: convert dw (grad w.r.t. softmax output) to dw_raw
+        float* dw_cpu = (float*)mallocCheck(W * sizeof(float));
+        cudaCheck(cudaMemcpy(dw_cpu, model->embed_blend_grads_memory, W * sizeof(float), cudaMemcpyDeviceToHost));
+        float sum_w_dw = 0.0f;
+        for (int d = 0; d < W; d++) sum_w_dw += w_cpu[d] * dw_cpu[d];
+        for (int d = 0; d < W; d++) {
+            dw_cpu[d] = w_cpu[d] * (dw_cpu[d] - sum_w_dw);
+        }
+        cudaCheck(cudaMemcpy(model->embed_blend_grads_memory, dw_cpu, W * sizeof(float), cudaMemcpyHostToDevice));
+
+        free(blend_params_cpu);
+        free(w_cpu);
+        free(dw_cpu);
+    }
     encoder_backward(grads.wte, grads.wpe, dresidual, model->inputs, B, T, C);
     if (sort_params_cpu_bw != NULL) { free(sort_params_cpu_bw); }
 }
@@ -2401,6 +2674,23 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
                                             beta1_correction, beta2_correction, eps, 0.0f);
     }
 
+    // Embed blend params: separate AdamW with 10x learning rate, no weight decay
+    if (EMBED_BLEND_WINDOW > 0 && model->embed_blend_params_memory != NULL && model->embed_blend_grads_memory != NULL) {
+        size_t blend_n = EMBED_BLEND_WINDOW + 1;
+        if (model->embed_blend_m_memory == NULL) {
+            cudaCheck(cudaMalloc((void**)&model->embed_blend_m_memory, blend_n * sizeof(float)));
+            cudaCheck(cudaMalloc((void**)&model->embed_blend_v_memory, blend_n * sizeof(float)));
+            cudaCheck(cudaMemset(model->embed_blend_m_memory, 0, blend_n * sizeof(float)));
+            cudaCheck(cudaMemset(model->embed_blend_v_memory, 0, blend_n * sizeof(float)));
+        }
+        int blend_blocks = CEIL_DIV(blend_n, 512);
+        adamw_kernel2<<<blend_blocks, 512>>>(model->embed_blend_params_memory, model->embed_blend_grads_memory,
+                                             model->embed_blend_m_memory, model->embed_blend_v_memory,
+                                             blend_n,
+                                             learning_rate * 10.0f, beta1, beta2,
+                                             beta1_correction, beta2_correction, eps, 0.0f);
+    }
+
     cudaCheck(cudaGetLastError());
 }
 
@@ -2421,6 +2711,10 @@ void gpt2_free(GPT2 *model) {
     if (model->sort_grads_memory != NULL) { cudaCheck(cudaFree(model->sort_grads_memory)); }
     if (model->sort_m_memory != NULL) { cudaCheck(cudaFree(model->sort_m_memory)); }
     if (model->sort_v_memory != NULL) { cudaCheck(cudaFree(model->sort_v_memory)); }
+    if (model->embed_blend_params_memory != NULL) { cudaCheck(cudaFree(model->embed_blend_params_memory)); }
+    if (model->embed_blend_grads_memory != NULL) { cudaCheck(cudaFree(model->embed_blend_grads_memory)); }
+    if (model->embed_blend_m_memory != NULL) { cudaCheck(cudaFree(model->embed_blend_m_memory)); }
+    if (model->embed_blend_v_memory != NULL) { cudaCheck(cudaFree(model->embed_blend_v_memory)); }
 }
 
 #ifndef TESTING
@@ -2533,6 +2827,7 @@ void error_usage() {
     fprintf(stderr, "  -1 <int>    FC1 bandwidth for banded sparsity (default = 0, dense)\n");
     fprintf(stderr, "  -2 <int>    FC2 bandwidth for banded sparsity (default = 0, dense)\n");
     fprintf(stderr, "  -r <int>    sort layer window size (default = 0, disabled)\n");
+    fprintf(stderr, "  -G <int>    embed blend window size (default = 0, disabled)\n");
     fprintf(stderr, "  -x <string> test data filename pattern (default = NULL, no test set)\n");
     fprintf(stderr, "  -q <int>    RNG seed for reproducibility (default = 1337)\n");
     exit(EXIT_FAILURE);
@@ -2593,6 +2888,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == '1') { BANDWIDTH_FC1 = atoi(argv[i+1]); }
         else if (argv[i][1] == '2') { BANDWIDTH_FC2 = atoi(argv[i+1]); }
         else if (argv[i][1] == 'r') { SORT_WINDOW = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'G') { EMBED_BLEND_WINDOW = atoi(argv[i+1]); }
         else if (argv[i][1] == 'x') { test_data_pattern = argv[i+1]; }
         else if (argv[i][1] == 'q') { rng_seed = (unsigned int)atoi(argv[i+1]); }
         else { error_usage(); }
@@ -2631,6 +2927,7 @@ int main(int argc, char *argv[]) {
            (BANDWIDTH_FC1 > 0 && BANDWIDTH_FC2 > 0) ? "BANDED (FC1 + FC2)" :
            (BANDWIDTH_FC1 > 0) ? "BANDED (FC1 only)" : "BANDED (FC2 only)");
     printf("| Sort window           | %-50d |\n", SORT_WINDOW);
+    printf("| Embed blend window    | %-50d |\n", EMBED_BLEND_WINDOW);
     printf("| test data pattern     | %-50s |\n", test_data_pattern == NULL ? "NULL" : test_data_pattern);
     printf("| rng_seed              | %-50u |\n", rng_seed);
     printf("+-----------------------+----------------------------------------------------+\n");
@@ -2671,6 +2968,10 @@ int main(int argc, char *argv[]) {
     // Initialize sort layer if enabled
     if (SORT_WINDOW > 0) {
         init_sort_layer(&model);
+    }
+    // Initialize embed blend layer if enabled
+    if (EMBED_BLEND_WINDOW > 0) {
+        init_embed_blend(&model);
     }
     printf("+-----------------------+----------------------------------------------------+\n");
 
