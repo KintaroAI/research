@@ -130,6 +130,43 @@ val evaluation frequency). The gap is stable from step 20k onward, confirming
 the persistent-damage pattern: the non-learnable pull continuously distorts wte,
 and the model cannot compensate.
 
+### Generation quality
+
+Ran `./generate -e <checkpoint> -n 256 -p "Once upon a time"` on all three:
+
+**Baseline** — Coherent TinyStories output. Clean narrative structure with
+dialogue, character names, and proper story arcs.
+
+> Once upon a time, a cheerful dog named Max lived close to a big grill.
+> Every day, he would sit by the grill and watch the sun rise. Max was very
+> happy. One sunny day, Max saw a little girl named Lily outside the grill...
+
+**Blend G8** — Garbled and incoherent. "The battery felt like a layer of
+smiling", "wrongv fingers scraped", "grumpy GPA none his claybr 06 way".
+The blend layer modifies embeddings before the transformer stack, but
+`./generate` doesn't load the `.blend` sidecar params — so the model runs
+without the transform it was trained with. The downstream layers expect
+blended embeddings and produce nonsense without them.
+
+> Once upon a long car was shiny and it could go super fast! Every morning,
+> the car were very close. The battery felt like a layer of smiling...
+
+**Hebbian H4** — Surprisingly coherent despite higher val loss. Clear story
+with dialogue and a moral ending. The Hebbian pull only runs during training
+(not inference), so `./generate` uses the checkpoint weights directly — the
+model learned to produce good outputs *despite* the pull distortion during
+training.
+
+> One day, a boy named Tim found a pair of scissors. He loved to cut things.
+> But his mom saw him and said, "Tim, please don't cut things, pause. You can
+> play with your toy later."...
+
+**Takeaway:** Blend-G8's lower val loss doesn't translate to better generation
+because the blend transform is missing at inference time. This is a deployment
+gap — the blend layer would need to be integrated into `./generate` (loading
+the `.blend` sidecar) to realize its val loss advantage. Hebbian's weights are
+self-contained, so generation works correctly despite the training-time pull.
+
 ### Final ordering
 
 **blend < baseline < hebbian** (lower is better)
@@ -151,7 +188,8 @@ than Hebbian), but the baseline-vs-blend ordering is reversed.
 
 ## Next Steps
 
+- [ ] Add blend layer support to `./generate` (load `.blend` sidecar, apply blend before transformer)
+- [ ] Re-test blend-G8 generation quality with blend-aware inference
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
-- [ ] Investigate whether the blend advantage is robust to val evaluation frequency
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
 - [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
