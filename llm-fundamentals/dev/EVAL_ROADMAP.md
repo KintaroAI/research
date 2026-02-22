@@ -10,16 +10,17 @@ Each item is scoped for implementation in llm.c/CUDA with minimal dependencies.
 We already have train/val/test splits on TinyStories. The next step is evaluating on
 *different distributions* than the training data.
 
-### 1a. Held-out domain perplexity
+### 1a. Held-out domain perplexity -- DONE
 
-Train on TinyStories, evaluate perplexity on:
-- TinyShakespeare (already have the data)
-- A subset of OpenWebText or FineWeb (different register/domain)
-- Simple Wikipedia or similar constrained text
+Train on TinyStories, evaluate perplexity on different text distributions using
+existing eval-only mode (`-n 0 -v 1 -j <heldout.bin>`). No C changes needed.
 
-**Implementation:** Add a `-z <pattern>` flag for "eval-only data" that runs a forward
-pass over the given data at the end of training (like `-x` but for arbitrary held-out sets).
-Generalize the test eval loop to accept multiple eval sets. Log as `s:STEP dom:NAME dml:LOSS`.
+Domains: TinyShakespeare (~300K tokens), WikiText-2 test (~240K tokens).
+
+**Data:** `python prepare_heldout.py` produces `data/heldout/shakespeare.bin`
+and `data/heldout/wikitext2.bin`.
+
+**See:** [EVAL.md](EVAL.md) Phase 1a for the full evaluation protocol.
 
 ### 1b. Compression ratio metric
 
@@ -127,7 +128,7 @@ existing test-set evaluation loop.
 | Priority | Item | Status | Why | Effort |
 |----------|------|--------|-----|--------|
 | 1 | 2a. Modular arithmetic | **Done** | Direct grokking measurement, sequential eval protocol | Small |
-| 2 | 1a. Held-out domain perplexity | Not started | Easy win, just need more eval data | Small |
+| 2 | 1a. Held-out domain perplexity | **Done** | Easy win, just need more eval data | Small |
 | 3 | 2b. Formal language tasks | Not started | Controlled generalization measurement | Small |
 | 4 | 3a. Scaling curves | Partial | Most principled architecture comparison | Medium |
 | 5 | 1b. Compression ratio | Not started | Novel metric, minimal code | Small |

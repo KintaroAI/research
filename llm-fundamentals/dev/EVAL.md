@@ -171,6 +171,70 @@ procedure including multi-seed averaging and matched-train-loss comparisons.
 
 ---
 
+## Phase 1a: Held-Out Domain Perplexity
+
+Evaluate a TinyStories-trained checkpoint on text from different distributions.
+Tests whether architectural variants generalize beyond the training domain.
+No C changes needed — uses existing eval-only mode (`-n 0 -v 1`).
+
+### Step 1: Prepare held-out data
+
+```bash
+python prepare_heldout.py
+```
+
+Produces:
+- `data/heldout/shakespeare.bin` — TinyShakespeare (~300K tokens)
+- `data/heldout/wikitext2.bin` — WikiText-2 test set (~240K tokens)
+
+The script prints token counts. Use them to compute B:
+`B = floor(num_tokens / T) - 1`
+
+### Step 2: Eval a checkpoint on each domain
+
+The `-i` flag is required by the binary but unused with `-n 0`. Point `-j` at
+the held-out data to get cross-domain val loss. Perplexity = exp(val_loss).
+
+```bash
+# In-domain baseline (TinyStories val)
+./train -e checkpoint.bin -n 0 -v 1 -t 256 -b 16 \
+    -i data/tinystories/TinyStories_train.bin \
+    -j data/tinystories/TinyStories_val.bin
+
+# Cross-domain: Shakespeare
+./train -e checkpoint.bin -n 0 -v 1 -t 256 -b 16 \
+    -i data/tinystories/TinyStories_train.bin \
+    -j data/heldout/shakespeare.bin
+
+# Cross-domain: WikiText-2
+./train -e checkpoint.bin -n 0 -v 1 -t 256 -b 16 \
+    -i data/tinystories/TinyStories_train.bin \
+    -j data/heldout/wikitext2.bin
+```
+
+Adjust `-b` based on token counts if needed (B*T+1 must fit in the val file).
+
+### Step 3: Record results
+
+| Domain | Val Loss | Perplexity |
+|--------|----------|------------|
+| TinyStories (in-domain) | ___ | ___ |
+| TinyShakespeare | ___ | ___ |
+| WikiText-2 | ___ | ___ |
+
+### Comparing architectures
+
+Run the eval for each variant's checkpoint. Lower held-out perplexity = better
+cross-domain generalization.
+
+| Domain | Dense | Banded-256 | ... |
+|--------|-------|------------|-----|
+| TinyStories (in-domain) | ___ | ___ | |
+| TinyShakespeare | ___ | ___ | |
+| WikiText-2 | ___ | ___ | |
+
+---
+
 ## Phase 2b: Sequential Formal Language Tasks
 
 Tests catastrophic forgetting across structurally different algorithmic tasks:
