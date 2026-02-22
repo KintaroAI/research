@@ -132,7 +132,9 @@ and the model cannot compensate.
 
 ### Generation quality
 
-Ran `./generate -e <checkpoint> -n 256 -p "Once upon a time"` on all three:
+Ran `./generate -e <checkpoint> -n 256 -p "Once upon a time"` on all three.
+Blend requires `-G 8` so `./generate` loads the `.blend` sidecar and applies
+the blend transform at inference time.
 
 **Baseline** — Coherent TinyStories output. Clean narrative structure with
 dialogue, character names, and proper story arcs.
@@ -141,31 +143,28 @@ dialogue, character names, and proper story arcs.
 > Every day, he would sit by the grill and watch the sun rise. Max was very
 > happy. One sunny day, Max saw a little girl named Lily outside the grill...
 
-**Blend G8** — Garbled and incoherent. "The battery felt like a layer of
-smiling", "wrongv fingers scraped", "grumpy GPA none his claybr 06 way".
-The blend layer modifies embeddings before the transformer stack, but
-`./generate` doesn't load the `.blend` sidecar params — so the model runs
-without the transform it was trained with. The downstream layers expect
-blended embeddings and produce nonsense without them.
+**Blend G8** (`-G 8`) — Coherent output, comparable quality to baseline.
+Slightly quirkier narrative choices but well-formed grammar and story structure.
 
-> Once upon a long car was shiny and it could go super fast! Every morning,
-> the car were very close. The battery felt like a layer of smiling...
+> One day, Alice and her mom washed their hands in the sink. "Our sink is
+> six." cried Alice. Her mom calmly whispered, "I have to be careful with
+> heat in the sink's hand, it's not what you have done here."...
 
-**Hebbian H4** — Surprisingly coherent despite higher val loss. Clear story
-with dialogue and a moral ending. The Hebbian pull only runs during training
-(not inference), so `./generate` uses the checkpoint weights directly — the
-model learned to produce good outputs *despite* the pull distortion during
-training.
+Note: running blend-G8 *without* `-G 8` produces garbled output because
+the model was trained expecting blended embeddings. The `-G` flag is required
+to load the `.blend` sidecar and apply the transform at inference time.
+
+**Hebbian H4** — Coherent output with clear dialogue and a moral ending.
+The Hebbian pull only runs during training (not inference), so `./generate`
+uses the checkpoint weights directly — no special flag needed.
 
 > One day, a boy named Tim found a pair of scissors. He loved to cut things.
 > But his mom saw him and said, "Tim, please don't cut things, pause. You can
 > play with your toy later."...
 
-**Takeaway:** Blend-G8's lower val loss doesn't translate to better generation
-because the blend transform is missing at inference time. This is a deployment
-gap — the blend layer would need to be integrated into `./generate` (loading
-the `.blend` sidecar) to realize its val loss advantage. Hebbian's weights are
-self-contained, so generation works correctly despite the training-time pull.
+All three produce coherent TinyStories text. Subjective quality is similar;
+the val loss differences (~0.02–0.04) are too small to produce obvious
+generation quality differences in short samples.
 
 ### Final ordering
 
@@ -188,8 +187,6 @@ than Hebbian), but the baseline-vs-blend ordering is reversed.
 
 ## Next Steps
 
-- [ ] Add blend layer support to `./generate` (load `.blend` sidecar, apply blend before transformer)
-- [ ] Re-test blend-G8 generation quality with blend-aware inference
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
 - [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
