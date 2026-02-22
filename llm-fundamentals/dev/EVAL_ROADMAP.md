@@ -38,17 +38,14 @@ Controlled tasks where ground truth is known exactly. These isolate generalizati
 from the noise of natural language. Very relevant for testing banded sparsity, sort layer,
 and other architectural changes.
 
-### 2a. Modular arithmetic (grokking)
+### 2a. Modular arithmetic (grokking) -- DONE
 
-We already have task-position masking (`-p` flag). Build a data generator for:
-- `a op b = c` where op is modular addition/multiplication
-- Train/test split by (a,b) pairs, not random
-- Track memorization (train acc = 100%) vs. generalization (test acc) over time
+`gen_modular_data.py` generates binary data for 4 operations (add, sub, mul, sq_sum)
+with 50/50 train/val split. Experiments 00010 and 00012 validated grokking on addition
+and multiplication. The sequential continual-learning protocol (train all 4 tasks in
+sequence, evaluate retention) is now the primary eval for architectural comparisons.
 
-**Implementation:** Python script `gen_modular_data.py` that produces .bin files in our
-data format. Sequences are `[a, op, b, =, c, EOT]` using a small vocabulary. Use `-p 4`
-to only compute loss at the answer position. Key metric: steps-to-generalize after
-memorization (grokking delay).
+**See:** [EVAL.md](EVAL.md) Phase 2a for the full sequential evaluation protocol.
 
 ### 2b. Formal language tasks
 
@@ -75,17 +72,19 @@ emergence — this tests whether architecture changes affect that capability.
 
 ## Phase 3: Scaling Laws (medium-term)
 
-### 3a. Compute-optimal scaling curves
+### 3a. Compute-optimal scaling curves -- PARTIAL
+
+`create_model.py` now supports arbitrary configs (num_layers, num_heads, channels).
+Still need: the actual scaling grid runs and power-law fitting.
 
 Train a series of models varying:
-- Parameters: 10M, 30M, 85M, 124M (modify `create_model.py` configs)
+- Parameters: 10M, 30M, 85M, 124M
 - Data: 10M, 50M, 200M, 900M tokens (subsample TinyStories)
 - Compute budget: fixed FLOPs, vary the param/data tradeoff
 
 Fit Chinchilla-style power laws: `L(N, D) = A/N^α + B/D^β + E`
 
-**Implementation:** Need `create_model.py` to accept arbitrary configs (num_layers,
-num_heads, channels). Script to run the grid and collect final val losses.
+**Remaining:** Script to run the grid and collect final val losses.
 Curve fitting in Python (scipy or manual least-squares).
 
 ### 3b. Per-architecture scaling comparison
@@ -125,17 +124,17 @@ existing test-set evaluation loop.
 
 ## Priority Order
 
-| Priority | Item | Why | Effort |
-|----------|------|-----|--------|
-| 1 | 2a. Modular arithmetic | Direct grokking measurement, tests existing `-p` infra | Small |
-| 2 | 1a. Held-out domain perplexity | Easy win, just need more eval data | Small |
-| 3 | 2b. Formal language tasks | Controlled generalization measurement | Small |
-| 4 | 3a. Scaling curves | Most principled architecture comparison | Medium |
-| 5 | 1b. Compression ratio | Novel metric, minimal code | Small |
-| 6 | 2c. ICL probes | Tests emergent capability | Medium |
-| 7 | 3b. Per-architecture scaling | Requires 3a first | Medium |
-| 8 | 4a. TinyBenchmarks | Standard comparison | Medium |
-| 9 | 4b. Perplexity benchmarks | Standard comparison | Small |
+| Priority | Item | Status | Why | Effort |
+|----------|------|--------|-----|--------|
+| 1 | 2a. Modular arithmetic | **Done** | Direct grokking measurement, sequential eval protocol | Small |
+| 2 | 1a. Held-out domain perplexity | Not started | Easy win, just need more eval data | Small |
+| 3 | 2b. Formal language tasks | Not started | Controlled generalization measurement | Small |
+| 4 | 3a. Scaling curves | Partial | Most principled architecture comparison | Medium |
+| 5 | 1b. Compression ratio | Not started | Novel metric, minimal code | Small |
+| 6 | 2c. ICL probes | Not started | Tests emergent capability | Medium |
+| 7 | 3b. Per-architecture scaling | Not started | Requires 3a first | Medium |
+| 8 | 4a. TinyBenchmarks | Not started | Standard comparison | Medium |
+| 9 | 4b. Perplexity benchmarks | Not started | Standard comparison | Small |
 
 ---
 

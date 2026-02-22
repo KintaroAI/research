@@ -2,7 +2,7 @@
 """
 Generate modular arithmetic dataset in llm.c shard format.
 
-Produces train.bin, val.bin, and test.bin containing equations:
+Produces train.bin and val.bin containing equations:
   a OP b = c (mod p)
 encoded as 8-token sequences [BOS, a, OP, b, EQ, c, EOS, EOS] in uint16.
 
@@ -17,7 +17,9 @@ Token encoding:
 Usage:
     python gen_modular_data.py [options]
     python gen_modular_data.py --prime 97 --op add --seed 42
+    python gen_modular_data.py --prime 97 --op sub --seed 42 --output-dir data/modular_sub
     python gen_modular_data.py --prime 97 --op mul --seed 42 --output-dir data/modular_mul
+    python gen_modular_data.py --prime 97 --op sq_sum --seed 42 --output-dir data/modular_sq_sum
 """
 
 import argparse
@@ -31,18 +33,20 @@ DATA_MAGIC = 20240520
 DATA_VERSION = 1
 
 OPERATIONS = {
-    'add': lambda a, b, p: (a + b) % p,
-    'mul': lambda a, b, p: (a * b) % p,
+    'add': lambda a, b, p: (int(a) + int(b)) % p,
+    'sub': lambda a, b, p: (int(a) - int(b)) % p,
+    'mul': lambda a, b, p: (int(a) * int(b)) % p,
+    'sq_sum': lambda a, b, p: (int(a) * int(a) + int(b) * int(b)) % p,
 }
 
-OP_SYMBOLS = {'add': '+', 'mul': '*'}
+OP_SYMBOLS = {'add': '+', 'sub': '-', 'mul': '*', 'sq_sum': 'S'}
 
 
 def generate_equations(p, op, train_frac, seed):
-    """Generate all p*p equations and split into train/val/test.
+    """Generate all p*p equations and split into train/val.
 
     Returns:
-        (train_tokens, val_tokens, test_tokens): flat uint16 arrays
+        (train_tokens, val_tokens): flat uint16 arrays
     """
     OP_tok  = p
     EQ_tok  = p + 1
@@ -60,25 +64,20 @@ def generate_equations(p, op, train_frac, seed):
 
     equations = np.array(equations, dtype=np.uint16)
 
-    # Shuffle and 3-way split
+    # Shuffle and 2-way split (train + val, no test)
     rng = np.random.RandomState(seed)
     perm = rng.permutation(len(equations))
 
     n_train = int(len(equations) * train_frac)
-    n_remaining = len(equations) - n_train
-    n_val = n_remaining // 2
-    # n_test gets the rest (may be 1 more than n_val)
 
     train_eqs = equations[perm[:n_train]]
-    val_eqs   = equations[perm[n_train:n_train + n_val]]
-    test_eqs  = equations[perm[n_train + n_val:]]
+    val_eqs   = equations[perm[n_train:]]
 
     # Shuffle within each split
     rng.shuffle(train_eqs)
     rng.shuffle(val_eqs)
-    rng.shuffle(test_eqs)
 
-    return train_eqs.flatten(), val_eqs.flatten(), test_eqs.flatten()
+    return train_eqs.flatten(), val_eqs.flatten()
 
 
 def write_shard(filename, tokens):
@@ -126,15 +125,13 @@ def main():
     print(f"  Vocab size:      {vocab_size} ({p} residues + OP + EQ + BOS + EOS)")
     print(f"  Seed:            {args.seed}")
 
-    train_tokens, val_tokens, test_tokens = generate_equations(
+    train_tokens, val_tokens = generate_equations(
         p, op, args.train_frac, args.seed)
 
     n_train = len(train_tokens) // SEQ_LEN
     n_val   = len(val_tokens)   // SEQ_LEN
-    n_test  = len(test_tokens)  // SEQ_LEN
     print(f"  Train equations: {n_train} ({len(train_tokens)} tokens)")
     print(f"  Val equations:   {n_val} ({len(val_tokens)} tokens)")
-    print(f"  Test equations:  {n_test} ({len(test_tokens)} tokens)")
 
     # Sanity check first few train equations
     OP_tok, EQ_tok, BOS_tok, EOS_tok = p, p + 1, p + 2, p + 3
@@ -151,8 +148,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     for name, tokens in [("train.bin", train_tokens),
-                         ("val.bin", val_tokens),
-                         ("test.bin", test_tokens)]:
+                         ("val.bin", val_tokens)]:
         path = os.path.join(args.output_dir, name)
         write_shard(path, tokens)
         n_eqs = len(tokens) // SEQ_LEN
@@ -161,11 +157,10 @@ def main():
     # Print suggested training command
     train_path = os.path.join(args.output_dir, "train.bin")
     val_path   = os.path.join(args.output_dir, "val.bin")
-    test_path  = os.path.join(args.output_dir, "test.bin")
     print(f"\nSuggested command:")
     print(f"  python create_model.py --preset grokking --prime {p} -o model_grok.bin")
     print(f"  ./train -e model_grok.bin -i {train_path} -j {val_path} \\")
-    print(f"          -x {test_path} -t {SEQ_LEN} -b {n_train} -n 50000 -l 0.001 -w 1.0 \\")
+    print(f"          -t {SEQ_LEN} -b {n_train} -n 50000 -l 0.001 -w 1.0 \\")
     print(f"          -a 0.98 -s 0 -p 4 -q 1337 -o log_grok_{op}_s1337.txt")
 
 
