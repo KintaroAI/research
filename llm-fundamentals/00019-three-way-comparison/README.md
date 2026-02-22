@@ -1,9 +1,9 @@
 # Experiment: Three-Way Comparison (Baseline vs Blend vs Hebbian)
 
 **Date:** 2026-02-22
-**Status:** In Progress
+**Status:** Complete
 **Source:** *tagged on completion as `exp/00019`*
-**W&B:** *links added on completion*
+**W&B:** [exp19-baseline](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/gtb3d3sm) | [exp19-blend-G8](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/e91u7965) | [exp19-hebbian-H4](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/3fmbml2d)
 
 ## Goal
 
@@ -63,16 +63,95 @@ All runs use `model_50m.bin` as starting weights, sequential on one GPU.
 
 ## Results
 
-*Pending — will be filled after training completes.*
+### Val loss comparison
+
+| Step | Baseline | Blend G8 | Hebbian H4 | Blend Delta | Hebbian Delta |
+|-----:|---------:|---------:|-----------:|------------:|--------------:|
+| 0 | 10.943 | 10.945 | 10.943 | +0.002 | +0.000 |
+| 5000 | 1.953 | 1.921 | 2.000 | -0.032 | +0.047 |
+| 10000 | 1.687 | 1.655 | 1.714 | -0.031 | +0.027 |
+| 15000 | 1.573 | 1.545 | 1.596 | -0.028 | +0.023 |
+| 20000 | 1.494 | 1.471 | 1.526 | -0.023 | +0.032 |
+| 25000 | 1.442 | 1.425 | 1.480 | -0.016 | +0.038 |
+| 30000 | 1.408 | 1.388 | 1.446 | -0.021 | +0.037 |
+| 35000 | 1.378 | 1.363 | 1.416 | -0.015 | +0.038 |
+| 40000 | 1.353 | 1.334 | 1.390 | -0.019 | +0.037 |
+| 45000 | 1.337 | 1.321 | 1.379 | -0.016 | +0.042 |
+| **50000** | **1.322** | **1.304** | **1.359** | **-0.018** | **+0.037** |
+
+### Throughput
+
+| Run | tok/s | ms/step |
+|-----|-------|---------|
+| Baseline | 119,833 | 34.2 |
+| Blend G8 | 119,353 | 34.3 |
+| Hebbian H4 | 119,614 | 34.2 |
+
+All three runs have near-identical throughput (~119.5k tok/s). The blend and
+Hebbian mechanisms add negligible computational overhead (<0.4%).
 
 ## Analysis
 
-*Pending.*
+### Surprise: Blend beats baseline
+
+The headline result contradicts our hypothesis. Blend-G8 doesn't just converge
+*near* baseline — it consistently **outperforms** it, finishing at 1.304 vs 1.322
+(-0.018 val loss, 1.3% relative improvement). This advantage appears from the
+very first checkpoint at step 5000 (-0.032) and persists through all 50k steps.
+
+This differs from experiment 00017, where blend trailed baseline throughout.
+The key difference: 00017 ran baseline first, then blend as a separate run.
+Here, all three share the same data ordering (seed=0), same initial weights,
+and run sequentially on the same GPU. The reproducibility of the baseline result
+(1.322 here vs 1.297 in 00017) is within the range expected from different
+data orderings, but the *relative* ranking has flipped.
+
+Possible explanations for blend outperforming baseline:
+
+1. **Warm-start benefit.** Blend-G8 ran second, so the GPU was fully warmed
+   up (caches, thermal state). While throughput is nearly identical, subtle
+   cache effects could influence numerical behavior.
+
+2. **Data ordering interaction.** With val_loss_every=20 (vs a typical 250
+   in prior experiments), the model sees more frequent val evaluations. The
+   specific data order with seed=0 may favor blend's local smoothing of
+   embeddings for certain subsequences.
+
+3. **The blend layer genuinely helps on this data split.** TinyStories has
+   strong local dependencies (children's stories with simple, repetitive
+   sentence structures). A bigram-like embedding blend could genuinely help
+   here by providing cheap local context that complements attention.
+
+### Hebbian matches expectations
+
+Hebbian-H4 trails baseline by +0.037 at 50k steps, consistent with the
+~+0.066 gap from experiment 00018 (the smaller gap here may reflect different
+val evaluation frequency). The gap is stable from step 20k onward, confirming
+the persistent-damage pattern: the non-learnable pull continuously distorts wte,
+and the model cannot compensate.
+
+### Final ordering
+
+**blend < baseline < hebbian** (lower is better)
+
+This was supposed to be **baseline < blend < hebbian** per our hypothesis.
+Blend and Hebbian behave as expected relative to each other (blend much better
+than Hebbian), but the baseline-vs-blend ordering is reversed.
 
 ## Conclusions
 
-*Pending.*
+- Blend-G8 outperforms baseline by -0.018 val loss at 50k steps (1.304 vs 1.322)
+- Hebbian-H4 trails baseline by +0.037 (1.359 vs 1.322)
+- All three runs have near-identical throughput (~119.5k tok/s)
+- The blend result contradicts experiment 00017, where blend trailed baseline
+  by +0.005 — the relative ranking is sensitive to run conditions
+- The blend advantage is small but consistent across all checkpoints
+- Hebbian's deficit is consistent and stable, confirming the structural harm
+  of non-learnable embedding perturbation
 
 ## Next Steps
 
-*Pending.*
+- [ ] Run the three-way comparison again with a different seed to test reproducibility
+- [ ] Investigate whether the blend advantage is robust to val evaluation frequency
+- [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
+- [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
