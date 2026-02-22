@@ -51,65 +51,83 @@ python create_model.py --preset grokking --prime 97 -o model_grok.bin
 ### Step 3: Sequential training + cross-task eval
 
 Train on each task in order, carrying the checkpoint forward. After each training
-phase, evaluate on **all** tasks' val sets.
+phase, evaluate on **all** tasks' val sets. Training runs use `wandb_train.py` for
+real-time metric logging (gracefully degrades if wandb is not installed).
+
+Note: B=4703 (not 4704) because the dataloader requires B*T+1 tokens.
 
 ```bash
 # --- Phase 1: Train on addition ---
-./train -e model_grok.bin -c ckpt_phase1.bin \
-        -i data/modular_add/train.bin -j data/modular_add/val.bin \
-        -t 8 -b 4704 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
-        -s 0 -p 4 -q 1337 -o log_phase1_train.txt
+python wandb_train.py --project gpt2-cuda --group seq-eval --name phase1-add -- \
+    ./train -e model_grok.bin -c ckpt_phase1.bin \
+    -i data/modular_add/train.bin -j data/modular_add/val.bin \
+    -t 8 -b 4703 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 4 -v 1000 -q 1337
 
 # Eval phase 1 checkpoint on all available tasks
-./train -e ckpt_phase1.bin -i data/modular_add/train.bin -j data/modular_add/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_add
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval1-add -- \
+    ./train -e ckpt_phase1.bin -i data/modular_add/train.bin -j data/modular_add/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_add
 
 # --- Phase 2: Train on subtraction (from phase 1 checkpoint) ---
-./train -e ckpt_phase1.bin -c ckpt_phase2.bin \
-        -i data/modular_sub/train.bin -j data/modular_sub/val.bin \
-        -t 8 -b 4704 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
-        -s 0 -p 4 -q 1337 -o log_phase2_train.txt
+python wandb_train.py --project gpt2-cuda --group seq-eval --name phase2-sub -- \
+    ./train -e ckpt_phase1.bin -c ckpt_phase2.bin \
+    -i data/modular_sub/train.bin -j data/modular_sub/val.bin \
+    -t 8 -b 4703 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 4 -v 1000 -q 1337
 
 # Eval phase 2 checkpoint on tasks 1-2
-./train -e ckpt_phase2.bin -i data/modular_sub/train.bin -j data/modular_add/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_add (retention)
-./train -e ckpt_phase2.bin -i data/modular_sub/train.bin -j data/modular_sub/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_sub
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval2-add -- \
+    ./train -e ckpt_phase2.bin -i data/modular_sub/train.bin -j data/modular_add/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_add (retention)
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval2-sub -- \
+    ./train -e ckpt_phase2.bin -i data/modular_sub/train.bin -j data/modular_sub/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_sub
 
 # --- Phase 3: Train on multiplication (from phase 2 checkpoint) ---
-./train -e ckpt_phase2.bin -c ckpt_phase3.bin \
-        -i data/modular_mul/train.bin -j data/modular_mul/val.bin \
-        -t 8 -b 4704 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
-        -s 0 -p 4 -q 1337 -o log_phase3_train.txt
+python wandb_train.py --project gpt2-cuda --group seq-eval --name phase3-mul -- \
+    ./train -e ckpt_phase2.bin -c ckpt_phase3.bin \
+    -i data/modular_mul/train.bin -j data/modular_mul/val.bin \
+    -t 8 -b 4703 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 4 -v 1000 -q 1337
 
 # Eval phase 3 checkpoint on tasks 1-3
-./train -e ckpt_phase3.bin -i data/modular_mul/train.bin -j data/modular_add/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_add (retention)
-./train -e ckpt_phase3.bin -i data/modular_mul/train.bin -j data/modular_sub/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_sub (retention)
-./train -e ckpt_phase3.bin -i data/modular_mul/train.bin -j data/modular_mul/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_mul
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval3-add -- \
+    ./train -e ckpt_phase3.bin -i data/modular_mul/train.bin -j data/modular_add/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_add (retention)
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval3-sub -- \
+    ./train -e ckpt_phase3.bin -i data/modular_mul/train.bin -j data/modular_sub/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_sub (retention)
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval3-mul -- \
+    ./train -e ckpt_phase3.bin -i data/modular_mul/train.bin -j data/modular_mul/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_mul
 
 # --- Phase 4: Train on squared sum (from phase 3 checkpoint) ---
-./train -e ckpt_phase3.bin -c ckpt_phase4.bin \
-        -i data/modular_sq_sum/train.bin -j data/modular_sq_sum/val.bin \
-        -t 8 -b 4704 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
-        -s 0 -p 4 -q 1337 -o log_phase4_train.txt
+python wandb_train.py --project gpt2-cuda --group seq-eval --name phase4-sq_sum -- \
+    ./train -e ckpt_phase3.bin -c ckpt_phase4.bin \
+    -i data/modular_sq_sum/train.bin -j data/modular_sq_sum/val.bin \
+    -t 8 -b 4703 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 4 -v 1000 -q 1337
 
 # Eval phase 4 checkpoint on all tasks
-./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_add/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_add (retention)
-./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_sub/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_sub (retention)
-./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_mul/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_mul (retention)
-./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_sq_sum/val.bin \
-        -n 0 -v 1 -t 8 -b 256 -s 0    # => val_sq_sum
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval4-add -- \
+    ./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_add/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_add (retention)
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval4-sub -- \
+    ./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_sub/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_sub (retention)
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval4-mul -- \
+    ./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_mul/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_mul (retention)
+python wandb_train.py --project gpt2-cuda --group seq-eval --name eval4-sq_sum -- \
+    ./train -e ckpt_phase4.bin -i data/modular_sq_sum/train.bin -j data/modular_sq_sum/val.bin \
+    -n 0 -v 1 -t 8 -b 4703 -s 0 -p 4    # => val_sq_sum
 ```
 
 **How eval-only works:** With `-n 0`, the training loop runs step=0 which is
 `last_step=true`, so it does val eval and exits. We point `-j` at each task's val
-data to get the loss. No C changes needed.
+data to get the loss. The `-p 4` flag ensures loss is computed only at the answer
+position (matching training). No C changes needed.
 
 ### Step 4: Record results
 
