@@ -183,6 +183,7 @@ pip install torch numpy
 | [00011-sort-layer](./00011-sort-layer/) | Complete | Learnable correlation-based blending gives +1.1% quality on TinyStories; +40% overhead |
 | [00012-grokking-conditions](./00012-grokking-conditions/) | Complete | No delayed generalization; -p 4 dominates; wd=0 memorizes, wd=1 generalizes instantly |
 | [00013-wandb-integration](./00013-wandb-integration/) | Complete | Python wrapper logs all training metrics to W&B in real-time; zero C code changes |
+| [00014-sequential-modular-eval](./00014-sequential-modular-eval/) | Complete | Sequential eval baseline: dense model shows total catastrophic forgetting (loss ~10 vs random 4.58) |
 
 ## Improvement Ideas: Encouraging Delayed Generalization
 
