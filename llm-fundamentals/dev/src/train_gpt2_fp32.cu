@@ -1487,7 +1487,8 @@ typedef struct {
     float* cpu_losses; // CPU buffer to copy the losses to, allocated with cudaMallocHost
     // loss masking: only compute loss/gradient at a specific position in each sequence
     int task_position; // if >= 0, only this position contributes to loss/gradient (-1 = all positions)
-    float* dlosses_mask; // GPU buffer: dlosses[b*T+task_position] = 1/B, rest = 0
+    int task_position_end; // if >= 0, loss range is [task_position, task_position_end] inclusive (-1 = same as task_position)
+    float* dlosses_mask; // GPU buffer: dlosses[b*T+tp] = 1/(B*n_pos), rest = 0
     // Banded sparsity masks
     float* fc1_mask;  // (L, 4*C, C) mask for fcw (FC1), NULL if dense
     float* fc2_mask;  // (L, C, 4*C) mask for fcprojw (FC2), NULL if dense
@@ -1554,6 +1555,7 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->seq_len = 0;
     model->mean_loss = -1.0f; // -1.0f will designate no loss
     model->task_position = -1; // default: loss on all positions
+    model->task_position_end = -1; // default: same as task_position (single position)
     model->dlosses_mask = NULL;
     model->fc1_mask = NULL;
     model->fc2_mask = NULL;
@@ -2108,15 +2110,19 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
         // lazily allocate the dlosses mask if task_position is set
         if (model->task_position >= 0 && model->dlosses_mask == NULL) {
             int tp = model->task_position;
-            assert(tp < T);
+            int tp_end = model->task_position_end >= 0 ? model->task_position_end : tp;
+            assert(tp < T && tp_end < T && tp_end >= tp);
+            int n_pos = tp_end - tp + 1;
             float* dlosses_cpu = (float*)calloc(B * T, sizeof(float));
             for (int b = 0; b < B; b++) {
-                dlosses_cpu[b * T + tp] = 1.0f / B; // only the answer position gets gradient
+                for (int p = tp; p <= tp_end; p++) {
+                    dlosses_cpu[b * T + p] = 1.0f / (B * n_pos);
+                }
             }
             cudaCheck(cudaMalloc((void**)&model->dlosses_mask, B * T * sizeof(float)));
             cudaCheck(cudaMemcpy(model->dlosses_mask, dlosses_cpu, B * T * sizeof(float), cudaMemcpyHostToDevice));
             free(dlosses_cpu);
-            printf("loss masking enabled: only position %d contributes to loss/gradient\n", tp);
+            printf("loss masking enabled: positions %d..%d contribute to loss/gradient\n", tp, tp_end);
         }
         // fused classifier: forward loss + first part of backward
         // dlosses_mask is NULL (uniform 1/(B*T)) or the task-position mask (1/B at position tp, 0 elsewhere)
@@ -2125,10 +2131,16 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
         cudaCheck(cudaMemcpy(model->cpu_losses, acts.losses, B * T * sizeof(float), cudaMemcpyDeviceToHost));
         float mean_loss = 0.0f;
         if (model->task_position >= 0) {
-            // only average the loss at the task position across the batch
+            // only average the loss at the task position(s) across the batch
             int tp = model->task_position;
-            for (int b = 0; b < B; b++) { mean_loss += model->cpu_losses[b * T + tp]; }
-            mean_loss /= B;
+            int tp_end = model->task_position_end >= 0 ? model->task_position_end : tp;
+            int n_pos = tp_end - tp + 1;
+            for (int b = 0; b < B; b++) {
+                for (int p = tp; p <= tp_end; p++) {
+                    mean_loss += model->cpu_losses[b * T + p];
+                }
+            }
+            mean_loss /= (B * n_pos);
         } else {
             // original: average over all positions
             for (int i = 0; i < B*T; i++) { mean_loss += model->cpu_losses[i]; }
@@ -2515,6 +2527,7 @@ void error_usage() {
     fprintf(stderr, "  -s <int>    sample_every, how often we inference the model (default = 20)\n");
     fprintf(stderr, "  -g <int>    genT, how many steps of inference we do (default = 64)\n");
     fprintf(stderr, "  -p <int>    task_position, only compute loss at this seq position (default = -1, all)\n");
+    fprintf(stderr, "  -P <int>    task_position_end, loss range [p..P] inclusive (default = -1, same as -p)\n");
     fprintf(stderr, "  -d <string> snapshot output directory for visualization (default = NULL, disabled)\n");
     fprintf(stderr, "  -f <int>    snapshot_every, save snapshot every N steps (default = 100)\n");
     fprintf(stderr, "  -1 <int>    FC1 bandwidth for banded sparsity (default = 0, dense)\n");
@@ -2547,6 +2560,7 @@ int main(int argc, char *argv[]) {
     int sample_every = 20; // every how many steps to do inference?
     int genT = 64; // number of steps of inference we will do
     int task_position = -1; // -1 = loss on all positions; >= 0 = loss only at this position
+    int task_position_end = -1; // -1 = same as task_position; >= 0 = loss range [task_position..task_position_end]
     const char* snapshot_dir = NULL;  // snapshot output directory for visualization
     int snapshot_every = 100;  // save snapshot every N steps
     const char* test_data_pattern = NULL;  // test set (evaluated only at end)
@@ -2573,6 +2587,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 's') { sample_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'g') { genT = atoi(argv[i+1]); }
         else if (argv[i][1] == 'p') { task_position = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'P') { task_position_end = atoi(argv[i+1]); }
         else if (argv[i][1] == 'd') { snapshot_dir = argv[i+1]; }
         else if (argv[i][1] == 'f') { snapshot_every = atoi(argv[i+1]); }
         else if (argv[i][1] == '1') { BANDWIDTH_FC1 = atoi(argv[i+1]); }
@@ -2581,6 +2596,10 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'x') { test_data_pattern = argv[i+1]; }
         else if (argv[i][1] == 'q') { rng_seed = (unsigned int)atoi(argv[i+1]); }
         else { error_usage(); }
+    }
+    // normalize: if -p set but -P not, single-position mode (end = start)
+    if (task_position >= 0 && task_position_end < 0) {
+        task_position_end = task_position;
     }
     printf("+-----------------------+----------------------------------------------------+\n");
     printf("| Parameter             | Value                                              |\n");
@@ -2602,6 +2621,7 @@ int main(int argc, char *argv[]) {
     printf("| sample_every          | %-50d |\n", sample_every);
     printf("| genT                  | %-50d |\n", genT);
     printf("| task_position         | %-50d |\n", task_position);
+    printf("| task_position_end     | %-50d |\n", task_position_end);
     printf("| snapshot_dir          | %-50s |\n", snapshot_dir == NULL ? "NULL" : snapshot_dir);
     printf("| snapshot_every        | %-50d |\n", snapshot_every);
     printf("| FC1 bandwidth         | %-50d |\n", BANDWIDTH_FC1);
@@ -2635,6 +2655,7 @@ int main(int argc, char *argv[]) {
     GPT2 model;
     gpt2_build_from_checkpoint(&model, model_path);
     model.task_position = task_position; // set loss masking position (-1 = all)
+    model.task_position_end = task_position_end; // set loss masking end position
     printf("| max_sequence_length T | %-50d |\n", model.config.max_seq_len);
     printf("| vocab_size V          | %-50d |\n", model.config.vocab_size);
     printf("| padded_vocab_size Vp  | %-50d |\n", model.config.padded_vocab_size);

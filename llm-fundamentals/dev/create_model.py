@@ -10,6 +10,7 @@ Usage:
 Presets:
     tinystories  block_size=256, vocab=50257, n_layer=4, n_head=4, n_embd=128
     grokking     block_size=8, vocab=P+4, n_layer=2, n_head=4, n_embd=128
+    formal       block_size=24, vocab=101, n_layer=2, n_head=4, n_embd=128
 """
 import struct
 import torch
@@ -228,6 +229,7 @@ def write_model(model, filename):
 PRESETS = {
     'tinystories': dict(block_size=256, vocab_size=50257, n_layer=4, n_head=4, n_embd=128),
     'grokking':    dict(block_size=8,   vocab_size=None,  n_layer=2, n_head=4, n_embd=128),
+    'formal':      dict(block_size=24,  vocab_size=101,   n_layer=2, n_head=4, n_embd=128),
 }
 
 if __name__ == "__main__":

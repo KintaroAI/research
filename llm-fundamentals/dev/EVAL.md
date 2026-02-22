@@ -171,9 +171,148 @@ procedure including multi-seed averaging and matched-train-loss comparisons.
 
 ---
 
+## Phase 2b: Sequential Formal Language Tasks
+
+Tests catastrophic forgetting across structurally different algorithmic tasks:
+parity (counting), copy (identity mapping), reverse (position reversal), and
+majority (thresholding). Uses the same sequential protocol as Phase 2a but with
+the `-P` flag for multi-position loss on copy/reverse tasks.
+
+### Tasks (in training order)
+
+| # | Task | Sequence layout | T | `-p`/`-P` | Examples |
+|---|------|-----------------|---|-----------|----------|
+| 1 | Parity-8 | `BOS b1..b8 EQ ans EOS` + 8 EOS pad | 20 | `-p 9` | 256 |
+| 2 | Copy-8 | `BOS x1..x8 SEP x1..x8 EOS EOS` | 20 | `-p 9 -P 16` | 256 |
+| 3 | Reverse-8 | `BOS x1..x8 SEP x8..x1 EOS EOS` | 20 | `-p 9 -P 16` | 256 |
+| 4 | Majority-9 | `BOS t1..t9 EQ ans EOS` + 6 EOS pad | 20 | `-p 10` | 512 |
+
+All tasks: binary alphabet (0/1), vocab_size=101, 50/50 train/val split, seed 42.
+Special tokens: BOS=99, EOS=100, EQ=98, SEP=97.
+
+### Step 1: Generate data
+
+```bash
+python gen_formal_data.py --task parity --input-len 8 --seed 42 --output-dir data/parity_8
+python gen_formal_data.py --task copy --input-len 8 --seed 42 --output-dir data/copy_8
+python gen_formal_data.py --task reverse --input-len 8 --seed 42 --output-dir data/reverse_8
+python gen_formal_data.py --task majority --input-len 9 --seed 42 --output-dir data/majority_9
+```
+
+Parity/copy/reverse: 256 examples (128 train, 128 val). Majority: 512 examples (256 train, 256 val).
+
+### Step 2: Create model
+
+```bash
+python create_model.py --preset formal -o model_formal.bin
+```
+
+Uses block_size=24, vocab_size=101, 2-layer/4-head/128-dim (same architecture as
+grokking preset but with block_size=24 to support T=20 sequences).
+
+### Step 3: Sequential training + cross-task eval
+
+Train on each task in order, carrying the checkpoint forward. After each training
+phase, evaluate on **all** tasks' val sets. B=127 for parity/copy/reverse (128
+train sequences, dataloader needs B*T+1 tokens). B=255 for majority (256 train).
+
+Note: for cross-task eval, each eval command must use the correct `-p`/`-P` for
+the task being evaluated (not the task that was trained), and `-t 20` is shared.
+
+```bash
+# --- Phase 1: Train on parity ---
+python wandb_train.py --project gpt2-cuda --group formal-eval --name phase1-parity -- \
+    ./train -e model_formal.bin -c ckpt_formal_p1.bin \
+    -i data/parity_8/train.bin -j data/parity_8/val.bin \
+    -t 20 -b 127 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 9 -v 1000 -q 1337
+
+# Eval phase 1 checkpoint
+./train -e ckpt_formal_p1.bin -i data/parity_8/train.bin -j data/parity_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9    # => val_parity
+
+# --- Phase 2: Train on copy (from phase 1 checkpoint) ---
+python wandb_train.py --project gpt2-cuda --group formal-eval --name phase2-copy -- \
+    ./train -e ckpt_formal_p1.bin -c ckpt_formal_p2.bin \
+    -i data/copy_8/train.bin -j data/copy_8/val.bin \
+    -t 20 -b 127 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 9 -P 16 -v 1000 -q 1337
+
+# Eval phase 2 checkpoint on tasks 1-2
+./train -e ckpt_formal_p2.bin -i data/copy_8/train.bin -j data/parity_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9    # => val_parity (retention)
+./train -e ckpt_formal_p2.bin -i data/copy_8/train.bin -j data/copy_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9 -P 16    # => val_copy
+
+# --- Phase 3: Train on reverse (from phase 2 checkpoint) ---
+python wandb_train.py --project gpt2-cuda --group formal-eval --name phase3-reverse -- \
+    ./train -e ckpt_formal_p2.bin -c ckpt_formal_p3.bin \
+    -i data/reverse_8/train.bin -j data/reverse_8/val.bin \
+    -t 20 -b 127 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 9 -P 16 -v 1000 -q 1337
+
+# Eval phase 3 checkpoint on tasks 1-3
+./train -e ckpt_formal_p3.bin -i data/reverse_8/train.bin -j data/parity_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9    # => val_parity (retention)
+./train -e ckpt_formal_p3.bin -i data/reverse_8/train.bin -j data/copy_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9 -P 16    # => val_copy (retention)
+./train -e ckpt_formal_p3.bin -i data/reverse_8/train.bin -j data/reverse_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9 -P 16    # => val_reverse
+
+# --- Phase 4: Train on majority (from phase 3 checkpoint) ---
+python wandb_train.py --project gpt2-cuda --group formal-eval --name phase4-majority -- \
+    ./train -e ckpt_formal_p3.bin -c ckpt_formal_p4.bin \
+    -i data/majority_9/train.bin -j data/majority_9/val.bin \
+    -t 20 -b 255 -n 50000 -l 0.001 -w 1.0 -a 0.98 \
+    -s 0 -p 10 -v 1000 -q 1337
+
+# Eval phase 4 checkpoint on all tasks
+./train -e ckpt_formal_p4.bin -i data/majority_9/train.bin -j data/parity_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9    # => val_parity (retention)
+./train -e ckpt_formal_p4.bin -i data/majority_9/train.bin -j data/copy_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9 -P 16    # => val_copy (retention)
+./train -e ckpt_formal_p4.bin -i data/majority_9/train.bin -j data/reverse_8/val.bin \
+    -n 0 -v 1 -t 20 -b 127 -s 0 -p 9 -P 16    # => val_reverse (retention)
+./train -e ckpt_formal_p4.bin -i data/majority_9/train.bin -j data/majority_9/val.bin \
+    -n 0 -v 1 -t 20 -b 255 -s 0 -p 10    # => val_majority
+```
+
+**Note on B mismatch:** Majority has 256 train sequences (B=255) while the other
+tasks have 128 (B=127). For eval-only runs (`-n 0`), B just needs to satisfy
+`B*T+1 <= num_tokens` for whichever val set is loaded, so use B=127 for
+parity/copy/reverse val sets and B=255 for majority val sets.
+
+**Note on `-p`/`-P` per task:** The dlosses mask is built lazily on the first
+forward pass, so each eval run must use the correct flags for the task being
+evaluated. Single-position tasks (parity, majority) use only `-p`. Multi-position
+tasks (copy, reverse) use `-p 9 -P 16`.
+
+### Step 4: Record results
+
+| Phase | Trained on | val_parity | val_copy | val_reverse | val_majority |
+|-------|------------|------------|----------|-------------|--------------|
+| 1 | parity | ___ | - | - | - |
+| 2 | copy | ___ | ___ | - | - |
+| 3 | reverse | ___ | ___ | ___ | - |
+| 4 | majority | ___ | ___ | ___ | ___ |
+
+Key metrics (same interpretation as Phase 2a):
+- **Diagonal**: learning ability (should reach low loss)
+- **Below diagonal**: retention (should stay low if representations are stable)
+- **Forgetting**: increase in a task's val loss between phases
+
+---
+
+## Phase 1: TinyStories
+
+Natural language generalization on TinyStories (train/val/test splits).
+See [GENERALIZATION_PROTOCOL.md](GENERALIZATION_PROTOCOL.md) for the full
+procedure including multi-seed averaging and matched-train-loss comparisons.
+
+---
+
 ## Future Phases
 
-- **2b. Formal language tasks** (parity, copy/reverse) — see EVAL_ROADMAP.md
 - **2c. In-context learning probes** — see EVAL_ROADMAP.md
 - **3. Scaling laws** — see EVAL_ROADMAP.md
 - **4. Standard benchmarks** — see EVAL_ROADMAP.md
