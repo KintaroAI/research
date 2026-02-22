@@ -2,6 +2,7 @@
 
 **Date:** 2026-02-22
 **Status:** Complete
+**W&B:** [50m-baseline](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/vjfdbl48) | [50m-blend-G8](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/qypsrz8u)
 
 ## Goal
 
