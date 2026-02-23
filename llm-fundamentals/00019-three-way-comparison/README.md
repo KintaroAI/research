@@ -252,14 +252,14 @@ A notable observation: all Hebbian runs produced `!!!!!!...` for the short
 mode triggered by the short sampling context interacting with Hebbian-modified
 embeddings.
 
-## Follow-Up: Window Size × Epsilon Sweep (H8, H16)
+## Follow-Up: Window Size × Epsilon Sweep (H7–H16)
 
 **Date:** 2026-02-22
 
-After the H4 epsilon sweep, extended to H8 and H16 to map the interaction
-between window size and epsilon. Each token pulls toward H preceding neighbors
-(with 1/d distance decay), so wider windows apply more cumulative pull force
-per step.
+After the H4 epsilon sweep, extended to H7, H8, H9, and H16 to map the
+interaction between window size and epsilon. Each token pulls toward H preceding
+neighbors (with 1/d distance decay), so wider windows apply more cumulative pull
+force per step.
 
 ### Setup
 
@@ -267,10 +267,13 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 
 | Run | Window | Epsilon | W&B |
 |-----|--------|---------|-----|
+| hebbian-H7-u1e5 | H7 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/12gi7rdk) |
 | hebbian-H8-u5e6 | H8 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/objbqhru) |
 | hebbian-H8-u1e5 | H8 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/k1322idk) |
+| hebbian-H8-u1e5-v2 | H8 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/1lom29sf) |
 | hebbian-H8-u1e4 | H8 | 1e-4 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/r1qgdwr5) |
 | hebbian-H8-u1e3 | H8 | 1e-3 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/vf30tvvj) |
+| hebbian-H9-u1e5 | H9 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/kpwusoqf) |
 | hebbian-H16-u5e6 | H16 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/9q1ea3h8) |
 | hebbian-H16-u1e5 | H16 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/b4af93e) |
 
@@ -282,14 +285,22 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 | H4 | 1e-5 | (main exp) | Stable | Coherent |
 | H4 | 1e-4 | 3.571 | Spike @~2296 | Broken grammar |
 | H4 | 1e-3 | 6.442 | Stable (stuck high) | Word salad |
-| H8 | 5e-6 | 2.449 | Stable | Coherent |
-| H8 | 1e-5 | 2.201 | Stable | Coherent (minor quirks) |
+| H7 | 1e-5 | 2.496 | Stable | Coherent |
+| **H8** | **5e-6** | **2.449** | **Stable** | **Coherent** |
+| **H8** | **1e-5** | **2.201 / 2.222** | **Stable** | **Coherent (minor quirks)** |
 | H8 | 1e-4 | 5.576 | Spike @~2455 | Word salad |
 | H8 | 1e-3 | 6.495 | Stable (stuck high) | Word salad |
+| H9 | 1e-5 | 2.633 | Stable | Coherent (degraded) |
 | H16 | 5e-6 | 2.471 | Stable | Semi-coherent |
 | H16 | 1e-5 | 2.533 | Stable | Degraded |
 
 ### Generation samples
+
+**H7, 1e-5** — Coherent, proper story structure:
+> Once upon time, a new boy named Timmy went to the park with his mom. Timmy
+> loved to play in the game near puddle... Timmy's parents kissed him and
+> apologized and they had a new worm with a new chair. They had a great day
+> making strong skin it fit around a hand.
 
 **H8, 5e-6** — Coherent, proper grammar and story structure:
 > One day, Pete was eating wheat for breakfast. He wanted to eat it. He said
@@ -302,6 +313,11 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 > Lily. The pink neighbor had pretty flowers and purple other flowers with
 > flowers. Lily was having so much fun playing in the park...
 
+**H8, 1e-5 v2** — Coherent, reproducible:
+> Once upon a time, there was a little girl named Lily. She loved to play with
+> her toys and share her teddy bear... Her mommy smiled and said, "But first,
+> I have to wait for each other one please."
+
 **H8, 1e-4** — Word salad, worse than H4 at same epsilon:
 > open in automobileOne upon my asked see then it all flew about not got for
 > dayAs Tim, saw'tMom They said doctorily't dance up a momSuddenly's had's
@@ -310,6 +326,11 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 **H8, 1e-3** — Pure word salad, similar to H4-1e-3:
 > make blue birthday!" with arms sandwich Alice stack fox!". worth time's
 > eaten notOnceerry in so some feel herL wasety his again she next drank...
+
+**H9, 1e-5** — Coherent but degraded, more grammatical slips:
+> One day, a generous bird lived near a tree. It wanted to live in the sun.
+> The bird wanted to fly. But the tree was jealous... The blue glove was not
+> clean anymore saw many times. Inside, they.
 
 **H16, 5e-6** — Semi-coherent, grammar mostly intact but semantics wander:
 > Once upon "We was going to go home Lucy, she did the gooseoceros. The duck
@@ -323,41 +344,50 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 
 ### Analysis
 
-The data reveals a clear scaling law: **safe epsilon ~ 1/H**.
+The data reveals two key findings:
 
-Doubling the window from H4→H8 roughly halves the safe epsilon range:
+**1. H8 is a sweet spot at eps=1e-5.**
 
-- **H8 at 5e-6** is solidly coherent (val 2.449). At half the epsilon of the
-  H4 sweet spot, the wider window produces clean output.
-- **H8 at 1e-5** still works (val 2.201, coherent with minor quirks). The wider
-  window doesn't hurt at this gentle epsilon.
-- **H8 at 1e-4** is much worse than H4 at the same epsilon (5.576 vs 3.571).
-  The late-training spike is similar but H8's is more damaging — the model
-  doesn't recover in time. More neighbors means more cumulative pull force
-  per step, amplifying the destabilizing effect.
-- **H8 at 1e-3** is essentially identical to H4-1e-3 (6.495 vs 6.442). Both
-  are so broken that window size doesn't matter — loss barely moves from the
-  starting point.
+At the same epsilon (1e-5), H8 dramatically outperforms both its neighbors:
 
-Quadrupling to H16 confirms the pattern:
+| Window | Val Loss @2500 |
+|--------|---------------:|
+| H7 | 2.496 |
+| H8 | 2.201 / 2.222 |
+| H9 | 2.633 |
 
-- **H16 at 1e-5** is degraded (val 2.533), unlike H8 which was coherent at the
-  same epsilon. The 4x wider window means 4x more cumulative pull force, pushing
-  1e-5 past the safe threshold.
-- **H16 at 5e-6** improves (val 2.471) but is still only semi-coherent. Grammar
-  holds up better than at 1e-5, but the narrative lacks focus. H16 likely needs
-  ~2.5e-6 or lower for fully clean generation.
+H8 achieves ~0.27 lower val loss than H7 and ~0.42 lower than H9. This is
+reproducible (two H8 runs: 2.201 and 2.222). The non-monotonic relationship
+with window size is unexpected — the simple "safe epsilon ~ 1/H" scaling law
+doesn't fully explain this. H8 may align with some structural property of the
+model (8 attention heads, 8 layers) or the data.
+
+**2. Wider windows degrade faster.**
+
+Beyond H8, increasing window size at fixed epsilon causes progressive degradation:
+
+- **H8 at 1e-5** is coherent (val 2.201)
+- **H9 at 1e-5** is already degraded (val 2.633)
+- **H16 at 1e-5** is further degraded (val 2.533, worse generation than H9)
+- **H16 at 5e-6** improves (val 2.471) but is still only semi-coherent
 
 The effective pull force scales with window size (each step applies pulls from
-W neighbors with 1/d decay, so total force ~ H * eps * harmonic(H)). The safe
-epsilon should therefore scale inversely with window size. The practical
-implication is that wider Hebbian windows offer diminishing returns — the safe
-epsilon shrinks faster than the potential benefit from more neighbors.
+H neighbors with 1/d decay, so total force ~ eps * harmonic(H)). The safe
+epsilon should therefore scale inversely with window size.
+
+**3. Epsilon sweep within H8.**
+
+H8 works well across a range of epsilons:
+
+- **H8 at 5e-6** — Coherent (val 2.449). Conservative but safe.
+- **H8 at 1e-5** — Best result (val 2.201). Sweet spot.
+- **H8 at 1e-4** — Catastrophic (val 5.576). Way past the cliff.
+- **H8 at 1e-3** — Broken (val 6.495). No learning.
 
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
 - [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
-- [ ] Try H16 at 2.5e-6 to confirm the safe epsilon scaling rule
+- [ ] Investigate why H8 is a sweet spot — test H6, H10, H12 to map the full curve
 - [ ] Test whether adaptive epsilon (eps/H) could make Hebbian window-size agnostic
