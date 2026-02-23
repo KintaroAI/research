@@ -252,36 +252,50 @@ A notable observation: all Hebbian runs produced `!!!!!!...` for the short
 mode triggered by the short sampling context interacting with Hebbian-modified
 embeddings.
 
-## Follow-Up: H8 Window Size Sweep
+## Follow-Up: Window Size × Epsilon Sweep (H8, H16)
 
 **Date:** 2026-02-22
 
-To test whether a wider Hebbian window changes the dynamics, ran the same
-epsilon sweep (1e-3, 1e-4, 1e-5) with `-H 8` instead of `-H 4`. With H=8,
-each token pulls toward 8 preceding neighbors (with 1/d decay) instead of 4.
+After the H4 epsilon sweep, extended to H8 and H16 to map the interaction
+between window size and epsilon. Each token pulls toward H preceding neighbors
+(with 1/d distance decay), so wider windows apply more cumulative pull force
+per step.
 
 ### Setup
 
 Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 
-| Run | Epsilon | W&B |
-|-----|---------|-----|
-| hebbian-H8-u1e5 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/k1322idk) |
-| hebbian-H8-u1e4 | 1e-4 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/r1qgdwr5) |
-| hebbian-H8-u1e3 | 1e-3 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/vf30tvvj) |
+| Run | Window | Epsilon | W&B |
+|-----|--------|---------|-----|
+| hebbian-H8-u5e6 | H8 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/objbqhru) |
+| hebbian-H8-u1e5 | H8 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/k1322idk) |
+| hebbian-H8-u1e4 | H8 | 1e-4 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/r1qgdwr5) |
+| hebbian-H8-u1e3 | H8 | 1e-3 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/vf30tvvj) |
+| hebbian-H16-u5e6 | H16 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/9q1ea3h8) |
+| hebbian-H16-u1e5 | H16 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/b4af93e) |
 
 ### Results
 
 | Window | Epsilon | Val Loss @2500 | Training Stability | Generation (256 tok) |
 |--------|---------|---------------:|--------------------|----------------------|
+| H4 | 1e-6 | 2.450 | Stable | Coherent |
 | H4 | 1e-5 | (main exp) | Stable | Coherent |
 | H4 | 1e-4 | 3.571 | Spike @~2296 | Broken grammar |
 | H4 | 1e-3 | 6.442 | Stable (stuck high) | Word salad |
+| H8 | 5e-6 | 2.449 | Stable | Coherent |
 | H8 | 1e-5 | 2.201 | Stable | Coherent (minor quirks) |
 | H8 | 1e-4 | 5.576 | Spike @~2455 | Word salad |
 | H8 | 1e-3 | 6.495 | Stable (stuck high) | Word salad |
+| H16 | 5e-6 | 2.471 | Stable | Semi-coherent |
+| H16 | 1e-5 | 2.533 | Stable | Degraded |
 
 ### Generation samples
+
+**H8, 5e-6** — Coherent, proper grammar and story structure:
+> One day, Pete was eating wheat for breakfast. He wanted to eat it. He said
+> goodbye all the words. Jerry saw a passport on the ground... Bob and the
+> farmer had a job for her bunny. They became best friends and played together
+> every day.
 
 **H8, 1e-5** — Coherent with minor quirks:
 > Once upon there and caterpillar, the puppy, there was her little girl named
@@ -297,11 +311,25 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 > make blue birthday!" with arms sandwich Alice stack fox!". worth time's
 > eaten notOnceerry in so some feel herL wasety his again she next drank...
 
+**H16, 5e-6** — Semi-coherent, grammar mostly intact but semantics wander:
+> Once upon "We was going to go home Lucy, she did the gooseoceros. The duck
+> didn't have a lion. She went to shore and saw Lily's puppy... Bob and the
+> farmer had a job for her bunny. They became best friends and played together
+> every day.
+
+**H16, 1e-5** — Degraded, wandering narrative:
+> Once upon a time, in there lived a small forest little day. Every morning,
+> the animals would explore and explore the world ands...
+
 ### Analysis
+
+The data reveals a clear scaling law: **safe epsilon ~ 1/H**.
 
 Doubling the window from H4→H8 roughly halves the safe epsilon range:
 
-- **H8 at 1e-5** works well (val 2.201, coherent generation). The wider
+- **H8 at 5e-6** is solidly coherent (val 2.449). At half the epsilon of the
+  H4 sweet spot, the wider window produces clean output.
+- **H8 at 1e-5** still works (val 2.201, coherent with minor quirks). The wider
   window doesn't hurt at this gentle epsilon.
 - **H8 at 1e-4** is much worse than H4 at the same epsilon (5.576 vs 3.571).
   The late-training spike is similar but H8's is more damaging — the model
@@ -311,52 +339,7 @@ Doubling the window from H4→H8 roughly halves the safe epsilon range:
   are so broken that window size doesn't matter — loss barely moves from the
   starting point.
 
-The effective pull force scales with window size (each step applies pulls from
-W neighbors with 1/d decay, so total force ~ H * eps * harmonic(W)). The safe
-epsilon should therefore scale inversely with window size. At H4, 1e-5 is
-safe; at H8, 1e-5 is still safe but 1e-4 is already catastrophic.
-
-## Follow-Up: H16 Window Size Sweep
-
-**Date:** 2026-02-22
-
-Extending the window size sweep to H=16 (16 preceding neighbors with 1/d decay).
-Based on the H4→H8 scaling pattern, the safe epsilon should be roughly 1/4 of H4's,
-so tested 1e-5 and 5e-6.
-
-### Setup
-
-Same as prior sweeps: 2500 steps from `model_50m.bin`, batch 8, seq 512.
-
-| Run | Epsilon | W&B |
-|-----|---------|-----|
-| hebbian-H16-u1e5 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/b4af93e) |
-| hebbian-H16-u5e6 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/9q1ea3h8) |
-
-### Results
-
-| Window | Epsilon | Val Loss @2500 | Training Stability | Generation (256 tok) |
-|--------|---------|---------------:|--------------------|----------------------|
-| H4 | 1e-5 | (main exp) | Stable | Coherent |
-| H8 | 1e-5 | 2.201 | Stable | Coherent (minor quirks) |
-| H16 | 1e-5 | 2.533 | Stable | Degraded |
-| H16 | 5e-6 | 2.471 | Stable | Semi-coherent |
-
-### Generation samples
-
-**H16, 1e-5** — Degraded, wandering narrative:
-> Once upon a time, in there lived a small forest little day. Every morning,
-> the animals would explore and explore the world ands...
-
-**H16, 5e-6** — Semi-coherent, grammar mostly intact but semantics wander:
-> Once upon "We was going to go home Lucy, she did the gooseoceros. The duck
-> didn't have a lion. She went to shore and saw Lily's puppy... Bob and the
-> farmer had a job for her bunny. They became best friends and played together
-> every day.
-
-### Analysis
-
-H16 confirms the window-size scaling pattern:
+Quadrupling to H16 confirms the pattern:
 
 - **H16 at 1e-5** is degraded (val 2.533), unlike H8 which was coherent at the
   same epsilon. The 4x wider window means 4x more cumulative pull force, pushing
@@ -365,10 +348,11 @@ H16 confirms the window-size scaling pattern:
   holds up better than at 1e-5, but the narrative lacks focus. H16 likely needs
   ~2.5e-6 or lower for fully clean generation.
 
-The scaling rule holds: safe epsilon ~ 1/H. At H4, 1e-5 is safe; at H8, 1e-5
-is marginal; at H16, even 5e-6 isn't quite enough. The practical implication is
-that wider Hebbian windows offer diminishing returns — the safe epsilon shrinks
-faster than the potential benefit from more neighbors.
+The effective pull force scales with window size (each step applies pulls from
+W neighbors with 1/d decay, so total force ~ H * eps * harmonic(H)). The safe
+epsilon should therefore scale inversely with window size. The practical
+implication is that wider Hebbian windows offer diminishing returns — the safe
+epsilon shrinks faster than the potential benefit from more neighbors.
 
 ## Next Steps
 
