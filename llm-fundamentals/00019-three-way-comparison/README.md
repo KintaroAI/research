@@ -316,9 +316,64 @@ W neighbors with 1/d decay, so total force ~ H * eps * harmonic(W)). The safe
 epsilon should therefore scale inversely with window size. At H4, 1e-5 is
 safe; at H8, 1e-5 is still safe but 1e-4 is already catastrophic.
 
+## Follow-Up: H16 Window Size Sweep
+
+**Date:** 2026-02-22
+
+Extending the window size sweep to H=16 (16 preceding neighbors with 1/d decay).
+Based on the H4→H8 scaling pattern, the safe epsilon should be roughly 1/4 of H4's,
+so tested 1e-5 and 5e-6.
+
+### Setup
+
+Same as prior sweeps: 2500 steps from `model_50m.bin`, batch 8, seq 512.
+
+| Run | Epsilon | W&B |
+|-----|---------|-----|
+| hebbian-H16-u1e5 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/b4af93e) |
+| hebbian-H16-u5e6 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/9q1ea3h8) |
+
+### Results
+
+| Window | Epsilon | Val Loss @2500 | Training Stability | Generation (256 tok) |
+|--------|---------|---------------:|--------------------|----------------------|
+| H4 | 1e-5 | (main exp) | Stable | Coherent |
+| H8 | 1e-5 | 2.201 | Stable | Coherent (minor quirks) |
+| H16 | 1e-5 | 2.533 | Stable | Degraded |
+| H16 | 5e-6 | 2.471 | Stable | Semi-coherent |
+
+### Generation samples
+
+**H16, 1e-5** — Degraded, wandering narrative:
+> Once upon a time, in there lived a small forest little day. Every morning,
+> the animals would explore and explore the world ands...
+
+**H16, 5e-6** — Semi-coherent, grammar mostly intact but semantics wander:
+> Once upon "We was going to go home Lucy, she did the gooseoceros. The duck
+> didn't have a lion. She went to shore and saw Lily's puppy... Bob and the
+> farmer had a job for her bunny. They became best friends and played together
+> every day.
+
+### Analysis
+
+H16 confirms the window-size scaling pattern:
+
+- **H16 at 1e-5** is degraded (val 2.533), unlike H8 which was coherent at the
+  same epsilon. The 4x wider window means 4x more cumulative pull force, pushing
+  1e-5 past the safe threshold.
+- **H16 at 5e-6** improves (val 2.471) but is still only semi-coherent. Grammar
+  holds up better than at 1e-5, but the narrative lacks focus. H16 likely needs
+  ~2.5e-6 or lower for fully clean generation.
+
+The scaling rule holds: safe epsilon ~ 1/H. At H4, 1e-5 is safe; at H8, 1e-5
+is marginal; at H16, even 5e-6 isn't quite enough. The practical implication is
+that wider Hebbian windows offer diminishing returns — the safe epsilon shrinks
+faster than the potential benefit from more neighbors.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
 - [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
-- [ ] Try Hebbian at 3e-5 or 5e-5 to find the sweet spot between "too weak to matter" and "disrupts grammar"
+- [ ] Try H16 at 2.5e-6 to confirm the safe epsilon scaling rule
+- [ ] Test whether adaptive epsilon (eps/H) could make Hebbian window-size agnostic
