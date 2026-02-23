@@ -185,8 +185,76 @@ than Hebbian), but the baseline-vs-blend ordering is reversed.
 - Hebbian's deficit is consistent and stable, confirming the structural harm
   of non-learnable embedding perturbation
 
+## Follow-Up: Hebbian Epsilon Sweep
+
+**Date:** 2026-02-22
+
+The main experiment used `-u 1e-5` for Hebbian-H4, which trailed baseline by
++0.037. To understand the sensitivity to epsilon, ran short 2500-step probes
+at 1e-3, 1e-4, and 1e-6 (100x above, 10x above, and 10x below the original).
+
+### Setup
+
+Same as main experiment but 2500 steps instead of 50,000. All runs start from
+`model_50m.bin` with `-H 4`.
+
+| Run | Epsilon | W&B |
+|-----|---------|-----|
+| hebbian-H4-u1e3 | 1e-3 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/3uo9q772) |
+| hebbian-H4-u1e4 | 1e-4 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/8r68mrjl) |
+| hebbian-H4-u1e6 | 1e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/w0rpxieg) |
+
+### Results
+
+| Epsilon | Val Loss @2500 | Training Stability | Generation (256 tok) |
+|---------|---------------:|--------------------|-----------------------|
+| 1e-3 | 6.442 | Stable, no NaN | Word salad — individually valid tokens but no grammar or coherence |
+| 1e-4 | 3.571 | Loss spike at step ~2296 (3.7→6.1, recovered by ~2380) | Semi-coherent — recognizable story elements but broken grammar |
+| 1e-5 | (main exp) | Stable | Coherent (see above) |
+| 1e-6 | 2.450 | Stable, smooth | Coherent — proper dialogue, character names, story structure |
+
+### Generation samples
+
+**1e-3** — Degenerate bag-of-words:
+> middle seven sighed beat One had helpy said world She stopped upon " airport
+> others boats bird wearing loud have moral TheSuddenly Sam mom Lily" They
+> carrots fun will Lily family milk walked furry advicecy ran...
+
+**1e-4** — Recognizable fragments, broken grammar:
+> Lilymy took remove your room instantly tried to unlock!" Lilycase thought
+> for that Fino did not share Benmy it and peided But then I am gone realized
+> he said the tomato were playing...
+
+**1e-6** — Coherent TinyStories:
+> One day, there friend named Tom was her dog, a little girl named Lily. She
+> was very weak. She said, "My name is Mimi. Be quiet. I am married," she said,
+> "I didn't know," Amy said, "I am scared of me. I can play together."
+
+### Analysis
+
+The Hebbian pull epsilon controls a sharp quality cliff. There is roughly a
+3-order-of-magnitude range from "fully coherent" (1e-6) to "word salad" (1e-3):
+
+- **1e-6:** Negligible effect on training — val loss and generation quality
+  are indistinguishable from what a baseline would produce at 2500 steps. The
+  pull may be too weak to meaningfully restructure embeddings.
+- **1e-5:** (Main experiment) Adds +0.037 val loss at 50k steps but generation
+  remains coherent. This is the edge of the useful range.
+- **1e-4:** Causes training instability (loss spikes) and partially destroys
+  grammatical structure. The embedding geometry is being disrupted faster than
+  the model can adapt.
+- **1e-3:** Completely overwhelms gradient-based learning. The model achieves
+  reasonable loss numerically (6.4) but the embedding space is so distorted
+  that autoregressive generation fails entirely.
+
+A notable observation: all Hebbian runs produced `!!!!!!...` for the short
+64-token in-training samples, regardless of epsilon. This may be a degenerate
+mode triggered by the short sampling context interacting with Hebbian-modified
+embeddings.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
 - [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
+- [ ] Try Hebbian at 3e-5 or 5e-5 to find the sweet spot between "too weak to matter" and "disrupts grammar"
