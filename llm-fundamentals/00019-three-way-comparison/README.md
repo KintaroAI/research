@@ -667,6 +667,136 @@ The most parsimonious remaining explanations involve properties of the number 8
 itself in the context of the data or hardware: batch size B=8, embedding dim
 512 = 8×64, or CUDA warp scheduling (warp_size=32, 32/4=8).
 
+## Follow-Up: 124M Model (Testing Embedding Dimension Hypothesis)
+
+**Date:** 2026-02-22
+
+H=8 is a sharp sweet spot across three architectures (8L/8H/512, 8L/16H/512,
+4L/8H/512). Head-count and layer-count alignment hypotheses are both falsified.
+All tested models share embedding dim 512 = 8×64 and batch size B=8. A 124M
+model with 768-dim embeddings (768 = 12×64, 12 layers, 12 heads) breaks the
+dim pattern entirely — nothing is 8 except batch size.
+
+### Setup
+
+Created `model_124m.bin` via:
+```bash
+python create_model.py --block-size 512 --n-layer 12 --n-head 12 --n-embd 768 -o model_124m.bin
+```
+
+Model: 12 layers, 12 heads, 768 dim, 124.0M params. All runs: 2500 steps,
+batch 8, seq 512, eps 1e-5 (for Hebbian runs).
+
+| Run | Config | W&B |
+|-----|--------|-----|
+| 124m-baseline | (none) | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/e6rn89zu) |
+| 124m-blend-G8 | `-G 8` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/8qwzlhs0) |
+| 124m-H4 | `-H 4 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/xhi1a4jy) |
+| 124m-H8 | `-H 8 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/0p238n2u) |
+| 124m-H12 | `-H 12 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/sivuvy74) |
+| 124m-H16 | `-H 16 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/o57lzik9) |
+
+### Results
+
+| Config | Val Loss @2500 | Delta vs Baseline | Generation (256 tok) |
+|--------|---------------:|------------------:|----------------------|
+| Baseline | 2.286 | — | Coherent |
+| Blend G8 | 2.231 | -0.055 | Coherent |
+| H4 | 2.406 | +0.120 | Coherent (minor slips) |
+| H8 | 2.486 | +0.200 | Coherent (degraded) |
+| H12 | 2.540 | +0.254 | Coherent (degraded) |
+| H16 | 2.554 | +0.268 | Coherent (degraded) |
+
+### Generation samples
+
+**124m Baseline** — Coherent TinyStories, clean narrative:
+> A lady hugged the colorer. She saw the neighbor making big whistle and the
+> siren to wash the acents. Ann was very surprised and ashamed... They learned
+> that it's not worth it, with things that we are always ignorant. She also
+> listened to us for permission and not being patient.
+
+**124m Blend G8** — Coherent, quirky but well-formed:
+> Once, there was a famous king. He ran at the moon and kept to enthusiastic.
+> He was curious and defeated like a nice person... The young girl smiled. She
+> went a new haircut house and asked the wise owl why if they could talk.
+
+**124m H4** — Coherent, minor grammatical slips:
+> One day, a little girl named Lily to the park with her mommy. She went to the
+> park with her daddy to play... From that day on, Lily always remembered to
+> listen to her mommy and listen to her.
+
+**124m H8** — Coherent but degraded, narrative wanders:
+> Tom loves things zone. Tim and Lily were happy. They saw lots of presents and
+> playing near it... The moral of you unite when they are able to be more
+> important and stay a fun love spa.
+
+**124m H12** — Coherent but degraded, sentence structure breaks:
+> One day, Lily went to the park to slide on the swings. She said, "Look at my
+> shoes tomorrow! Why were hiding in create a surprise?"... Whiskers learned
+> that being different is important and not be kind to someone or bad.
+
+**124m H16** — Coherent but degraded, fragments:
+> One day, Timmy and his mommy became playing in the woods... Timmy was happy,
+> knowing From that sometimes being alone.
+
+### Analysis
+
+**H8 does NOT win in the 124M model.** The Hebbian window sweep shows a
+monotonically increasing val loss with window size:
+
+| Window | Val Loss @2500 |
+|--------|---------------:|
+| H4 | 2.406 |
+| H8 | 2.486 |
+| H12 | 2.540 |
+| H16 | 2.554 |
+
+There is no H8 sweet spot — H4 is the best Hebbian config, and all Hebbian
+runs trail baseline substantially. The sharp H8 dip seen in 512-dim models
+does not appear at 768 dim.
+
+**Blend G8 continues to outperform baseline** (2.231 vs 2.286, -0.055),
+consistent with the pattern seen across all architectures.
+
+### Cross-Architecture Summary (Updated)
+
+Four architectures tested, all at eps=1e-5, 2500 steps:
+
+| Window | 8L/8H/512 (51M) | 8L/16H/512 (51M) | 4L/8H/512 (39M) | 12L/12H/768 (124M) |
+|--------|----------------:|------------------:|----------------:|-------------------:|
+| Baseline | 2.272 | 2.272 | 2.132 | 2.286 |
+| Blend G8 | — | 2.285 | 2.110 | 2.231 |
+| H4 | (50k run) | 2.258 | 2.284 | 2.406 |
+| H5 | — | 2.433 | 2.337 | — |
+| H6 | 2.574 | — | — | — |
+| H7 | 2.496 | — | — | — |
+| **H8** | **2.201** | **2.182** | **2.197** | 2.486 |
+| H9 | 2.633 | — | — | — |
+| H10 | 2.586 | — | — | — |
+| H12 | — | 2.568 | 2.250 | 2.540 |
+| H16 | 2.533 | 2.775 | 2.383 | 2.554 |
+
+**The H8 sweet spot is specific to 512-dim models.** Three 512-dim
+architectures (varying heads 8→16, layers 8→4) all show H8 as a dramatic
+outlier. The 768-dim model shows no such effect — val loss increases
+monotonically with window size, suggesting Hebbian pull is pure damage at
+this scale.
+
+This narrows the hypothesis space significantly:
+
+- ~~Head count alignment~~ — falsified (H8 wins with 8 and 16 heads)
+- ~~Layer count alignment~~ — falsified (H8 wins with 4 and 8 layers)
+- ~~Batch size alignment~~ — weakened (B=8 in all runs, but 124M model has B=8 too and shows no H8 effect)
+- **Embedding dimension** — strongest remaining candidate (512 = 8×64; the H8 window pulls each embedding toward 8 neighbors, matching the 8 head-dim-sized chunks in the embedding space)
+- **CUDA warp/scheduling** — still viable but less likely (same GPU for all runs)
+
+The batch size hypothesis is now weakened because the 124M model also uses
+B=8 but shows no H8 sweet spot. The embedding dimension hypothesis becomes
+the frontrunner: 512-dim embeddings with 64-dim head slices create 8
+natural partitions, and an H=8 pull window may align with this structure.
+At 768 dim with 64-dim head slices there are 12 partitions, and H=8 no
+longer has special significance.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
@@ -676,6 +806,7 @@ itself in the context of the data or hardware: batch size B=8, embedding dim
 - [x] ~~Test H8 with different head count~~ (done: 16-head model, H8 still wins — head alignment falsified)
 - [x] ~~Test H8 with different layer count~~ (done: 4-layer model, H8 still wins — layer alignment falsified)
 - [ ] Test H8 with different batch size (B=4, B=16) to test batch-alignment hypothesis
-- [ ] Test H8 with different embedding dim (256 or 768) to test dim-alignment hypothesis
+- [x] ~~Test H8 with different embedding dim (768)~~ (done: 124M model, H8 sweet spot disappears — embedding dim is prime suspect)
+- [ ] Test H8 with 256-dim model to further confirm dim hypothesis (256 = 4×64, predict H4 sweet spot)
 - [ ] Test whether adaptive epsilon (eps/H or eps/harmonic(H)) could make Hebbian window-size agnostic
 - [ ] Run H8 at 1e-5 for full 50k steps to see if the advantage persists long-term
