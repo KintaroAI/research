@@ -550,6 +550,123 @@ space:
 Testing with a different layer count (e.g., 4 or 12 layers) would distinguish
 the layer-alignment hypothesis.
 
+## Follow-Up: 4-Layer Model (Testing Layer Alignment Hypothesis)
+
+**Date:** 2026-02-22
+
+To test whether H8 is special because the original model has 8 layers, created
+a 4-layer variant: 4 layers, 8 heads, 512 dim, 38.6M params. If H8's advantage
+comes from matching the layer count, we'd expect H=4 to be the sweet spot here.
+
+### Setup
+
+Created `model_4L.bin` via:
+```bash
+python create_model.py --block-size 512 --n-layer 4 --n-head 8 --n-embd 512 -o model_4L.bin
+```
+
+All runs: 2500 steps, batch 8, seq 512, eps 1e-5 (for Hebbian runs).
+
+| Run | Config | W&B |
+|-----|--------|-----|
+| 4L-baseline | (none) | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/osfbwk13) |
+| 4L-blend-G8 | `-G 8` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/5utr2xtw) |
+| 4L-hebbian-H4 | `-H 4 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/s2llmabm) |
+| 4L-hebbian-H5 | `-H 5 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/q4incvlq) |
+| 4L-hebbian-H8 | `-H 8 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/2twad41i) |
+| 4L-hebbian-H12 | `-H 12 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/jypnyja0) |
+| 4L-hebbian-H16 | `-H 16 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/wmxd3e21) |
+
+### Results
+
+| Config | Val Loss @2500 | Generation (256 tok) |
+|--------|---------------:|----------------------|
+| Baseline | 2.132 | Coherent |
+| Blend G8 | 2.110 | Coherent |
+| H4 | 2.284 | Degraded |
+| H5 | 2.337 | Degraded |
+| **H8** | **2.197** | **Coherent** |
+| H12 | 2.250 | Degraded |
+| H16 | 2.383 | Degraded |
+
+### Generation samples
+
+**4L Baseline** — Coherent TinyStories:
+> Once upon a time, there lived a brave little boy named Timmy and his mommy had
+> a plane. They were very good friends and squirrels... He sang a song by the park
+> with many colors. He built the song in the sun.
+
+**4L Blend G8** — Coherent, good quality:
+> One day, there was a little boy named Timmy. Timmy saw a big elephant by. She
+> had a lamp on it... His mom said, "Of course, Timmy and you are very kind."
+> Timmy was very excited.
+
+**4L H4** — Degraded, grammar breaks down:
+> Alice went on theByet believe the girl splashed around and watched the street...
+> She knew that she had made a new friend and to teach she would be spent the
+> whole day, he would swim in was.
+
+**4L H5** — Degraded, sentence fragments:
+> One day, the little girl went outside to play for a walk. outside and the soldier
+> saw the car light around her friend... From that day on, Bobby and Lily slowed
+> down the window and played brown tape.
+
+**4L H8** — Coherent, best Hebbian quality:
+> Once upon a time, there was a little boy named Timmy. Timmy loved to play with
+> his friends and trucks. One day, Timmy decided to make a hole in his yard...
+> They were very kind and played together all day.
+
+**4L H12** — Degraded, repetitive and wandering:
+> Once upon a time, there was in a big yard the pond with pedals... Lily's teddy
+> bear decided to ask her teddy bear to stay to the magic doing something in the
+> forest. Lily was so happy to have her teddy bear, and her teddy bear.
+
+**4L H16** — Degraded, fragmented narrative:
+> One day, Sometimes, there was a little bird named Bobo. Bobo lived in the park
+> with his mom... Bobo thanked Bobo with a make his head. They all shone happily
+> and watched the flowers go down.
+
+### Analysis
+
+**H8 is still the sweet spot with 4 layers.** This falsifies the "layer count
+alignment" hypothesis. The model has 4 layers, but H=4 (2.284) does NOT win —
+H=8 (2.197) still does. Notably, H=4 actually *hurts* this model (+0.15 vs
+baseline), while H=8 only hurts by +0.065.
+
+The 4-layer model also shows a notable pattern: blend G8 again beats baseline
+(2.110 vs 2.132), consistent with the 8-layer 50k-step result.
+
+### Cross-Architecture Summary
+
+Three architectures tested, all at eps=1e-5, 2500 steps:
+
+| Window | 8L/8H (51M) | 8L/16H (51M) | 4L/8H (39M) |
+|--------|------------:|-------------:|------------:|
+| Baseline | 2.272 | 2.272 | 2.132 |
+| Blend G8 | — | 2.285 | 2.110 |
+| H4 | (50k run) | 2.258 | 2.284 |
+| H5 | — | 2.433 | 2.337 |
+| H6 | 2.574 | — | — |
+| H7 | 2.496 | — | — |
+| **H8** | **2.201** | **2.182** | **2.197** |
+| H9 | 2.633 | — | — |
+| H10 | 2.586 | — | — |
+| H12 | — | 2.568 | 2.250 |
+| H16 | 2.533 | 2.775 | 2.383 |
+
+H=8 wins across all three architectures. The effect is NOT tied to:
+
+- ~~Head count~~ — falsified (H8 wins with 8 and 16 heads)
+- ~~Layer count~~ — falsified (H8 wins with 4 and 8 layers)
+- **Batch size** — still viable (B=8 in all runs)
+- **Data structure** — still viable (same TinyStories data/tokenizer)
+- **CUDA warp/scheduling** — still viable (8 = warp_size/4)
+- **Embedding dimension** — still viable (512 = 8 × 64 in all runs)
+
+The most parsimonious remaining explanations involve properties of the number 8
+itself in the context of the data or hardware: batch size B=8, embedding dim
+512 = 8×64, or CUDA warp scheduling (warp_size=32, 32/4=8).
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
@@ -557,14 +674,8 @@ the layer-alignment hypothesis.
 - [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
 - [x] ~~Investigate H8 sweet spot — test H6, H10 to map full curve~~ (done: H6–H16 curve mapped, H8 confirmed as sharp outlier)
 - [x] ~~Test H8 with different head count~~ (done: 16-head model, H8 still wins — head alignment falsified)
-- [ ] Test H8 with a different layer count (4 or 12 layers) to test layer-alignment hypothesis
-- [ ] Test whether adaptive epsilon (eps/H or eps/harmonic(H)) could make Hebbian window-size agnostic
-- [ ] Run H8 at 1e-5 for full 50k steps to see if the advantage persists long-term
-
-- [ ] Run the three-way comparison again with a different seed to test reproducibility
-- [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
-- [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
-- [x] ~~Investigate H8 sweet spot — test H6, H10 to map full curve~~ (done: H6–H16 curve mapped, H8 confirmed as sharp outlier)
-- [ ] Test H8 with a different model architecture (4-head or 12-head) to confirm structural alignment hypothesis
+- [x] ~~Test H8 with different layer count~~ (done: 4-layer model, H8 still wins — layer alignment falsified)
+- [ ] Test H8 with different batch size (B=4, B=16) to test batch-alignment hypothesis
+- [ ] Test H8 with different embedding dim (256 or 768) to test dim-alignment hypothesis
 - [ ] Test whether adaptive epsilon (eps/H or eps/harmonic(H)) could make Hebbian window-size agnostic
 - [ ] Run H8 at 1e-5 for full 50k steps to see if the advantage persists long-term
