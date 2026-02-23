@@ -435,7 +435,131 @@ The H8 sweet spot remains unexplained and warrants further investigation. Testin
 with different model sizes (e.g., 4-head or 12-head models) could distinguish
 the "structural alignment" hypothesis from coincidence.
 
+## Follow-Up: 16-Head Model (Testing Structural Alignment Hypothesis)
+
+**Date:** 2026-02-22
+
+To test whether H8 is special because the original model has 8 attention heads,
+created a 16-head variant with the same architecture: 8 layers, 512 dim, 51.2M
+params — only the head count changes (head dim drops from 64 to 32). If H8's
+advantage comes from matching the head count, we'd expect H=16 to be the sweet
+spot in this model.
+
+### Setup
+
+Created `model_50m_16h.bin` via:
+```bash
+python create_model.py --block-size 512 --n-layer 8 --n-head 16 --n-embd 512 -o model_50m_16h.bin
+```
+
+All runs: 2500 steps, batch 8, seq 512, eps 1e-5 (for Hebbian runs).
+
+| Run | Config | W&B |
+|-----|--------|-----|
+| 16h-baseline | (none) | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/hvktkwev) |
+| 16h-blend-G8 | `-G 8` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/9nl0qq3e) |
+| 16h-hebbian-H4 | `-H 4 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/pq2ve61i) |
+| 16h-hebbian-H5 | `-H 5 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/vsfyp42f) |
+| 16h-hebbian-H8 | `-H 8 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/71jbiiw4) |
+| 16h-hebbian-H12 | `-H 12 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/u4rkqy96) |
+| 16h-hebbian-H16 | `-H 16 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/xk6ztc1o) |
+
+### Results
+
+| Config | Val Loss @2500 | Generation (256 tok) |
+|--------|---------------:|----------------------|
+| Baseline | 2.272 | Coherent |
+| Blend G8 | 2.285 | Coherent |
+| H4 | 2.258 | Coherent |
+| H5 | 2.433 | Degraded grammar |
+| **H8** | **2.182** | **Coherent** |
+| H12 | 2.568 | Fragmented |
+| H16 | 2.775 | Word salad |
+
+### Generation samples
+
+**16h Baseline** — Coherent TinyStories:
+> Once upon a time, there were a little girl named Lily. She loved to go outside
+> and read bookshelf. One day, her mommy asked for a time at the garage. Lily
+> waited about if she went inside... Lily hugged her mommy and said, "I love you,
+> mommy and dadmy!"
+
+**16h Blend G8** — Coherent, slightly quirkier:
+> Once upon a time, there was a little hut in the forest. Behind this tree
+> sunscreen, a tree was wide and flew around loudly... Tom ran to his bed so he
+> tripped and pinch the tree. His friends were very patient and they should be good.
+
+**16h H4** — Coherent, good story structure:
+> Once upon a time, there was a little girl named Lily. She loved to play outside
+> and make bubbles cookies. One day, she found a magic cubes... Lily's mom saw in
+> her arm and was surprised. She hugged her and hugged her.
+
+**16h H5** — Degraded grammar, story wanders:
+> Once upon a time, Ellie and her mommy went to the store to a store where had
+> some menu to buy some iceba he noticed something... The cane hit up in a big
+> hole and the mud. The bear chased Tommy and took Lucy out her tight.
+
+**16h H8** — Coherent, best quality:
+> Once upon a time, there was a little boy named Timmy. Timmy loved to play
+> outside and bring his toys. One day, he met a big dish... Timmy taught Lily to
+> listen to his mom and wait. He had an idea. He grabbed a peaceful nap and cut
+> some of drawings.
+
+**16h H12** — Fragmented, multiple stories collide:
+> Once upon a time, there was in a big yard the pond with pedals. The lion said,
+> "Ducky, you'll be a little rabbit..."... Timmy was fixing the kitchen. "Please
+> are these flowers. Do you want to cut some money, Timmy now, come back with a
+> restaurantets..."
+
+**16h H16** — Word salad, no coherent narrative:
+> The wet man hopped out. TheWould Rudy was out a weak cat. The musician and Jally
+> saw and had the black fruits... He also looked at the sun and smiled in his hair.
+> He put his red ball up his yellow fruit and a grown-seek.
+
+### Analysis
+
+**H8 is still the sweet spot with 16 heads.** This falsifies the "head count
+alignment" hypothesis. The model now has 16 heads, but H=8 (not H=16) still
+wins decisively — in fact the advantage is even stronger: H8 beats baseline by
+-0.09 (2.182 vs 2.272) compared to -0.07 in the 8-head model (2.201 vs 2.272
+at 2500 steps).
+
+Comparing the window-size curves across architectures:
+
+| Window | 8-head model | 16-head model |
+|--------|------------:|-------------:|
+| H4 | (50k run) | 2.258 |
+| H5 | — | 2.433 |
+| H6 | 2.574 | — |
+| H7 | 2.496 | — |
+| **H8** | **2.201** | **2.182** |
+| H9 | 2.633 | — |
+| H10 | 2.586 | — |
+| H12 | — | 2.568 |
+| H16 | 2.533 | 2.775 |
+
+The H8 sweet spot is robust across head counts. H=16 does NOT become special
+in the 16-head model — it's actually worse (2.775). This narrows the hypothesis
+space:
+
+- ~~Head count alignment~~ — falsified (H8 wins with both 8 and 16 heads)
+- **Layer count alignment** — still viable (both models have 8 layers)
+- **Data/batch structure** — still viable (B=8, T=512 are the same)
+- **CUDA warp/scheduling** — still viable (8 = warp_size/4)
+
+Testing with a different layer count (e.g., 4 or 12 layers) would distinguish
+the layer-alignment hypothesis.
+
 ## Next Steps
+
+- [ ] Run the three-way comparison again with a different seed to test reproducibility
+- [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
+- [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
+- [x] ~~Investigate H8 sweet spot — test H6, H10 to map full curve~~ (done: H6–H16 curve mapped, H8 confirmed as sharp outlier)
+- [x] ~~Test H8 with different head count~~ (done: 16-head model, H8 still wins — head alignment falsified)
+- [ ] Test H8 with a different layer count (4 or 12 layers) to test layer-alignment hypothesis
+- [ ] Test whether adaptive epsilon (eps/H or eps/harmonic(H)) could make Hebbian window-size agnostic
+- [ ] Run H8 at 1e-5 for full 50k steps to see if the advantage persists long-term
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
