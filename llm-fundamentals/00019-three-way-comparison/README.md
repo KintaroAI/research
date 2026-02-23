@@ -797,6 +797,143 @@ natural partitions, and an H=8 pull window may align with this structure.
 At 768 dim with 64-dim head slices there are 12 partitions, and H=8 no
 longer has special significance.
 
+## Follow-Up: 355M Model (Scaling to Larger Embedding Dim)
+
+**Date:** 2026-02-23
+
+The 124M model (768-dim) showed no H8 sweet spot — val loss increased monotonically
+with window size. To further test scaling behavior, ran the full suite on a 355M
+model with 1024-dim embeddings (1024 = 16×64 head_dim). This model has 24 layers,
+16 heads — nothing is 8 except batch size.
+
+### Setup
+
+Used `model_355m.bin`: 24 layers, 16 heads, 1024 dim, 354.3M params. All runs:
+2500 steps, batch 8, seq 512, eps 1e-5 (for Hebbian runs).
+
+| Run | Config | W&B |
+|-----|--------|-----|
+| 355m-baseline | (none) | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/pkv1e45h) |
+| 355m-blend-G8 | `-G 8` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/jdu9kx2w) |
+| 355m-H4 | `-H 4 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/7n9phw2u) |
+| 355m-H8 | `-H 8 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/hubdv482) |
+| 355m-H12 | `-H 12 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/m6cd4lgp) |
+| 355m-H16 | `-H 16 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/ryvofj8i) |
+
+### Commands
+
+```bash
+# Baseline
+./venv/bin/python wandb_train.py --name exp19-355m-baseline --tags exp19,355m -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 2500 -q 0 -c ~/data/exp19-355m-baseline.bin
+
+# Blend G8
+./venv/bin/python wandb_train.py --name exp19-355m-blend-G8 --tags exp19,355m -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 2500 -q 0 -G 8 -c ~/data/exp19-355m-blend-G8.bin
+
+# Hebbian H4
+./venv/bin/python wandb_train.py --name exp19-355m-H4 --tags exp19,355m -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 2500 -q 0 -H 4 -u 1e-5 -c ~/data/exp19-355m-H4.bin
+
+# Hebbian H8
+./venv/bin/python wandb_train.py --name exp19-355m-H8 --tags exp19,355m -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 2500 -q 0 -H 8 -u 1e-5 -c ~/data/exp19-355m-H8.bin
+
+# Hebbian H12
+./venv/bin/python wandb_train.py --name exp19-355m-H12 --tags exp19,355m -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 2500 -q 0 -H 12 -u 1e-5 -c ~/data/exp19-355m-H12.bin
+
+# Hebbian H16
+./venv/bin/python wandb_train.py --name exp19-355m-H16 --tags exp19,355m -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 2500 -q 0 -H 16 -u 1e-5 -c ~/data/exp19-355m-H16.bin
+```
+
+### Results
+
+| Config | Val Loss @2500 | Delta vs Baseline | Avg Train Loss | Gen. Gap |
+|--------|---------------:|------------------:|---------------:|---------:|
+| Blend G8 | 3.006 | -1.075 | 2.998 | +0.009 |
+| H8 | 3.876 | -0.205 | 3.909 | -0.033 |
+| H12 | 3.999 | -0.082 | 4.035 | -0.037 |
+| Baseline | 4.081 | — | 4.079 | +0.002 |
+| H4 | 4.329 | +0.248 | 4.388 | -0.059 |
+| H16 | 4.652 | +0.571 | 4.635 | +0.017 |
+
+### Analysis
+
+**H8 is the best Hebbian window at 355M, but the pattern differs from smaller models.**
+
+At 1024-dim (355M), Hebbian pull shows a non-monotonic curve with H8 as a local
+minimum, but the effect is weaker than at 512-dim and the shape is different:
+
+| Window | Val Loss @2500 | vs Baseline |
+|--------|---------------:|------------:|
+| H4 | 4.329 | +0.248 |
+| H8 | 3.876 | -0.205 |
+| H12 | 3.999 | -0.082 |
+| H16 | 4.652 | +0.571 |
+
+Key observations:
+
+**1. H8 beats baseline by -0.205.** Unlike the 124M model (768-dim) where all
+Hebbian windows hurt, H8 at 355M (1024-dim) actually helps. This partially
+contradicts the "H8 sweet spot is 512-dim only" conclusion from the 124M results.
+
+**2. H16 diverges late in training.** The H16 run reached a minimum val loss of
+~4.26 around step 2140, then loss climbed sharply to 4.65 by step 2500. The
+training loss also spiked. The large Hebbian window destabilizes the 355M model's
+embeddings over extended training.
+
+**3. All Hebbian runs show negative generalization gaps.** Val loss is consistently
+lower than train loss for H4/H8/H12, suggesting the Hebbian pull acts as a
+regularizer. This effect is absent in baseline and blend runs.
+
+**4. Blend G8 dominates massively.** Val loss 3.006 vs baseline 4.081 — a 1.075
+improvement. This is the largest blend advantage seen across any architecture,
+suggesting the learnable blend layer becomes more valuable at larger model scales
+where there is more capacity to exploit local context.
+
+**5. The ordering H8 > H12 > baseline > H4 > H16** shows a clear sweet spot at
+H=8 rather than monotonic increase. With 1024 = 16×64 head_dim, the dim/8 = 128
+partition hypothesis from the 512-dim models doesn't directly apply (1024/8 = 128,
+not 64). The H8 effect may be more about the window size itself (matching local
+syntactic dependencies in TinyStories) than purely about embedding partitioning.
+
+### Cross-Architecture Summary (Updated)
+
+Five architectures tested, all at eps=1e-5, 2500 steps:
+
+| Window | 8L/8H/512 (51M) | 8L/16H/512 (51M) | 4L/8H/512 (39M) | 12L/12H/768 (124M) | 24L/16H/1024 (355M) |
+|--------|----------------:|------------------:|----------------:|-------------------:|--------------------:|
+| Baseline | 2.272 | 2.272 | 2.132 | 2.286 | 4.081 |
+| Blend G8 | — | 2.285 | 2.110 | 2.231 | 3.006 |
+| H4 | (50k run) | 2.258 | 2.284 | 2.406 | 4.329 |
+| H5 | — | 2.433 | 2.337 | — | — |
+| H6 | 2.574 | — | — | — | — |
+| H7 | 2.496 | — | — | — | — |
+| **H8** | **2.201** | **2.182** | **2.197** | 2.486 | **3.876** |
+| H9 | 2.633 | — | — | — | — |
+| H10 | 2.586 | — | — | — | — |
+| H12 | — | 2.568 | 2.250 | 2.540 | 3.999 |
+| H16 | 2.533 | 2.775 | 2.383 | 2.554 | 4.652 |
+
+The H8 sweet spot appears at 512-dim and 1024-dim but NOT at 768-dim:
+
+- **512-dim (3 architectures):** H8 is a dramatic outlier, beating baseline
+- **768-dim (124M):** No H8 effect, monotonically increasing damage
+- **1024-dim (355M):** H8 beats baseline (-0.205), non-monotonic curve returns
+
+This complicates the "embedding dim" hypothesis. 512 = 8×64 and 1024 = 16×64
+both show H8 effects, while 768 = 12×64 does not. Alternatively, the 355M
+model has much more capacity (24 layers) and may simply be better able to
+compensate for embedding perturbation, with H=8 matching some data-intrinsic
+property of TinyStories (typical clause length, attention span).
+
+Note: the 355M baseline val loss (4.081) is much higher than the 124M baseline
+(2.286) at 2500 steps. The larger model needs more steps to converge, so the
+355M results reflect a very early phase of training where the Hebbian pull may
+interact differently with the learning dynamics.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
@@ -807,6 +944,9 @@ longer has special significance.
 - [x] ~~Test H8 with different layer count~~ (done: 4-layer model, H8 still wins — layer alignment falsified)
 - [ ] Test H8 with different batch size (B=4, B=16) to test batch-alignment hypothesis
 - [x] ~~Test H8 with different embedding dim (768)~~ (done: 124M model, H8 sweet spot disappears — embedding dim is prime suspect)
+- [x] ~~Test H8 at 1024-dim (355M)~~ (done: H8 sweet spot reappears at 1024-dim, complicating the embedding-dim-only hypothesis)
 - [ ] Test H8 with 256-dim model to further confirm dim hypothesis (256 = 4×64, predict H4 sweet spot)
 - [ ] Test whether adaptive epsilon (eps/H or eps/harmonic(H)) could make Hebbian window-size agnostic
 - [ ] Run H8 at 1e-5 for full 50k steps to see if the advantage persists long-term
+- [ ] Run 355M for more steps (10k+) to test whether H8 advantage persists past early training
+- [ ] Run 355M with H6/H7/H9/H10 to map full curve at 1024-dim
