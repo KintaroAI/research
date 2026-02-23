@@ -267,6 +267,7 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 
 | Run | Window | Epsilon | W&B |
 |-----|--------|---------|-----|
+| hebbian-H6-u1e5 | H6 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/g0v66hqg) |
 | hebbian-H7-u1e5 | H7 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/12gi7rdk) |
 | hebbian-H8-u5e6 | H8 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/objbqhru) |
 | hebbian-H8-u1e5 | H8 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/k1322idk) |
@@ -274,6 +275,7 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 | hebbian-H8-u1e4 | H8 | 1e-4 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/r1qgdwr5) |
 | hebbian-H8-u1e3 | H8 | 1e-3 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/vf30tvvj) |
 | hebbian-H9-u1e5 | H9 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/kpwusoqf) |
+| hebbian-H10-u1e5 | H10 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/h5ib2r1l) |
 | hebbian-H16-u5e6 | H16 | 5e-6 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/9q1ea3h8) |
 | hebbian-H16-u1e5 | H16 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/b4af93e) |
 
@@ -285,16 +287,22 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 | H4 | 1e-5 | (main exp) | Stable | Coherent |
 | H4 | 1e-4 | 3.571 | Spike @~2296 | Broken grammar |
 | H4 | 1e-3 | 6.442 | Stable (stuck high) | Word salad |
+| H6 | 1e-5 | 2.574 | Stable | Coherent |
 | H7 | 1e-5 | 2.496 | Stable | Coherent |
 | **H8** | **5e-6** | **2.449** | **Stable** | **Coherent** |
 | **H8** | **1e-5** | **2.201 / 2.222** | **Stable** | **Coherent (minor quirks)** |
 | H8 | 1e-4 | 5.576 | Spike @~2455 | Word salad |
 | H8 | 1e-3 | 6.495 | Stable (stuck high) | Word salad |
 | H9 | 1e-5 | 2.633 | Stable | Coherent (degraded) |
+| H10 | 1e-5 | 2.586 | Stable | Coherent (drifty) |
 | H16 | 5e-6 | 2.471 | Stable | Semi-coherent |
 | H16 | 1e-5 | 2.533 | Stable | Degraded |
 
 ### Generation samples
+
+**H6, 1e-5** — Coherent, proper story elements with minor grammatical slips:
+> Once upon a time, there was a boy named Timmy. Timmy liked to play with items
+> fun. He had many toys, like houses, watching it reaching of his gas!...
 
 **H7, 1e-5** — Coherent, proper story structure:
 > Once upon time, a new boy named Timmy went to the park with his mom. Timmy
@@ -327,10 +335,15 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 > make blue birthday!" with arms sandwich Alice stack fox!". worth time's
 > eaten notOnceerry in so some feel herL wasety his again she next drank...
 
-**H9, 1e-5** — Coherent but degraded, more grammatical slips:
+**H9, 1e-5** — Coherent but degraded, more grammatical slips and sentence fragments:
 > One day, a generous bird lived near a tree. It wanted to live in the sun.
 > The bird wanted to fly. But the tree was jealous... The blue glove was not
 > clean anymore saw many times. Inside, they.
+
+**H10, 1e-5** — Coherent but drifty, narrative loses focus:
+> Tess, there was a little girl named Lily. She was a little girl named Lily,
+> collecting lollipop were pink... One day, Lily went to the room and met her
+> friend John playing with it...
 
 **H16, 5e-6** — Semi-coherent, grammar mostly intact but semantics wander:
 > Once upon "We was going to go home Lucy, she did the gooseoceros. The duck
@@ -346,34 +359,30 @@ Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
 
 The data reveals two key findings:
 
-**1. H8 is a sweet spot at eps=1e-5.**
+**1. H8 is a sharp sweet spot at eps=1e-5.**
 
-At the same epsilon (1e-5), H8 dramatically outperforms both its neighbors:
+The full window-size curve at eps=1e-5 reveals H8 as a dramatic outlier:
 
 | Window | Val Loss @2500 |
 |--------|---------------:|
+| H6 | 2.574 |
 | H7 | 2.496 |
-| H8 | 2.201 / 2.222 |
+| **H8** | **2.201 / 2.222** |
 | H9 | 2.633 |
+| H10 | 2.586 |
+| H16 | 2.533 |
 
 H8 achieves ~0.27 lower val loss than H7 and ~0.42 lower than H9. This is
-reproducible (two H8 runs: 2.201 and 2.222). The non-monotonic relationship
-with window size is unexpected — the simple "safe epsilon ~ 1/H" scaling law
-doesn't fully explain this. H8 may align with some structural property of the
-model (8 attention heads, 8 layers) or the data.
+reproducible (two H8 runs: 2.201 and 2.222). The curve is non-monotonic —
+H9 is *worse* than H10 and H16, ruling out any simple "more window = more
+damage" explanation.
 
-**2. Wider windows degrade faster.**
+**2. The curve is non-monotonic, not a smooth gradient.**
 
-Beyond H8, increasing window size at fixed epsilon causes progressive degradation:
-
-- **H8 at 1e-5** is coherent (val 2.201)
-- **H9 at 1e-5** is already degraded (val 2.633)
-- **H16 at 1e-5** is further degraded (val 2.533, worse generation than H9)
-- **H16 at 5e-6** improves (val 2.471) but is still only semi-coherent
-
-The effective pull force scales with window size (each step applies pulls from
-H neighbors with 1/d decay, so total force ~ eps * harmonic(H)). The safe
-epsilon should therefore scale inversely with window size.
+The relationship between window size and val loss at fixed epsilon is jagged:
+H6 (2.574) → H7 (2.496) → **H8 (2.201)** → H9 (2.633) → H10 (2.586) → H16 (2.533).
+The sharp dip at H8 and the fact that H9 is worse than both H10 and H16
+suggests a resonance effect rather than simple scaling.
 
 **3. Epsilon sweep within H8.**
 
@@ -384,10 +393,54 @@ H8 works well across a range of epsilons:
 - **H8 at 1e-4** — Catastrophic (val 5.576). Way past the cliff.
 - **H8 at 1e-3** — Broken (val 6.495). No learning.
 
+**4. Investigation: why is H8 special?**
+
+We investigated the `embed_pull_kernel` implementation to check for bugs
+(future leakage, cross-sequence contamination) that might accidentally favor
+H=8. Key findings:
+
+*Kernel is correct — no future leakage.* The inner loop `for (int d = 1;
+d <= W && d <= t; d++)` uses `d <= t` where `t = bt % T` (position within
+sequence). This correctly restricts lookback to within the current sequence
+position. A token at position 3 only pulls from positions 0–2, regardless of
+window size. No future information leaks.
+
+*Data is a contiguous stream.* The dataloader reads B×T+1 contiguous tokens
+per batch — not separate sequences. Tokens at position 0 of batch element k
+are adjacent in the corpus to the last token of batch element k-1. The `d <= t`
+guard prevents cross-sequence boundary pulls (position 0 has t=0, so the loop
+body never executes — no pulling from the previous batch element's tail).
+
+*atomicAdd race conditions are non-deterministic but not window-dependent.*
+The kernel uses `atomicAdd` on shared wte rows. When two threads try to pull
+the same token's embedding simultaneously, the order of operations is
+non-deterministic. However, this non-determinism affects all window sizes
+equally — there's no special property at H=8 that would reduce contention.
+
+*Leading hypothesis: model structure alignment.* The model has 8 attention
+heads and 8 layers, and the embedding dimension is 512 = 8 × 64. H=8 matching
+both the head count and layer count may create a resonance where the Hebbian
+pull restructures the embedding space in a way that aligns with how the
+transformer uses it. Each attention head attends to different aspects of
+context; an 8-token pull window may create embedding neighborhoods that map
+naturally onto what the 8 heads are trying to extract.
+
+*Alternative hypothesis: harmonic series interaction.* The pull force decays
+as 1/d, so total force ~ eps × H_n (nth harmonic number). H(8) ≈ 2.72 while
+H(9) ≈ 2.83. The jump from 8→9 crosses from "beneficial regularization" to
+"destructive perturbation" at eps=1e-5, but this doesn't explain why H7 (H(7)
+≈ 2.59) is also worse — the cliff would need to be very precisely located.
+
+The H8 sweet spot remains unexplained and warrants further investigation. Testing
+with different model sizes (e.g., 4-head or 12-head models) could distinguish
+the "structural alignment" hypothesis from coincidence.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
 - [ ] Run longer (100k+ steps) to see if blend advantage grows or shrinks
-- [ ] Investigate why H8 is a sweet spot — test H6, H10, H12 to map the full curve
-- [ ] Test whether adaptive epsilon (eps/H) could make Hebbian window-size agnostic
+- [x] ~~Investigate H8 sweet spot — test H6, H10 to map full curve~~ (done: H6–H16 curve mapped, H8 confirmed as sharp outlier)
+- [ ] Test H8 with a different model architecture (4-head or 12-head) to confirm structural alignment hypothesis
+- [ ] Test whether adaptive epsilon (eps/H or eps/harmonic(H)) could make Hebbian window-size agnostic
+- [ ] Run H8 at 1e-5 for full 50k steps to see if the advantage persists long-term
