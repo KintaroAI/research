@@ -252,6 +252,70 @@ A notable observation: all Hebbian runs produced `!!!!!!...` for the short
 mode triggered by the short sampling context interacting with Hebbian-modified
 embeddings.
 
+## Follow-Up: H8 Window Size Sweep
+
+**Date:** 2026-02-22
+
+To test whether a wider Hebbian window changes the dynamics, ran the same
+epsilon sweep (1e-3, 1e-4, 1e-5) with `-H 8` instead of `-H 4`. With H=8,
+each token pulls toward 8 preceding neighbors (with 1/d decay) instead of 4.
+
+### Setup
+
+Same as the H4 sweep: 2500 steps from `model_50m.bin`, batch 8, seq 512.
+
+| Run | Epsilon | W&B |
+|-----|---------|-----|
+| hebbian-H8-u1e5 | 1e-5 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/k1322idk) |
+| hebbian-H8-u1e4 | 1e-4 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/r1qgdwr5) |
+| hebbian-H8-u1e3 | 1e-3 | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/vf30tvvj) |
+
+### Results
+
+| Window | Epsilon | Val Loss @2500 | Training Stability | Generation (256 tok) |
+|--------|---------|---------------:|--------------------|----------------------|
+| H4 | 1e-5 | (main exp) | Stable | Coherent |
+| H4 | 1e-4 | 3.571 | Spike @~2296 | Broken grammar |
+| H4 | 1e-3 | 6.442 | Stable (stuck high) | Word salad |
+| H8 | 1e-5 | 2.201 | Stable | Coherent (minor quirks) |
+| H8 | 1e-4 | 5.576 | Spike @~2455 | Word salad |
+| H8 | 1e-3 | 6.495 | Stable (stuck high) | Word salad |
+
+### Generation samples
+
+**H8, 1e-5** — Coherent with minor quirks:
+> Once upon there and caterpillar, the puppy, there was her little girl named
+> Lily. The pink neighbor had pretty flowers and purple other flowers with
+> flowers. Lily was having so much fun playing in the park...
+
+**H8, 1e-4** — Word salad, worse than H4 at same epsilon:
+> open in automobileOne upon my asked see then it all flew about not got for
+> dayAs Tim, saw'tMom They said doctorily't dance up a momSuddenly's had's
+> wings!" and KTim had to was friends...
+
+**H8, 1e-3** — Pure word salad, similar to H4-1e-3:
+> make blue birthday!" with arms sandwich Alice stack fox!". worth time's
+> eaten notOnceerry in so some feel herL wasety his again she next drank...
+
+### Analysis
+
+Doubling the window from H4→H8 roughly halves the safe epsilon range:
+
+- **H8 at 1e-5** works well (val 2.201, coherent generation). The wider
+  window doesn't hurt at this gentle epsilon.
+- **H8 at 1e-4** is much worse than H4 at the same epsilon (5.576 vs 3.571).
+  The late-training spike is similar but H8's is more damaging — the model
+  doesn't recover in time. More neighbors means more cumulative pull force
+  per step, amplifying the destabilizing effect.
+- **H8 at 1e-3** is essentially identical to H4-1e-3 (6.495 vs 6.442). Both
+  are so broken that window size doesn't matter — loss barely moves from the
+  starting point.
+
+The effective pull force scales with window size (each step applies pulls from
+W neighbors with 1/d decay, so total force ~ H * eps * harmonic(W)). The safe
+epsilon should therefore scale inversely with window size. At H4, 1e-5 is
+safe; at H8, 1e-5 is still safe but 1e-4 is already catastrophic.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
