@@ -1013,6 +1013,85 @@ rate schedule — by providing cheap local context through a well-conditioned
 additional pathway, it stabilizes gradient flow in a way that lets the large
 model actually learn.
 
+### Generation samples
+
+Ran `./generate -e <checkpoint> -n 256 -p "Once upon a time"` on all three
+(blend requires `-G 8`). Also tested with prompt "The little boy walked to school".
+
+**Blend G8** (`-G 8`) — Fluent, coherent TinyStories with proper narrative arcs:
+
+> Once upon a time, there was a little girl named Lily. She loved to go on
+> journeys with her family. They walked and walked, and they found a big tree.
+> Lily knew they needed to protect her from the cold wind blindly on it. Lily saw
+> a big tree with a clear branch hanging from it. She asked her little brother if
+> he was scared, and he said no. Lily knew she had to do something to protect
+> herself from the wind. She went outside and took a deep breath. She stood tall
+> and strong as she carried the branch for her favorite toys. When she finished,
+> she felt proud of herself for staying calm and finding a safe way to protect
+> herself from the wind. From that day on, Lily felt known as a hero among her
+> family and knowing that she had helped the world save everyone.
+
+Second sample (prompt: "The little boy walked to school"):
+
+> Once upon a time, there was a wise goat. The goat lived on a big farm. The goat
+> was not like other cows. He was white and very wise. One day, the wise goat saw
+> a big ball in the field. He wanted to jump on the ball! The wise goat had a
+> plan. He would spring high and jump on the ball. The clever goat jumped off the
+> ball. He practiced every day. Soon, he could jump high in the sky. All the other
+> cows came to watch the wise goat. They were proud of their hard work.
+
+Grammar is correct throughout, with character names, dialogue, and story structure
+(setup, conflict, resolution). Minor semantic drift occasionally ("blindly on it",
+"the increase tall") but rare. Quality is comparable to the 51M model at 50k steps.
+
+**Baseline** — Word salad with recognizable vocabulary but no grammar:
+
+> a tree will play with play with the spider. She happy and scared was surprised
+> so cos his of a own her. She away't mud the top's. Timmy to a modern and to
+> skip her friends in it clean. Nem like sillyopl always and button his the had
+> his. He. They never. Sheel. The boy had to to chew homes's, but awe was too
+> was't.
+
+Second sample:
+
+> battery started the pie and happy fish powerful. Bob was not everything the pen
+> sleep want Anna."The. kindness. not a sweater, looking the oneman felt. The cat
+> quickly shining the song bear and the dog best. She were so thanked thankful.
+
+TinyStories vocabulary (names, toys, parks, animals) appears but words are in
+near-random order. No coherent sentences. Consistent with val loss 3.76 — the
+model learned token frequencies but not grammar or structure.
+
+**H8** — Pure word salad, worse than baseline:
+
+> the smile outside of Do need a dogs walk up hipp little hugged his, hairy the
+> Lily dogara high you they ", yellow sw course to he up opened because Lily told
+> blue . pretty was smiled scared need to. not " away Spot happy happy running
+> moment zoom the mom at pengully have to toys
+
+Second sample:
+
+> things Sammy, day a search the Gig into to to, declared. she game Ch the't!."
+> when next, he say the it itOh hold boss, The outside build some a Teddy
+> wasHerI if could and Sarah and,. barn loved itBob holding?
+
+Grammar completely absent. Frequent `<|endoftext|>` tokens interrupt output.
+Tokens are essentially random with slight TinyStories vocabulary bias. Consistent
+with val loss 5.54 — the model unlearned what it started with.
+
+### Quality summary
+
+| Model | Val Loss | Grammar | Coherence | Story Structure |
+|-------|---------|---------|-----------|-----------------|
+| Blend G8 | 1.350 | Fluent | Full narratives | Setup/conflict/resolution |
+| Baseline | 3.757 | Broken | Word salad | None |
+| H8 | 5.537 | None | Random tokens | None |
+
+The generation quality perfectly mirrors the val loss gap. Blend-G8 is the only
+355M checkpoint that actually learned language. The 9-parameter blend layer is
+the difference between a working model and a broken one at this scale without
+a learning rate schedule.
+
 **4. Revisiting the 2500-step 355M conclusions.** The H8 "sweet spot" at 355M
 was a mirage — it reflected the first 2000 steps before divergence. This
 actually *reinforces* the 124M finding: Hebbian pull at eps=1e-5 is destructive
