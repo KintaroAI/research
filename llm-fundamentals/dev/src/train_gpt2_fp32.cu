@@ -2862,6 +2862,8 @@ void error_usage() {
     fprintf(stderr, "  -u <float>  Hebbian pull strength epsilon (default = 1e-5)\n");
     fprintf(stderr, "  -x <string> test data filename pattern (default = NULL, no test set)\n");
     fprintf(stderr, "  -q <int>    RNG seed for reproducibility (default = 1337)\n");
+    fprintf(stderr, "  -W <int>    warmup steps for LR schedule (default = 0, disabled)\n");
+    fprintf(stderr, "  -L <float>  minimum LR for cosine decay (default = 0.0)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -2892,6 +2894,8 @@ int main(int argc, char *argv[]) {
     int snapshot_every = 100;  // save snapshot every N steps
     const char* test_data_pattern = NULL;  // test set (evaluated only at end)
     unsigned int rng_seed = 1337;  // RNG seed for reproducibility
+    int warmup_steps = 0;       // 0 = no warmup (constant LR, current behavior)
+    float min_lr = 0.0f;        // minimum LR at end of cosine decay (0 = decay to zero)
     for (int i = 1; i < argc; i+=2) {
         if (i + 1 >= argc) { error_usage(); } // must have arg after flag
         if (argv[i][0] != '-') { error_usage(); } // must start with dash
@@ -2925,6 +2929,8 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'u') { EMBED_PULL_EPS = atof(argv[i+1]); }
         else if (argv[i][1] == 'x') { test_data_pattern = argv[i+1]; }
         else if (argv[i][1] == 'q') { rng_seed = (unsigned int)atoi(argv[i+1]); }
+        else if (argv[i][1] == 'W') { warmup_steps = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'L') { min_lr = atof(argv[i+1]); }
         else { error_usage(); }
     }
     // normalize: if -p set but -P not, single-position mode (end = start)
@@ -2966,6 +2972,8 @@ int main(int argc, char *argv[]) {
     printf("| Hebbian pull eps      | %-50e |\n", EMBED_PULL_EPS);
     printf("| test data pattern     | %-50s |\n", test_data_pattern == NULL ? "NULL" : test_data_pattern);
     printf("| rng_seed              | %-50u |\n", rng_seed);
+    printf("| warmup_steps          | %-50d |\n", warmup_steps);
+    printf("| min_lr (cosine end)   | %-50e |\n", min_lr);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // set up the device
@@ -3151,7 +3159,19 @@ int main(int argc, char *argv[]) {
         gpt2_forward(&model, train_loader.inputs, train_loader.targets, B, T);
         gpt2_zero_grad(&model);
         gpt2_backward(&model);
-        gpt2_update(&model, learning_rate, 0.9f, beta2, 1e-8f, weight_decay, step+1);
+        // LR schedule: linear warmup then cosine decay
+        float step_lr = learning_rate;
+        if (warmup_steps > 0) {
+            if (step < warmup_steps) {
+                step_lr = learning_rate * (step + 1) / warmup_steps;
+            } else {
+                float decay_ratio = (float)(step - warmup_steps) / (train_num_batches - warmup_steps);
+                if (decay_ratio > 1.0f) decay_ratio = 1.0f;
+                float coeff = 0.5f * (1.0f + cosf(M_PI * decay_ratio));
+                step_lr = min_lr + (learning_rate - min_lr) * coeff;
+            }
+        }
+        gpt2_update(&model, step_lr, 0.9f, beta2, 1e-8f, weight_decay, step+1);
         cudaCheck(cudaDeviceSynchronize()); // finish all CUDA work to get correct precise timings
         clock_gettime(CLOCK_MONOTONIC, &end);
         double time_elapsed_s = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
@@ -3165,7 +3185,7 @@ int main(int argc, char *argv[]) {
         // save snapshot for visualization
         if (snapshot_dir != NULL && snapshot_every > 0 &&
             (step % snapshot_every == 0 || step == train_num_batches - 1)) {
-            gpt2_save_snapshot(&model, snapshot_dir, step, model.mean_loss, learning_rate);
+            gpt2_save_snapshot(&model, snapshot_dir, step, model.mean_loss, step_lr);
         }
     }
     // add a total average, for optimizations that are only mild improvements
