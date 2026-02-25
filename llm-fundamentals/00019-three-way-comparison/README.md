@@ -1102,12 +1102,93 @@ pattern is:
 - **512-dim:** H8 genuinely helps (confirmed at 50k steps in 51M model)
 - **768-dim and above:** H8 hurts or diverges
 
+## Follow-Up: 355M with LR Warmup + Cosine Decay (20k Steps)
+
+**Date:** 2026-02-24
+
+The 355M baseline failed to converge at 50k steps with constant lr=3e-4 (val
+loss stagnated at 3.76). Standard practice for larger transformers is linear
+warmup + cosine decay. Added `-W` (warmup steps) and `-L` (min LR) flags to
+`train_gpt2_fp32.cu` and re-ran the three-way comparison at 20k steps.
+
+### Setup
+
+Same model: `model_355m.bin` (24L/16H/1024dim, 354.3M params), batch 8, seq 512.
+LR schedule: 200-step linear warmup to 3e-4, then cosine decay to 3e-5.
+
+| Run | Config | W&B |
+|-----|--------|-----|
+| 355m-baseline-warmup-20k | `-W 200 -L 3e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/lr8228cl) |
+| 355m-H8-warmup-20k | `-W 200 -L 3e-5 -H 8 -u 1e-5` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/a4qblrfe) |
+| 355m-blend-G8-warmup-20k | `-W 200 -L 3e-5 -G 8` | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/a17h1zyo) |
+
+### Commands
+
+```bash
+# Baseline with warmup
+./venv/bin/python wandb_train.py --name exp19-355m-baseline-warmup-20k --tags exp19,355m,warmup -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 20000 -q 0 -W 200 -L 3e-5 \
+    -c ~/data/exp19-355m-baseline-warmup-20k.bin
+
+# Hebbian H8 with warmup
+./venv/bin/python wandb_train.py --name exp19-355m-H8-warmup-20k --tags exp19,355m,warmup,H8 -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 20000 -q 0 -W 200 -L 3e-5 -H 8 -u 1e-5 \
+    -c ~/data/exp19-355m-H8-warmup-20k.bin
+
+# Blend G8 with warmup
+./venv/bin/python wandb_train.py --name exp19-355m-blend-G8-warmup-20k --tags exp19,355m,warmup,G8 -- \
+    ./train -e model_355m.bin -b 8 -t 512 -n 20000 -q 0 -W 200 -L 3e-5 -G 8 \
+    -c ~/data/exp19-355m-blend-G8-warmup-20k.bin
+```
+
+### Results (in progress)
+
+| Config | Val Loss @20k | Delta vs Baseline | Avg Train Loss | Gen. Gap |
+|--------|-------------:|------------------:|---------------:|---------:|
+| Baseline | 1.240 | — | 1.235 | +0.005 |
+| H8 | 1.467 | +0.227 | 1.460 | +0.006 |
+| Blend G8 | 1.261 | +0.021 | 1.255 | +0.006 |
+
+### Analysis
+
+**1. Warmup fixes 355M convergence.** All three configs now converge properly.
+The baseline reaches 1.240 at 20k steps — a massive improvement over the
+constant-LR baseline that stagnated at 3.76 at 50k steps. The 355M model was
+learning-rate-limited, not capacity-limited.
+
+**2. Blend G8's massive advantage disappears.** Without warmup, blend-G8
+dominated baseline by -2.41 val loss (1.35 vs 3.76) at 50k steps. With warmup,
+the gap shrinks to just +0.021 (1.261 vs 1.240) — and blend actually trails
+slightly. The blend layer was compensating for the missing LR schedule, not
+providing genuine architectural value at this scale.
+
+**3. H8 converges but trails significantly.** With warmup, H8 reaches 1.467
+instead of diverging to 5.5. But it still trails baseline by +0.227, consistent
+with the pattern that Hebbian pull at eps=1e-5 is harmful for 1024-dim models.
+
+**4. Comparison with constant-LR 50k-step results:**
+
+| Config | Constant LR (50k) | Warmup (20k) |
+|--------|------------------:|-------------:|
+| Baseline | 3.757 | 1.240 |
+| H8 | 5.537 | 1.467 |
+| Blend G8 | 1.350 | 1.261 |
+
+Warmup transforms baseline and H8 from broken to functional. Blend improves
+modestly (1.350 → 1.261) since it was already converging via the blend layer's
+implicit stabilization.
+
+**5. Ordering: baseline < blend < H8.** With proper LR scheduling, the 355M
+results match the 51M pattern from the original three-way comparison — baseline
+wins, blend is close behind, Hebbian trails. The blend layer provides no benefit
+when the optimizer is properly configured.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
 - [ ] Investigate why blend-G8 rescues 355M training — is it acting as implicit LR warmup?
-- [ ] Run 355M baseline with LR warmup/cosine decay to see if baseline catches up to blend
+- [x] ~~Run 355M baseline with LR warmup/cosine decay to see if baseline catches up to blend~~ (done: baseline reaches 1.240 at 20k with warmup vs 3.76 at 50k without — warmup solves convergence)
 - [x] ~~Investigate H8 sweet spot — test H6, H10 to map full curve~~ (done: H6–H16 curve mapped, H8 confirmed as sharp outlier)
 - [x] ~~Test H8 with different head count~~ (done: 16-head model, H8 still wins — head alignment falsified)
 - [x] ~~Test H8 with different layer count~~ (done: 4-layer model, H8 still wins — layer alignment falsified)
