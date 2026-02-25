@@ -1141,7 +1141,7 @@ LR schedule: 200-step linear warmup to 3e-4, then cosine decay to 3e-5.
     -c ~/data/exp19-355m-blend-G8-warmup-20k.bin
 ```
 
-### Results (in progress)
+### Results
 
 | Config | Val Loss @20k | Delta vs Baseline | Avg Train Loss | Gen. Gap |
 |--------|-------------:|------------------:|---------------:|---------:|
@@ -1183,11 +1183,68 @@ results match the 51M pattern from the original three-way comparison — baselin
 wins, blend is close behind, Hebbian trails. The blend layer provides no benefit
 when the optimizer is properly configured.
 
+### Generation samples
+
+Ran `./generate -e <checkpoint> -n 256 -p "Once upon a time"` on all three
+(blend requires `-G 8`).
+
+**Baseline** — Fluent, clean narrative with proper story structure:
+
+> Once upon a time, in a big forest, there was a little pine tree. The pine tree
+> was very hairy, with lots of leaves. The pine tree had many green leaves, but
+> it lived in a far, faraway place. One day, a small bird came to the pine tree.
+> The bird was lost and needed help. The pine tree wanted to help the bird, but
+> it told the bird to trust it. The bird said it would help the tree find its way
+> back home. As the pine tree trusted the bird, it helped the bird find its way
+> home. The bird was very happy and thanked the pine tree. From that day on, the
+> pine tree and the bird became best friends, and they lived happily ever after.
+
+**H8** — Starts coherent but grammar degrades mid-story:
+
+> Once upon a time, there was a boy named Timmy. He loved cake — it was his
+> favorite thing in the whole wide world. One day, he was walking down the stair
+> when he saw hair on letters. Timmy knew it wouldn't work to reach the top, so
+> he decided to shut his eyes and wait. Suddenly, he saw a brilliant light coming
+> closer. He got enthusiastic and released there down to Mom can be front room.
+> Timmy quickly came down the stairs, but he was too excited baby to explore a
+> new place too. Suddenly, he stumbled stops and quickly twisted his ankle and got
+> hurt Some puzzles how he felt lonelyOh of cleaning.
+
+Grammar breaks down mid-narrative ("he was too excited baby to explore",
+"stumbled stops"), consistent with the +0.23 val loss gap.
+
+**Blend G8** (`-G 8`) — Coherent with full story arc:
+
+> Once upon a time, there was a small rat named Tim. Tim liked to play outside in
+> the dirt. He was a very good rat. One day, Tim found a big cobweb in the
+> corner. He felt upset. He did not like it at all. Tim wanted to go away. But
+> then, a wise old owl came by. The owl saw Tim was upset. Tim asked, "Why are
+> you sad, small rat?" The wise old owl told him, "Cacticed are not for playing.
+> It can be heavy and hurt you if you don't understand them." Tim listened to the
+> wise old owl. He listened to him and stayed away from the cobweb. Then,
+> something unexpected happened. A small bird came by and told Tim, "Can you
+> imagine what the cobweb is?"
+
+Minor invented words ("Cacticed") but overall fluent with dialogue and narrative
+structure. Comparable quality to baseline.
+
+### Quality summary
+
+| Model | Val Loss | Grammar | Coherence | Story Structure |
+|-------|---------|---------|-----------|-----------------|
+| Baseline | 1.240 | Fluent | Full narratives | Setup/conflict/resolution |
+| Blend G8 | 1.261 | Fluent (minor quirks) | Full narratives | Setup/conflict/resolution |
+| H8 | 1.467 | Degrades mid-story | Partial | Starts well, falls apart |
+
+All three are dramatically better than the constant-LR checkpoints (which
+produced word salad for baseline and H8). Warmup is the key ingredient for
+355M training.
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
 - [ ] Try larger blend windows (G=16, G=32) now that G=8 shows a potential benefit
-- [ ] Investigate why blend-G8 rescues 355M training — is it acting as implicit LR warmup?
+- [x] ~~Investigate why blend-G8 rescues 355M training — is it acting as implicit LR warmup?~~ (answered: yes, blend compensated for missing LR schedule; with warmup, blend advantage disappears)
 - [x] ~~Run 355M baseline with LR warmup/cosine decay to see if baseline catches up to blend~~ (done: baseline reaches 1.240 at 20k with warmup vs 3.76 at 50k without — warmup solves convergence)
 - [x] ~~Investigate H8 sweet spot — test H6, H10 to map full curve~~ (done: H6–H16 curve mapped, H8 confirmed as sharp outlier)
 - [x] ~~Test H8 with different head count~~ (done: 16-head model, H8 still wins — head alignment falsified)
