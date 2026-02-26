@@ -30,12 +30,18 @@ test_generate: src/test_generate.cu src/generate.cu
 test_sort_layer: src/test_sort_layer.cu src/train_gpt2_fp32.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
-# Run test: requires gpt2_124M.bin and gpt2_124M_debug_state.bin
-# Generate with: ./venv/bin/python train_gpt2.py --model gpt2 --write_tensors 1 --num_iterations 0
-test: test_gpt2_fp32
+# Test reference model: downloads GPT-2 124M and generates debug state
+# Only runs if the files are missing (e.g. after make clean)
+gpt2_124M.bin gpt2_124M_debug_state.bin: venv
+	@test -f data/tinyshakespeare/tiny_shakespeare_val.bin || \
+		./venv/bin/python prepare_tinyshakespeare.py
+	./venv/bin/python train_gpt2.py --model gpt2 --write_tensors 1 --num_iterations 0 \
+		--input_bin "data/tinyshakespeare/tiny_shakespeare_val.bin"
+
+test: test_gpt2_fp32 gpt2_124M.bin gpt2_124M_debug_state.bin
 	./test_gpt2_fp32
 
-test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer
+test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer gpt2_124M.bin gpt2_124M_debug_state.bin
 	./test_gpt2_fp32
 	./test_banded_sparsity
 	./test_task_position
@@ -53,7 +59,8 @@ clean:
 # Setup: create venv and prepare data
 setup: venv data
 
-venv:
+venv: venv/bin/python
+venv/bin/python:
 	python3 -m venv venv
 	./venv/bin/pip install --upgrade pip
 	./venv/bin/pip install tiktoken numpy requests tqdm torch wandb
@@ -96,4 +103,4 @@ experiment_asymmetric: train data
 compare:
 	./venv/bin/python compare_runs.py $(LOGS)
 
-.PHONY: all clean setup venv data model test test_all experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric compare
+.PHONY: all clean setup data model test test_all experiment experiment_fc1_only experiment_fc2_only experiment_asymmetric compare

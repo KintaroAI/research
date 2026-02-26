@@ -51,7 +51,7 @@ int main(int argc, char *argv[]) {
         gpt2_build_from_checkpoint(&model1, "gpt2_124M.bin");
 
         // Save to temp file
-        gpt2_save_checkpoint(&model1, tmp_checkpoint);
+        gpt2_save_checkpoint(&model1, tmp_checkpoint, 0, 0, 0);
 
         // Load into second model
         GPT2 model2;
@@ -111,7 +111,7 @@ int main(int argc, char *argv[]) {
     {
         GPT2 model1;
         gpt2_build_from_checkpoint(&model1, "gpt2_124M.bin");
-        gpt2_save_checkpoint(&model1, tmp_checkpoint);
+        gpt2_save_checkpoint(&model1, tmp_checkpoint, 0, 0, 0);
 
         GPT2 model2;
         gpt2_build_from_checkpoint(&model2, tmp_checkpoint);
@@ -175,7 +175,7 @@ int main(int argc, char *argv[]) {
         printf("  Loss after 3 training steps: %f\n", loss_before_save);
 
         // Save trained model
-        gpt2_save_checkpoint(&model1, tmp_checkpoint);
+        gpt2_save_checkpoint(&model1, tmp_checkpoint, 0, 0, 0);
 
         // Load into new model
         GPT2 model2;
