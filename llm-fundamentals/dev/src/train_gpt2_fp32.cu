@@ -1742,11 +1742,12 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model->embed_blend_v_memory = NULL;
 }
 
-void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
+void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path,
+                          int step, int current_shard_idx, int current_sample_idx) {
     // save model checkpoint to file
     printf("saving checkpoint to %s\n", checkpoint_path);
     FILE *model_file = fopenCheck(checkpoint_path, "wb");
-    
+
     // write header
     int model_header[256];
     memset(model_header, 0, sizeof(model_header));
@@ -1758,6 +1759,10 @@ void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
     model_header[5] = model->config.num_heads;
     model_header[6] = model->config.channels;
     model_header[7] = model->config.padded_vocab_size;
+    // training state for resume (slots 8-10)
+    model_header[8] = step;
+    model_header[9] = current_shard_idx;
+    model_header[10] = current_sample_idx;
     fwrite(model_header, sizeof(int), 256, model_file);
     
     // copy parameters from GPU to CPU and write
@@ -1801,6 +1806,111 @@ void gpt2_save_checkpoint(GPT2 *model, const char* checkpoint_path) {
         fcloseCheck(blend_file);
         printf("blend params saved to %s (window=%d, %d params)\n", blend_path, W, W + 1);
     }
+
+    // Save optimizer state as sidecar file for training resume
+    if (model->m_memory != NULL && model->v_memory != NULL) {
+        char optim_path[512];
+        snprintf(optim_path, sizeof(optim_path), "%s.optim", checkpoint_path);
+        FILE *optim_file = fopenCheck(optim_path, "wb");
+        // write a small header: [magic, num_parameters, sort_n, blend_n]
+        int L = model->config.num_layers;
+        int sort_n = (SORT_WINDOW > 0 && model->sort_m_memory != NULL) ? 2 * L : 0;
+        int blend_n = (EMBED_BLEND_WINDOW > 0 && model->embed_blend_m_memory != NULL) ? EMBED_BLEND_WINDOW + 1 : 0;
+        int optim_header[4] = { 20240327, (int)model->num_parameters, sort_n, blend_n };
+        fwrite(optim_header, sizeof(int), 4, optim_file);
+        // write main m and v
+        float* optim_cpu = (float*)mallocCheck(model->num_parameters * sizeof(float));
+        cudaCheck(cudaMemcpy(optim_cpu, model->m_memory, model->num_parameters * sizeof(float), cudaMemcpyDeviceToHost));
+        fwrite(optim_cpu, sizeof(float), model->num_parameters, optim_file);
+        cudaCheck(cudaMemcpy(optim_cpu, model->v_memory, model->num_parameters * sizeof(float), cudaMemcpyDeviceToHost));
+        fwrite(optim_cpu, sizeof(float), model->num_parameters, optim_file);
+        free(optim_cpu);
+        // write sort m/v if present
+        if (sort_n > 0) {
+            float* sort_opt_cpu = (float*)mallocCheck(sort_n * sizeof(float));
+            cudaCheck(cudaMemcpy(sort_opt_cpu, model->sort_m_memory, sort_n * sizeof(float), cudaMemcpyDeviceToHost));
+            fwrite(sort_opt_cpu, sizeof(float), sort_n, optim_file);
+            cudaCheck(cudaMemcpy(sort_opt_cpu, model->sort_v_memory, sort_n * sizeof(float), cudaMemcpyDeviceToHost));
+            fwrite(sort_opt_cpu, sizeof(float), sort_n, optim_file);
+            free(sort_opt_cpu);
+        }
+        // write blend m/v if present
+        if (blend_n > 0) {
+            float* blend_opt_cpu = (float*)mallocCheck(blend_n * sizeof(float));
+            cudaCheck(cudaMemcpy(blend_opt_cpu, model->embed_blend_m_memory, blend_n * sizeof(float), cudaMemcpyDeviceToHost));
+            fwrite(blend_opt_cpu, sizeof(float), blend_n, optim_file);
+            cudaCheck(cudaMemcpy(blend_opt_cpu, model->embed_blend_v_memory, blend_n * sizeof(float), cudaMemcpyDeviceToHost));
+            fwrite(blend_opt_cpu, sizeof(float), blend_n, optim_file);
+            free(blend_opt_cpu);
+        }
+        fcloseCheck(optim_file);
+        printf("optimizer state saved to %s\n", optim_path);
+    }
+}
+
+void gpt2_load_optimizer_state(GPT2 *model, const char* checkpoint_path) {
+    // Load optimizer state from .optim sidecar file for training resume
+    char optim_path[512];
+    snprintf(optim_path, sizeof(optim_path), "%s.optim", checkpoint_path);
+    FILE *optim_file = fopen(optim_path, "rb");
+    if (optim_file == NULL) {
+        printf("WARNING: optimizer sidecar %s not found, starting with fresh optimizer\n", optim_path);
+        return;
+    }
+    // read and validate header
+    int optim_header[4];
+    freadCheck(optim_header, sizeof(int), 4, optim_file);
+    if (optim_header[0] != 20240327) {
+        printf("WARNING: bad magic in %s, starting with fresh optimizer\n", optim_path);
+        fclose(optim_file);
+        return;
+    }
+    int saved_num_params = optim_header[1];
+    int sort_n = optim_header[2];
+    int blend_n = optim_header[3];
+    if ((size_t)saved_num_params != model->num_parameters) {
+        printf("WARNING: optimizer state has %d params but model has %zu, starting fresh\n",
+               saved_num_params, model->num_parameters);
+        fclose(optim_file);
+        return;
+    }
+    // allocate m and v on GPU
+    if (model->m_memory == NULL) {
+        cudaCheck(cudaMalloc((void**)&model->m_memory, model->num_parameters * sizeof(float)));
+        cudaCheck(cudaMalloc((void**)&model->v_memory, model->num_parameters * sizeof(float)));
+        printf("allocated %zu MiB for AdamW optimizer state m\n", (model->num_parameters * sizeof(float)) >> 20);
+        printf("allocated %zu MiB for AdamW optimizer state v\n", (model->num_parameters * sizeof(float)) >> 20);
+    }
+    // read m and v from file and copy to GPU
+    float* optim_cpu = (float*)mallocCheck(model->num_parameters * sizeof(float));
+    freadCheck(optim_cpu, sizeof(float), model->num_parameters, optim_file);
+    cudaCheck(cudaMemcpy(model->m_memory, optim_cpu, model->num_parameters * sizeof(float), cudaMemcpyHostToDevice));
+    freadCheck(optim_cpu, sizeof(float), model->num_parameters, optim_file);
+    cudaCheck(cudaMemcpy(model->v_memory, optim_cpu, model->num_parameters * sizeof(float), cudaMemcpyHostToDevice));
+    free(optim_cpu);
+    // read sort m/v if present in file and sort layer is active
+    if (sort_n > 0 && SORT_WINDOW > 0 && model->sort_m_memory != NULL) {
+        float* sort_opt_cpu = (float*)mallocCheck(sort_n * sizeof(float));
+        freadCheck(sort_opt_cpu, sizeof(float), sort_n, optim_file);
+        cudaCheck(cudaMemcpy(model->sort_m_memory, sort_opt_cpu, sort_n * sizeof(float), cudaMemcpyHostToDevice));
+        freadCheck(sort_opt_cpu, sizeof(float), sort_n, optim_file);
+        cudaCheck(cudaMemcpy(model->sort_v_memory, sort_opt_cpu, sort_n * sizeof(float), cudaMemcpyHostToDevice));
+        free(sort_opt_cpu);
+    } else if (sort_n > 0) {
+        // skip sort data in file if sort layer not active
+        fseek(optim_file, 2 * sort_n * sizeof(float), SEEK_CUR);
+    }
+    // read blend m/v if present in file and blend layer is active
+    if (blend_n > 0 && EMBED_BLEND_WINDOW > 0 && model->embed_blend_m_memory != NULL) {
+        float* blend_opt_cpu = (float*)mallocCheck(blend_n * sizeof(float));
+        freadCheck(blend_opt_cpu, sizeof(float), blend_n, optim_file);
+        cudaCheck(cudaMemcpy(model->embed_blend_m_memory, blend_opt_cpu, blend_n * sizeof(float), cudaMemcpyHostToDevice));
+        freadCheck(blend_opt_cpu, sizeof(float), blend_n, optim_file);
+        cudaCheck(cudaMemcpy(model->embed_blend_v_memory, blend_opt_cpu, blend_n * sizeof(float), cudaMemcpyHostToDevice));
+        free(blend_opt_cpu);
+    }
+    fcloseCheck(optim_file);
+    printf("optimizer state loaded from %s (sort_n=%d, blend_n=%d)\n", optim_path, sort_n, blend_n);
 }
 
 // ----------------------------------------------------------------------------
@@ -2864,6 +2974,7 @@ void error_usage() {
     fprintf(stderr, "  -q <int>    RNG seed for reproducibility (default = 1337)\n");
     fprintf(stderr, "  -W <int>    warmup steps for LR schedule (default = 0, disabled)\n");
     fprintf(stderr, "  -L <float>  minimum LR for cosine decay (default = 0.0)\n");
+    fprintf(stderr, "  -R <int>    resume training from checkpoint state (default = 0, off)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -2896,6 +3007,7 @@ int main(int argc, char *argv[]) {
     unsigned int rng_seed = 1337;  // RNG seed for reproducibility
     int warmup_steps = 0;       // 0 = no warmup (constant LR, current behavior)
     float min_lr = 0.0f;        // minimum LR at end of cosine decay (0 = decay to zero)
+    int resume = 0;             // 0 = fresh start, 1 = resume from checkpoint state
     for (int i = 1; i < argc; i+=2) {
         if (i + 1 >= argc) { error_usage(); } // must have arg after flag
         if (argv[i][0] != '-') { error_usage(); } // must start with dash
@@ -2931,6 +3043,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'q') { rng_seed = (unsigned int)atoi(argv[i+1]); }
         else if (argv[i][1] == 'W') { warmup_steps = atoi(argv[i+1]); }
         else if (argv[i][1] == 'L') { min_lr = atof(argv[i+1]); }
+        else if (argv[i][1] == 'R') { resume = atoi(argv[i+1]); }
         else { error_usage(); }
     }
     // normalize: if -p set but -P not, single-position mode (end = start)
@@ -2974,6 +3087,7 @@ int main(int argc, char *argv[]) {
     printf("| rng_seed              | %-50u |\n", rng_seed);
     printf("| warmup_steps          | %-50d |\n", warmup_steps);
     printf("| min_lr (cosine end)   | %-50e |\n", min_lr);
+    printf("| resume                | %-50d |\n", resume);
     printf("+-----------------------+----------------------------------------------------+\n");
 
     // set up the device
@@ -3043,6 +3157,26 @@ int main(int argc, char *argv[]) {
     // print model parameter allocations from gpt2_build_from_checkpoint down here to not mess up our table above
     printf("allocated %d MiB for model parameters\n", (int)round(model.num_parameters * sizeof(float) / (1024 * 1024)));
 
+    // resume from checkpoint if requested
+    int resume_step = 0;
+    if (resume) {
+        // re-read header to get saved training state
+        FILE *resume_file = fopenCheck(model_path, "rb");
+        int resume_header[256];
+        freadCheck(resume_header, sizeof(int), 256, resume_file);
+        fcloseCheck(resume_file);
+        resume_step = resume_header[8];
+        int saved_shard = resume_header[9];
+        int saved_sample = resume_header[10];
+        if (resume_step > 0) {
+            printf("Resuming from step %d (shard %d, sample %d)\n", resume_step, saved_shard, saved_sample);
+            dataloader_resume(&train_loader, saved_shard, saved_sample);
+            gpt2_load_optimizer_state(&model, model_path);
+        } else {
+            printf("WARNING: -R set but checkpoint has no saved step (header[8]=0), starting fresh\n");
+        }
+    }
+
     // set up the Logger
     Logger logger;
     logger_init(&logger, output_log_file);
@@ -3061,7 +3195,7 @@ int main(int argc, char *argv[]) {
     double total_sum_iteration_time_s = 0.0;
     float train_loss_sum = 0.0f;
     int train_loss_count = 0;
-    for (int step = 0; step <= train_num_batches; step++) {
+    for (int step = resume_step; step <= train_num_batches; step++) {
         int last_step = step == train_num_batches;
 
         // once in a while estimate the validation loss
@@ -3086,7 +3220,8 @@ int main(int argc, char *argv[]) {
 
         // save checkpoint if configured
         if (checkpoint_path != NULL && checkpoint_every > 0 && step > 0 && step % checkpoint_every == 0) {
-            gpt2_save_checkpoint(&model, checkpoint_path);
+            gpt2_save_checkpoint(&model, checkpoint_path, step,
+                                 (int)train_loader.current_shard_idx, (int)train_loader.current_sample_idx);
         }
 
         // once in a while do model inference to print generated text
@@ -3189,11 +3324,15 @@ int main(int argc, char *argv[]) {
         }
     }
     // add a total average, for optimizations that are only mild improvements
-    printf("total average iteration time: %f ms\n", total_sum_iteration_time_s / train_num_batches * 1000);
+    int steps_trained = train_num_batches - resume_step;
+    if (steps_trained > 0) {
+        printf("total average iteration time: %f ms\n", total_sum_iteration_time_s / steps_trained * 1000);
+    }
 
     // save final checkpoint
     if (checkpoint_path != NULL) {
-        gpt2_save_checkpoint(&model, checkpoint_path);
+        gpt2_save_checkpoint(&model, checkpoint_path, train_num_batches,
+                             (int)train_loader.current_shard_idx, (int)train_loader.current_sample_idx);
     }
 
     // free
