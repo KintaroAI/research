@@ -1240,6 +1240,83 @@ All three are dramatically better than the constant-LR checkpoints (which
 produced word salad for baseline and H8). Warmup is the key ingredient for
 355M training.
 
+### Continued training to 50k steps
+
+Resumed all three 20k checkpoints for 30k more steps (same warmup/decay
+schedule per segment, optimizer state reset).
+
+| Run | W&B |
+|-----|-----|
+| 355m-baseline-warmup-50k | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/un2azqq1) |
+| 355m-H8-warmup-50k | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/5yeh1tk0) |
+| 355m-blend-G8-warmup-50k | [link](https://wandb.ai/kintaroai-dot-com/gpt2-cuda/runs/tk9d24ma) |
+
+| Config | Val @20k | Val @50k | Delta vs Baseline |
+|--------|--------:|--------:|-----------------:|
+| Baseline | 1.240 | **1.084** | — |
+| Blend G8 | 1.261 | **1.094** | +0.010 |
+| H8 | 1.467 | **1.254** | +0.170 |
+
+All three continue improving. Blend nearly matches baseline (gap narrowed from
++0.021 to +0.010). H8 gap narrowed from +0.227 to +0.170 but remains substantial.
+
+### Generation samples (50k)
+
+Ran `./generate -e <checkpoint> -n 256 -p "Once upon a time"` on all three.
+
+**Baseline** — Fluent, complete story with dialogue and resolution:
+
+> Once upon a time, there was a little boy named Timmy. Timmy loved to use his
+> eraser to fix his mistakes. He thought erasers were funny and he liked them
+> better than his hands. One day, Timmy went to buy a new eraser. It was very
+> impressive and had many colors on it. He wanted to use it to fix his mistakes.
+> When Timmy went to the store, he saw a boy with a very cool eraser. Timmy asked
+> the boy if he could have his eraser. The boy said no and Timmy got very upset.
+> He told the boy that he already had his eraser and didn't want to sell it to
+> him. The boy got very upset and started to cry. Timmy didn't understand why the
+> boy was so upset, but he decided to ask his friends if they could help him. They
+> all said yes and they went to talk to the boy. The boy said sorry and gave Timmy
+> his reliable eraser. It was his favorite eraser too. Timmy was happy again and
+> used his eraser to fix his mistakes.
+
+Complete story arc with consistent theme, dialogue, and resolution. Noticeably
+better than the 20k sample.
+
+**H8** — Coherent opening but degrades:
+
+> Once upon a time, there was a bald man named Ben. Ben had a gun that he loved
+> to show off town paper with. One day. Ben went to school and showed his what he
+> did. His teacher playground did so well again and were happy fun. Ben felt proud
+> that he could help his replied with happy actions told a happy future friend
+> Pink bouncing a new bed
+
+First sentence is fine, then grammar collapses into fragments. Second story in
+the sample is better — coherent paragraphs with minor issues. Quality is uneven,
+consistent with val loss 1.25 (vs baseline 1.08).
+
+**Blend G8** (`-G 8`) — Fluent with full narrative:
+
+> Once upon a time, there was a little girl named Lily. She loved to draw and
+> color. One day, she asked her mom if she could draw a picture of a rose for her
+> mom. Her mom said yes and gave her a little paper and crayons. Lily drew a
+> pretty rose with red petals. Her mom was so proud of her teddy bear. Lily
+> wanted to give the rose to her mom, but her mom said, "Stay here, Lily. I can't
+> come back to see you because I'm at work." Lily felt anxious because she wanted
+> her mom to see her rose. But then her mom sent her out and said, "Boo!" Lily
+> was scared and asked, "Who did you mean a rose?" Her mom said, "I don't know,
+> maybe she lied to you." Lily felt better and waited for her mom to come back.
+
+Clean grammar throughout with dialogue and emotional arc. Minor semantic drift
+("proud of her teddy bear" when discussing a rose) but comparable to baseline.
+
+### Quality summary (50k)
+
+| Model | Val Loss | Grammar | Coherence | Story Structure |
+|-------|---------|---------|-----------|-----------------|
+| Baseline | 1.084 | Fluent | Complete stories | Full arc with dialogue |
+| Blend G8 | 1.094 | Fluent | Complete stories | Full arc with dialogue |
+| H8 | 1.254 | Uneven | Partial collapse | Starts well, fragments |
+
 ## Next Steps
 
 - [ ] Run the three-way comparison again with a different seed to test reproducibility
