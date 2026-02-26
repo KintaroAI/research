@@ -30,6 +30,9 @@ test_generate: src/test_generate.cu src/generate.cu
 test_sort_layer: src/test_sort_layer.cu src/train_gpt2_fp32.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
+test_resume: src/test_resume.cu src/train_gpt2_fp32.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
 # Test reference model: downloads GPT-2 124M and generates debug state
 # Only runs if the files are missing (e.g. after make clean)
 gpt2_124M.bin gpt2_124M_debug_state.bin: venv
@@ -41,16 +44,17 @@ gpt2_124M.bin gpt2_124M_debug_state.bin: venv
 test: test_gpt2_fp32 gpt2_124M.bin gpt2_124M_debug_state.bin
 	./test_gpt2_fp32
 
-test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer gpt2_124M.bin gpt2_124M_debug_state.bin
+test_all: test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer test_resume gpt2_124M.bin gpt2_124M_debug_state.bin
 	./test_gpt2_fp32
 	./test_banded_sparsity
 	./test_task_position
 	./test_checkpoint
 	./test_generate
 	./test_sort_layer
+	./test_resume
 
 clean:
-	rm -f train generate test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer
+	rm -f train generate test_gpt2_fp32 test_banded_sparsity test_task_position test_checkpoint test_generate test_sort_layer test_resume
 	rm -f checkpoint*.bin checkpoint*.bin.sort model*.bin
 	rm -f log_*.txt
 	rm -f gpt2_124M*.bin gpt2_tokenizer.bin
