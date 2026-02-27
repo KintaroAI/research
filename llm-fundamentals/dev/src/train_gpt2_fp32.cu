@@ -2355,7 +2355,7 @@ void init_fc_masks(GPT2 *model) {
     }
 
     if (BANDWIDTH_FC1 > 0 || BANDWIDTH_FC2 > 0) {
-        printf("| Compute mode          | banded kernels (fwd+bwd-input), cuBLAS (bwd-weight)|\n");
+        printf("| Mask mode             | gradients + post-update only                       |\n");
     }
 }
 
@@ -2550,19 +2550,9 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
         matmul_forward(l_attproj, l_atty, l_attprojw, l_attprojb, B, T, C, C);
         residual_forward(l_residual2, residual, l_attproj, B*T*C);
         layernorm_forward(l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2, l_ln2w, l_ln2b, B, T, C);
-        if (BANDWIDTH_FC1 > 0) {
-            float half_bw = BANDWIDTH_FC1 / 2.0f * (float)C / (float)(4*C);
-            banded_matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C, half_bw);
-        } else {
-            matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C);
-        }
+        matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C);
         gelu_forward(l_fch_gelu, l_fch, B*T*4*C);
-        if (BANDWIDTH_FC2 > 0) {
-            float half_bw = BANDWIDTH_FC2 / 2.0f;
-            banded_matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C, half_bw);
-        } else {
-            matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C);
-        }
+        matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C);
         residual_forward(l_residual3, l_residual2, l_fcproj, B*T*C);
 
         // Sort layer: correlation-based blending of residual stream
@@ -2807,23 +2797,13 @@ void gpt2_backward(GPT2 *model) {
         }
 
         // backprop this layer
-        // FC2 backward: banded kernel for dinp if bandwidth > 0, else dense
+        // FC2 backward: apply mask to weight gradients if banded sparsity enabled
         float* l_fc2_mask = (model->fc2_mask != NULL) ? model->fc2_mask + l * C * 4*C : NULL;
-        if (BANDWIDTH_FC2 > 0) {
-            float half_bw = BANDWIDTH_FC2 / 2.0f;
-            banded_matmul_backward(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, l_fc2_mask, B, T, 4*C, C, half_bw);
-        } else {
-            matmul_backward_masked(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, l_fc2_mask, B, T, 4*C, C);
-        }
+        matmul_backward_masked(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, l_fc2_mask, B, T, 4*C, C);
         gelu_backward(dl_bt4c, l_fch, dl_bt4c, B*T*4*C);
-        // FC1 backward: banded kernel for dinp if bandwidth > 0, else dense
+        // FC1 backward: apply mask to weight gradients if banded sparsity enabled
         float* l_fc1_mask = (model->fc1_mask != NULL) ? model->fc1_mask + l * 4*C * C : NULL;
-        if (BANDWIDTH_FC1 > 0) {
-            float half_bw = BANDWIDTH_FC1 / 2.0f * (float)C / (float)(4*C);
-            banded_matmul_backward(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc1_mask, B, T, C, 4 * C, half_bw);
-        } else {
-            matmul_backward_masked(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc1_mask, B, T, C, 4 * C);
-        }
+        matmul_backward_masked(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc1_mask, B, T, C, 4 * C);
         // layernorm backward does += to the dresidual, so it correctly accumulates grad from the MLP block above
         layernorm_backward(dresidual, dl_ln2w, dl_ln2b, dl_btc, l_residual2, l_ln2w, l_ln2_mean, l_ln2_rstd, B, T, C);
         matmul_backward(dl_btc, dl_attprojw, dl_attprojb, dresidual, l_atty, l_attprojw, B, T, C, C);
