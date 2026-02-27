@@ -132,6 +132,82 @@ __global__ void apply_mask_kernel(float* weight, const float* mask, int N) {
     }
 }
 
+// Banded matmul forward kernel: only multiplies within the band per output row
+// out[bt][j] = sum_{i in band(j)} weight[j][i] * inp[bt][i] + bias[j]
+// Band: i_center = j * IC / OC, include i where |i - i_center| <= half_bw
+// half_bw is the band half-width in input-column space. Callers must compute:
+//   FC1 (C->4C): half_bw = BANDWIDTH / 2.0 * IC / OC  (scale from output to input space)
+//   FC2 (4C->C): half_bw = BANDWIDTH / 2.0              (already in input space)
+// One thread per output element (bt, j)
+__global__ void banded_matmul_forward_kernel(
+    float* out, const float* inp, const float* weight, const float* bias,
+    int BT, int IC, int OC, float half_bw)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= BT * OC) return;
+
+    int bt = idx / OC;
+    int j = idx % OC;
+
+    float i_center = (float)j * IC / OC;
+
+    // Clamp iteration range to [0, IC)
+    // Use floorf+1 for upper bound to include boundary (ceilf misses exact integers)
+    int col_start = (int)floorf(i_center - half_bw);
+    int col_end = (int)floorf(i_center + half_bw) + 1;
+    if (col_start < 0) col_start = 0;
+    if (col_end > IC) col_end = IC;
+
+    float sum = (bias != NULL) ? bias[j] : 0.0f;
+    const float* inp_row = inp + bt * IC;
+    const float* w_row = weight + j * IC;
+
+    for (int i = col_start; i < col_end; i++) {
+        float dist = fabsf((float)i - i_center);
+        if (dist <= half_bw) {
+            sum += w_row[i] * inp_row[i];
+        }
+    }
+    out[idx] = sum;
+}
+
+// Banded matmul backward-to-input kernel: propagates gradients through band
+// dinp[bt][i] = sum_{j in reverse_band(i)} dout[bt][j] * weight[j][i]
+// Reverse band: for column i, find rows j where |i - j*IC/OC| <= half_bw
+// One thread per input element (bt, i)
+__global__ void banded_matmul_backward_input_kernel(
+    float* dinp, const float* dout, const float* weight,
+    int BT, int IC, int OC, float half_bw)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= BT * IC) return;
+
+    int bt = idx / IC;
+    int i = idx % IC;
+
+    // Find range of j that could include i in their band
+    // For row j: i_center = j * IC / OC, condition: |i - i_center| <= half_bw
+    // So: j >= (i - half_bw) * OC / IC and j <= (i + half_bw) * OC / IC
+    // Use floorf+1 for upper bound to include boundary elements
+    float oc_over_ic = (float)OC / IC;
+    int j_start = (int)floorf(((float)i - half_bw) * oc_over_ic);
+    int j_end = (int)floorf(((float)i + half_bw) * oc_over_ic) + 1;
+    if (j_start < 0) j_start = 0;
+    if (j_end > OC) j_end = OC;
+
+    float sum = 0.0f;
+    const float* dout_row = dout + bt * OC;
+
+    for (int j = j_start; j < j_end; j++) {
+        float i_center = (float)j * IC / OC;
+        float dist = fabsf((float)i - i_center);
+        if (dist <= half_bw) {
+            sum += dout_row[j] * weight[j * IC + i];
+        }
+    }
+    dinp[idx] = sum;
+}
+
 // Hebbian embedding pull: co-occurring tokens pull each other's embeddings closer
 // One thread per (b, t, c) element. Each thread pulls wte[self] toward wte[neighbor]
 // for neighbors within window W, with 1/d distance decay. Symmetric (both tokens move).
@@ -1351,6 +1427,51 @@ void matmul_backward_masked(float* dinp, float* dweight, float* dbias,
     }
 }
 
+// Banded matmul forward: dispatches to banded kernel instead of cuBLAS
+// half_bw is the band half-width in input-column space
+void banded_matmul_forward(float* out, const float* inp, const float* weight,
+                           const float* bias, int B, int T, int IC, int OC,
+                           float half_bw) {
+    int BT = B * T;
+    int N = BT * OC;
+    int block_size = 256;
+    int grid_size = CEIL_DIV(N, block_size);
+    banded_matmul_forward_kernel<<<grid_size, block_size>>>(out, inp, weight, bias, BT, IC, OC, half_bw);
+    cudaCheck(cudaGetLastError());
+}
+
+// Banded matmul backward: banded kernel for dinp, cuBLAS+mask for dweight, existing for dbias
+// half_bw is the band half-width in input-column space (same as forward)
+void banded_matmul_backward(float* dinp, float* dweight, float* dbias,
+                            float* dout, float* inp, float* weight, float* mask,
+                            int B, int T, int C, int OC, float half_bw) {
+    int BT = B * T;
+    // backward to input: banded kernel (actual compute savings)
+    int N_inp = BT * C;
+    int block_size = 256;
+    int grid_size = CEIL_DIV(N_inp, block_size);
+    banded_matmul_backward_input_kernel<<<grid_size, block_size>>>(dinp, dout, weight, BT, C, OC, half_bw);
+    cudaCheck(cudaGetLastError());
+
+    // backward to weight: cuBLAS + mask (same as matmul_backward_masked)
+    float one = 1.0f;
+    cublasCheck(cublasSgemm(cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T, C, OC, BT, &one, inp, C, dout, OC, &one, dweight, C));
+    if (mask != NULL) {
+        int N_w = OC * C;
+        grid_size = CEIL_DIV(N_w, block_size);
+        apply_mask_kernel<<<grid_size, block_size>>>(dweight, mask, N_w);
+        cudaCheck(cudaGetLastError());
+    }
+
+    // backward to bias
+    if (dbias != NULL) {
+        const int bias_block_size = 1024;
+        const int bias_grid_size = OC / 32;
+        matmul_backward_bias_kernel4<<<bias_grid_size, bias_block_size, bias_block_size * sizeof(float)>>>(dbias, dout, B, T, OC);
+        cudaCheck(cudaGetLastError());
+    }
+}
+
 void layernorm_backward(float* dinp, float* dweight, float* dbias,
                         const float* dout, const float* inp, const  float* weight, const float* mean, const float* rstd,
                         int B, int T, int C) {
@@ -2234,7 +2355,7 @@ void init_fc_masks(GPT2 *model) {
     }
 
     if (BANDWIDTH_FC1 > 0 || BANDWIDTH_FC2 > 0) {
-        printf("| Mask mode             | gradients + post-update only                       |\n");
+        printf("| Compute mode          | banded kernels (fwd+bwd-input), cuBLAS (bwd-weight)|\n");
     }
 }
 
@@ -2429,9 +2550,19 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
         matmul_forward(l_attproj, l_atty, l_attprojw, l_attprojb, B, T, C, C);
         residual_forward(l_residual2, residual, l_attproj, B*T*C);
         layernorm_forward(l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2, l_ln2w, l_ln2b, B, T, C);
-        matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C);
+        if (BANDWIDTH_FC1 > 0) {
+            float half_bw = BANDWIDTH_FC1 / 2.0f * (float)C / (float)(4*C);
+            banded_matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C, half_bw);
+        } else {
+            matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C);
+        }
         gelu_forward(l_fch_gelu, l_fch, B*T*4*C);
-        matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C);
+        if (BANDWIDTH_FC2 > 0) {
+            float half_bw = BANDWIDTH_FC2 / 2.0f;
+            banded_matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C, half_bw);
+        } else {
+            matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C);
+        }
         residual_forward(l_residual3, l_residual2, l_fcproj, B*T*C);
 
         // Sort layer: correlation-based blending of residual stream
@@ -2676,13 +2807,23 @@ void gpt2_backward(GPT2 *model) {
         }
 
         // backprop this layer
-        // FC2 backward: apply mask to weight gradients if banded sparsity enabled
+        // FC2 backward: banded kernel for dinp if bandwidth > 0, else dense
         float* l_fc2_mask = (model->fc2_mask != NULL) ? model->fc2_mask + l * C * 4*C : NULL;
-        matmul_backward_masked(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, l_fc2_mask, B, T, 4*C, C);
+        if (BANDWIDTH_FC2 > 0) {
+            float half_bw = BANDWIDTH_FC2 / 2.0f;
+            banded_matmul_backward(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, l_fc2_mask, B, T, 4*C, C, half_bw);
+        } else {
+            matmul_backward_masked(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, l_fc2_mask, B, T, 4*C, C);
+        }
         gelu_backward(dl_bt4c, l_fch, dl_bt4c, B*T*4*C);
-        // FC1 backward: apply mask to weight gradients if banded sparsity enabled
+        // FC1 backward: banded kernel for dinp if bandwidth > 0, else dense
         float* l_fc1_mask = (model->fc1_mask != NULL) ? model->fc1_mask + l * 4*C * C : NULL;
-        matmul_backward_masked(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc1_mask, B, T, C, 4 * C);
+        if (BANDWIDTH_FC1 > 0) {
+            float half_bw = BANDWIDTH_FC1 / 2.0f * (float)C / (float)(4*C);
+            banded_matmul_backward(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc1_mask, B, T, C, 4 * C, half_bw);
+        } else {
+            matmul_backward_masked(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, l_fc1_mask, B, T, C, 4 * C);
+        }
         // layernorm backward does += to the dresidual, so it correctly accumulates grad from the MLP block above
         layernorm_backward(dresidual, dl_ln2w, dl_ln2b, dl_btc, l_residual2, l_ln2w, l_ln2_mean, l_ln2_rstd, B, T, C);
         matmul_backward(dl_btc, dl_attprojw, dl_attprojb, dresidual, l_atty, l_attprojw, B, T, C, C);
