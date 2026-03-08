@@ -1,0 +1,104 @@
+# Thalamus Sorter — dev
+
+Consolidated codebase for topographic map formation experiments. All algorithms from the parent directories are unified here with shared utilities and a single CLI entry point.
+
+## Setup
+
+```bash
+make setup
+```
+
+This creates a venv and installs numpy, opencv-python-headless, and scikit-learn.
+
+## Quick start
+
+```bash
+# Run tests (headless, no display needed)
+make test
+
+# Grid simulation (no camera needed)
+make greedy                                   # default 40x40, k=24
+make greedy ARGS="--width 80 --height 80 --k 48"
+make mst ARGS="--width 20 --height 20"
+make sa ARGS="--width 20 --height 20 --temp 200"
+
+# Camera modes (requires webcam + display)
+make camera-sa ARGS="--width 32 --height 24"
+make camera-spatial ARGS="--width 16 --height 12 --lr 0.001"
+```
+
+Press `q` in the OpenCV window to quit any mode.
+
+## Solvers
+
+### `greedy` — Greedy Hebbian drift
+
+Each neuron moves one step toward the centroid of its K highest-affinity neighbors. The most biologically plausible approach: Hebbian attraction with spatial constraints. Iterative — watch the grid self-organize in real time.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--k` | 24 | Number of neighbors to attract toward |
+| `--move-fraction` | 0.9 | Fraction of neurons moved per tick |
+| `--weight-type` | decay2d | `decay2d` or `inv1d` |
+| `--decay` | 0.1 | Decay rate for decay2d weights |
+
+### `mst` — Maximum spanning tree
+
+One-shot sorting. Builds a maximum spanning tree on the weight matrix (Kruskal's algorithm), then DFS traversal produces a linear ordering that respects correlation structure. Reshaped into a 2D grid.
+
+### `sa` — Simulated annealing
+
+Random neuron swaps accepted or rejected based on cost change and temperature. Cost = sum of `affinity(i,j) * manhattan_distance(i,j)` over sampled pairs. Temperature decreases by cooling rate each step.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--temp` | 100 | Initial temperature |
+| `--cooling` | 0.99 | Cooling rate per step |
+| `--sa-iterations` | 100 | SA steps per display tick |
+
+### `camera-sa` — Online weight learning + MST sort
+
+Uses live camera as a streaming signal source. Captures frames into a temporal buffer, finds nearest neighbors in temporal-signal space (sklearn ball_tree), computes pairwise correlations, and updates a running-average weight matrix. Sorts the learned weights via MST each frame.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--steps` | 10 | Temporal window size (frames) |
+
+### `camera-spatial` — Total variation gradient descent
+
+Treats sorting as continuous optimization. Maintains a permutation weight matrix and minimizes total variation loss (sum of absolute horizontal + vertical differences in the output grid) via gradient descent. The only differentiable approach.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lr` | 0.001 | Learning rate |
+| `--epochs` | 1000 | Gradient steps per camera frame |
+
+## Weight matrices
+
+Two built-in weight matrix types define the "ideal" neuron affinity:
+
+- **`decay2d`** (default) — `weight = max(0, 1 - euclidean_distance * decay_rate)` on 2D grid coordinates. Neurons nearby on the grid have high affinity. Controlled by `--decay`.
+- **`inv1d`** — `weight = 1/|i-j|` on 1D index distance. Simpler but doesn't capture 2D structure.
+
+The camera modes learn weights online from observed temporal correlations instead of using a pre-defined matrix.
+
+## Code layout
+
+```
+dev/
+├── main.py              # CLI entry point (5 subcommands)
+├── Makefile
+├── requirements.txt
+├── utils/
+│   ├── camera.py        # cv2.VideoCapture wrapper
+│   ├── correlation.py   # Pearson correlation (scalar, temporal, matrix)
+│   ├── display.py       # cv2 display helpers
+│   ├── geometry.py      # coords(), to_index(), move_closer()
+│   ├── graph.py         # UnionFind, MST (Kruskal), DFS traversal
+│   └── weights.py       # Weight matrices + OnlineWeightMatrix
+└── solvers/
+    ├── greedy_drift.py          # GreedyDrift class
+    ├── mst_sort.py              # mst_sort() function
+    ├── simulated_annealing.py   # SimulatedAnnealing class
+    └── spatial_coherence.py     # SpatialCoherence class
+```
