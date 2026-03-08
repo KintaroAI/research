@@ -62,7 +62,7 @@ def run_greedy(args):
         W = inverse_distance_1d(w * h)
 
     solver = GreedyDrift(w, h, W, k=args.k, move_fraction=args.move_fraction,
-                         image=image)
+                         image=image, gpu=args.gpu)
 
     # Output directory for saving frames
     output_dir = args.output_dir
@@ -289,6 +289,8 @@ def main():
                           help="Directory to save output frames as PNGs")
     p_greedy.add_argument("--save-every", type=int, default=1,
                           help="Save every Nth frame (default: 1)")
+    p_greedy.add_argument("--gpu", action="store_true",
+                          help="Use GPU acceleration via CuPy")
     p_greedy.set_defaults(func=run_greedy)
 
     # --- mst ---

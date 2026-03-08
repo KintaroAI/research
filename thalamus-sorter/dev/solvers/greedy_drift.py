@@ -1,8 +1,25 @@
 """Greedy drift solver: neurons move toward the centroid of their
-highest-affinity neighbors. Hebbian self-organization with spatial constraints."""
+highest-affinity neighbors. Hebbian self-organization with spatial constraints.
+
+Supports GPU acceleration via CuPy (--gpu flag). The vectorized tick()
+computes all centroids and directions in one batch, then applies
+non-conflicting swaps in parallel rounds.
+"""
 
 import numpy as np
-import random
+
+try:
+    import cupy as cp
+    _HAS_CUPY = True
+except ImportError:
+    _HAS_CUPY = False
+
+
+def _get_xp(gpu):
+    """Return the array module (cupy or numpy)."""
+    if gpu and _HAS_CUPY:
+        return cp
+    return np
 
 
 class GreedyDrift:
@@ -14,7 +31,7 @@ class GreedyDrift:
     """
 
     def __init__(self, width, height, weight_matrix, k=24, move_fraction=0.9,
-                 image=None):
+                 image=None, gpu=False):
         """
         Args:
             width, height: grid dimensions
@@ -23,89 +40,124 @@ class GreedyDrift:
             move_fraction: fraction of neurons moved per tick
             image: optional (height, width) uint8 array — pixel values
                    mapped to neuron identities for visual reconstruction
+            gpu: use CuPy GPU acceleration if available
         """
         self.width = width
         self.height = height
         self.n = width * height
         self.k = k
         self.move_fraction = move_fraction
+        self.gpu = gpu and _HAS_CUPY
 
-        # Neuron grid: neurons_matrix[y][x] = neuron identity index
-        self.neurons_matrix = np.random.permutation(self.n).reshape((height, width))
-        self.weight_matrix = weight_matrix
+        xp = _get_xp(self.gpu)
+
+        # Neuron grid: neurons_matrix[y, x] = neuron identity index
+        perm = np.random.permutation(self.n)
+        self.neurons_matrix = perm.reshape((height, width))
 
         # Current (x, y) position of each neuron identity
-        self.coordinates = np.zeros((self.n, 2))
+        self.coordinates = np.zeros((self.n, 2), dtype=np.float32)
         for y in range(height):
             for x in range(width):
-                i = self.neurons_matrix[y][x]
+                i = self.neurons_matrix[y, x]
                 self.coordinates[i] = [x, y]
 
-        # Image tracking: output[y][x] = pixel value of the neuron at (y, x)
+        # Precompute top-K neighbor indices for ALL neurons as dense array
+        self.top_k = np.zeros((self.n, k), dtype=np.int32)
+        for i in range(self.n):
+            kj = np.argpartition(weight_matrix[i], -k - 1)[-k - 1:-1]
+            self.top_k[i] = kj
+
+        # Move to GPU if requested
+        if self.gpu:
+            self.coordinates = cp.asarray(self.coordinates)
+            self.top_k = cp.asarray(self.top_k)
+
+        # Image tracking
         self.image = image
         if image is not None:
             self.output = np.zeros((height, width), dtype=np.uint8)
             for y in range(height):
                 for x in range(width):
-                    i = self.neurons_matrix[y][x]
+                    i = self.neurons_matrix[y, x]
                     ox, oy = i % width, i // width
-                    self.output[y][x] = image[oy][ox]
+                    self.output[y, x] = image[oy, ox]
         else:
             self.output = None
 
-        # Cache for top-K neighbor indices per neuron
-        self._k_cache = {}
-
     def tick(self):
-        """One sorting iteration: move a fraction of neurons toward neighbors."""
+        """One sorting iteration. Vectorized centroid computation,
+        then conflict-free batch swaps."""
+        xp = _get_xp(self.gpu)
         n_moves = int(self.move_fraction * self.n)
-        for _ in range(n_moves):
-            x = random.randint(0, self.width - 1)
-            y = random.randint(0, self.height - 1)
-            self._move_toward_neighbors(x, y)
 
-    def _get_top_k(self, neuron_id):
-        """Return indices of the K neurons with highest affinity to neuron_id."""
-        if neuron_id not in self._k_cache:
-            # argpartition is O(n) vs O(n log n) for full sort
-            kj = np.argpartition(self.weight_matrix[neuron_id], -self.k - 1)
-            self._k_cache[neuron_id] = kj[-self.k - 1:-1]
-        return self._k_cache[neuron_id]
+        # Pick random grid positions
+        flat_indices = np.random.randint(0, self.n, size=n_moves)
+        src_y = flat_indices // self.width
+        src_x = flat_indices % self.width
 
-    def _move_toward_neighbors(self, x, y):
-        """Move the neuron at (x, y) one step toward its neighbor centroid."""
-        neuron_id = self.neurons_matrix[y][x]
-        top_k = self._get_top_k(neuron_id)
+        # Neuron IDs at those positions
+        neuron_ids = self.neurons_matrix[src_y, src_x]
 
-        # Centroid of top-K neighbors' current positions
-        positions = self.coordinates[top_k]
-        avg_x = np.mean(positions[:, 0])
-        avg_y = np.mean(positions[:, 1])
+        # Top-K neighbor positions -> centroids  (all on GPU if enabled)
+        neighbor_ids = self.top_k[neuron_ids]           # (n_moves, k)
+        neighbor_pos = self.coordinates[neighbor_ids]    # (n_moves, k, 2)
+        centroids = xp.mean(neighbor_pos, axis=1)       # (n_moves, 2)
 
-        dx = avg_x - x
-        dy = avg_y - y
-        if dx == 0 and dy == 0:
-            return
+        # Direction vectors
+        if self.gpu:
+            cur_x = cp.asarray(src_x, dtype=cp.float32)
+            cur_y = cp.asarray(src_y, dtype=cp.float32)
+        else:
+            cur_x = src_x.astype(np.float32)
+            cur_y = src_y.astype(np.float32)
 
-        # Normalize to one-cell step
-        mag = (dx ** 2 + dy ** 2) ** 0.5
-        new_x = x + round(dx / mag)
-        new_y = y + round(dy / mag)
+        dx = centroids[:, 0] - cur_x
+        dy = centroids[:, 1] - cur_y
+        mag = xp.sqrt(dx * dx + dy * dy)
 
-        # Clamp to grid bounds
-        new_x = max(0, min(self.width - 1, new_x))
-        new_y = max(0, min(self.height - 1, new_y))
+        nonzero = mag > 0
+        dx_norm = xp.where(nonzero, dx / xp.maximum(mag, 1e-8), 0)
+        dy_norm = xp.where(nonzero, dy / xp.maximum(mag, 1e-8), 0)
 
-        self._swap(x, y, new_x, new_y)
+        new_x = xp.clip(xp.round(cur_x + dx_norm).astype(xp.int32),
+                         0, self.width - 1)
+        new_y = xp.clip(xp.round(cur_y + dy_norm).astype(xp.int32),
+                         0, self.height - 1)
+
+        # Transfer to CPU for swaps
+        if self.gpu:
+            new_x = cp.asnumpy(new_x)
+            new_y = cp.asnumpy(new_y)
+            nonzero = cp.asnumpy(nonzero)
+
+        # Batch swaps: skip conflicts (two moves touching the same cell)
+        touched = set()
+        for idx in range(n_moves):
+            if not nonzero[idx]:
+                continue
+            sx, sy = int(src_x[idx]), int(src_y[idx])
+            nx, ny = int(new_x[idx]), int(new_y[idx])
+            if sx == nx and sy == ny:
+                continue
+            src_key = sy * self.width + sx
+            dst_key = ny * self.width + nx
+            if src_key in touched or dst_key in touched:
+                continue
+            touched.add(src_key)
+            touched.add(dst_key)
+            self._swap(sx, sy, nx, ny)
 
     def _swap(self, x1, y1, x2, y2):
         """Swap the neurons at two grid positions."""
-        i = self.neurons_matrix[y1][x1]
-        j = self.neurons_matrix[y2][x2]
-        self.neurons_matrix[y1][x1] = j
-        self.neurons_matrix[y2][x2] = i
-        self.coordinates[i] = [x2, y2]
-        self.coordinates[j] = [x1, y1]
+        i = self.neurons_matrix[y1, x1]
+        j = self.neurons_matrix[y2, x2]
+        self.neurons_matrix[y1, x1] = j
+        self.neurons_matrix[y2, x2] = i
+        self.coordinates[i, 0] = x2
+        self.coordinates[i, 1] = y2
+        self.coordinates[j, 0] = x1
+        self.coordinates[j, 1] = y1
         if self.output is not None:
-            self.output[y1][x1], self.output[y2][x2] = (
-                self.output[y2][x2], self.output[y1][x1])
+            self.output[y1, x1], self.output[y2, x2] = (
+                self.output[y2, x2], self.output[y1, x1])
