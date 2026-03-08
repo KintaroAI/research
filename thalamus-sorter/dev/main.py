@@ -14,6 +14,7 @@ Camera mode (live video input):
 """
 
 import argparse
+import os
 import sys
 import numpy as np
 import cv2
@@ -22,7 +23,7 @@ from utils.weights import inverse_distance_1d, decay_distance_2d, OnlineWeightMa
 from utils.correlation import temporal_correlation
 from utils.graph import build_mst, tree_to_adjacency, dfs_order
 from utils.camera import Camera
-from utils.display import show_grid, show_vector, wait
+from utils.display import show_grid, show_vector, wait, poll_quit
 from solvers.greedy_drift import GreedyDrift
 from solvers.simulated_annealing import SimulatedAnnealing
 from solvers.spatial_coherence import SpatialCoherence
@@ -32,26 +33,72 @@ from solvers.spatial_coherence import SpatialCoherence
 # Grid-mode runners (pre-defined weight matrix, no camera)
 # ---------------------------------------------------------------------------
 
+def _load_image(path, width, height):
+    """Load an image, resize to (width, height), convert to grayscale."""
+    img = cv2.imread(path)
+    if img is None:
+        print(f"Error: could not load image '{path}'")
+        sys.exit(1)
+    resized = cv2.resize(img, (width, height))
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    return gray
+
+
 def run_greedy(args):
     w, h = args.width, args.height
-    print(f"Greedy drift: {w}x{h} grid, k={args.k}, "
-          f"weights={args.weight_type}, decay={args.decay}")
+
+    # Load image if provided
+    image = None
+    if args.image:
+        image = _load_image(args.image, w, h)
+        print(f"Greedy drift: {w}x{h} grid, k={args.k}, image={args.image}")
+    else:
+        print(f"Greedy drift: {w}x{h} grid, k={args.k}, "
+              f"weights={args.weight_type}, decay={args.decay}")
 
     if args.weight_type == "decay2d":
         W = decay_distance_2d(w, h, decay_rate=args.decay)
     else:
         W = inverse_distance_1d(w * h)
 
-    solver = GreedyDrift(w, h, W, k=args.k, move_fraction=args.move_fraction)
+    solver = GreedyDrift(w, h, W, k=args.k, move_fraction=args.move_fraction,
+                         image=image)
+
+    # Output directory for saving frames
+    output_dir = args.output_dir
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    max_frames = args.frames  # 0 = unlimited
 
     tick = 0
+    saved = 0
     while True:
         solver.tick()
         tick += 1
+
         if tick % 10 == 0:
+            if solver.output is not None:
+                show_grid("Restored image", solver.output)
             show_grid("Sorted neurons", solver.neurons_matrix)
             wait()
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+
+        # Save frame
+        if output_dir:
+            frame = solver.output if solver.output is not None else solver.neurons_matrix
+            normalized = cv2.normalize(
+                frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+            cv2.imwrite(path, normalized)
+            saved += 1
+            if saved % 100 == 0:
+                print(f"  tick {tick}, saved {saved} frames")
+
+        # Stop condition
+        if max_frames > 0 and tick >= max_frames:
+            print(f"Done: {tick} frames")
+            break
+        if poll_quit():
             break
 
 
@@ -73,7 +120,7 @@ def run_mst(args):
     show_grid("MST sorted", sorted_matrix)
     print("Press 'q' to quit.")
     while True:
-        if cv2.waitKey(100) & 0xFF == ord('q'):
+        if poll_quit():
             break
 
 
@@ -107,7 +154,7 @@ def run_sa(args):
             show_grid("SA sorted", solver.neurons_matrix)
             wait()
             print(f"  tick {tick}, cost={solver.cost:.1f}, temp={solver.temp:.4f}")
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if poll_quit():
             break
 
 
@@ -234,6 +281,12 @@ def main():
                           help="Number of nearest neighbors (default: 24)")
     p_greedy.add_argument("--move-fraction", type=float, default=0.9,
                           help="Fraction of neurons to move per tick (default: 0.9)")
+    p_greedy.add_argument("--image", "-i", type=str, default=None,
+                          help="Input image to scramble and reconstruct")
+    p_greedy.add_argument("--frames", "-f", type=int, default=0,
+                          help="Number of frames to run (0 = unlimited)")
+    p_greedy.add_argument("--output-dir", "-o", type=str, default=None,
+                          help="Directory to save output frames as PNGs")
     p_greedy.set_defaults(func=run_greedy)
 
     # --- mst ---

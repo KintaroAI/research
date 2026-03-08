@@ -7,9 +7,23 @@ import random
 
 class GreedyDrift:
     """Sort a neuron grid by iteratively moving each neuron one step
-    toward the average position of its K nearest neighbors (by weight)."""
+    toward the average position of its K nearest neighbors (by weight).
 
-    def __init__(self, width, height, weight_matrix, k=24, move_fraction=0.9):
+    Optionally tracks an image: each neuron identity maps to a pixel value,
+    so as neurons sort, the image reconstructs from scrambled state.
+    """
+
+    def __init__(self, width, height, weight_matrix, k=24, move_fraction=0.9,
+                 image=None):
+        """
+        Args:
+            width, height: grid dimensions
+            weight_matrix: (n, n) affinity matrix
+            k: number of neighbors to attract toward
+            move_fraction: fraction of neurons moved per tick
+            image: optional (height, width) uint8 array — pixel values
+                   mapped to neuron identities for visual reconstruction
+        """
         self.width = width
         self.height = height
         self.n = width * height
@@ -26,6 +40,18 @@ class GreedyDrift:
             for x in range(width):
                 i = self.neurons_matrix[y][x]
                 self.coordinates[i] = [x, y]
+
+        # Image tracking: output[y][x] = pixel value of the neuron at (y, x)
+        self.image = image
+        if image is not None:
+            self.output = np.zeros((height, width), dtype=np.uint8)
+            for y in range(height):
+                for x in range(width):
+                    i = self.neurons_matrix[y][x]
+                    ox, oy = i % width, i // width
+                    self.output[y][x] = image[oy][ox]
+        else:
+            self.output = None
 
         # Cache for top-K neighbor indices per neuron
         self._k_cache = {}
@@ -80,3 +106,6 @@ class GreedyDrift:
         self.neurons_matrix[y2][x2] = i
         self.coordinates[i] = [x2, y2]
         self.coordinates[j] = [x1, y1]
+        if self.output is not None:
+            self.output[y1][x1], self.output[y2][x2] = (
+                self.output[y2][x2], self.output[y1][x1])
