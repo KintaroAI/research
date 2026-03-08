@@ -84,7 +84,7 @@ def run_greedy(args):
             wait()
 
         # Save frame
-        if output_dir:
+        if output_dir and tick % args.save_every == 0:
             frame = solver.output if solver.output is not None else solver.neurons_matrix
             normalized = cv2.normalize(
                 frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -287,6 +287,8 @@ def main():
                           help="Number of frames to run (0 = unlimited)")
     p_greedy.add_argument("--output-dir", "-o", type=str, default=None,
                           help="Directory to save output frames as PNGs")
+    p_greedy.add_argument("--save-every", type=int, default=1,
+                          help="Save every Nth frame (default: 1)")
     p_greedy.set_defaults(func=run_greedy)
 
     # --- mst ---

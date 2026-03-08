@@ -41,6 +41,16 @@ Each neuron moves one step toward the centroid of its K highest-affinity neighbo
 | `--move-fraction` | 0.9 | Fraction of neurons moved per tick |
 | `--weight-type` | decay2d | `decay2d` or `inv1d` |
 | `--decay` | 0.1 | Decay rate for decay2d weights |
+| `--image` / `-i` | — | Input image to scramble and reconstruct |
+| `--frames` / `-f` | 0 | Number of ticks to run (0 = unlimited) |
+| `--output-dir` / `-o` | — | Directory to save output frames as PNGs |
+| `--save-every` | 1 | Save every Nth frame |
+
+Image mode example — scramble a 40x40 grayscale image and save 200 frames over 10k ticks:
+
+```bash
+make greedy ARGS="--image K_40_g.png -W 40 -H 40 --k 24 --frames 10000 --save-every 50 -o output/"
+```
 
 ### `mst` — Maximum spanning tree
 
