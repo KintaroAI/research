@@ -5,6 +5,7 @@ so that temporally correlated units become spatial neighbors.
 
 Grid mode (no camera):
     python main.py greedy --width 80 --height 80 --k 24
+    python main.py continuous --width 80 --height 80 --k 24 --lr 0.05
     python main.py mst --width 20 --height 20
     python main.py sa --width 20 --height 20
 
@@ -26,6 +27,7 @@ from utils.graph import build_mst, tree_to_adjacency, dfs_order
 from utils.camera import Camera
 from utils.display import show_grid, show_vector, wait, poll_quit
 from solvers.greedy_drift import GreedyDrift
+from solvers.continuous_drift import ContinuousDrift
 from solvers.simulated_annealing import SimulatedAnnealing
 from solvers.spatial_coherence import SpatialCoherence
 
@@ -115,6 +117,79 @@ def run_greedy(args):
         # Stop condition
         if max_frames > 0 and tick >= max_frames:
             print(f"Done: {tick} frames")
+            break
+        if poll_quit():
+            break
+
+
+def run_continuous(args):
+    w, h = args.width, args.height
+
+    image = None
+    if args.image:
+        image = _load_image(args.image, w, h)
+        print(f"Continuous drift: {w}x{h} grid, k={args.k}, lr={args.lr}, "
+              f"dims={args.dims}, image={args.image}")
+    else:
+        print(f"Continuous drift: {w}x{h} grid, k={args.k}, lr={args.lr}, "
+              f"dims={args.dims}, weights={args.weight_type}")
+
+    n = w * h
+    k = min(args.k, n - 1)
+    if args.weight_type == "decay2d":
+        top_k = topk_decay2d(w, h, k)
+    else:
+        top_k = topk_inv1d(n, k)
+
+    solver = ContinuousDrift(w, h, top_k, k=k, lr=args.lr, dims=args.dims,
+                             margin=args.margin, image=image, gpu=args.gpu)
+
+    output_dir = args.output_dir
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    max_frames = args.frames
+    sync_every = args.save_every if (args.gpu and output_dir) else 10
+
+    tick = 0
+    saved = 0
+    while True:
+        if args.gpu:
+            solver.run_gpu(sync_every)
+            tick += sync_every
+        else:
+            solver.tick()
+            tick += 1
+            if tick % 10 == 0:
+                solver.render()
+
+        if tick % 10 == 0:
+            if solver.output is not None:
+                show_grid("Continuous drift", solver.output)
+            elif solver.neurons_matrix is not None:
+                show_grid("Continuous drift", solver.neurons_matrix)
+            wait()
+
+        if output_dir and tick % args.save_every == 0:
+            if solver.output is None:
+                solver.render()
+            frame = solver.output if solver.output is not None else solver.neurons_matrix
+            normalized = cv2.normalize(
+                frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+            cv2.imwrite(path, normalized)
+            saved += 1
+            if saved % 100 == 0:
+                stats = solver.position_stats()
+                print(f"  tick {tick}, saved {saved} frames, "
+                      f"spread: x={stats['spread_x']:.1f} y={stats['spread_y']:.1f}")
+
+        if max_frames > 0 and tick >= max_frames:
+            if solver.output is None:
+                solver.render()
+            stats = solver.position_stats()
+            print(f"Done: {tick} ticks, "
+                  f"spread: x={stats['spread_x']:.1f} y={stats['spread_y']:.1f}")
             break
         if poll_quit():
             break
@@ -310,6 +385,30 @@ def main():
     p_greedy.add_argument("--gpu", action="store_true",
                           help="Use GPU acceleration via CuPy")
     p_greedy.set_defaults(func=run_greedy)
+
+    # --- continuous ---
+    p_cont = sub.add_parser("continuous",
+                            help="Continuous position drift (embedding-style)")
+    add_common(p_cont)
+    p_cont.add_argument("--k", type=int, default=24,
+                        help="Number of nearest neighbors (default: 24)")
+    p_cont.add_argument("--lr", type=float, default=0.05,
+                        help="Learning rate / step fraction (default: 0.05)")
+    p_cont.add_argument("--dims", type=int, default=2,
+                        help="Position vector dimensionality (default: 2)")
+    p_cont.add_argument("--margin", type=float, default=1.0,
+                        help="Dead zone radius around centroid (default: 1.0)")
+    p_cont.add_argument("--image", "-i", type=str, default=None,
+                        help="Input image to scramble and reconstruct")
+    p_cont.add_argument("--frames", "-f", type=int, default=0,
+                        help="Number of frames to run (0 = unlimited)")
+    p_cont.add_argument("--output-dir", "-o", type=str, default=None,
+                        help="Directory to save output frames as PNGs")
+    p_cont.add_argument("--save-every", type=int, default=1,
+                        help="Save every Nth frame (default: 1)")
+    p_cont.add_argument("--gpu", action="store_true",
+                        help="Use GPU acceleration via CuPy")
+    p_cont.set_defaults(func=run_continuous)
 
     # --- mst ---
     p_mst = sub.add_parser("mst", help="MST-based one-shot sorting")
