@@ -1,7 +1,53 @@
-"""Weight matrix construction for neuron affinity."""
+"""Weight matrix construction for neuron affinity.
+
+Two approaches:
+- Full matrix: inverse_distance_1d(), decay_distance_2d() — O(n²) memory,
+  only feasible for small grids (≤40x40).
+- Top-K only: topk_decay2d(), topk_inv1d() — O(nK) memory,
+  scales to arbitrary grid sizes. Returns (n, K) index array directly.
+"""
 
 import numpy as np
 
+
+# ---------------------------------------------------------------------------
+# Top-K neighbor computation (matrix-free, O(nK) memory)
+# ---------------------------------------------------------------------------
+
+def topk_decay2d(width, height, k):
+    """Return (n, k) array of top-K neighbor indices by 2D proximity.
+    Equivalent to building decay_distance_2d then argpartitioning each row,
+    but without ever allocating the n×n matrix.
+
+    Uses scipy KDTree for efficient spatial lookup."""
+    from scipy.spatial import cKDTree
+
+    n = width * height
+    # Ideal grid positions for each neuron
+    coords = np.column_stack([np.arange(n) % width,
+                              np.arange(n) // width]).astype(np.float32)
+    tree = cKDTree(coords)
+    # Query k+1 because the closest neighbor is the neuron itself
+    _, indices = tree.query(coords, k=k + 1)
+    # Drop self (column 0)
+    return indices[:, 1:].astype(np.int32)
+
+
+def topk_inv1d(n, k):
+    """Return (n, k) array of top-K neighbor indices by 1D index distance.
+    For neuron i, the closest are i±1, i±2, ... — just the K nearest indices."""
+    k = min(k, n - 1)
+    top_k = np.zeros((n, k), dtype=np.int32)
+    for i in range(n):
+        # Candidates sorted by |i - j|, excluding self
+        candidates = np.argsort(np.abs(np.arange(n) - i))
+        top_k[i] = candidates[1:k + 1]
+    return top_k
+
+
+# ---------------------------------------------------------------------------
+# Full matrix construction (O(n²) memory — legacy, used by MST/SA/camera)
+# ---------------------------------------------------------------------------
 
 def inverse_distance_1d(n):
     """Weight matrix based on 1D index distance: weight = 1/|i-j|.

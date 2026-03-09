@@ -19,7 +19,8 @@ import sys
 import numpy as np
 import cv2
 
-from utils.weights import inverse_distance_1d, decay_distance_2d, OnlineWeightMatrix
+from utils.weights import (inverse_distance_1d, decay_distance_2d,
+                            topk_decay2d, topk_inv1d, OnlineWeightMatrix)
 from utils.correlation import temporal_correlation
 from utils.graph import build_mst, tree_to_adjacency, dfs_order
 from utils.camera import Camera
@@ -56,13 +57,16 @@ def run_greedy(args):
         print(f"Greedy drift: {w}x{h} grid, k={args.k}, "
               f"weights={args.weight_type}, decay={args.decay}")
 
+    # Matrix-free top-K computation (O(nK) instead of O(n²))
+    n = w * h
+    k = min(args.k, n - 1)
     if args.weight_type == "decay2d":
-        W = decay_distance_2d(w, h, decay_rate=args.decay)
+        top_k = topk_decay2d(w, h, k)
     else:
-        W = inverse_distance_1d(w * h)
+        top_k = topk_inv1d(n, k)
 
-    solver = GreedyDrift(w, h, W, k=args.k, move_fraction=args.move_fraction,
-                         image=image, gpu=args.gpu)
+    solver = GreedyDrift(w, h, k=k, move_fraction=args.move_fraction,
+                         image=image, gpu=args.gpu, top_k=top_k)
 
     # Output directory for saving frames
     output_dir = args.output_dir
@@ -71,11 +75,25 @@ def run_greedy(args):
 
     max_frames = args.frames  # 0 = unlimited
 
+    # Determine sync interval for GPU batching:
+    # Sync only when we need CPU data — for saving or display.
+    if args.gpu:
+        if output_dir:
+            sync_every = args.save_every
+        else:
+            sync_every = 10  # display interval
+
     tick = 0
     saved = 0
     while True:
-        solver.tick()
-        tick += 1
+        if args.gpu:
+            # Full-GPU path: batch ticks, sync only when needed
+            solver.run_gpu(sync_every)
+            tick += sync_every
+        else:
+            # CPU reference path
+            solver.tick()
+            tick += 1
 
         if tick % 10 == 0:
             if solver.output is not None:

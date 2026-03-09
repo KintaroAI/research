@@ -9,7 +9,7 @@ setup:
 
 test:
 	$(PYTHON) -c "\
-from utils.weights import inverse_distance_1d, decay_distance_2d, OnlineWeightMatrix; \
+from utils.weights import inverse_distance_1d, decay_distance_2d, topk_decay2d, topk_inv1d, OnlineWeightMatrix; \
 from utils.correlation import pearson, temporal_correlation; \
 from utils.geometry import coords, to_index, move_closer; \
 from utils.graph import UnionFind, build_mst, tree_to_adjacency, dfs_order; \
@@ -19,7 +19,10 @@ from solvers.spatial_coherence import SpatialCoherence; \
 from solvers.mst_sort import mst_sort; \
 import numpy as np; \
 W = decay_distance_2d(10, 10, 0.1); \
-g = GreedyDrift(10, 10, W, k=8); g.tick(); \
+tk = topk_decay2d(10, 10, 8); \
+g = GreedyDrift(10, 10, top_k=tk, k=8); g.tick(); \
+g2 = GreedyDrift(10, 10, W, k=8); g2.tick(); \
+tk1d = topk_inv1d(100, 8); assert tk1d.shape == (100, 8); \
 sa = SimulatedAnnealing(W, 10, 10); sa.tick(50); \
 m = mst_sort(W, 10, 10); \
 sc = SpatialCoherence(10, 10); sc.optimize(np.random.rand(100), epochs=10); \
