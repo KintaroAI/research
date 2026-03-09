@@ -113,6 +113,14 @@ Changed sync interval from `gcd(10, save_every)` to just `save_every` when savin
 
 Composite visualization generated with `make_grid_image.py` — 1000 frames showing all 30 experiments evolving simultaneously.
 
+**Tick 100 — all noise, original K in top-left:**
+
+![Grid at tick 100](grid_tick_100.png)
+
+**Tick 100k — converged results across all parameter combinations:**
+
+![Grid at tick 100k](grid_tick_100k.png)
+
 ## Results
 
 ### Key findings from grid search (80x80, 100k ticks)
