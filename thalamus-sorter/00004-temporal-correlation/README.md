@@ -190,6 +190,24 @@ Both systems: random sampling to avoid all-pairs, similarity-based pull/push, em
 
 We could swap our update rule for the word2vec SGD step directly. The log-sigmoid objective and explicit negative sampling would likely improve convergence speed and scaling behavior, especially at larger grid sizes where random sampling rarely hits nearby peers.
 
+### Online top-K discovery from random sampling
+
+Instead of precomputing top-K neighbors, **discover them online** from random samples. Each neuron maintains a window of its K best peers (highest correlation seen so far):
+
+1. **Cold start**: sample random peers, fill the K-window with whatever comes
+2. **Steady state**: each tick, sample a random peer. If its correlation is higher than the worst in the K-window, evict the worst and insert the new peer
+3. **Update rule**: pull toward all K peers in the window (known good neighbors), push against some number of random peers (negative samples)
+
+This is a learned version of the precomputed top-K from experiments 00001–00003 — but discovered incrementally from random sampling rather than computed upfront. Over time, the K-window converges to the true nearest neighbors.
+
+Benefits:
+- Bridges the gap between "fully random" (current, slow at large scale) and "fully precomputed" (fast but requires knowing similarity upfront)
+- Each tick does K pulls (strong, directed) + a few random pushes — much more efficient than hoping random samples hit nearby peers
+- The K-window adapts over time if the similarity structure changes (e.g., with live temporal input)
+- Directly analogous to word2vec's positive/negative sampling split
+
+This is essentially **online nearest neighbor search** embedded in the sorting loop.
+
 ### Embedding compression (future)
 
 When inputs outnumber output slots (more input neurons than neocortex capacity), some embeddings must merge. This is learned pooling: neurons whose embeddings converge close enough share an output slot. The sorting becomes "arrange AND compress" — discovering which neurons are redundant enough to collapse.
@@ -209,3 +227,4 @@ This builds on multi-modal sorting: first learn joint embeddings that capture al
 - [ ] Multi-modal sorting: multiple buffer streams feeding shared embeddings
 - [ ] Embedding compression: merge similar embeddings when N_input > N_output
 - [ ] Try word2vec-style update: log-sigmoid objective, explicit positive/negative sampling
+- [ ] Online top-K discovery: maintain K-window per neuron, fill from random samples
