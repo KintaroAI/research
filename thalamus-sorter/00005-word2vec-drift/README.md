@@ -72,16 +72,26 @@ Some spatial structure forming — dark/light clustering with coherence. No line
 
 Clear K reconstruction. Comparable to centroid drift (exp 00003) at similar tick count.
 
+### Test 4: Dot product, no LayerNorm, small uniform init, D2, K=11, k_neg=5, 30k ticks
+
+Removed LayerNorm entirely, switched to word2vec-style uniform init `[-0.5/dims, 0.5/dims]`. `std=0.54, mean_norm=0.001` — sigmoid self-regulates scale without normalization. Some spatial structure forming, no binary collapse. **LayerNorm was fighting the sigmoid dynamics** in test 1 — without it, dot product word2vec works.
+
+### Test 5: Dot product, no LayerNorm, D16, K=25, k_neg=5, 30k ticks
+
+`std=0.37` stable. K shape vaguely visible but noisy. The binary positive/negative selection (top-K = always pull, random = always push) is too coarse — no correlation signal modulating push/pull strength. Random negatives sometimes push away true neighbors.
+
 ## Findings So Far
 
-1. **Dot product word2vec collapses**: original skip-gram math (dot product + direction-of-peer) creates binary clusters, not topographic maps. Euclidean distance + toward/away delta is the correct adaptation.
-2. **No line collapse at D2 K11**: the explicit negative push prevents the degenerate solutions that centroid averaging produces. This is a direct benefit of negative sampling.
-3. **Vectorized negatives**: all k_neg negatives computed in one batch (no Python loop) — much faster than iterating.
+1. **Dot product + LayerNorm collapses**: original word2vec math with LayerNorm creates binary clusters. LayerNorm forces unit variance which fights the sigmoid's self-regulation. Without LayerNorm, dot product works.
+2. **Sigmoid self-regulates scale**: with no normalization, embeddings stabilize at `std ≈ 0.4-0.5`. The push/pull balance from negative sampling controls magnitude naturally, like in real word2vec.
+3. **No line collapse at D2 K11**: explicit negative push prevents the degenerate solutions centroid averaging produces.
+4. **Binary positive/negative selection is too coarse**: using top-K membership to decide attract vs repel ignores the actual similarity signal. Random negatives can accidentally push away true neighbors. Need correlation-based push/pull where the signal itself decides direction and strength.
+5. **Precomputed top-K contradicts the goal**: the word2vec solver still uses precomputed neighbors for positive sampling. Should use all-random sampling with similarity deciding attract/repel — merging the temporal correlation approach (exp 00004) with sigmoid self-regulation.
 
 ## Next Steps
 
+- [ ] Merge temporal correlation + word2vec: random sampling with similarity-driven sigmoid attract/repel (no precomputed top-K)
 - [ ] Compare convergence speed vs centroid drift at matched parameters
 - [ ] Grid search: k_neg ratio, lr, dims
 - [ ] Test at 160px and 1024px scale
-- [ ] Analyze per-dimension coefficients — do dims specialize more than with centroid updates?
-- [ ] Try combining with temporal correlation (random pairs + sigmoid updates)
+- [ ] Analyze per-dimension specialization

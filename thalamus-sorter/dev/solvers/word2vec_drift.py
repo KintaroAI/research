@@ -56,8 +56,9 @@ class Word2vecDrift:
         self.k_neg = k_neg
         self.gpu = gpu and _HAS_CUPY
 
-        # Position vectors: (n, dims) — small init like word2vec
-        self.positions = np.random.normal(0, 0.1, (self.n, dims)).astype(np.float32)
+        # Position vectors: (n, dims) — small uniform init like word2vec
+        scale = 0.5 / dims
+        self.positions = np.random.uniform(-scale, scale, (self.n, dims)).astype(np.float32)
 
         self.top_k = top_k.astype(np.int32)
 
@@ -91,16 +92,15 @@ class Word2vecDrift:
             pos_idx = np.random.randint(0, self.k, self.n).astype(np.int32)
         j_pos = self.top_k[xp.arange(self.n), pos_idx]  # (n,)
 
-        # Euclidean distance to positive peer
+        # Dot product with positive peer
         pos_j = self.positions[j_pos]                           # (n, dims)
-        delta_pos = pos_j - self.positions                      # (n, dims)
-        dist_sq_pos = xp.sum(delta_pos ** 2, axis=1)            # (n,)
+        dot_pos = xp.sum(self.positions * pos_j, axis=1)        # (n,)
 
-        # Sigmoid: σ(dist²) — large when far (needs pull), small when close (done)
-        sig_pos = 1.0 / (1.0 + xp.exp(xp.clip(-dist_sq_pos, -20, 20)))  # (n,)
+        # σ(-dot) — large when misaligned (needs pull), small when aligned (done)
+        sig_pos = 1.0 / (1.0 + xp.exp(xp.clip(dot_pos, -20, 20)))  # (n,)
 
-        # Pull TOWARD positive peer, scaled by sigmoid
-        self.positions += self.lr * sig_pos[:, None] * delta_pos
+        # Pull: move in direction of positive peer's vector
+        self.positions += self.lr * sig_pos[:, None] * pos_j
 
         # --- Negative: sample all k_neg at once, vectorized ---
         if self.gpu:
@@ -109,24 +109,14 @@ class Word2vecDrift:
             j_neg = np.random.randint(0, self.n, (self.n, self.k_neg)).astype(np.int32)
 
         neg_j = self.positions[j_neg]                            # (n, k_neg, dims)
-        delta_neg = neg_j - self.positions[:, None, :]           # (n, k_neg, dims)
-        dist_sq_neg = xp.sum(delta_neg ** 2, axis=2)             # (n, k_neg)
+        dot_neg = xp.sum(self.positions[:, None, :] * neg_j, axis=2)  # (n, k_neg)
 
-        # Sigmoid: σ(-dist²) — large when close (wrongly similar), small when far (fine)
-        sig_neg = 1.0 / (1.0 + xp.exp(xp.clip(dist_sq_neg, -20, 20)))  # (n, k_neg)
+        # σ(dot) — large when wrongly aligned (needs push), small when dissimilar (fine)
+        sig_neg = 1.0 / (1.0 + xp.exp(xp.clip(-dot_neg, -20, 20)))  # (n, k_neg)
 
-        # Push AWAY from negative peers, scaled by sigmoid
-        push = xp.sum(sig_neg[:, :, None] * delta_neg, axis=1)  # (n, dims)
+        # Push: move away from negative peers' vectors
+        push = xp.sum(sig_neg[:, :, None] * neg_j, axis=1)      # (n, dims)
         self.positions -= self.lr * push
-
-        self._normalize(xp)
-
-    def _normalize(self, xp):
-        """LayerNorm: center at origin, unit variance per dimension."""
-        self.positions -= xp.mean(self.positions, axis=0)
-        std = xp.std(self.positions, axis=0)
-        std = xp.where(std < 1e-8, xp.ones_like(std), std)
-        self.positions /= std
 
     def render(self):
         """Quantize continuous positions to a 2D grid for display.
