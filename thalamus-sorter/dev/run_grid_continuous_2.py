@@ -11,7 +11,6 @@ SIZE = 80
 FRAMES = 100000
 SAVE_EVERY = 100  # 100k / 100 = 1000 images
 LR = 0.05
-MARGIN = 0.3
 
 k_values = [1, 11, 21, 31, 41, 51]
 dims_values = [2, 3, 10, 50, 100]
@@ -27,7 +26,6 @@ for k in k_values:
             "-W", str(SIZE), "-H", str(SIZE),
             "--k", str(k),
             "--lr", str(LR),
-            "--margin", str(MARGIN),
             "--dims", str(d),
             "--frames", str(FRAMES),
             "--save-every", str(SAVE_EVERY),

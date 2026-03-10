@@ -182,14 +182,14 @@ def run_continuous(args):
             if saved % 100 == 0:
                 stats = solver.position_stats()
                 print(f"  tick {tick}, saved {saved} frames, "
-                      f"spread: x={stats['spread_x']:.1f} y={stats['spread_y']:.1f}")
+                      f"mean_norm={stats['mean_norm']:.4f} std={stats['std_mean']:.4f}")
 
         if max_frames > 0 and tick >= max_frames:
             if solver.output is None:
                 solver.render()
             stats = solver.position_stats()
             print(f"Done: {tick} ticks, "
-                  f"spread: x={stats['spread_x']:.1f} y={stats['spread_y']:.1f}")
+                  f"mean_norm={stats['mean_norm']:.4f} std={stats['std_mean']:.4f}")
             break
         if poll_quit():
             break
@@ -396,8 +396,8 @@ def main():
                         help="Learning rate / step fraction (default: 0.05)")
     p_cont.add_argument("--dims", type=int, default=2,
                         help="Position vector dimensionality (default: 2)")
-    p_cont.add_argument("--margin", type=float, default=1.0,
-                        help="Dead zone radius around centroid (default: 1.0)")
+    p_cont.add_argument("--margin", type=float, default=0.1,
+                        help="Dead zone radius around centroid (default: 0.1)")
     p_cont.add_argument("--image", "-i", type=str, default=None,
                         help="Input image to scramble and reconstruct")
     p_cont.add_argument("--frames", "-f", type=int, default=0,

@@ -33,7 +33,7 @@ class ContinuousDrift:
     """
 
     def __init__(self, width, height, top_k, k=24, lr=0.05, dims=2,
-                 margin=1.0, image=None, gpu=False):
+                 margin=0.1, image=None, gpu=False):
         """
         Args:
             width, height: grid dimensions (for rendering)
@@ -54,14 +54,8 @@ class ContinuousDrift:
         self.gpu = gpu and _HAS_CUPY
 
         # Position vectors: (n, dims) — the "embeddings"
-        # First 2 dims: uniform in [0, width) x [0, height)
-        # Higher dims: random normal (unconstrained)
-        self.positions = np.zeros((self.n, dims), dtype=np.float32)
-        self.positions[:, 0] = np.random.uniform(0, width, self.n)
-        if dims >= 2:
-            self.positions[:, 1] = np.random.uniform(0, height, self.n)
-        for d in range(2, dims):
-            self.positions[:, d] = np.random.normal(0, 1, self.n)
+        # All dims: random normal, then LayerNorm to unit variance
+        self.positions = np.random.normal(0, 1, (self.n, dims)).astype(np.float32)
 
         self.top_k = top_k.astype(np.int32)
 
@@ -96,24 +90,22 @@ class ContinuousDrift:
             scale = xp.tanh(dist / self.margin)
             delta = delta * scale
         self.positions += self.lr * delta
-        self._rescale(xp)
+        self._normalize(xp)
 
-    def _rescale(self, xp):
-        """Rescale positions to fill the target range.
-        Without this, centroid-attraction collapses all positions to a point.
-        Rescaling preserves relative ordering (the topographic structure)."""
-        mins = xp.min(self.positions, axis=0)
-        maxs = xp.max(self.positions, axis=0)
-        span = maxs - mins
-        # Avoid division by zero on degenerate dimensions
-        span = xp.where(span < 1e-8, xp.ones_like(span), span)
+    def _normalize(self, xp):
+        """LayerNorm: center at origin, unit variance per dimension."""
+        self.positions -= xp.mean(self.positions, axis=0)
+        std = xp.std(self.positions, axis=0)
+        std = xp.where(std < 1e-8, xp.ones_like(std), std)
+        self.positions /= std
 
-        # Normalize to [0, 1] then scale to target ranges
-        self.positions = (self.positions - mins) / span
-        # First 2 dims: [0, width) x [0, height)
-        self.positions[:, 0] *= (self.width - 1)
-        if self.dims >= 2:
-            self.positions[:, 1] *= (self.height - 1)
+    def _normalize_rmsnorm(self, xp):
+        """Center + per-vector unit-length normalization.
+        Points live on a hypersphere — needs adapted render for display."""
+        self.positions -= xp.mean(self.positions, axis=0)
+        norms = xp.sqrt(xp.sum(self.positions ** 2, axis=1, keepdims=True))
+        norms = xp.where(norms < 1e-8, xp.ones_like(norms), norms)
+        self.positions /= norms
 
     def render(self):
         """Quantize continuous positions to a 2D grid for display.
@@ -128,17 +120,17 @@ class ContinuousDrift:
 
         if self.dims > 2:
             # PCA projection to 2D
-            centered = pos - pos.mean(axis=0)
-            _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-            pos_2d = (centered @ Vt[:2].T).astype(np.float64)
-            # Rescale to grid range
-            for d in range(2):
-                mn, mx = pos_2d[:, d].min(), pos_2d[:, d].max()
-                span = mx - mn if mx - mn > 1e-8 else 1.0
-                target = (self.width - 1) if d == 0 else (self.height - 1)
-                pos_2d[:, d] = (pos_2d[:, d] - mn) / span * target
+            _, _, Vt = np.linalg.svd(pos, full_matrices=False)
+            pos_2d = (pos @ Vt[:2].T).astype(np.float64)
         else:
             pos_2d = pos[:, :2].astype(np.float64)
+
+        # Map from normalized space to grid coordinates
+        for d in range(2):
+            mn, mx = pos_2d[:, d].min(), pos_2d[:, d].max()
+            span = mx - mn if mx - mn > 1e-8 else 1.0
+            target = (self.width - 1) if d == 0 else (self.height - 1)
+            pos_2d[:, d] = (pos_2d[:, d] - mn) / span * target
 
         # Grid cell centers
         grid_y, grid_x = np.mgrid[0:self.height, 0:self.width]
@@ -181,16 +173,15 @@ class ContinuousDrift:
         self.render()
 
     def position_stats(self):
-        """Return position spread statistics for debugging."""
+        """Return position statistics for debugging."""
         xp = _get_xp(self.gpu)
         pos = self.positions
-        mins = xp.min(pos, axis=0)
-        maxs = xp.max(pos, axis=0)
+        means = xp.mean(pos, axis=0)
         stds = xp.std(pos, axis=0)
         if self.gpu:
-            mins, maxs, stds = cp.asnumpy(mins), cp.asnumpy(maxs), cp.asnumpy(stds)
+            means, stds = cp.asnumpy(means), cp.asnumpy(stds)
         return {
-            'min': mins, 'max': maxs, 'std': stds,
-            'spread_x': float(maxs[0] - mins[0]),
-            'spread_y': float(maxs[1] - mins[1]) if self.dims >= 2 else 0,
+            'mean': means, 'std': stds,
+            'mean_norm': float(np.linalg.norm(means)),
+            'std_mean': float(np.mean(stds)),
         }
