@@ -29,6 +29,7 @@ from utils.display import show_grid, show_vector, wait, poll_quit
 from solvers.greedy_drift import GreedyDrift
 from solvers.continuous_drift import ContinuousDrift
 from solvers.temporal_correlation import TemporalCorrelation
+from solvers.word2vec_drift import Word2vecDrift
 from solvers.simulated_annealing import SimulatedAnnealing
 from solvers.spatial_coherence import SpatialCoherence
 
@@ -169,6 +170,76 @@ def run_continuous(args):
                 show_grid("Continuous drift", solver.output)
             elif solver.neurons_matrix is not None:
                 show_grid("Continuous drift", solver.neurons_matrix)
+            wait()
+
+        if output_dir and tick % args.save_every == 0:
+            if solver.output is None:
+                solver.render()
+            frame = solver.output if solver.output is not None else solver.neurons_matrix
+            normalized = cv2.normalize(
+                frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+            cv2.imwrite(path, normalized)
+            saved += 1
+            if saved % 100 == 0:
+                stats = solver.position_stats()
+                print(f"  tick {tick}, saved {saved} frames, "
+                      f"mean_norm={stats['mean_norm']:.4f} std={stats['std_mean']:.4f}")
+
+        if max_frames > 0 and tick >= max_frames:
+            if solver.output is None:
+                solver.render()
+            stats = solver.position_stats()
+            print(f"Done: {tick} ticks, "
+                  f"mean_norm={stats['mean_norm']:.4f} std={stats['std_mean']:.4f}")
+            break
+        if poll_quit():
+            break
+
+
+def run_word2vec(args):
+    w, h = args.width, args.height
+
+    image = None
+    if args.image:
+        image = _load_image(args.image, w, h)
+        print(f"Word2vec drift: {w}x{h} grid, k={args.k}, k_neg={args.k_neg}, "
+              f"lr={args.lr}, dims={args.dims}, image={args.image}")
+    else:
+        print(f"Word2vec drift: {w}x{h} grid, k={args.k}, k_neg={args.k_neg}, "
+              f"lr={args.lr}, dims={args.dims}")
+
+    n = w * h
+    k = min(args.k, n - 1)
+    top_k = topk_decay2d(w, h, k)
+
+    solver = Word2vecDrift(w, h, top_k, k=k, lr=args.lr, dims=args.dims,
+                           k_neg=args.k_neg, image=image, gpu=args.gpu)
+
+    output_dir = args.output_dir
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    max_frames = args.frames
+    sync_every = args.save_every if (args.gpu and output_dir) else 10
+
+    tick = 0
+    saved = 0
+    while True:
+        if args.gpu:
+            solver.run_gpu(sync_every)
+            tick += sync_every
+        else:
+            solver.tick()
+            tick += 1
+            if tick % 10 == 0:
+                solver.render()
+
+        if tick % 10 == 0:
+            if solver.output is not None:
+                show_grid("Word2vec drift", solver.output)
+            elif solver.neurons_matrix is not None:
+                show_grid("Word2vec drift", solver.neurons_matrix)
             wait()
 
         if output_dir and tick % args.save_every == 0:
@@ -486,6 +557,33 @@ def main():
     p_cont.add_argument("--gpu", action="store_true",
                         help="Use GPU acceleration via CuPy")
     p_cont.set_defaults(func=run_continuous)
+
+    # --- word2vec ---
+    p_w2v = sub.add_parser("word2vec",
+                           help="Word2vec-style drift (skip-gram + negative sampling)")
+    p_w2v.add_argument("--width", "-W", type=int, default=40,
+                       help="Grid width (default: 40)")
+    p_w2v.add_argument("--height", "-H", type=int, default=40,
+                       help="Grid height (default: 40)")
+    p_w2v.add_argument("--k", type=int, default=24,
+                       help="Number of nearest neighbors for positive sampling (default: 24)")
+    p_w2v.add_argument("--k-neg", type=int, default=5,
+                       help="Number of negative samples per positive (default: 5)")
+    p_w2v.add_argument("--lr", type=float, default=0.05,
+                       help="Learning rate (default: 0.05)")
+    p_w2v.add_argument("--dims", type=int, default=2,
+                       help="Position vector dimensionality (default: 2)")
+    p_w2v.add_argument("--image", "-i", type=str, default=None,
+                       help="Input image to scramble and reconstruct")
+    p_w2v.add_argument("--frames", "-f", type=int, default=0,
+                       help="Number of frames to run (0 = unlimited)")
+    p_w2v.add_argument("--output-dir", "-o", type=str, default=None,
+                       help="Directory to save output frames as PNGs")
+    p_w2v.add_argument("--save-every", type=int, default=1,
+                       help="Save every Nth frame (default: 1)")
+    p_w2v.add_argument("--gpu", action="store_true",
+                       help="Use GPU acceleration via CuPy")
+    p_w2v.set_defaults(func=run_word2vec)
 
     # --- temporal ---
     p_temp = sub.add_parser("temporal",
