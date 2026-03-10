@@ -92,6 +92,11 @@ Best result. LayerNorm only, no margin dead zone. Clean K reconstruction at 100k
 2. **RMSNorm breaks display**: per-vector unit-length normalization constrains points to a hypersphere, which PCA projects as a disk with density concentrated at center. Needs adapted rendering before it's useful.
 3. **Margin=0 is fine**: the tanh dead zone (margin parameter) is unnecessary with LayerNorm — normalization prevents collapse on its own. Removing it simplifies the system and gives clean results.
 4. **dims=16 with K=25 works well**: consistent with 00002 findings on higher dimensionality.
+5. **Per-vector magnitude drift**: LayerNorm controls per-dimension population stats but does NOT prevent individual vectors from drifting in magnitude. Over 1M ticks (dims=16, K=25, margin=0):
+   - Element min/max stays stable at ~±1.95 (LayerNorm working as intended)
+   - But per-vector norms diverge: min 1.64→0.006 (collapsing), max 7.16→7.77 (growing), mean 3.94→3.29
+   - Neurons near cluster centers shrink (pulled uniformly from all sides), neurons at cluster boundaries grow
+   - This is the gap RMSNorm was meant to fill — per-vector magnitude regularization is needed for long-term stability
 
 ## Next Steps
 
@@ -99,5 +104,5 @@ Best result. LayerNorm only, no margin dead zone. Clean K reconstruction at 100k
 - [x] Verify convergence on K_80_g.png matches or exceeds 00002 quality
 - [ ] Run grid search: K × dims (same grid as 00002 for direct comparison)
 - [ ] Test long-term stability (10M+ ticks) — verify no drift or overflow
-- [ ] Investigate RMSNorm-compatible rendering (radial equalization or stereographic projection)
+- [ ] Fix per-vector magnitude drift: either RMSNorm with adapted rendering, or hybrid (LayerNorm + soft magnitude clamp)
 - [ ] Document final results and compare with 00002
