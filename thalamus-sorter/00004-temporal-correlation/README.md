@@ -109,6 +109,38 @@ Just 1 random peer per neuron per tick. Already clear K structure at only 10k ti
 
 P=1 at 50k ticks. Clean K, comparable quality to precomputed top-K (exp 00003 test6 at 100k). **P=1 is sufficient** when the similarity signal is strong — no need for multiple peers per tick.
 
+### Test 8: Synthetic, P=1, sigma=5, dims=16, threshold=0.02, 50k ticks
+
+Added repulsion: `sim = rbf - 0.02`, so distant peers (sim < 0.02) push apart. K visible but distorted/rotated compared to test 7. Most random pairs are far apart (sim≈0), so the -0.02 push is weak but adds noise. **Threshold repulsion not clearly beneficial** with random sampling — LayerNorm already prevents collapse.
+
+### Scaling to 160px
+
+### Test 9: Synthetic, P=1, sigma=5, dims=16, 160px, 50k ticks
+
+4x more neurons (25,600). K emerging but noisy — sigma=5 is a small neighborhood relative to 160px grid, and P=1 means few useful interactions per tick.
+
+### Test 10: Synthetic, P=5, sigma=5, dims=16, 160px, 50k ticks
+
+P=5 peers. Much cleaner — clear K structure with sharp edges.
+
+### Test 11: Synthetic, P=10, sigma=5, dims=16, 160px, 50k ticks
+
+First frame (random init) → final frame at 50k:
+
+![test11_first](test11_160px_P10_first.png) ![test11_final](test11_160px_P10_50k.png)
+
+Sharp K at 160px. Clean edges, some texture noise in interior. **Scaling works** — larger grids need more P or more ticks to compensate for lower hit rate on nearby peers.
+
+### Scaling to 1024px
+
+Tests 12–15 on K_crop_g.png (1024×1024, ~1M neurons). With sigma=5 the probability of randomly hitting a peer within 3σ is ~0.07% — most samples contribute nothing. Edges/corners sort first (more distinctive neighborhoods). Results:
+- P=10, sigma=5, 10k ticks: edges defined, center still noisy
+- P=25, sigma=5, 1k ticks: similar — bottleneck is hit rate, not P
+- P=5, sigma=64, 1k ticks: too broad — everything collapses, Voronoi shows mostly white
+- P=5, sigma=20, 1k ticks: better balance, edges sorting
+
+Three 1M-tick runs in progress: sigma=20/P=5, sigma=5/P=5, sigma=5/P=1 (pending results).
+
 ## Findings So Far
 
 1. **Random-pair sampling works**: No precomputed neighbor list needed — even P=1 (one random peer per tick) converges to topographic maps when the signal is clean.
