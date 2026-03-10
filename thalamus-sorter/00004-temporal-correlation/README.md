@@ -165,6 +165,31 @@ Over many ticks, the embedding settles into a position that balances all modalit
 
 This is a natural extension of the current architecture — same update loop, just multiple similarity sources.
 
+### Connection to Word2vec
+
+Our system is structurally almost identical to Word2vec (Skip-gram + Negative Sampling):
+
+| Word2vec | Our system |
+|----------|-----------|
+| Context window co-occurrence | Buffer correlation / RBF similarity |
+| Negative sampling (random words) | Random peer sampling |
+| SGD on log σ(w·c) | lr × sim × delta |
+| Word embeddings | Neuron position vectors |
+
+Both systems: random sampling to avoid all-pairs, similarity-based pull/push, embeddings converge to encode co-occurrence/proximity structure.
+
+**What word2vec's math adds that we're missing:**
+
+1. **Explicit positive/negative separation**: word2vec deliberately samples a nearby peer (positive, pull) AND random peers (negative, push) with different objectives. We could do the same — sample one known-similar peer + k random peers each tick, instead of relying on random hits.
+
+2. **Log-sigmoid objective**: word2vec uses `log σ(w·c)` instead of linear similarity. This gives stronger gradients for "wrong" pairs (far embeddings that should be close, or vice versa) and saturates for "correct" pairs — a natural curriculum that focuses learning where it's most needed.
+
+3. **Negative sampling ratio (k)**: word2vec uses ~5–20 negatives per positive. This explicitly controls push/pull balance rather than relying on LayerNorm to prevent collapse.
+
+4. **Dual vector spaces**: word2vec maintains separate embedding and context vectors per word. Could relate to the multi-modal question — different "roles" for the same neuron.
+
+We could swap our update rule for the word2vec SGD step directly. The log-sigmoid objective and explicit negative sampling would likely improve convergence speed and scaling behavior, especially at larger grid sizes where random sampling rarely hits nearby peers.
+
 ### Embedding compression (future)
 
 When inputs outnumber output slots (more input neurons than neocortex capacity), some embeddings must merge. This is learned pooling: neurons whose embeddings converge close enough share an output slot. The sorting becomes "arrange AND compress" — discovering which neurons are redundant enough to collapse.
@@ -183,3 +208,4 @@ This builds on multi-modal sorting: first learn joint embeddings that capture al
 - [ ] Move toward Phase 2: real circular buffer time-series from live input
 - [ ] Multi-modal sorting: multiple buffer streams feeding shared embeddings
 - [ ] Embedding compression: merge similar embeddings when N_input > N_output
+- [ ] Try word2vec-style update: log-sigmoid objective, explicit positive/negative sampling
