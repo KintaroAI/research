@@ -28,6 +28,7 @@ from utils.camera import Camera
 from utils.display import show_grid, show_vector, wait, poll_quit
 from solvers.greedy_drift import GreedyDrift
 from solvers.continuous_drift import ContinuousDrift
+from solvers.temporal_correlation import TemporalCorrelation
 from solvers.simulated_annealing import SimulatedAnnealing
 from solvers.spatial_coherence import SpatialCoherence
 
@@ -168,6 +169,81 @@ def run_continuous(args):
                 show_grid("Continuous drift", solver.output)
             elif solver.neurons_matrix is not None:
                 show_grid("Continuous drift", solver.neurons_matrix)
+            wait()
+
+        if output_dir and tick % args.save_every == 0:
+            if solver.output is None:
+                solver.render()
+            frame = solver.output if solver.output is not None else solver.neurons_matrix
+            normalized = cv2.normalize(
+                frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+            cv2.imwrite(path, normalized)
+            saved += 1
+            if saved % 100 == 0:
+                stats = solver.position_stats()
+                print(f"  tick {tick}, saved {saved} frames, "
+                      f"mean_norm={stats['mean_norm']:.4f} std={stats['std_mean']:.4f}")
+
+        if max_frames > 0 and tick >= max_frames:
+            if solver.output is None:
+                solver.render()
+            stats = solver.position_stats()
+            print(f"Done: {tick} ticks, "
+                  f"mean_norm={stats['mean_norm']:.4f} std={stats['std_mean']:.4f}")
+            break
+        if poll_quit():
+            break
+
+
+def run_temporal(args):
+    w, h = args.width, args.height
+
+    image = None
+    if args.image:
+        image = _load_image(args.image, w, h)
+
+    print(f"Temporal correlation: {w}x{h} grid, buf={args.buf_source}, P={args.P}, "
+          f"lr={args.lr}, dims={args.dims}")
+
+    # Precompute top_k if using embeddings source
+    top_k = None
+    if args.buf_source == "embeddings":
+        n = w * h
+        k = min(args.emb_k, n - 1)
+        top_k = topk_decay2d(w, h, k)
+
+    solver = TemporalCorrelation(w, h, P=args.P, lr=args.lr, dims=args.dims,
+                                 buf_source=args.buf_source,
+                                 T=args.T, sigma=args.sigma,
+                                 top_k=top_k, emb_dims=args.emb_dims,
+                                 emb_ticks=args.emb_ticks,
+                                 image=image, gpu=args.gpu)
+
+    output_dir = args.output_dir
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    max_frames = args.frames
+    sync_every = args.save_every if (args.gpu and output_dir) else 10
+
+    tick = 0
+    saved = 0
+    while True:
+        if args.gpu:
+            solver.run_gpu(sync_every)
+            tick += sync_every
+        else:
+            solver.tick()
+            tick += 1
+            if tick % 10 == 0:
+                solver.render()
+
+        if tick % 10 == 0:
+            if solver.output is not None:
+                show_grid("Temporal correlation", solver.output)
+            elif solver.neurons_matrix is not None:
+                show_grid("Temporal correlation", solver.neurons_matrix)
             wait()
 
         if output_dir and tick % args.save_every == 0:
@@ -409,6 +485,44 @@ def main():
     p_cont.add_argument("--gpu", action="store_true",
                         help="Use GPU acceleration via CuPy")
     p_cont.set_defaults(func=run_continuous)
+
+    # --- temporal ---
+    p_temp = sub.add_parser("temporal",
+                            help="Temporal correlation sorting (no precomputed neighbors)")
+    p_temp.add_argument("--width", "-W", type=int, default=40,
+                        help="Grid width (default: 40)")
+    p_temp.add_argument("--height", "-H", type=int, default=40,
+                        help="Grid height (default: 40)")
+    p_temp.add_argument("--buf-source", choices=["synthetic", "gaussian", "embeddings"],
+                        default="synthetic",
+                        help="Buffer source: gaussian fields or converged embeddings (default: embeddings)")
+    p_temp.add_argument("--T", type=int, default=200,
+                        help="Buffer length for gaussian source (default: 200)")
+    p_temp.add_argument("--P", type=int, default=1,
+                        help="Random peers per neuron per tick (default: 1)")
+    p_temp.add_argument("--sigma", type=float, default=5.0,
+                        help="Spatial smoothing sigma for gaussian source (default: 5.0)")
+    p_temp.add_argument("--emb-k", type=int, default=25,
+                        help="K neighbors for embedding generation (default: 25)")
+    p_temp.add_argument("--emb-dims", type=int, default=16,
+                        help="Dimensionality of source embeddings (default: 16)")
+    p_temp.add_argument("--emb-ticks", type=int, default=100000,
+                        help="Convergence ticks for embedding generation (default: 100000)")
+    p_temp.add_argument("--lr", type=float, default=0.05,
+                        help="Learning rate (default: 0.05)")
+    p_temp.add_argument("--dims", type=int, default=2,
+                        help="Position vector dimensionality (default: 2)")
+    p_temp.add_argument("--image", "-i", type=str, default=None,
+                        help="Input image to scramble and reconstruct")
+    p_temp.add_argument("--frames", "-f", type=int, default=0,
+                        help="Number of frames to run (0 = unlimited)")
+    p_temp.add_argument("--output-dir", "-o", type=str, default=None,
+                        help="Directory to save output frames as PNGs")
+    p_temp.add_argument("--save-every", type=int, default=1,
+                        help="Save every Nth frame (default: 1)")
+    p_temp.add_argument("--gpu", action="store_true",
+                        help="Use GPU acceleration via CuPy")
+    p_temp.set_defaults(func=run_temporal)
 
     # --- mst ---
     p_mst = sub.add_parser("mst", help="MST-based one-shot sorting")
