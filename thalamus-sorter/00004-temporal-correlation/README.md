@@ -116,6 +116,28 @@ P=1 at 50k ticks. Clean K, comparable quality to precomputed top-K (exp 00003 te
 3. **Gaussian field buffers are too weak**: T=200 samples of smoothed noise give correlations of ~0.005 — below the noise floor for meaningful updates. Would need T >> 1000.
 4. **Exp 00003 embeddings are broken as buffers**: Per-vector magnitude drift makes them unusable for correlation computation. Need to fix magnitude drift first (RMSNorm or soft clamp).
 5. **Synthetic buffers validate the mechanism**: With clean (x,y) + RBF similarity, the system converges well. The sampling/update loop is sound — the bottleneck is generating good buffer vectors from real signals.
+6. **Dimensions don't specialize with single modality**: PCA of converged 16-dim embeddings shows PC0+PC1 = 91% of variance, PC0–PC2 = 99.2%. All 16 dims are rotated copies of the same 2D (x,y) structure — no dim captures anything beyond spatial position. This is expected: with only one similarity signal (spatial), there's no pressure for dims to differentiate.
+7. **Updates are linear interpolation, not rotation**: The update rule `pos[i] += lr * sim * (pos[j] - pos[i])` shifts all dimensions equally toward the peer — it's weighted averaging with no rotation, shearing, or non-linear transformation. Dims can only converge to smooth maps of the input signal. Specialization of different dimensions would require different update signals per dimension (e.g., from multiple modalities pulling in conflicting directions).
+
+## Future Directions: Multi-Modal Input & Compression
+
+### Multiple buffer streams (Option 3)
+
+With RGB input, each pixel has multiple "reasons" to be similar to another: spatial proximity, red similarity, green similarity, blue similarity. Instead of combining these into one similarity score, keep **separate buffers per modality** and a **single shared embedding**:
+
+- 4 buffers per neuron: spatial (x,y), red time-series, green time-series, blue time-series
+- 1 embedding per neuron (shared across modalities)
+- Each tick: pick a random peer AND a random modality, compute similarity from that modality's buffer, update the shared embedding
+
+Over many ticks, the embedding settles into a position that balances all modalities. High-dimensional embedding space gives room to satisfy multiple organizing principles simultaneously — analogous to cortical maps encoding retinotopy, orientation, color preference, etc. in the same 2D sheet.
+
+This is a natural extension of the current architecture — same update loop, just multiple similarity sources.
+
+### Embedding compression (future)
+
+When inputs outnumber output slots (more input neurons than neocortex capacity), some embeddings must merge. This is learned pooling: neurons whose embeddings converge close enough share an output slot. The sorting becomes "arrange AND compress" — discovering which neurons are redundant enough to collapse.
+
+This builds on multi-modal sorting: first learn joint embeddings that capture all modalities, then compress by merging similar ones. Different from current work where N inputs = N output slots (bijective mapping).
 
 ## Next Steps
 
@@ -127,3 +149,5 @@ P=1 at 50k ticks. Clean K, comparable quality to precomputed top-K (exp 00003 te
 - [ ] Grid search on sigma, P for synthetic source
 - [ ] Compare convergence speed: synthetic temporal vs precomputed top-K
 - [ ] Move toward Phase 2: real circular buffer time-series from live input
+- [ ] Multi-modal sorting: multiple buffer streams feeding shared embeddings
+- [ ] Embedding compression: merge similar embeddings when N_input > N_output

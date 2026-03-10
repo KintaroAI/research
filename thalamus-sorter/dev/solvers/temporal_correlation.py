@@ -94,7 +94,7 @@ class TemporalCorrelation:
     """
 
     def __init__(self, width, height, P=1, lr=0.05, dims=2,
-                 buf_source="synthetic", T=200, sigma=5.0,
+                 buf_source="synthetic", T=200, sigma=5.0, threshold=0.0,
                  top_k=None, emb_dims=16, emb_ticks=100000,
                  image=None, gpu=False):
         """
@@ -120,6 +120,7 @@ class TemporalCorrelation:
         self.dims = dims
         self.buf_source = buf_source
         self.sigma = sigma
+        self.threshold = threshold
         self.gpu = gpu and _HAS_CUPY
 
         # Position vectors: (n, dims) — the "embeddings" to be learned
@@ -174,16 +175,16 @@ class TemporalCorrelation:
     def _similarity(self, j, xp):
         """Compute similarity between each neuron and its peer j.
 
-        For synthetic buffers: Gaussian RBF on (x,y) distance.
+        For synthetic buffers: Gaussian RBF on (x,y) distance, shifted by threshold.
         For gaussian/embeddings: Pearson correlation from normalized buffers.
-        Returns (n,) similarity values.
+        Returns (n,) similarity values. Positive = pull, negative = repel.
         """
         if self.buf_source == "synthetic":
-            # Gaussian RBF: exp(-dist² / (2σ²))
+            # Gaussian RBF: exp(-dist² / (2σ²)) - threshold
             diff = self.buffers - self.buffers[j]       # (n, 2)
             dist_sq = xp.sum(diff ** 2, axis=1)         # (n,)
             sim = xp.exp(-dist_sq / (2 * self.sigma ** 2))  # (n,) in [0, 1]
-            return sim
+            return sim - self.threshold
         else:
             # Pearson from pre-normalized buffers
             bi = self.buf_normed

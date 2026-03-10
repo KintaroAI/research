@@ -216,6 +216,7 @@ def run_temporal(args):
     solver = TemporalCorrelation(w, h, P=args.P, lr=args.lr, dims=args.dims,
                                  buf_source=args.buf_source,
                                  T=args.T, sigma=args.sigma,
+                                 threshold=args.threshold,
                                  top_k=top_k, emb_dims=args.emb_dims,
                                  emb_ticks=args.emb_ticks,
                                  image=image, gpu=args.gpu)
@@ -501,7 +502,9 @@ def main():
     p_temp.add_argument("--P", type=int, default=1,
                         help="Random peers per neuron per tick (default: 1)")
     p_temp.add_argument("--sigma", type=float, default=5.0,
-                        help="Spatial smoothing sigma for gaussian source (default: 5.0)")
+                        help="Spatial smoothing sigma / RBF kernel width (default: 5.0)")
+    p_temp.add_argument("--threshold", type=float, default=0.0,
+                        help="Similarity threshold: sim > threshold pulls, < repels (default: 0.0)")
     p_temp.add_argument("--emb-k", type=int, default=25,
                         help="K neighbors for embedding generation (default: 25)")
     p_temp.add_argument("--emb-dims", type=int, default=16,
