@@ -228,7 +228,7 @@ def run_word2vec(args):
         print(f"Word2vec drift (sentence): {w}x{h} grid, k={args.k}, "
               f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
               f"window={args.window}, normalize_every={norm_every}, "
-              f"align={args.align}")
+              f"align={args.align}, async={args.async_render}")
 
         # Pixel values for image rendering
         pixel_values = None
@@ -246,59 +246,168 @@ def run_word2vec(args):
         if render_method == 'euclidean':
             render_method = 'pca'
 
-        prev_2d = None  # warm start for projections (UMAP/t-SNE)
+        if args.async_render and output_dir:
+            # --- Async render: training and rendering decoupled ---
+            # Double-buffered shared memory prevents torn reads.
+            # Writer fills inactive slot, then flips the index atomically.
+            # Reader always reads the active slot — always consistent.
+            import multiprocessing as mp
 
-        def render_frame():
-            nonlocal prev_2d
+            buf_size = n * args.dims
+            shm_buf0 = mp.Array('f', buf_size)       # slot 0
+            shm_buf1 = mp.Array('f', buf_size)       # slot 1
+            shm_active = mp.Value('i', 0)             # which slot is readable
+            shm_tick = mp.Value('i', 0)               # tick of active slot
+            shm_done = mp.Value('i', 0)               # 1 = training finished
+
+            def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
+                               shm_done, n, dims, w, h, pixel_values,
+                               render_method, do_align, cold_proj, output_dir):
+                """Pull-based render worker. Reads from active double-buffer slot."""
+                from render_embeddings import (project, align_to_grid,
+                                               render as render_emb)
+                bufs = [shm_buf0, shm_buf1]
+                prev_2d = None
+                last_rendered_tick = 0
+                frame_idx = 0
+
+                while True:
+                    cur_tick = shm_tick.value
+                    done = shm_done.value
+
+                    if cur_tick > last_rendered_tick:
+                        # Read from the active (complete) slot
+                        slot = shm_active.value
+                        emb = np.frombuffer(bufs[slot].get_obj(),
+                                            dtype=np.float32).reshape(n, dims).copy()
+                        last_rendered_tick = cur_tick
+
+                        warm = None if cold_proj else prev_2d
+                        pos_2d = project(emb, w, h, render_method, prev_2d=warm)
+                        if do_align:
+                            pos_2d = align_to_grid(pos_2d, w, h)
+                        if not cold_proj:
+                            prev_2d = pos_2d.copy()
+                        frame = render_emb(pos_2d, w, h, pixel_values)
+
+                        if frame is not None:
+                            normalized = cv2.normalize(
+                                frame, None, 0, 255, cv2.NORM_MINMAX,
+                                dtype=cv2.CV_8U)
+                            path = os.path.join(output_dir,
+                                                f"frame_{frame_idx:06d}.png")
+                            cv2.imwrite(path, normalized)
+                            frame_idx += 1
+
+                    elif done:
+                        break
+                    else:
+                        time.sleep(0.001)
+
+                print(f"  render worker: {frame_idx} frames saved, "
+                      f"last tick={last_rendered_tick}")
+
+            bufs = [shm_buf0, shm_buf1]
+            worker = mp.Process(target=_render_worker,
+                                args=(shm_buf0, shm_buf1, shm_active, shm_tick,
+                                      shm_done, n, args.dims,
+                                      w, h, pixel_values, render_method,
+                                      args.align, args.cold_projection,
+                                      output_dir))
+            worker.start()
+
+            t0 = time.time()
+            max_frames = args.frames
+            write_slot = 1  # start writing to inactive slot
+            for tick in range(1, max_frames + 1):
+                dsolver.tick_sentence(window=args.window)
+                if tick % args.save_every == 0:
+                    # Write to inactive slot, then flip
+                    emb = dsolver.get_positions()
+                    dst = np.frombuffer(bufs[write_slot].get_obj(),
+                                        dtype=np.float32)
+                    np.copyto(dst, emb.ravel())
+                    shm_active.value = write_slot
+                    shm_tick.value = tick
+                    write_slot = 1 - write_slot
+
+            # Final snapshot
             emb = dsolver.get_positions()
-            warm = None if args.cold_projection else prev_2d
-            pos_2d = project(emb, w, h, render_method, prev_2d=warm)
-            if args.align:
-                pos_2d = align_to_grid(pos_2d, w, h)
-            if not args.cold_projection:
-                prev_2d = pos_2d.copy()
-            return render_emb(pos_2d, w, h, pixel_values)
+            dst = np.frombuffer(bufs[write_slot].get_obj(), dtype=np.float32)
+            np.copyto(dst, emb.ravel())
+            shm_active.value = write_slot
+            shm_tick.value = max_frames + 1
+            time.sleep(0.01)
+            shm_done.value = 1
 
-        t0 = time.time()
-        max_frames = args.frames
-        saved = 0
-        for tick in range(1, max_frames + 1):
-            dsolver.tick_sentence(window=args.window)
-            if output_dir and tick % args.save_every == 0:
+            elapsed_train = time.time() - t0
+            s = dsolver.stats()
+            print(f"Training done: {max_frames} ticks in {elapsed_train:.1f}s, "
+                  f"std={s['std']:.4f}")
+
+            worker.join()
+            elapsed_total = time.time() - t0
+            print(f"Total (train + render drain): {elapsed_total:.1f}s")
+
+        else:
+            # --- Synchronous render (original path) ---
+            prev_2d = None
+
+            def render_frame():
+                nonlocal prev_2d
+                emb = dsolver.get_positions()
+                warm = None if args.cold_projection else prev_2d
+                pos_2d = project(emb, w, h, render_method, prev_2d=warm)
+                if args.align:
+                    pos_2d = align_to_grid(pos_2d, w, h)
+                if not args.cold_projection:
+                    prev_2d = pos_2d.copy()
+                return render_emb(pos_2d, w, h, pixel_values)
+
+            t0 = time.time()
+            max_frames = args.frames
+            saved = 0
+            for tick in range(1, max_frames + 1):
+                dsolver.tick_sentence(window=args.window)
+                if output_dir and tick % args.save_every == 0:
+                    frame = render_frame()
+                    if frame is not None:
+                        normalized = cv2.normalize(
+                            frame, None, 0, 255, cv2.NORM_MINMAX,
+                            dtype=cv2.CV_8U)
+                        path = os.path.join(output_dir,
+                                            f"frame_{saved:06d}.png")
+                        cv2.imwrite(path, normalized)
+                        saved += 1
+                        if saved % 100 == 0:
+                            elapsed = time.time() - t0
+                            s = dsolver.stats()
+                            print(f"  tick {tick}, saved {saved} frames, "
+                                  f"std={s['std']:.4f}, elapsed={elapsed:.1f}s")
+                elif not output_dir and tick % 10 == 0:
+                    frame = render_frame()
+                    if frame is not None:
+                        show_grid("Sentence skip-gram", frame)
+                    wait()
+                if poll_quit():
+                    break
+
+            elapsed = time.time() - t0
+            s = dsolver.stats()
+            print(f"Done: {max_frames} ticks in {elapsed:.1f}s, "
+                  f"std={s['std']:.4f}")
+
+            # Save final frame
+            if output_dir:
                 frame = render_frame()
                 if frame is not None:
                     normalized = cv2.normalize(
-                        frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                    path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+                        frame, None, 0, 255, cv2.NORM_MINMAX,
+                        dtype=cv2.CV_8U)
+                    path = os.path.join(output_dir,
+                                        f"frame_{saved:06d}.png")
                     cv2.imwrite(path, normalized)
-                    saved += 1
-                    if saved % 100 == 0:
-                        elapsed = time.time() - t0
-                        s = dsolver.stats()
-                        print(f"  tick {tick}, saved {saved} frames, "
-                              f"std={s['std']:.4f}, elapsed={elapsed:.1f}s")
-            elif not output_dir and tick % 10 == 0:
-                frame = render_frame()
-                if frame is not None:
-                    show_grid("Sentence skip-gram", frame)
-                wait()
-            if poll_quit():
-                break
-
-        elapsed = time.time() - t0
-        s = dsolver.stats()
-        print(f"Done: {max_frames} ticks in {elapsed:.1f}s, "
-              f"std={s['std']:.4f}")
-
-        # Save final frame
-        if output_dir:
-            frame = render_frame()
-            if frame is not None:
-                normalized = cv2.normalize(
-                    frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                path = os.path.join(output_dir, f"frame_{saved:06d}.png")
-                cv2.imwrite(path, normalized)
-                print(f"  final frame saved: {path}")
+                    print(f"  final frame saved: {path}")
 
         # Save model (only if explicitly requested)
         if args.save_model or args.save_model_path:
@@ -729,6 +838,8 @@ def main():
                        help="Load .npy embeddings as initial positions (warm start)")
     p_w2v.add_argument("--cold-projection", action="store_true",
                        help="Disable projection warm start (run UMAP/t-SNE from scratch each frame)")
+    p_w2v.add_argument("--async-render", action="store_true",
+                       help="Render in separate process (training never waits for visualization)")
     p_w2v.add_argument("--save-model", action="store_true",
                        help="Save final embeddings to .npy file")
     p_w2v.add_argument("--save-model-path", type=str, default=None,

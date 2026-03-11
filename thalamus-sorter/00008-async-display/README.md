@@ -20,23 +20,79 @@ Rendering dominates — training is 1000x faster than visualization. With 100 fr
 
 ## Method
 
-1. Training loop runs on main thread/process, producing embeddings at full GPU speed.
-2. At save intervals, snapshot current embeddings and push to a render queue.
-3. Render worker (separate process) pulls snapshots, runs UMAP + Procrustes + save.
-4. Training never waits for rendering to complete.
+### Push vs pull
 
-### Design considerations
+Two approaches considered:
 
-- **Thread vs process:** UMAP is CPU-bound (numpy/numba), so a separate process avoids GIL. `multiprocessing.Process` with a `Queue`.
-- **Memory:** Each snapshot is 6400 × 8 × 4 bytes = 200KB — negligible. Queue can hold many frames.
-- **Warm projection state:** `prev_2d` must live in the render worker (it owns the projection continuity).
-- **Backpressure:** If renders can't keep up, either drop frames or let the queue grow (bounded queue with drop policy).
-- **Shutdown:** Sentinel value in queue signals render worker to flush remaining frames and exit.
+1. **Push (queue):** Training pushes snapshots to a queue, renderer consumes in order. Simple, but needs backpressure policy — if renderer is slow, queue grows or frames must be dropped explicitly.
+
+2. **Pull (shared memory):** Renderer periodically grabs the latest available snapshot. If rendering finishes fast, it waits for the next update. If rendering took longer than the interval, it skips to whatever's current. Natural best-effort — no queue, no drop policy.
+
+**Chose pull.** The renderer works at its own pace and always sees the most recent state. No frame ordering guarantees, but for visualization that's fine — we want to see the current state, not replay every intermediate.
+
+### Torn read problem
+
+With shared memory, the renderer could read while training is mid-write, getting a mix of old and new embedding values (a "torn read"). Solved with **double buffering**:
+
+- Two embedding slots in shared memory (slot 0 and slot 1)
+- Training writes to the **inactive** slot, then atomically flips the active index
+- Renderer always reads the **active** slot — always a complete, consistent snapshot
+
+```
+Training:                    Renderer:
+  write to slot 1              read slot 0 (safe)
+  flip active → 1              ...rendering...
+  write to slot 0              read slot 1 (safe)
+  flip active → 0              ...rendering...
+```
+
+### Implementation
+
+- `multiprocessing.Process` for the render worker (UMAP is CPU-bound, avoids GIL)
+- `multiprocessing.Array('f', n * dims)` × 2 for double-buffered embeddings
+- `multiprocessing.Value('i')` for active slot index, tick counter, done flag
+- Each snapshot is n × dims × 4 bytes (e.g. 6400 × 8 × 4 = 200KB) — negligible memory
+- `prev_2d` (warm projection state) lives in the render worker, maintaining projection continuity
+- Renderer polls with 1ms sleep when no new data available
+- Training signals completion via done flag; renderer drains the final snapshot and exits
+
+Enabled with `--async-render` flag. Falls back to synchronous render without it.
 
 ## Results
 
-*(to be filled)*
+### Test 1: 1k ticks, async vs sync (80x80, D8, UMAP + Procrustes)
+
+| Mode | Training time | Frames rendered | Total time |
+|------|--------------|-----------------|------------|
+| Sync | 125.5s | 100 (every 10th tick) | 125.5s |
+| Async | 8.9s | 2 | 32.6s |
+
+Training is **14x faster** when decoupled. Renderer only captured 2 frames because 1k ticks finishes in <9s while UMAP cold start alone takes ~15s. The renderer grabbed tick ~10 (random, disparity 0.999) and the final state (disparity 0.956).
+
+### Test 2: 10k ticks, async (80x80, D8, UMAP + Procrustes)
+
+With 10x more ticks, the renderer has time to capture many frames:
+
+| Metric | Value |
+|--------|-------|
+| Training time | 88.2s |
+| Frames rendered | 71 |
+| Total time | 89.6s |
+| Render drain after training | 1.4s |
+
+Renderer nearly kept up — only 1.4s of drain after training finished. 71 frames at ~0.9s/frame warm UMAP ≈ 64s of render work, overlapping with 88s of training. Disparity curve drops smoothly from 1.0 → 0.24, sampling non-uniformly across ticks (denser at start when UMAP is slower cold, sparser mid-training as warm UMAP accelerates).
+
+### Comparison: sync vs async at 10k ticks
+
+| | Sync (estimated) | Async |
+|--|-------------------|-------|
+| Training wall time | ~88s + ~85s render = ~173s | 88.2s |
+| Frames | 1000 (every tick) | 71 (best-effort) |
+| Total wall time | ~173s | 89.6s |
+| Speedup | 1x | **~2x** |
+
+Async is ~2x faster at 10k ticks. The speedup grows with shorter training (at 1k ticks, 14x). For very long runs the renderer keeps up and overhead approaches zero.
 
 ## Files
 
-- `main.py` — Updated sentence mode with async render pipeline
+- `main.py` — Updated sentence mode with `--async-render` flag and double-buffered shared memory
