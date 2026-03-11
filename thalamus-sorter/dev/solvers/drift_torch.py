@@ -1,0 +1,400 @@
+"""GPU-accelerated drift solvers using PyTorch.
+
+Supports two solver modes:
+  - 'euclidean': ContinuousDrift — positions lerp toward neighbor centroids
+  - 'dot': Word2vec dual-vector — W·C skip-gram with cross-updates
+
+And tick variants:
+  - tick():         standard (top-K positive + random negative)
+  - tick_dual_xy(): alternating x/y neighbor signals for dimension specialization
+
+Usage:
+    from solvers.drift_torch import DriftSolver
+
+    solver = DriftSolver(n=6400, top_k=top_k, dims=16, mode='euclidean')
+    solver.tick()
+    positions_np = solver.get_positions()  # back to numpy
+"""
+
+import torch
+import numpy as np
+
+
+class DriftSolver:
+    """Unified GPU drift solver for topographic map formation.
+
+    Args:
+        n: number of neurons
+        top_k: (n, k) int32 array of neighbor indices (numpy or torch)
+        k: number of neighbors (inferred from top_k if provided)
+        dims: embedding dimensionality
+        lr: learning rate
+        mode: 'euclidean' or 'dot'
+        k_neg: negative samples per tick (dot mode only)
+        margin: dead zone for euclidean mode
+        normalize_every: periodic L2 normalization interval (dot mode, 0=off)
+        device: 'cuda', 'cpu', or specific device
+    """
+
+    def __init__(self, n, top_k=None, k=24, dims=3, lr=0.05,
+                 mode='euclidean', k_neg=5, margin=0.1,
+                 normalize_every=0, device='cuda'):
+        self.n = n
+        self.dims = dims
+        self.lr = lr
+        self.mode = mode
+        self.k_neg = k_neg
+        self.margin = margin
+        self.normalize_every = normalize_every
+        self._tick_count = 0
+        self.device = torch.device(device)
+
+        # Positions (W vectors)
+        if mode == 'euclidean':
+            self.positions = torch.randn(n, dims, device=self.device)
+        else:
+            scale = 0.5 / dims
+            self.positions = torch.empty(n, dims, device=self.device).uniform_(-scale, scale)
+
+        # Context vectors (dot mode only)
+        self.contexts = torch.zeros(n, dims, device=self.device) if mode == 'dot' else None
+
+        # Top-K neighbors
+        if top_k is not None:
+            if isinstance(top_k, np.ndarray):
+                top_k = torch.from_numpy(top_k.astype(np.int64))
+            self.top_k = top_k.to(self.device)
+            self.k = self.top_k.shape[1]
+        else:
+            self.top_k = None
+            self.k = k
+
+        # Helper: arange for indexing
+        self._arange = torch.arange(n, device=self.device)
+
+    # ---- Euclidean mode ----
+
+    def tick_euclidean(self):
+        """Lerp toward neighbor centroid with dead zone + LayerNorm."""
+        neighbor_pos = self.positions[self.top_k]       # (n, k, dims)
+        centroids = neighbor_pos.mean(dim=1)             # (n, dims)
+        delta = centroids - self.positions
+        if self.margin > 0:
+            dist = delta.norm(dim=1, keepdim=True)
+            scale = torch.tanh(dist / self.margin)
+            delta = delta * scale
+        self.positions.add_(self.lr * delta)
+        self._layernorm()
+
+    def _layernorm(self):
+        """Center + unit variance per dimension."""
+        self.positions.sub_(self.positions.mean(dim=0))
+        std = self.positions.std(dim=0)
+        std = std.clamp(min=1e-8)
+        self.positions.div_(std)
+
+    # ---- Dot product (word2vec) mode ----
+
+    def tick_dot(self):
+        """Two-vector skip-gram: W←C and C←W cross-updates."""
+        # Positive: sample one random neighbor from top_k
+        pos_idx = torch.randint(0, self.k, (self.n,), device=self.device)
+        j_pos = self.top_k[self._arange, pos_idx]
+
+        c_pos = self.contexts[j_pos]                          # (n, dims)
+        dot_pos = (self.positions * c_pos).sum(dim=1)          # (n,)
+        sig_pos = torch.sigmoid(-dot_pos)                      # σ(-dot)
+
+        # W[i] += lr * σ(-dot) * C[j]
+        grad_w_pos = sig_pos.unsqueeze(1) * c_pos
+        # C[j] += lr * σ(-dot) * W[i]  (use pre-update W)
+        grad_c_pos = sig_pos.unsqueeze(1) * self.positions
+
+        self.positions.add_(self.lr * grad_w_pos)
+        # Scatter-add for C updates (multiple neurons may share same j)
+        self.contexts.scatter_add_(0, j_pos.unsqueeze(1).expand_as(grad_c_pos),
+                                   self.lr * grad_c_pos)
+
+        # Negative: sample k_neg random neurons
+        j_neg = torch.randint(0, self.n, (self.n, self.k_neg), device=self.device)
+        c_neg = self.contexts[j_neg]                           # (n, k_neg, dims)
+        dot_neg = (self.positions.unsqueeze(1) * c_neg).sum(dim=2)  # (n, k_neg)
+        sig_neg = torch.sigmoid(dot_neg)                       # σ(dot)
+
+        # W[i] -= lr * σ(dot) * C[neg]
+        push_w = (sig_neg.unsqueeze(2) * c_neg).sum(dim=1)    # (n, dims)
+        self.positions.sub_(self.lr * push_w)
+
+        # C[neg] -= lr * σ(dot) * W[i]
+        push_c = sig_neg.unsqueeze(2) * self.positions.unsqueeze(1)  # (n, k_neg, dims)
+        # Flatten and scatter
+        j_neg_flat = j_neg.reshape(-1)
+        push_c_flat = (self.lr * push_c).reshape(-1, self.dims)
+        self.contexts.scatter_add_(0, j_neg_flat.unsqueeze(1).expand_as(push_c_flat),
+                                   -push_c_flat)
+
+        self._maybe_normalize()
+
+    def tick_sentence(self, window=5):
+        """Skip-gram with sliding window over neighbor sentences, like gensim.
+
+        Each neuron's sentence = [self, shuffled_neighbor1, ..., shuffled_neighbor_k].
+        All (center, context) pairs within the window are batched into a single
+        GPU operation — no Python loops over pairs.
+        """
+        seq_len = self.k + 1
+
+        # Build sentences: (n, k+1) — neuron followed by shuffled neighbors
+        perm = torch.argsort(torch.rand(self.n, self.k, device=self.device), dim=1)
+        shuffled_nb = torch.gather(self.top_k, 1, perm)
+        sentences = torch.cat([self._arange.unsqueeze(1), shuffled_nb], dim=1)  # (n, seq_len)
+
+        # Build all valid (center_offset, context_offset) pairs
+        if not hasattr(self, '_sentence_offsets'):
+            offsets = []
+            for c in range(seq_len):
+                for ctx in range(max(0, c - window), min(seq_len, c + window + 1)):
+                    if ctx != c:
+                        offsets.append((c, ctx))
+            self._sentence_offsets = torch.tensor(offsets, device=self.device)  # (P, 2)
+
+        P = self._sentence_offsets.shape[0]  # number of pairs per sentence
+
+        # Gather all center and context neuron IDs: (n, P)
+        c_offs = self._sentence_offsets[:, 0]  # (P,)
+        x_offs = self._sentence_offsets[:, 1]  # (P,)
+        center_ids = sentences[:, c_offs]  # (n, P)
+        ctx_ids = sentences[:, x_offs]     # (n, P)
+
+        # Flatten to (n*P,) for batched processing
+        center_flat = center_ids.reshape(-1)  # (n*P,)
+        ctx_flat = ctx_ids.reshape(-1)        # (n*P,)
+        B = center_flat.shape[0]
+
+        # --- Positive updates ---
+        w_center = self.positions[center_flat]     # (B, dims)
+        c_ctx = self.contexts[ctx_flat]            # (B, dims)
+        dot = (w_center * c_ctx).sum(dim=1)        # (B,)
+        sig = torch.sigmoid(-dot)                  # (B,)
+
+        grad_w = self.lr * sig.unsqueeze(1) * c_ctx    # (B, dims)
+        grad_c = self.lr * sig.unsqueeze(1) * w_center  # (B, dims)
+
+        self.positions.scatter_add_(
+            0, center_flat.unsqueeze(1).expand_as(grad_w), grad_w)
+        self.contexts.scatter_add_(
+            0, ctx_flat.unsqueeze(1).expand_as(grad_c), grad_c)
+
+        # --- Negative sampling: k_neg negatives per pair ---
+        j_neg = torch.randint(0, self.n, (B, self.k_neg), device=self.device)  # (B, k_neg)
+        c_neg = self.contexts[j_neg]                                   # (B, k_neg, dims)
+        dot_neg = (w_center.unsqueeze(1) * c_neg).sum(dim=2)          # (B, k_neg)
+        sig_neg = torch.sigmoid(dot_neg)                               # (B, k_neg)
+
+        # W[center] -= lr * sum(σ(dot) * C[neg])
+        push_w = (sig_neg.unsqueeze(2) * c_neg).sum(dim=1)            # (B, dims)
+        self.positions.scatter_add_(
+            0, center_flat.unsqueeze(1).expand_as(push_w), -self.lr * push_w)
+
+        # C[neg] -= lr * σ(dot) * W[center]
+        push_c = sig_neg.unsqueeze(2) * w_center.unsqueeze(1)         # (B, k_neg, dims)
+        j_neg_flat = j_neg.reshape(-1)                                 # (B*k_neg,)
+        push_c_flat = (self.lr * push_c).reshape(-1, self.dims)       # (B*k_neg, dims)
+        self.contexts.scatter_add_(
+            0, j_neg_flat.unsqueeze(1).expand_as(push_c_flat), -push_c_flat)
+
+        self._maybe_normalize()
+
+    def _maybe_normalize(self):
+        """Periodic L2 normalization of W and C to prevent magnitude blow-up."""
+        if self.normalize_every <= 0:
+            return
+        self._tick_count += 1
+        if self._tick_count % self.normalize_every != 0:
+            return
+        for vecs in [self.positions, self.contexts]:
+            if vecs is not None:
+                norms = vecs.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                vecs.div_(norms)
+
+    # ---- Dual-XY mode ----
+
+    def setup_xy_topk(self, grid_coords, k=None):
+        """Precompute x-primary and y-primary top-K from grid coordinates.
+
+        Args:
+            grid_coords: (n, 2) or (n, 3) array of grid positions (numpy)
+            k: override neighbor count (default: self.k)
+        """
+        from scipy.spatial import cKDTree
+
+        if isinstance(grid_coords, torch.Tensor):
+            grid_coords = grid_coords.cpu().numpy()
+
+        k = k or self.k
+
+        # x-primary: x weight 1.0, y weight 0.3
+        coords_x = grid_coords[:, :2].copy()
+        coords_x[:, 1] *= 0.3
+        tree_x = cKDTree(coords_x)
+        _, idx_x = tree_x.query(coords_x, k=k + 1)
+        self._top_k_x = torch.from_numpy(idx_x[:, 1:].astype(np.int64)).to(self.device)
+
+        # y-primary: y weight 1.0, x weight 0.3
+        coords_y = grid_coords[:, :2].copy()
+        coords_y[:, 0] *= 0.3
+        tree_y = cKDTree(coords_y)
+        _, idx_y = tree_y.query(coords_y, k=k + 1)
+        self._top_k_y = torch.from_numpy(idx_y[:, 1:].astype(np.int64)).to(self.device)
+
+    def tick_dual_xy(self):
+        """Alternate x/y neighbors for dimension specialization."""
+        self.top_k = self._top_k_x if self._tick_count % 2 == 0 else self._top_k_y
+        self.tick_dot()
+
+    # ---- Unified tick ----
+
+    def tick(self):
+        """Run one tick using the configured mode."""
+        if self.mode == 'euclidean':
+            self.tick_euclidean()
+        else:
+            self.tick_dot()
+
+    # ---- Data transfer ----
+
+    def get_positions(self):
+        """Return positions as numpy array."""
+        return self.positions.detach().cpu().numpy()
+
+    def get_contexts(self):
+        """Return context vectors as numpy array (dot mode only)."""
+        if self.contexts is not None:
+            return self.contexts.detach().cpu().numpy()
+        return None
+
+    def set_top_k(self, top_k):
+        """Set top-K neighbor indices from numpy array."""
+        if isinstance(top_k, np.ndarray):
+            top_k = torch.from_numpy(top_k.astype(np.int64))
+        self.top_k = top_k.to(self.device)
+        self.k = self.top_k.shape[1]
+
+    # ---- Rendering (CPU, shared across modes) ----
+
+    def render(self, size_or_shape, voxel_values=None, method='pca'):
+        """Render positions to a grid via Voronoi assignment.
+
+        Args:
+            size_or_shape: int for square/cube, or tuple (W, H) / (W, H, D)
+            voxel_values: (n,) values for each neuron (numpy)
+            method: 'pca' (top PCs), 'bestpc' (best correlated PCs), 'direct' (first dims)
+
+        Returns:
+            grid array with shape matching size_or_shape
+        """
+        from scipy.spatial import cKDTree
+
+        pos = self.get_positions()  # (n, dims)
+
+        # Determine output shape
+        if isinstance(size_or_shape, int):
+            ndim = min(self.dims, 3)
+            shape = (size_or_shape,) * ndim
+        else:
+            shape = tuple(size_or_shape)
+        ndim_out = len(shape)
+
+        # Project to output dimensionality
+        pos_proj = self._project(pos, ndim_out, method, shape)
+
+        # Scale to grid coordinates
+        for d in range(ndim_out):
+            mn, mx = pos_proj[:, d].min(), pos_proj[:, d].max()
+            span = mx - mn if mx - mn > 1e-8 else 1.0
+            pos_proj[:, d] = (pos_proj[:, d] - mn) / span * (shape[d] - 1)
+
+        # Build grid points
+        grids = np.meshgrid(*[np.arange(s) for s in shape], indexing='ij')
+        grid_points = np.column_stack([g.ravel().astype(np.float64) for g in grids])
+
+        # Voronoi: nearest neuron for each grid cell
+        tree = cKDTree(pos_proj.astype(np.float64))
+        _, nearest = tree.query(grid_points)
+
+        if voxel_values is not None:
+            result = voxel_values[nearest]
+            if voxel_values.ndim == 1:
+                return result.reshape(shape)
+            else:
+                # Multi-channel (e.g. RGB): (n_grid, C) → (W, H, D, C)
+                return result.reshape(shape + voxel_values.shape[1:])
+        return nearest.reshape(shape)
+
+    def _project(self, pos, ndim_out, method, shape=None):
+        """Project positions to ndim_out dimensions."""
+        if self.dims <= ndim_out:
+            proj = np.zeros((self.n, ndim_out), dtype=np.float32)
+            proj[:, :self.dims] = pos
+            return proj
+
+        if method == 'direct':
+            return pos[:, :ndim_out].copy()
+
+        # PCA
+        _, _, Vt = np.linalg.svd(pos, full_matrices=False)
+
+        if method == 'pca':
+            return (pos @ Vt[:ndim_out].T).astype(np.float32)
+
+        if method == 'bestpc':
+            pcs = pos @ Vt.T
+            # Need grid coordinates to correlate against
+            if shape is not None and len(shape) >= 2:
+                n = pos.shape[0]
+                # Infer grid coords from shape
+                idx = np.arange(n)
+                grid_axes = []
+                for d in range(len(shape)):
+                    stride = int(np.prod(shape[d+1:])) if d + 1 < len(shape) else 1
+                    grid_axes.append((idx // stride) % shape[d])
+
+                best_pcs = []
+                used = set()
+                for ax in range(ndim_out):
+                    best_corr, best_pc = 0, 0
+                    for i in range(self.dims):
+                        if i in used:
+                            continue
+                        c = abs(np.corrcoef(pcs[:, i], grid_axes[ax])[0, 1])
+                        if c > best_corr:
+                            best_corr = c
+                            best_pc = i
+                    used.add(best_pc)
+                    best_pcs.append(best_pc)
+
+                proj = np.column_stack([pcs[:, pc] for pc in best_pcs])
+                # Flip if negatively correlated
+                for ax in range(ndim_out):
+                    if np.corrcoef(proj[:, ax], grid_axes[ax])[0, 1] < 0:
+                        proj[:, ax] *= -1
+                return proj.astype(np.float32)
+
+            # Fallback to top PCs
+            return (pos @ Vt[:ndim_out].T).astype(np.float32)
+
+        return (pos @ Vt[:ndim_out].T).astype(np.float32)
+
+    # ---- Stats ----
+
+    def stats(self):
+        """Return dict of position statistics."""
+        pos = self.get_positions()
+        result = {
+            'std': float(np.std(pos)),
+            'mean_norm': float(np.linalg.norm(np.mean(pos, axis=0))),
+        }
+        if self.contexts is not None:
+            ctx = self.get_contexts()
+            result['ctx_std'] = float(np.std(ctx))
+        return result

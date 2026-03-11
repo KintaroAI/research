@@ -234,6 +234,23 @@ Result: recognizable K but wobbly ("drunken K") — the 24% wrong neighbors intr
 
 **Magnitudes are large** (W·C ranges from -500 to +150) — this is why D2 dual overflowed. The dot product scale grows unbounded because the sigmoid thermostat only controls individual vector magnitudes, not their products.
 
+### Dimension specialization: separated x/y similarity signals
+
+With combined 2D similarity (standard RBF), no W dimension correlates with grid coordinates above r=0.16. All dims encode the same non-spatial structure.
+
+**Test:** split similarity into two 1D signals — x-only neighbors and y-only neighbors. Alternate between them each tick (even ticks = x-neighbors, odd = y-neighbors). 40px, D16, K=25, dual dot product, 30k ticks.
+
+**Result — W dimensions specialize:**
+- Dim 0: corr_x=+0.38, corr_y=+0.04 → **captures X axis**
+- Dim 8: corr_x=+0.20, corr_y=-0.32 → **captures Y axis**
+- Dim 12: corr_x=-0.32, corr_y=-0.10 → **captures X axis**
+
+PCA confirms: PC1 correlates with X (r=0.41), PC4 correlates with Y (r=0.43) — **two independent spatial axes in separate components.** With combined 2D signal, only one PC had structure.
+
+C vectors show weaker correlations (max r=0.09) — initialized to zeros, only indirect updates.
+
+**Key insight:** separate, conflicting similarity signals force dimension specialization. With one combined signal, all dims converge to the same structure. With two independent signals (x-proximity vs y-proximity), different dims must specialize to satisfy both. This is the mechanism for multi-modal encoding — each modality (spatial, color, sound) would push different dimensions to represent different properties.
+
 ## Next Steps
 
 - [x] Test Euclidean sigmoid at longer runs (100k+) — check convergence and stability

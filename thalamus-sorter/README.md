@@ -142,3 +142,22 @@ cd spatial_coherence && python spatial_coherence.py
 ```
 
 The greedy drift neighbors script runs without a camera (pure simulation on a random grid). The MST script also runs standalone on a random 10x10 grid.
+
+## Research directions to explore
+
+Embedding and dimensionality reduction techniques relevant to topographic map formation:
+
+| Technique | Implementation | Notes |
+|-----------|---------------|-------|
+| **Skip-gram / CBOW** | gensim `Word2Vec`, PyTorch | Partially explored in ts-00005. Custom PyTorch version in `drift_torch.py` |
+| **Incremental UMAP** | `umap-learn` (has `transform()`) | Online updates for streaming data |
+| **Warm start initialization** | — | Initialize embeddings from prior state |
+| **Anchor words / landmarks** | — | Subset of reference points for scalability |
+| **Procrustes transformation** | `scipy.spatial.procrustes` | Align embedding spaces across time steps |
+| **MDS** | scikit-learn `MDS`, `SMACOF` | Embed from pairwise distances. CPU, not great for >10k points |
+| **Landmark MDS** | scikit-learn | Scalable MDS using anchor points. Could help with 3D solver |
+| **Laplacian Eigenmaps** | scikit-learn `SpectralEmbedding` | Direct spectral solution from neighbor graph — no iterative learning. High priority |
+| **GloVe** | Stanford C code, `glove-python` | Matrix factorization approach to co-occurrence |
+| **GloVe for the Fly** | Research paper (Dasgupta et al.) | Biologically plausible sparse random projections. No standard lib |
+
+Most promising for our use case: **Laplacian Eigenmaps** (direct spectral solution, no iteration) and **Landmark MDS** (could scale the 3D solver).

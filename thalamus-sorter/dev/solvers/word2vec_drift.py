@@ -36,7 +36,7 @@ class Word2vecDrift:
 
     def __init__(self, width, height, top_k=None, k=24, lr=0.05, dims=2,
                  k_neg=5, P=10, sigma=5.0, threshold=0.0,
-                 image=None, gpu=False):
+                 normalize_every=0, image=None, gpu=False):
         """
         Args:
             width, height: grid dimensions (for rendering)
@@ -61,6 +61,8 @@ class Word2vecDrift:
         self.P = P
         self.sigma = sigma
         self.threshold = threshold
+        self.normalize_every = normalize_every
+        self._tick_count = 0
         self.gpu = gpu and _HAS_CUPY
 
         # Word vectors W: (n, dims) — small uniform init like word2vec
@@ -174,6 +176,59 @@ class Word2vecDrift:
         for ki in range(self.k_neg):
             xp.add.at(self.contexts, j_neg[:, ki], -self.lr * push_c[:, ki, :])
 
+        self._maybe_normalize()
+
+    def _maybe_normalize(self):
+        """Periodically normalize W and C to unit length to prevent magnitude blow-up
+        while preserving angular relationships."""
+        if self.normalize_every <= 0:
+            return
+        self._tick_count += 1
+        if self._tick_count % self.normalize_every != 0:
+            return
+        xp = _get_xp(self.gpu)
+        for vecs in [self.positions, self.contexts]:
+            norms = xp.sqrt(xp.sum(vecs ** 2, axis=1, keepdims=True))
+            norms = xp.where(norms < 1e-8, xp.ones_like(norms), norms)
+            vecs /= norms
+
+    def tick_dual_xy(self):
+        """Two-vector dot product with alternating x/y neighbor signals.
+        Even ticks use x-only neighbors, odd ticks use y-only neighbors.
+        Forces dimension specialization by providing conflicting 1D signals."""
+        if not hasattr(self, '_top_k_x'):
+            self._build_xy_topk()
+        # Alternate
+        self.top_k = self._top_k_x if self._tick_count % 2 == 0 else self._top_k_y
+        self.tick_dual()
+
+    def _build_xy_topk(self):
+        """Precompute separate top-K for x-primary and y-primary proximity.
+        Secondary axis has weight 0.3 — neighbors are close in primary axis
+        AND reasonably close in secondary axis, reducing conflicting gradients."""
+        from scipy.spatial import cKDTree
+        coords = self.grid_coords
+        if self.gpu:
+            coords = cp.asnumpy(coords)
+
+        # x-neighbors: x dominant, y secondary (weight 0.3)
+        coords_x = coords.copy()
+        coords_x[:, 1] *= 0.3
+        tree_x = cKDTree(coords_x)
+        _, idx_x = tree_x.query(coords_x, k=self.k + 1)
+        self._top_k_x = idx_x[:, 1:].astype(np.int32)
+
+        # y-neighbors: y dominant, x secondary (weight 0.3)
+        coords_y = coords.copy()
+        coords_y[:, 0] *= 0.3
+        tree_y = cKDTree(coords_y)
+        _, idx_y = tree_y.query(coords_y, k=self.k + 1)
+        self._top_k_y = idx_y[:, 1:].astype(np.int32)
+
+        if self.gpu:
+            self._top_k_x = cp.asarray(self._top_k_x)
+            self._top_k_y = cp.asarray(self._top_k_y)
+
     def tick_similarity(self):
         """Similarity mode: all random peers, similarity decides attract/repel.
         Euclidean: sigmoid on distance², update toward/away from peer."""
@@ -276,6 +331,64 @@ class Word2vecDrift:
         grid_points = np.column_stack([
             grid_x.ravel().astype(np.float64),
             grid_y.ravel().astype(np.float64)
+        ])
+
+        tree = cKDTree(pos_2d)
+        _, nearest = tree.query(grid_points)
+
+        self.neurons_matrix = nearest.reshape(self.height, self.width)
+
+        if self.pixel_values is not None:
+            self.output = self.pixel_values[nearest].reshape(
+                self.height, self.width)
+
+        return self.output
+
+    def render_bestpc(self):
+        """Render using the two PCs most correlated with grid x/y coordinates.
+        For dot-product embeddings where spatial axes may not be PC0/PC1."""
+        from scipy.spatial import cKDTree
+
+        pos = self.positions
+        if self.gpu:
+            pos = cp.asnumpy(pos)
+
+        grid_x = np.arange(self.n) % self.width
+        grid_y = np.arange(self.n) // self.width
+
+        _, _, Vt = np.linalg.svd(pos, full_matrices=False)
+        pcs = pos @ Vt.T  # (n, dims)
+
+        # Find best PC for each axis
+        best_x_pc, best_x_corr = 0, 0
+        best_y_pc, best_y_corr = 0, 0
+        for i in range(self.dims):
+            cx = abs(np.corrcoef(pcs[:, i], grid_x)[0, 1])
+            cy = abs(np.corrcoef(pcs[:, i], grid_y)[0, 1])
+            if cx > best_x_corr:
+                best_x_corr = cx
+                best_x_pc = i
+            if cy > best_y_corr:
+                best_y_corr = cy
+                best_y_pc = i
+
+        pos_2d = np.column_stack([pcs[:, best_x_pc], pcs[:, best_y_pc]]).astype(np.float64)
+        # Flip if negatively correlated
+        if np.corrcoef(pcs[:, best_x_pc], grid_x)[0, 1] < 0:
+            pos_2d[:, 0] *= -1
+        if np.corrcoef(pcs[:, best_y_pc], grid_y)[0, 1] < 0:
+            pos_2d[:, 1] *= -1
+
+        for d in range(2):
+            mn, mx = pos_2d[:, d].min(), pos_2d[:, d].max()
+            span = mx - mn if mx - mn > 1e-8 else 1.0
+            target = (self.width - 1) if d == 0 else (self.height - 1)
+            pos_2d[:, d] = (pos_2d[:, d] - mn) / span * target
+
+        grid_yy, grid_xx = np.mgrid[0:self.height, 0:self.width]
+        grid_points = np.column_stack([
+            grid_xx.ravel().astype(np.float64),
+            grid_yy.ravel().astype(np.float64)
         ])
 
         tree = cKDTree(pos_2d)
