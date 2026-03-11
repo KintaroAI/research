@@ -1,7 +1,7 @@
 # ts-00008: Async Display Pipeline
 
 **Date:** 2026-03-11
-**Status:** In Progress
+**Status:** Complete
 **Source:** *tagged on completion as `exp/ts-00008`*
 
 ## Goal
