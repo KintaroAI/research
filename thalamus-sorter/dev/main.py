@@ -30,6 +30,7 @@ from solvers.greedy_drift import GreedyDrift
 from solvers.continuous_drift import ContinuousDrift
 from solvers.temporal_correlation import TemporalCorrelation
 from solvers.word2vec_drift import Word2vecDrift
+from solvers.drift_torch import DriftSolver
 from solvers.simulated_annealing import SimulatedAnnealing
 from solvers.spatial_coherence import SpatialCoherence
 
@@ -205,6 +206,110 @@ def run_word2vec(args):
         image = _load_image(args.image, w, h)
 
     mode = args.mode
+    norm_every = args.normalize_every
+    if mode == "sentence":
+        from render_embeddings import project, align_to_grid, render as render_emb
+        import time
+        import torch
+
+        n = w * h
+        k = min(args.k, n - 1)
+        top_k = topk_decay2d(w, h, k)
+        dsolver = DriftSolver(n, top_k=top_k, dims=args.dims, lr=args.lr,
+                              mode='dot', k_neg=args.k_neg,
+                              normalize_every=norm_every, device='cuda')
+
+        # Warm start: load previous embeddings
+        if args.warm_start:
+            warm = np.load(args.warm_start)
+            dsolver.positions = torch.from_numpy(warm).to(dsolver.device)
+            print(f"Warm start from {args.warm_start} ({warm.shape})")
+
+        print(f"Word2vec drift (sentence): {w}x{h} grid, k={args.k}, "
+              f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
+              f"window={args.window}, normalize_every={norm_every}, "
+              f"align={args.align}")
+
+        # Pixel values for image rendering
+        pixel_values = None
+        if image is not None:
+            pixel_values = np.zeros(n, dtype=np.uint8)
+            for i in range(n):
+                pixel_values[i] = image[i // w, i % w]
+
+        output_dir = args.output_dir
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Pick projection method
+        render_method = args.render
+        if render_method == 'euclidean':
+            render_method = 'pca'
+
+        prev_2d = None  # warm start for projections (UMAP/t-SNE)
+
+        def render_frame():
+            nonlocal prev_2d
+            emb = dsolver.get_positions()
+            warm = None if args.cold_projection else prev_2d
+            pos_2d = project(emb, w, h, render_method, prev_2d=warm)
+            if args.align:
+                pos_2d = align_to_grid(pos_2d, w, h)
+            if not args.cold_projection:
+                prev_2d = pos_2d.copy()
+            return render_emb(pos_2d, w, h, pixel_values)
+
+        t0 = time.time()
+        max_frames = args.frames
+        saved = 0
+        for tick in range(1, max_frames + 1):
+            dsolver.tick_sentence(window=args.window)
+            if output_dir and tick % args.save_every == 0:
+                frame = render_frame()
+                if frame is not None:
+                    normalized = cv2.normalize(
+                        frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                    path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+                    cv2.imwrite(path, normalized)
+                    saved += 1
+                    if saved % 100 == 0:
+                        elapsed = time.time() - t0
+                        s = dsolver.stats()
+                        print(f"  tick {tick}, saved {saved} frames, "
+                              f"std={s['std']:.4f}, elapsed={elapsed:.1f}s")
+            elif not output_dir and tick % 10 == 0:
+                frame = render_frame()
+                if frame is not None:
+                    show_grid("Sentence skip-gram", frame)
+                wait()
+            if poll_quit():
+                break
+
+        elapsed = time.time() - t0
+        s = dsolver.stats()
+        print(f"Done: {max_frames} ticks in {elapsed:.1f}s, "
+              f"std={s['std']:.4f}")
+
+        # Save final frame
+        if output_dir:
+            frame = render_frame()
+            if frame is not None:
+                normalized = cv2.normalize(
+                    frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+                cv2.imwrite(path, normalized)
+                print(f"  final frame saved: {path}")
+
+        # Save model (only if explicitly requested)
+        if args.save_model or args.save_model_path:
+            save_path = args.save_model_path
+            if not save_path and output_dir:
+                save_path = os.path.join(output_dir, "model.npy")
+            if save_path:
+                np.save(save_path, dsolver.get_positions())
+                print(f"  model saved: {save_path}")
+        return
+
     if mode == "similarity":
         print(f"Word2vec drift (similarity): {w}x{h} grid, P={args.P}, "
               f"sigma={args.sigma}, threshold={args.threshold}, "
@@ -212,6 +317,17 @@ def run_word2vec(args):
         solver = Word2vecDrift(w, h, top_k=None, lr=args.lr, dims=args.dims,
                                P=args.P, sigma=args.sigma,
                                threshold=args.threshold,
+                               normalize_every=norm_every,
+                               image=image, gpu=args.gpu)
+    elif mode == "dual-xy":
+        print(f"Word2vec drift (dual-xy): {w}x{h} grid, k={args.k}, "
+              f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
+              f"normalize_every={norm_every}")
+        n = w * h
+        k = min(args.k, n - 1)
+        # top_k will be built internally by tick_dual_xy
+        solver = Word2vecDrift(w, h, top_k=None, k=k, lr=args.lr, dims=args.dims,
+                               k_neg=args.k_neg, normalize_every=norm_every,
                                image=image, gpu=args.gpu)
     else:
         print(f"Word2vec drift ({mode}): {w}x{h} grid, k={args.k}, "
@@ -220,7 +336,8 @@ def run_word2vec(args):
         k = min(args.k, n - 1)
         top_k = topk_decay2d(w, h, k)
         solver = Word2vecDrift(w, h, top_k, k=k, lr=args.lr, dims=args.dims,
-                               k_neg=args.k_neg, image=image, gpu=args.gpu)
+                               k_neg=args.k_neg, normalize_every=norm_every,
+                               image=image, gpu=args.gpu)
 
     output_dir = args.output_dir
     if output_dir:
@@ -231,9 +348,11 @@ def run_word2vec(args):
 
     gpu_mode = mode if mode == "similarity" else "skipgram"
     tick_fns = {"similarity": solver.tick_similarity, "skipgram": solver.tick,
-                "dual": solver.tick_dual}
+                "dual": solver.tick_dual, "dual-xy": solver.tick_dual_xy}
     tick_fn = tick_fns[mode]
-    render_fn = solver.render_angular if args.render == "angular" else solver.render
+    render_fns = {"euclidean": solver.render, "angular": solver.render_angular,
+                  "bestpc": solver.render_bestpc}
+    render_fn = render_fns[args.render]
 
     tick = 0
     saved = 0
@@ -577,9 +696,13 @@ def main():
                        help="Grid width (default: 40)")
     p_w2v.add_argument("--height", "-H", type=int, default=40,
                        help="Grid height (default: 40)")
-    p_w2v.add_argument("--mode", choices=["skipgram", "similarity", "dual"],
+    p_w2v.add_argument("--mode", choices=["skipgram", "similarity", "dual", "dual-xy", "sentence"],
                        default="similarity",
-                       help="Update mode: skipgram (Euclidean), similarity (random peers), dual (two-vector dot product) (default: similarity)")
+                       help="Update mode: skipgram (Euclidean), similarity (random peers), dual (two-vector dot product), dual-xy (separated x/y signals), sentence (batched sliding window skip-gram) (default: similarity)")
+    p_w2v.add_argument("--window", type=int, default=5,
+                       help="Sliding window size for sentence mode (default: 5)")
+    p_w2v.add_argument("--normalize-every", type=int, default=0,
+                       help="Normalize W/C vectors every N ticks (0 = disabled, default: 0)")
     # skipgram mode args
     p_w2v.add_argument("--k", type=int, default=24,
                        help="Number of nearest neighbors for positive sampling (skipgram mode, default: 24)")
@@ -592,9 +715,24 @@ def main():
                        help="Gaussian RBF kernel width (similarity mode, default: 5.0)")
     p_w2v.add_argument("--threshold", type=float, default=0.0,
                        help="Similarity threshold for attract/repel boundary (default: 0.0)")
-    p_w2v.add_argument("--render", choices=["euclidean", "angular"],
+    p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
+                                            "direct", "procrustes", "lstsq",
+                                            "umap", "tsne", "spectral", "mds"],
                        default="euclidean",
-                       help="Render mode: euclidean (position) or angular (direction) (default: euclidean)")
+                       help="Render projection: euclidean/pca (top-2 PCs), "
+                            "bestpc (grid-correlated PCs), angular (unit norm + PCA), "
+                            "direct (first 2 dims), procrustes/lstsq (supervised linear), "
+                            "umap/tsne/spectral/mds (nonlinear) (default: euclidean)")
+    p_w2v.add_argument("--align", action="store_true",
+                       help="Procrustes-align rendered output to grid (fixes rotation/flip)")
+    p_w2v.add_argument("--warm-start", type=str, default=None,
+                       help="Load .npy embeddings as initial positions (warm start)")
+    p_w2v.add_argument("--cold-projection", action="store_true",
+                       help="Disable projection warm start (run UMAP/t-SNE from scratch each frame)")
+    p_w2v.add_argument("--save-model", action="store_true",
+                       help="Save final embeddings to .npy file")
+    p_w2v.add_argument("--save-model-path", type=str, default=None,
+                       help="Path for saved model (default: output_dir/model.npy)")
     # common args
     p_w2v.add_argument("--lr", type=float, default=0.05,
                        help="Learning rate (default: 0.05)")
