@@ -419,6 +419,126 @@ def run_word2vec(args):
                 print(f"  model saved: {save_path}")
         return
 
+    if mode == "correlation":
+        from render_embeddings import project, align_to_grid, render as render_emb
+        import time
+        import torch
+
+        n = w * h
+        dsolver = DriftSolver(n, top_k=None, k=args.k, dims=args.dims,
+                              lr=args.lr, mode='dot', k_neg=args.k_neg,
+                              normalize_every=norm_every, device='cuda')
+
+        if args.warm_start:
+            warm = np.load(args.warm_start)
+            dsolver.positions = torch.from_numpy(warm).to(dsolver.device)
+            print(f"Warm start from {args.warm_start} ({warm.shape})")
+
+        # Build signal buffer: Gaussian-smoothed random fields
+        # Each frame is a spatially-correlated 2D signal — nearby pixels
+        # get similar values, giving correlation structure to discover.
+        T = args.signal_T
+        sigma = args.signal_sigma
+        print(f"Word2vec drift (correlation): {w}x{h} grid, "
+              f"k_sample={args.k_sample}, threshold={args.threshold}, "
+              f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
+              f"signal: T={T}, sigma={sigma}, "
+              f"normalize_every={norm_every}, align={args.align}")
+
+        # Generate spatially-correlated signals
+        from scipy.ndimage import gaussian_filter
+        signals_np = np.zeros((n, T), dtype=np.float32)
+        for t in range(T):
+            noise = np.random.randn(h, w).astype(np.float32)
+            smoothed = gaussian_filter(noise, sigma=sigma)
+            signals_np[:, t] = smoothed.ravel()
+        signals = torch.from_numpy(signals_np).to(dsolver.device)
+        print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
+
+        # Pixel values for rendering
+        pixel_values = None
+        if image is not None:
+            pixel_values = np.zeros(n, dtype=np.uint8)
+            for i in range(n):
+                pixel_values[i] = image[i // w, i % w]
+
+        output_dir = args.output_dir
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        render_method = args.render
+        if render_method == 'euclidean':
+            render_method = 'pca'
+
+        prev_2d = None
+
+        def render_frame():
+            nonlocal prev_2d
+            emb = dsolver.get_positions()
+            warm = None if args.cold_projection else prev_2d
+            pos_2d = project(emb, w, h, render_method, prev_2d=warm)
+            if args.align:
+                pos_2d = align_to_grid(pos_2d, w, h)
+            if not args.cold_projection:
+                prev_2d = pos_2d.copy()
+            return render_emb(pos_2d, w, h, pixel_values)
+
+        t0 = time.time()
+        max_frames = args.frames
+        saved = 0
+        total_pairs = 0
+        for tick in range(1, max_frames + 1):
+            pairs = dsolver.tick_correlation(
+                signals, k_sample=args.k_sample,
+                threshold=args.threshold, window=args.window)
+            total_pairs += pairs
+
+            if output_dir and tick % args.save_every == 0:
+                frame = render_frame()
+                if frame is not None:
+                    normalized = cv2.normalize(
+                        frame, None, 0, 255, cv2.NORM_MINMAX,
+                        dtype=cv2.CV_8U)
+                    path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+                    cv2.imwrite(path, normalized)
+                    saved += 1
+                    if saved % 100 == 0:
+                        elapsed = time.time() - t0
+                        s = dsolver.stats()
+                        print(f"  tick {tick}, saved {saved} frames, "
+                              f"std={s['std']:.4f}, pairs={total_pairs}, "
+                              f"elapsed={elapsed:.1f}s")
+            elif not output_dir and tick % 10 == 0:
+                frame = render_frame()
+                if frame is not None:
+                    show_grid("Correlation skip-gram", frame)
+                wait()
+            if poll_quit():
+                break
+
+        elapsed = time.time() - t0
+        s = dsolver.stats()
+        print(f"Done: {max_frames} ticks in {elapsed:.1f}s, "
+              f"std={s['std']:.4f}, total_pairs={total_pairs}")
+
+        if output_dir:
+            frame = render_frame()
+            if frame is not None:
+                normalized = cv2.normalize(
+                    frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+                cv2.imwrite(path, normalized)
+                print(f"  final frame saved: {path}")
+
+        if args.save_model or args.save_model_path:
+            save_path = args.save_model_path
+            if not save_path and output_dir:
+                save_path = os.path.join(output_dir, "model.npy")
+            if save_path:
+                np.save(save_path, dsolver.get_positions())
+                print(f"  model saved: {save_path}")
+        return
+
     if mode == "similarity":
         print(f"Word2vec drift (similarity): {w}x{h} grid, P={args.P}, "
               f"sigma={args.sigma}, threshold={args.threshold}, "
@@ -805,9 +925,9 @@ def main():
                        help="Grid width (default: 40)")
     p_w2v.add_argument("--height", "-H", type=int, default=40,
                        help="Grid height (default: 40)")
-    p_w2v.add_argument("--mode", choices=["skipgram", "similarity", "dual", "dual-xy", "sentence"],
+    p_w2v.add_argument("--mode", choices=["skipgram", "similarity", "dual", "dual-xy", "sentence", "correlation"],
                        default="similarity",
-                       help="Update mode: skipgram (Euclidean), similarity (random peers), dual (two-vector dot product), dual-xy (separated x/y signals), sentence (batched sliding window skip-gram) (default: similarity)")
+                       help="Update mode: skipgram, similarity, dual, dual-xy, sentence (precomputed neighbors), correlation (online neighbor discovery from signals) (default: similarity)")
     p_w2v.add_argument("--window", type=int, default=5,
                        help="Sliding window size for sentence mode (default: 5)")
     p_w2v.add_argument("--normalize-every", type=int, default=0,
@@ -823,7 +943,14 @@ def main():
     p_w2v.add_argument("--sigma", type=float, default=5.0,
                        help="Gaussian RBF kernel width (similarity mode, default: 5.0)")
     p_w2v.add_argument("--threshold", type=float, default=0.0,
-                       help="Similarity threshold for attract/repel boundary (default: 0.0)")
+                       help="Similarity/correlation threshold (default: 0.0)")
+    # correlation mode args
+    p_w2v.add_argument("--k-sample", type=int, default=50,
+                       help="Random candidates to check per neuron (correlation mode, default: 50)")
+    p_w2v.add_argument("--signal-T", type=int, default=100,
+                       help="Temporal signal buffer length (correlation mode, default: 100)")
+    p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
+                       help="Gaussian smoothing sigma for signal generation (correlation mode, default: 3.0)")
     p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
                                             "direct", "procrustes", "lstsq",
                                             "umap", "tsne", "spectral", "mds"],

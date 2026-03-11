@@ -205,6 +205,141 @@ class DriftSolver:
 
         self._maybe_normalize()
 
+    def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5):
+        """Skip-gram from correlation-based neighbor discovery.
+
+        Instead of precomputed top-K, each tick:
+        1. Pick a batch of random neurons
+        2. For each, sample k_sample random candidates
+        3. Compute correlation between their signals
+        4. Keep only pairs above threshold
+        5. Form variable-length sentences and run skip-gram
+
+        Args:
+            signals: (n, T) tensor of temporal signals on device
+            k_sample: candidates to check per neuron
+            threshold: minimum |correlation| to include as neighbor
+            window: sliding window for skip-gram pairs
+        """
+        n = self.n
+        batch = min(n, 256)  # neurons per tick
+
+        # Pick random anchor neurons
+        anchors = torch.randint(0, n, (batch,), device=self.device)
+
+        # Sample random candidates for each anchor
+        candidates = torch.randint(0, n, (batch, k_sample), device=self.device)
+
+        # Compute correlations: signals are (n, T)
+        # Gather anchor and candidate signals
+        anchor_sig = signals[anchors]            # (batch, T)
+        cand_sig = signals[candidates]           # (batch, k_sample, T)
+
+        # Center signals (subtract mean)
+        anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)  # (batch, T)
+        cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)       # (batch, k_sample, T)
+
+        # Pearson correlation via dot product of centered/normalized signals
+        anchor_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)  # (batch, 1)
+        cand_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)      # (batch, k_sample, 1)
+
+        anchor_unit = anchor_centered / anchor_norm  # (batch, T)
+        cand_unit = cand_centered / cand_norm        # (batch, k_sample, T)
+
+        # corr[i,j] = dot(anchor_unit[i], cand_unit[i,j])
+        corr = (anchor_unit.unsqueeze(1) * cand_unit).sum(dim=2)  # (batch, k_sample)
+
+        # Filter: keep candidates with |corr| > threshold
+        mask = corr.abs() > threshold  # (batch, k_sample)
+
+        # Build variable-length sentences and run skip-gram
+        # For each anchor, collect good neighbors, form sentence, extract pairs
+        good_counts = mask.sum(dim=1)  # (batch,)
+        max_good = int(good_counts.max().item())
+
+        if max_good == 0:
+            # No correlated pairs found at this threshold
+            self._maybe_normalize()
+            return 0
+
+        # Pack good candidates: for each anchor, gather the ones that passed
+        # Use masked_fill to create dense packed tensor
+        # Sort mask so True values come first
+        sorted_mask, sort_idx = mask.int().sort(dim=1, descending=True)
+        sorted_cands = torch.gather(candidates, 1, sort_idx)  # (batch, k_sample)
+
+        # Trim to max_good and build sentences: [anchor, nb1, nb2, ...]
+        trimmed = sorted_cands[:, :max_good]  # (batch, max_good)
+        sentences = torch.cat([anchors.unsqueeze(1), trimmed], dim=1)  # (batch, max_good+1)
+        seq_len = max_good + 1
+
+        # Build (center, context) offset pairs for this seq_len
+        offsets = []
+        for c in range(seq_len):
+            for ctx in range(max(0, c - window), min(seq_len, c + window + 1)):
+                if ctx != c:
+                    offsets.append((c, ctx))
+        if not offsets:
+            self._maybe_normalize()
+            return 0
+        offset_t = torch.tensor(offsets, device=self.device)  # (P, 2)
+        P = offset_t.shape[0]
+
+        # Valid mask: only include pairs where the context position is a real neighbor
+        # Position 0 is always valid (anchor), positions 1..max_good valid per good_counts
+        # A pair (c, ctx) is valid for sentence i if both c and ctx < good_counts[i]+1
+        c_offs = offset_t[:, 0]  # (P,)
+        x_offs = offset_t[:, 1]  # (P,)
+        limits = (good_counts + 1).unsqueeze(1)  # (batch, 1)
+        valid = (c_offs.unsqueeze(0) < limits) & (x_offs.unsqueeze(0) < limits)  # (batch, P)
+
+        # Gather center/context IDs
+        center_ids = sentences[:, c_offs]  # (batch, P)
+        ctx_ids = sentences[:, x_offs]     # (batch, P)
+
+        # Flatten only valid pairs
+        valid_flat = valid.reshape(-1)
+        center_flat = center_ids.reshape(-1)[valid_flat]
+        ctx_flat = ctx_ids.reshape(-1)[valid_flat]
+        B = center_flat.shape[0]
+
+        if B == 0:
+            self._maybe_normalize()
+            return 0
+
+        # --- Positive updates (same as tick_sentence) ---
+        w_center = self.positions[center_flat]
+        c_ctx = self.contexts[ctx_flat]
+        dot = (w_center * c_ctx).sum(dim=1)
+        sig = torch.sigmoid(-dot)
+
+        grad_w = self.lr * sig.unsqueeze(1) * c_ctx
+        grad_c = self.lr * sig.unsqueeze(1) * w_center
+
+        self.positions.scatter_add_(
+            0, center_flat.unsqueeze(1).expand_as(grad_w), grad_w)
+        self.contexts.scatter_add_(
+            0, ctx_flat.unsqueeze(1).expand_as(grad_c), grad_c)
+
+        # --- Negative sampling ---
+        j_neg = torch.randint(0, self.n, (B, self.k_neg), device=self.device)
+        c_neg = self.contexts[j_neg]
+        dot_neg = (w_center.unsqueeze(1) * c_neg).sum(dim=2)
+        sig_neg = torch.sigmoid(dot_neg)
+
+        push_w = (sig_neg.unsqueeze(2) * c_neg).sum(dim=1)
+        self.positions.scatter_add_(
+            0, center_flat.unsqueeze(1).expand_as(push_w), -self.lr * push_w)
+
+        push_c = sig_neg.unsqueeze(2) * w_center.unsqueeze(1)
+        j_neg_flat = j_neg.reshape(-1)
+        push_c_flat = (self.lr * push_c).reshape(-1, self.dims)
+        self.contexts.scatter_add_(
+            0, j_neg_flat.unsqueeze(1).expand_as(push_c_flat), -push_c_flat)
+
+        self._maybe_normalize()
+        return B  # number of training pairs
+
     def _maybe_normalize(self):
         """Periodic L2 normalization of W and C to prevent magnitude blow-up."""
         if self.normalize_every <= 0:
