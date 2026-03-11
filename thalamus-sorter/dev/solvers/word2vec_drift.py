@@ -1,15 +1,14 @@
-"""Word2vec-style drift: neurons update embeddings using skip-gram
-with negative sampling, adapted for topographic map formation.
+"""Word2vec-style drift: neurons update embeddings using sigmoid-scaled
+pairwise updates, adapted for topographic map formation.
 
-Positive pairs: precomputed top-K neighbors (or random high-similarity peers).
-Negative pairs: randomly sampled neurons.
-Update: sigmoid-based with per-dimension coefficients from peer vectors.
+Two modes:
+  - tick(): precomputed top-K for positives, random for negatives (skip-gram)
+  - tick_similarity(): all-random sampling, similarity decides attract/repel
 
-Key differences from centroid drift (continuous_drift.py):
-  - Pairwise updates, not centroid averaging
-  - Sigmoid self-regulation: focuses learning on "mistakes"
-  - Per-dimension coefficients: each dim updated by peer's value in that dim
-  - Explicit negative sampling: push dissimilar pairs apart
+Key properties:
+  - Sigmoid self-regulation: focuses learning on "mistakes", controls scale
+  - No normalization needed — push/pull balance stabilizes embeddings
+  - Per-dimension coefficients from peer vectors (dot product mode)
 """
 
 import numpy as np
@@ -28,22 +27,27 @@ def _get_xp(gpu):
 
 
 class Word2vecDrift:
-    """Sort neurons using word2vec-style skip-gram with negative sampling.
+    """Sort neurons using word2vec-style sigmoid updates.
 
-    Each tick: for each neuron, sample one positive neighbor and k_neg
-    random negatives. Update embeddings with sigmoid objective.
+    Supports two tick modes:
+      - tick(): skip-gram with precomputed top-K (positive) + random (negative)
+      - tick_similarity(): all random peers, similarity decides attract/repel
     """
 
-    def __init__(self, width, height, top_k, k=24, lr=0.05, dims=2,
-                 k_neg=5, image=None, gpu=False):
+    def __init__(self, width, height, top_k=None, k=24, lr=0.05, dims=2,
+                 k_neg=5, P=10, sigma=5.0, threshold=0.0,
+                 image=None, gpu=False):
         """
         Args:
             width, height: grid dimensions (for rendering)
-            top_k: (n, k) precomputed neighbor indices
+            top_k: (n, k) precomputed neighbor indices (for tick() mode)
             k: number of neighbors
             lr: learning rate
             dims: dimensionality of position vectors (>= 2)
-            k_neg: number of negative samples per positive
+            k_neg: number of negative samples per positive (for tick() mode)
+            P: random peers per neuron per tick (for tick_similarity() mode)
+            sigma: Gaussian RBF kernel width (for tick_similarity() mode)
+            threshold: similarity threshold for attract/repel boundary
             image: optional (height, width) uint8 array for reconstruction
             gpu: use CuPy GPU acceleration
         """
@@ -54,13 +58,27 @@ class Word2vecDrift:
         self.lr = lr
         self.dims = dims
         self.k_neg = k_neg
+        self.P = P
+        self.sigma = sigma
+        self.threshold = threshold
         self.gpu = gpu and _HAS_CUPY
 
-        # Position vectors: (n, dims) — small uniform init like word2vec
+        # Word vectors W: (n, dims) — small uniform init like word2vec
         scale = 0.5 / dims
         self.positions = np.random.uniform(-scale, scale, (self.n, dims)).astype(np.float32)
 
-        self.top_k = top_k.astype(np.int32)
+        # Context vectors C: (n, dims) — initialized to zeros like word2vec syn1neg
+        self.contexts = np.zeros((self.n, dims), dtype=np.float32)
+
+        if top_k is not None:
+            self.top_k = top_k.astype(np.int32)
+        else:
+            self.top_k = None
+
+        # Synthetic buffers: (x, y) grid coords for similarity computation
+        self.grid_coords = np.zeros((self.n, 2), dtype=np.float32)
+        self.grid_coords[:, 0] = np.arange(self.n) % width
+        self.grid_coords[:, 1] = np.arange(self.n) // width
 
         # Pixel values for image reconstruction
         self.image = image
@@ -79,10 +97,14 @@ class Word2vecDrift:
         # Move to GPU
         if self.gpu:
             self.positions = cp.asarray(self.positions)
-            self.top_k = cp.asarray(self.top_k)
+            self.contexts = cp.asarray(self.contexts)
+            self.grid_coords = cp.asarray(self.grid_coords)
+            if self.top_k is not None:
+                self.top_k = cp.asarray(self.top_k)
 
     def tick(self):
-        """One iteration: skip-gram with negative sampling for all neurons."""
+        """Skip-gram mode: precomputed top-K positive + random negative.
+        Euclidean: sigmoid on distance², update toward/away from peer."""
         xp = _get_xp(self.gpu)
 
         # --- Positive: sample one random neighbor from top_k ---
@@ -90,33 +112,100 @@ class Word2vecDrift:
             pos_idx = cp.random.randint(0, self.k, self.n, dtype=cp.int32)
         else:
             pos_idx = np.random.randint(0, self.k, self.n).astype(np.int32)
-        j_pos = self.top_k[xp.arange(self.n), pos_idx]  # (n,)
+        j_pos = self.top_k[xp.arange(self.n), pos_idx]
 
-        # Dot product with positive peer
-        pos_j = self.positions[j_pos]                           # (n, dims)
-        dot_pos = xp.sum(self.positions * pos_j, axis=1)        # (n,)
+        delta_pos = self.positions[j_pos] - self.positions  # toward peer
+        dist_sq_pos = xp.sum(delta_pos ** 2, axis=1)
+        # σ(dist²) — large when far apart → strong pull
+        sig_pos = 1.0 / (1.0 + xp.exp(xp.clip(-dist_sq_pos, -20, 20)))
+        self.positions += self.lr * sig_pos[:, None] * delta_pos
 
-        # σ(-dot) — large when misaligned (needs pull), small when aligned (done)
-        sig_pos = 1.0 / (1.0 + xp.exp(xp.clip(dot_pos, -20, 20)))  # (n,)
-
-        # Pull: move in direction of positive peer's vector
-        self.positions += self.lr * sig_pos[:, None] * pos_j
-
-        # --- Negative: sample all k_neg at once, vectorized ---
+        # --- Negative: sample all k_neg at once ---
         if self.gpu:
             j_neg = cp.random.randint(0, self.n, (self.n, self.k_neg), dtype=cp.int32)
         else:
             j_neg = np.random.randint(0, self.n, (self.n, self.k_neg)).astype(np.int32)
 
-        neg_j = self.positions[j_neg]                            # (n, k_neg, dims)
-        dot_neg = xp.sum(self.positions[:, None, :] * neg_j, axis=2)  # (n, k_neg)
+        delta_neg = self.positions[j_neg] - self.positions[:, None, :]  # toward neg peer
+        dist_sq_neg = xp.sum(delta_neg ** 2, axis=2)
+        # σ(-dist²) — large when close → strong push
+        sig_neg = 1.0 / (1.0 + xp.exp(xp.clip(dist_sq_neg, -20, 20)))
+        push = xp.sum(sig_neg[:, :, None] * delta_neg, axis=1)
+        self.positions -= self.lr * push  # push away from negative peers
 
-        # σ(dot) — large when wrongly aligned (needs push), small when dissimilar (fine)
-        sig_neg = 1.0 / (1.0 + xp.exp(xp.clip(-dot_neg, -20, 20)))  # (n, k_neg)
+    def tick_dual(self):
+        """Two-vector dot product skip-gram like real word2vec.
+        W (positions) and C (contexts) are separate vectors.
+        Updates are always cross: W←C and C←W, never W←W."""
+        xp = _get_xp(self.gpu)
 
-        # Push: move away from negative peers' vectors
-        push = xp.sum(sig_neg[:, :, None] * neg_j, axis=1)      # (n, dims)
-        self.positions -= self.lr * push
+        # --- Positive: sample one random neighbor from top_k ---
+        if self.gpu:
+            pos_idx = cp.random.randint(0, self.k, self.n, dtype=cp.int32)
+        else:
+            pos_idx = np.random.randint(0, self.k, self.n).astype(np.int32)
+        j_pos = self.top_k[xp.arange(self.n), pos_idx]
+
+        # dot(W[i], C[j]) for positive pairs
+        c_pos = self.contexts[j_pos]
+        dot_pos = xp.sum(self.positions * c_pos, axis=1)
+        sig_pos = 1.0 / (1.0 + xp.exp(xp.clip(dot_pos, -20, 20)))
+        # W[i] += lr * σ(-dot) * C[j]
+        self.positions += self.lr * sig_pos[:, None] * c_pos
+        # C[j] += lr * σ(-dot) * W[i] — use pre-update W
+        w_for_ctx = self.positions - self.lr * sig_pos[:, None] * c_pos  # undo to get pre-update
+        xp.add.at(self.contexts, j_pos, self.lr * sig_pos[:, None] * w_for_ctx)
+
+        # --- Negative: sample k_neg random neurons ---
+        if self.gpu:
+            j_neg = cp.random.randint(0, self.n, (self.n, self.k_neg), dtype=cp.int32)
+        else:
+            j_neg = np.random.randint(0, self.n, (self.n, self.k_neg)).astype(np.int32)
+
+        # dot(W[i], C[neg]) for negative pairs
+        c_neg = self.contexts[j_neg]  # (n, k_neg, dims)
+        dot_neg = xp.sum(self.positions[:, None, :] * c_neg, axis=2)  # (n, k_neg)
+        sig_neg = 1.0 / (1.0 + xp.exp(xp.clip(-dot_neg, -20, 20)))
+        # W[i] -= lr * σ(dot) * C[neg]
+        push_w = xp.sum(sig_neg[:, :, None] * c_neg, axis=1)
+        self.positions -= self.lr * push_w
+        # C[neg] -= lr * σ(dot) * W[i]
+        push_c = sig_neg[:, :, None] * self.positions[:, None, :]  # (n, k_neg, dims)
+        for ki in range(self.k_neg):
+            xp.add.at(self.contexts, j_neg[:, ki], -self.lr * push_c[:, ki, :])
+
+    def tick_similarity(self):
+        """Similarity mode: all random peers, similarity decides attract/repel.
+        Euclidean: sigmoid on distance², update toward/away from peer."""
+        xp = _get_xp(self.gpu)
+
+        # Sample P random peers
+        if self.gpu:
+            peers = cp.random.randint(0, self.n, (self.n, self.P), dtype=cp.int32)
+        else:
+            peers = np.random.randint(0, self.n, (self.n, self.P)).astype(np.int32)
+
+        for p in range(self.P):
+            j = peers[:, p]
+
+            # Similarity from grid coords: Gaussian RBF
+            diff = self.grid_coords - self.grid_coords[j]
+            dist_sq = xp.sum(diff ** 2, axis=1)
+            sim = xp.exp(-dist_sq / (2 * self.sigma ** 2))  # [0, 1]
+
+            # Shift by threshold: positive = attract, negative = repel
+            signal = sim - self.threshold  # positive → pull, negative → push
+
+            # Euclidean: direction toward peer
+            delta = self.positions[j] - self.positions
+            emb_dist_sq = xp.sum(delta ** 2, axis=1)
+
+            # Sigmoid on embedding distance:
+            # attract (signal > 0): σ(dist²) — large when far → pull hard
+            # repel (signal < 0): σ(-dist²) — large when close → push hard
+            sig = 1.0 / (1.0 + xp.exp(xp.clip(-signal * emb_dist_sq, -20, 20)))
+
+            self.positions += self.lr * (signal * sig)[:, None] * delta
 
     def render(self):
         """Quantize continuous positions to a 2D grid for display.
@@ -156,10 +245,55 @@ class Word2vecDrift:
 
         return self.output
 
-    def run_gpu(self, n_ticks):
+    def render_angular(self):
+        """Render based on angular similarity: normalize vectors to unit length
+        before Voronoi assignment. Use when embeddings encode direction (dot product)
+        rather than position (Euclidean distance)."""
+        from scipy.spatial import cKDTree
+
+        pos = self.positions
+        if self.gpu:
+            pos = cp.asnumpy(pos)
+
+        # Normalize to unit vectors — only direction matters
+        norms = np.sqrt(np.sum(pos ** 2, axis=1, keepdims=True))
+        norms = np.where(norms < 1e-8, 1.0, norms)
+        pos = pos / norms
+
+        if self.dims > 2:
+            _, _, Vt = np.linalg.svd(pos, full_matrices=False)
+            pos_2d = (pos @ Vt[:2].T).astype(np.float64)
+        else:
+            pos_2d = pos[:, :2].astype(np.float64)
+
+        for d in range(2):
+            mn, mx = pos_2d[:, d].min(), pos_2d[:, d].max()
+            span = mx - mn if mx - mn > 1e-8 else 1.0
+            target = (self.width - 1) if d == 0 else (self.height - 1)
+            pos_2d[:, d] = (pos_2d[:, d] - mn) / span * target
+
+        grid_y, grid_x = np.mgrid[0:self.height, 0:self.width]
+        grid_points = np.column_stack([
+            grid_x.ravel().astype(np.float64),
+            grid_y.ravel().astype(np.float64)
+        ])
+
+        tree = cKDTree(pos_2d)
+        _, nearest = tree.query(grid_points)
+
+        self.neurons_matrix = nearest.reshape(self.height, self.width)
+
+        if self.pixel_values is not None:
+            self.output = self.pixel_values[nearest].reshape(
+                self.height, self.width)
+
+        return self.output
+
+    def run_gpu(self, n_ticks, mode="similarity"):
         """Run n ticks, then render to CPU."""
+        tick_fn = self.tick_similarity if mode == "similarity" else self.tick
         for _ in range(n_ticks):
-            self.tick()
+            tick_fn()
         self.render()
 
     def position_stats(self):

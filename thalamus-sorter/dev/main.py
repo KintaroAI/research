@@ -203,18 +203,24 @@ def run_word2vec(args):
     image = None
     if args.image:
         image = _load_image(args.image, w, h)
-        print(f"Word2vec drift: {w}x{h} grid, k={args.k}, k_neg={args.k_neg}, "
-              f"lr={args.lr}, dims={args.dims}, image={args.image}")
-    else:
-        print(f"Word2vec drift: {w}x{h} grid, k={args.k}, k_neg={args.k_neg}, "
+
+    mode = args.mode
+    if mode == "similarity":
+        print(f"Word2vec drift (similarity): {w}x{h} grid, P={args.P}, "
+              f"sigma={args.sigma}, threshold={args.threshold}, "
               f"lr={args.lr}, dims={args.dims}")
-
-    n = w * h
-    k = min(args.k, n - 1)
-    top_k = topk_decay2d(w, h, k)
-
-    solver = Word2vecDrift(w, h, top_k, k=k, lr=args.lr, dims=args.dims,
-                           k_neg=args.k_neg, image=image, gpu=args.gpu)
+        solver = Word2vecDrift(w, h, top_k=None, lr=args.lr, dims=args.dims,
+                               P=args.P, sigma=args.sigma,
+                               threshold=args.threshold,
+                               image=image, gpu=args.gpu)
+    else:
+        print(f"Word2vec drift ({mode}): {w}x{h} grid, k={args.k}, "
+              f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}")
+        n = w * h
+        k = min(args.k, n - 1)
+        top_k = topk_decay2d(w, h, k)
+        solver = Word2vecDrift(w, h, top_k, k=k, lr=args.lr, dims=args.dims,
+                               k_neg=args.k_neg, image=image, gpu=args.gpu)
 
     output_dir = args.output_dir
     if output_dir:
@@ -223,17 +229,23 @@ def run_word2vec(args):
     max_frames = args.frames
     sync_every = args.save_every if (args.gpu and output_dir) else 10
 
+    gpu_mode = mode if mode == "similarity" else "skipgram"
+    tick_fns = {"similarity": solver.tick_similarity, "skipgram": solver.tick,
+                "dual": solver.tick_dual}
+    tick_fn = tick_fns[mode]
+    render_fn = solver.render_angular if args.render == "angular" else solver.render
+
     tick = 0
     saved = 0
     while True:
         if args.gpu:
-            solver.run_gpu(sync_every)
+            solver.run_gpu(sync_every, mode=gpu_mode)
             tick += sync_every
         else:
-            solver.tick()
+            tick_fn()
             tick += 1
             if tick % 10 == 0:
-                solver.render()
+                render_fn()
 
         if tick % 10 == 0:
             if solver.output is not None:
@@ -244,7 +256,7 @@ def run_word2vec(args):
 
         if output_dir and tick % args.save_every == 0:
             if solver.output is None:
-                solver.render()
+                render_fn()
             frame = solver.output if solver.output is not None else solver.neurons_matrix
             normalized = cv2.normalize(
                 frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -258,7 +270,7 @@ def run_word2vec(args):
 
         if max_frames > 0 and tick >= max_frames:
             if solver.output is None:
-                solver.render()
+                render_fn()
             stats = solver.position_stats()
             print(f"Done: {tick} ticks, "
                   f"mean_norm={stats['mean_norm']:.4f} std={stats['std_mean']:.4f}")
@@ -560,15 +572,30 @@ def main():
 
     # --- word2vec ---
     p_w2v = sub.add_parser("word2vec",
-                           help="Word2vec-style drift (skip-gram + negative sampling)")
+                           help="Word2vec-style drift (skip-gram or similarity mode)")
     p_w2v.add_argument("--width", "-W", type=int, default=40,
                        help="Grid width (default: 40)")
     p_w2v.add_argument("--height", "-H", type=int, default=40,
                        help="Grid height (default: 40)")
+    p_w2v.add_argument("--mode", choices=["skipgram", "similarity", "dual"],
+                       default="similarity",
+                       help="Update mode: skipgram (Euclidean), similarity (random peers), dual (two-vector dot product) (default: similarity)")
+    # skipgram mode args
     p_w2v.add_argument("--k", type=int, default=24,
-                       help="Number of nearest neighbors for positive sampling (default: 24)")
+                       help="Number of nearest neighbors for positive sampling (skipgram mode, default: 24)")
     p_w2v.add_argument("--k-neg", type=int, default=5,
-                       help="Number of negative samples per positive (default: 5)")
+                       help="Number of negative samples per positive (skipgram mode, default: 5)")
+    # similarity mode args
+    p_w2v.add_argument("--P", type=int, default=10,
+                       help="Random peers per neuron per tick (similarity mode, default: 10)")
+    p_w2v.add_argument("--sigma", type=float, default=5.0,
+                       help="Gaussian RBF kernel width (similarity mode, default: 5.0)")
+    p_w2v.add_argument("--threshold", type=float, default=0.0,
+                       help="Similarity threshold for attract/repel boundary (default: 0.0)")
+    p_w2v.add_argument("--render", choices=["euclidean", "angular"],
+                       default="euclidean",
+                       help="Render mode: euclidean (position) or angular (direction) (default: euclidean)")
+    # common args
     p_w2v.add_argument("--lr", type=float, default=0.05,
                        help="Learning rate (default: 0.05)")
     p_w2v.add_argument("--dims", type=int, default=2,
