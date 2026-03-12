@@ -1,7 +1,7 @@
 # ts-00009: Correlation-based Neighbor Sampling
 
 **Date:** 2026-03-11
-**Status:** In Progress
+**Status:** Complete
 **Source:** *tagged on completion as `exp/ts-00009`*
 
 ## Goal
