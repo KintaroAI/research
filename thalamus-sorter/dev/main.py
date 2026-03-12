@@ -488,42 +488,48 @@ def run_word2vec(args):
         signals_np = np.zeros((n, T), dtype=np.float32)
 
         if args.signal_source:
-            # Saccade mode: small random movements over a source image
+            # Saccade mode: continuous random walk over a source image.
+            # Rolling buffer: each tick overwrites signals[:, tick % T]
+            # with a new crop from the ongoing walk. The walk bounces
+            # off image edges and never stops.
             source = np.load(args.signal_source)  # (H_src, W_src), float32 0-1
             src_h, src_w = source.shape
             max_dy = src_h - h
             max_dx = src_w - w
             assert max_dy > 0 and max_dx > 0, \
                 f"Source {src_w}x{src_h} too small for {w}x{h} grid"
-            # Random walk: start at random position, drift by small steps
-            # Simulates biological saccades — eyes move a few pixels at a time
             saccade_step = args.saccade_step
-            dy = np.random.randint(0, max_dy + 1)
-            dx = np.random.randint(0, max_dx + 1)
+            use_mse = args.use_mse
+            # Fill initial buffer
+            walk_dy = np.random.randint(0, max_dy + 1)
+            walk_dx = np.random.randint(0, max_dx + 1)
             for t in range(T):
-                dy = np.clip(dy + np.random.randint(-saccade_step, saccade_step + 1),
-                             0, max_dy)
-                dx = np.clip(dx + np.random.randint(-saccade_step, saccade_step + 1),
-                             0, max_dx)
-                crop = source[dy:dy+h, dx:dx+w].ravel()
-                if args.use_mse:
-                    signals_np[:, t] = crop  # raw values; MSE score handles it
+                walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
+                                  0, max_dy)
+                walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
+                                  0, max_dx)
+                crop = source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].ravel()
+                if use_mse:
+                    signals_np[:, t] = crop
                 else:
-                    signals_np[:, t] = crop - crop.mean()  # remove global luminance
-            mean_sub = "raw" if args.use_mse else "mean-subtracted"
-            print(f"  signal buffer: ({n}, {T}), saccades from "
+                    signals_np[:, t] = crop - crop.mean()
+            mean_sub = "raw" if use_mse else "mean-subtracted"
+            print(f"  signal buffer: ({n}, {T}), rolling saccades from "
                   f"{args.signal_source} ({src_w}x{src_h}), "
                   f"step={saccade_step}, {mean_sub}")
+            saccade_source = source
         else:
-            # Gaussian noise mode (ts-00009)
+            # Gaussian noise mode (ts-00009) — static buffer
             from scipy.ndimage import gaussian_filter
             for t in range(T):
                 noise = np.random.randn(h, w).astype(np.float32)
                 smoothed = gaussian_filter(noise, sigma=sigma)
                 signals_np[:, t] = smoothed.ravel()
             print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
+            saccade_source = None
 
         signals = torch.from_numpy(signals_np).to(dsolver.device)
+        tick_counter = [0]  # mutable for closure
 
         # Pixel values for rendering
         pixel_values = None
@@ -545,6 +551,20 @@ def run_word2vec(args):
             args.async_render = False
 
         def do_tick():
+            # Rolling buffer: overwrite oldest frame with new saccade crop
+            if saccade_source is not None:
+                nonlocal walk_dy, walk_dx
+                walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
+                                  0, max_dy)
+                walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
+                                  0, max_dx)
+                crop = saccade_source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].ravel()
+                col = tick_counter[0] % T
+                if use_mse:
+                    signals[:, col] = torch.from_numpy(crop).to(signals.device)
+                else:
+                    signals[:, col] = torch.from_numpy(crop - crop.mean()).to(signals.device)
+                tick_counter[0] += 1
             pairs = dsolver.tick_correlation(
                 signals, k_sample=args.k_sample,
                 threshold=args.threshold, window=args.window,
