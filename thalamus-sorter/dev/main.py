@@ -347,236 +347,114 @@ def run_word2vec(args):
         print(f"  render worker: {frame_idx} frames saved, "
               f"last tick={last_rendered_tick}")
 
-    if mode == "sentence":
+    if mode in ("sentence", "correlation"):
         from render_embeddings import project, align_to_grid, render as render_emb
         import time
         import torch
 
         n = w * h
-        k = min(args.k, n - 1)
-        top_k = topk_decay2d(w, h, k)
-        dsolver = DriftSolver(n, top_k=top_k, dims=args.dims, lr=args.lr,
-                              mode='dot', k_neg=args.k_neg,
-                              normalize_every=norm_every, device='cuda')
 
-        # Warm start: load previous embeddings
-        if args.warm_start:
-            warm = np.load(args.warm_start)
-            dsolver.positions = torch.from_numpy(warm).to(dsolver.device)
-            print(f"Warm start from {args.warm_start} ({warm.shape})")
-
-        print(f"Word2vec drift (sentence): {w}x{h} grid, k={args.k}, "
-              f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
-              f"window={args.window}, normalize_every={norm_every}, "
-              f"align={args.align}, async={args.async_render}")
-
-        # Pixel values for image rendering
-        pixel_values = None
-        if image is not None:
-            pixel_values = np.zeros(n, dtype=np.uint8)
-            for i in range(n):
-                pixel_values[i] = image[i // w, i % w]
-
-        output_dir = args.output_dir
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            _save_run_info(output_dir, args)
-
-        # Pick projection method
-        render_method = args.render
-        if render_method == 'euclidean':
-            render_method = 'pca'
-
-        if getattr(args, 'sync_render', False):
-            args.async_render = False
-
-        if args.async_render and output_dir:
-            import multiprocessing as mp
-
-            buf_size = n * args.dims
-            shm_buf0 = mp.Array('f', buf_size)
-            shm_buf1 = mp.Array('f', buf_size)
-            shm_active = mp.Value('i', 0)
-            shm_tick = mp.Value('i', 0)
-            shm_done = mp.Value('i', 0)
-
-            bufs = [shm_buf0, shm_buf1]
-            worker = mp.Process(target=_render_worker,
-                                args=(shm_buf0, shm_buf1, shm_active, shm_tick,
-                                      shm_done, n, args.dims,
-                                      w, h, pixel_values, render_method,
-                                      args.align, args.cold_projection,
-                                      output_dir))
-            worker.start()
-
-            t0 = time.time()
-            max_frames = args.frames
-            write_slot = 1  # start writing to inactive slot
-            for tick in range(1, max_frames + 1):
-                dsolver.tick_sentence(window=args.window)
-                if tick % args.save_every == 0:
-                    # Write to inactive slot, then flip
-                    emb = dsolver.get_positions()
-                    dst = np.frombuffer(bufs[write_slot].get_obj(),
-                                        dtype=np.float32)
-                    np.copyto(dst, emb.ravel())
-                    shm_active.value = write_slot
-                    shm_tick.value = tick
-                    write_slot = 1 - write_slot
-
-            # Final snapshot
-            emb = dsolver.get_positions()
-            dst = np.frombuffer(bufs[write_slot].get_obj(), dtype=np.float32)
-            np.copyto(dst, emb.ravel())
-            shm_active.value = write_slot
-            shm_tick.value = max_frames + 1
-            time.sleep(0.01)
-            shm_done.value = 1
-
-            elapsed_train = time.time() - t0
-            s = dsolver.stats()
-            print(f"Training done: {max_frames} ticks in {elapsed_train:.1f}s, "
-                  f"std={s['std']:.4f}")
-
-            worker.join()
-            elapsed_total = time.time() - t0
-            print(f"Total (train + render drain): {elapsed_total:.1f}s")
-
+        if mode == "sentence":
+            k = min(args.k, n - 1)
+            top_k = topk_decay2d(w, h, k)
+            dsolver = DriftSolver(n, top_k=top_k, dims=args.dims, lr=args.lr,
+                                  mode='dot', k_neg=args.k_neg,
+                                  normalize_every=norm_every, device='cuda')
         else:
-            # --- Synchronous render (original path) ---
-            prev_2d = None
-
-            def render_frame():
-                nonlocal prev_2d
-                emb = dsolver.get_positions()
-                warm = None if args.cold_projection else prev_2d
-                pos_2d = project(emb, w, h, render_method, prev_2d=warm)
-                if args.align:
-                    pos_2d = align_to_grid(pos_2d, w, h)
-                if not args.cold_projection:
-                    prev_2d = pos_2d.copy()
-                return render_emb(pos_2d, w, h, pixel_values)
-
-            t0 = time.time()
-            max_frames = args.frames
-            saved = 0
-            for tick in range(1, max_frames + 1):
-                dsolver.tick_sentence(window=args.window)
-                if output_dir and tick % args.save_every == 0:
-                    frame = render_frame()
-                    if frame is not None:
-                        normalized = cv2.normalize(
-                            frame, None, 0, 255, cv2.NORM_MINMAX,
-                            dtype=cv2.CV_8U)
-                        path = os.path.join(output_dir,
-                                            f"frame_{saved:06d}.png")
-                        cv2.imwrite(path, normalized)
-                        saved += 1
-                        if saved % 100 == 0:
-                            elapsed = time.time() - t0
-                            s = dsolver.stats()
-                            print(f"  tick {tick}, saved {saved} frames, "
-                                  f"std={s['std']:.4f}, elapsed={elapsed:.1f}s")
-                elif not output_dir and tick % 10 == 0:
-                    frame = render_frame()
-                    if frame is not None:
-                        show_grid("Sentence skip-gram", frame)
-                    wait()
-                if poll_quit():
-                    break
-
-            elapsed = time.time() - t0
-            s = dsolver.stats()
-            print(f"Done: {max_frames} ticks in {elapsed:.1f}s, "
-                  f"std={s['std']:.4f}")
-
-            # Save final frame
-            if output_dir:
-                frame = render_frame()
-                if frame is not None:
-                    normalized = cv2.normalize(
-                        frame, None, 0, 255, cv2.NORM_MINMAX,
-                        dtype=cv2.CV_8U)
-                    path = os.path.join(output_dir,
-                                        f"frame_{saved:06d}.png")
-                    cv2.imwrite(path, normalized)
-                    print(f"  final frame saved: {path}")
-
-        _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames)
-        return
-
-    if mode == "correlation":
-        from render_embeddings import project, align_to_grid, render as render_emb
-        import time
-        import torch
-
-        n = w * h
-        dsolver = DriftSolver(n, top_k=None, k=args.k, dims=args.dims,
-                              lr=args.lr, mode='dot', k_neg=args.k_neg,
-                              normalize_every=norm_every, device='cuda')
+            dsolver = DriftSolver(n, top_k=None, k=args.k, dims=args.dims,
+                                  lr=args.lr, mode='dot', k_neg=args.k_neg,
+                                  normalize_every=norm_every, device='cuda')
 
         if args.warm_start:
             warm = np.load(args.warm_start)
             dsolver.positions = torch.from_numpy(warm).to(dsolver.device)
             print(f"Warm start from {args.warm_start} ({warm.shape})")
 
-        T = args.signal_T
-        sigma = args.signal_sigma
-        print(f"Word2vec drift (correlation): {w}x{h} grid, "
-              f"k_sample={args.k_sample}, threshold={args.threshold}, "
-              f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
-              f"signal: T={T}, sigma={sigma}, "
-              f"normalize_every={norm_every}, align={args.align}")
+        # --- Correlation mode: build signal buffer ---
+        saccade_source = None
+        if mode == "correlation":
+            T = args.signal_T
+            sigma = args.signal_sigma
+            print(f"Word2vec drift (correlation): {w}x{h} grid, "
+                  f"k_sample={args.k_sample}, threshold={args.threshold}, "
+                  f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
+                  f"signal: T={T}, sigma={sigma}, "
+                  f"normalize_every={norm_every}, align={args.align}")
 
-        # Build signal buffer
-        signals_np = np.zeros((n, T), dtype=np.float32)
+            signals_np = np.zeros((n, T), dtype=np.float32)
 
-        if args.signal_source:
-            # Saccade mode: continuous random walk over a source image.
-            # Rolling buffer: each tick overwrites signals[:, tick % T]
-            # with a new crop from the ongoing walk. The walk bounces
-            # off image edges and never stops.
-            source = np.load(args.signal_source)  # (H_src, W_src), float32 0-1
-            src_h, src_w = source.shape
-            max_dy = src_h - h
-            max_dx = src_w - w
-            assert max_dy > 0 and max_dx > 0, \
-                f"Source {src_w}x{src_h} too small for {w}x{h} grid"
-            saccade_step = args.saccade_step
-            use_mse = args.use_mse
-            # Fill initial buffer
-            walk_dy = np.random.randint(0, max_dy + 1)
-            walk_dx = np.random.randint(0, max_dx + 1)
-            for t in range(T):
-                walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
-                                  0, max_dy)
-                walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
-                                  0, max_dx)
-                crop = source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].ravel()
-                if use_mse:
-                    signals_np[:, t] = crop
-                else:
-                    signals_np[:, t] = crop - crop.mean()
-            mean_sub = "raw" if use_mse else "mean-subtracted"
-            print(f"  signal buffer: ({n}, {T}), rolling saccades from "
-                  f"{args.signal_source} ({src_w}x{src_h}), "
-                  f"step={saccade_step}, {mean_sub}")
-            saccade_source = torch.from_numpy(source).to(
-                torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+            if args.signal_source:
+                source = np.load(args.signal_source)
+                src_h, src_w = source.shape
+                max_dy = src_h - h
+                max_dx = src_w - w
+                assert max_dy > 0 and max_dx > 0, \
+                    f"Source {src_w}x{src_h} too small for {w}x{h} grid"
+                saccade_step = args.saccade_step
+                use_mse = args.use_mse
+                walk_dy = np.random.randint(0, max_dy + 1)
+                walk_dx = np.random.randint(0, max_dx + 1)
+                for t in range(T):
+                    walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
+                                      0, max_dy)
+                    walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
+                                      0, max_dx)
+                    crop = source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].ravel()
+                    if use_mse:
+                        signals_np[:, t] = crop
+                    else:
+                        signals_np[:, t] = crop - crop.mean()
+                mean_sub = "raw" if use_mse else "mean-subtracted"
+                print(f"  signal buffer: ({n}, {T}), rolling saccades from "
+                      f"{args.signal_source} ({src_w}x{src_h}), "
+                      f"step={saccade_step}, {mean_sub}")
+                saccade_source = torch.from_numpy(source).to(
+                    torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+            else:
+                from scipy.ndimage import gaussian_filter
+                for t in range(T):
+                    noise = np.random.randn(h, w).astype(np.float32)
+                    smoothed = gaussian_filter(noise, sigma=sigma)
+                    signals_np[:, t] = smoothed.ravel()
+                print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
+
+            signals = torch.from_numpy(signals_np).to(dsolver.device)
+            tick_counter = [0]
         else:
-            # Gaussian noise mode (ts-00009) — static buffer
-            from scipy.ndimage import gaussian_filter
-            for t in range(T):
-                noise = np.random.randn(h, w).astype(np.float32)
-                smoothed = gaussian_filter(noise, sigma=sigma)
-                signals_np[:, t] = smoothed.ravel()
-            print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
-            saccade_source = None
+            print(f"Word2vec drift (sentence): {w}x{h} grid, k={args.k}, "
+                  f"k_neg={args.k_neg}, lr={args.lr}, dims={args.dims}, "
+                  f"window={args.window}, normalize_every={norm_every}, "
+                  f"align={args.align}, async={args.async_render}")
 
-        signals = torch.from_numpy(signals_np).to(dsolver.device)
-        tick_counter = [0]  # mutable for closure
+        # --- Tick function ---
+        if mode == "correlation":
+            def do_tick():
+                if saccade_source is not None:
+                    nonlocal walk_dy, walk_dx
+                    walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
+                                      0, max_dy)
+                    walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
+                                      0, max_dx)
+                    crop = saccade_source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].reshape(-1)
+                    col = tick_counter[0] % T
+                    if use_mse:
+                        signals[:, col] = crop
+                    else:
+                        signals[:, col] = crop - crop.mean()
+                    tick_counter[0] += 1
+                return dsolver.tick_correlation(
+                    signals, k_sample=args.k_sample,
+                    threshold=args.threshold, window=args.window,
+                    anchor_only=args.anchor_only,
+                    use_covariance=args.use_covariance,
+                    use_mse=args.use_mse,
+                    max_hit_ratio=args.max_hit_ratio)
+        else:
+            def do_tick():
+                dsolver.tick_sentence(window=args.window)
+                return 0
 
-        # Pixel values for rendering
+        # --- Common setup ---
         pixel_values = None
         if image is not None:
             pixel_values = np.zeros(n, dtype=np.uint8)
@@ -595,31 +473,7 @@ def run_word2vec(args):
         if getattr(args, 'sync_render', False):
             args.async_render = False
 
-        def do_tick():
-            # Rolling buffer: overwrite oldest frame with new saccade crop
-            if saccade_source is not None:
-                nonlocal walk_dy, walk_dx
-                walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
-                                  0, max_dy)
-                walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
-                                  0, max_dx)
-                # Crop on GPU — no CPU→GPU transfer per tick
-                crop = saccade_source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].reshape(-1)
-                col = tick_counter[0] % T
-                if use_mse:
-                    signals[:, col] = crop
-                else:
-                    signals[:, col] = crop - crop.mean()
-                tick_counter[0] += 1
-            pairs = dsolver.tick_correlation(
-                signals, k_sample=args.k_sample,
-                threshold=args.threshold, window=args.window,
-                anchor_only=args.anchor_only,
-                use_covariance=args.use_covariance,
-                use_mse=args.use_mse,
-                max_hit_ratio=args.max_hit_ratio)
-            return pairs
-
+        # --- Training + rendering ---
         if args.async_render and output_dir:
             import multiprocessing as mp
 
@@ -711,7 +565,7 @@ def run_word2vec(args):
                 elif not output_dir and tick % 10 == 0:
                     frame = render_frame()
                     if frame is not None:
-                        show_grid("Correlation skip-gram", frame)
+                        show_grid(f"{mode} skip-gram", frame)
                     wait()
                 if poll_quit():
                     break
