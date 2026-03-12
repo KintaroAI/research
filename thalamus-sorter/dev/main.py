@@ -246,6 +246,9 @@ def run_word2vec(args):
         if render_method == 'euclidean':
             render_method = 'pca'
 
+        if getattr(args, 'sync_render', False):
+            args.async_render = False
+
         if args.async_render and output_dir:
             # --- Async render: training and rendering decoupled ---
             # Double-buffered shared memory prevents torn reads.
@@ -490,7 +493,8 @@ def run_word2vec(args):
         for tick in range(1, max_frames + 1):
             pairs = dsolver.tick_correlation(
                 signals, k_sample=args.k_sample,
-                threshold=args.threshold, window=args.window)
+                threshold=args.threshold, window=args.window,
+                anchor_only=args.anchor_only)
             total_pairs += pairs
 
             if output_dir and tick % args.save_every == 0:
@@ -951,6 +955,8 @@ def main():
                        help="Temporal signal buffer length (correlation mode, default: 100)")
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
                        help="Gaussian smoothing sigma for signal generation (correlation mode, default: 3.0)")
+    p_w2v.add_argument("--anchor-only", action="store_true",
+                       help="Correlation mode: only (anchor, neighbor) pairs, no transitive sliding window")
     p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
                                             "direct", "procrustes", "lstsq",
                                             "umap", "tsne", "spectral", "mds"],
@@ -965,8 +971,10 @@ def main():
                        help="Load .npy embeddings as initial positions (warm start)")
     p_w2v.add_argument("--cold-projection", action="store_true",
                        help="Disable projection warm start (run UMAP/t-SNE from scratch each frame)")
-    p_w2v.add_argument("--async-render", action="store_true",
-                       help="Render in separate process (training never waits for visualization)")
+    p_w2v.add_argument("--async-render", action="store_true", default=True,
+                       help="Render in separate process (default: on)")
+    p_w2v.add_argument("--sync-render", action="store_true",
+                       help="Force synchronous rendering")
     p_w2v.add_argument("--save-model", action="store_true",
                        help="Save final embeddings to .npy file")
     p_w2v.add_argument("--save-model-path", type=str, default=None,

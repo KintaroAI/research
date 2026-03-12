@@ -206,6 +206,24 @@ Final (5000 ticks):
 python run_correlation_grid.py -i K_80_g.png -o output_9_grid -j 6
 ```
 
+### Test 6: Anchor-only pairs vs sliding window
+
+Tested whether restricting training to only verified (anchor, neighbor) pairs — no transitive neighbor-to-neighbor pairs from the sliding window — would improve quality.
+
+**Hypothesis:** The sliding window generates unverified pairs (neighbor B paired with neighbor C, where both correlate with anchor A but not necessarily with each other). Removing these noisy pairs should improve precision.
+
+**Result:** Precision helps, but data volume matters more.
+
+| Approach | Ticks | Pairs | Final disparity |
+|----------|-------|-------|-----------------|
+| Sliding window | 5k | 171M | **0.0225** |
+| Anchor-only | 5k | 19M | 0.989 |
+| Anchor-only | 50k | 191M | 0.0955 |
+
+At 5k ticks, anchor-only generates ~10x fewer pairs and doesn't converge at all. At 50k ticks (~equal pair count), sliding window still wins by ~4x on disparity. The transitive pairs from the sliding window are a form of implicit inference — if A correlates with both B and C, B and C are likely spatially close too. The learner benefits from this signal more than it's hurt by the noise.
+
+**Conclusion:** Sliding window is default. `--anchor-only` flag available for comparison.
+
 ## Thoughts
 
 ### It works — spatial maps from correlation alone

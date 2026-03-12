@@ -205,7 +205,8 @@ class DriftSolver:
 
         self._maybe_normalize()
 
-    def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5):
+    def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
+                         anchor_only=False):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -220,6 +221,8 @@ class DriftSolver:
             k_sample: candidates to check per neuron
             threshold: minimum |correlation| to include as neighbor
             window: sliding window for skip-gram pairs
+            anchor_only: if True, only generate (anchor, neighbor) pairs
+                         instead of sliding window over full sentence
         """
         n = self.n
         batch = min(n, 256)  # neurons per tick
@@ -263,44 +266,49 @@ class DriftSolver:
             return 0
 
         # Pack good candidates: for each anchor, gather the ones that passed
-        # Use masked_fill to create dense packed tensor
         # Sort mask so True values come first
         sorted_mask, sort_idx = mask.int().sort(dim=1, descending=True)
         sorted_cands = torch.gather(candidates, 1, sort_idx)  # (batch, k_sample)
-
-        # Trim to max_good and build sentences: [anchor, nb1, nb2, ...]
         trimmed = sorted_cands[:, :max_good]  # (batch, max_good)
-        sentences = torch.cat([anchors.unsqueeze(1), trimmed], dim=1)  # (batch, max_good+1)
-        seq_len = max_good + 1
 
-        # Build (center, context) offset pairs for this seq_len
-        offsets = []
-        for c in range(seq_len):
-            for ctx in range(max(0, c - window), min(seq_len, c + window + 1)):
-                if ctx != c:
-                    offsets.append((c, ctx))
-        if not offsets:
-            self._maybe_normalize()
-            return 0
-        offset_t = torch.tensor(offsets, device=self.device)  # (P, 2)
-        P = offset_t.shape[0]
+        if anchor_only:
+            # Anchor-center pairs only: each (anchor, neighbor) is a training pair
+            # Only verified pairs — no transitive neighbor-to-neighbor pairs
+            pos_idx = torch.arange(max_good, device=self.device).unsqueeze(0)
+            valid = pos_idx < good_counts.unsqueeze(1)  # (batch, max_good)
+            valid_flat = valid.reshape(-1)
+            anchor_exp = anchors.unsqueeze(1).expand_as(trimmed).reshape(-1)
+            neighbor_flat = trimmed.reshape(-1)
+            center_flat = anchor_exp[valid_flat]
+            ctx_flat = neighbor_flat[valid_flat]
+        else:
+            # Sliding window over sentences: [anchor, nb1, nb2, ...]
+            # Includes transitive neighbor-to-neighbor pairs
+            sentences = torch.cat([anchors.unsqueeze(1), trimmed], dim=1)
+            seq_len = max_good + 1
 
-        # Valid mask: only include pairs where the context position is a real neighbor
-        # Position 0 is always valid (anchor), positions 1..max_good valid per good_counts
-        # A pair (c, ctx) is valid for sentence i if both c and ctx < good_counts[i]+1
-        c_offs = offset_t[:, 0]  # (P,)
-        x_offs = offset_t[:, 1]  # (P,)
-        limits = (good_counts + 1).unsqueeze(1)  # (batch, 1)
-        valid = (c_offs.unsqueeze(0) < limits) & (x_offs.unsqueeze(0) < limits)  # (batch, P)
+            offsets = []
+            for c in range(seq_len):
+                for ctx in range(max(0, c - window), min(seq_len, c + window + 1)):
+                    if ctx != c:
+                        offsets.append((c, ctx))
+            if not offsets:
+                self._maybe_normalize()
+                return 0
+            offset_t = torch.tensor(offsets, device=self.device)  # (P, 2)
 
-        # Gather center/context IDs
-        center_ids = sentences[:, c_offs]  # (batch, P)
-        ctx_ids = sentences[:, x_offs]     # (batch, P)
+            c_offs = offset_t[:, 0]
+            x_offs = offset_t[:, 1]
+            limits = (good_counts + 1).unsqueeze(1)  # (batch, 1)
+            valid = (c_offs.unsqueeze(0) < limits) & (x_offs.unsqueeze(0) < limits)
 
-        # Flatten only valid pairs
-        valid_flat = valid.reshape(-1)
-        center_flat = center_ids.reshape(-1)[valid_flat]
-        ctx_flat = ctx_ids.reshape(-1)[valid_flat]
+            center_ids = sentences[:, c_offs]  # (batch, P)
+            ctx_ids = sentences[:, x_offs]     # (batch, P)
+
+            valid_flat = valid.reshape(-1)
+            center_flat = center_ids.reshape(-1)[valid_flat]
+            ctx_flat = ctx_ids.reshape(-1)[valid_flat]
+
         B = center_flat.shape[0]
 
         if B == 0:
