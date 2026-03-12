@@ -116,6 +116,96 @@ K clearly visible and correctly oriented. Disparity converges smoothly from 1.0 
 
 **What changed:** sigma=8 creates broader spatial correlation (pixels up to ~16 apart have measurable correlation). T=200 gives more reliable correlation estimates. Threshold=0.3 filters noise while keeping genuine neighbors. Together, each anchor finds ~5-15 real neighbors per tick — enough to form informative sentences.
 
+### Test 4: 160x160, sigma=8 (FAILED — sigma too small for grid size)
+
+Same parameters as Test 3 but on 160x160 (25,600 neurons):
+
+- 64M pairs trained, disparity stuck at ~0.998
+- At 160x160, sigma=8 only correlates immediate neighbors. Sampling 200 out of 25,600 (0.8%) almost never hits them.
+- Correlation stats: only 2 out of 200 candidates passed threshold=0.3
+
+### Test 5: 160x160, sigma=16 (SUCCESS)
+
+```bash
+python main.py word2vec --mode correlation -W 160 -H 160 --dims 8 \
+    --k-neg 5 --lr 0.001 --normalize-every 100 \
+    --k-sample 200 --threshold 0.3 --signal-T 200 --signal-sigma 16.0 \
+    -i K_160_g.png -f 5000 --save-every 50 -o output_9_run5_160 \
+    --render umap --align
+```
+
+| Metric | Value |
+|--------|-------|
+| Total pairs | 279M |
+| Final disparity | 0.15–0.17 |
+| Training time | 430.7s |
+| Ticks | 5000 |
+| Neurons | 25,600 |
+
+K clearly visible and still converging at 5k ticks. Higher disparity than 80x80 (0.17 vs 0.08) — 4x more neurons need more training to fully resolve fine structure.
+
+### Scaling rule: sigma ≈ grid_size / 10
+
+| Grid | Neurons | sigma | Candidates >0.3 (of 200) | Disparity at 5k ticks |
+|------|---------|-------|--------------------------|----------------------|
+| 80×80 | 6,400 | 8 | ~10–15 | 0.08 |
+| 160×160 | 25,600 | 8 | ~2 (fails) | 0.998 |
+| 160×160 | 25,600 | 16 | ~17 | 0.17 |
+
+Sigma must scale with grid size to maintain a similar number of correlated candidates per random sample. Rule of thumb: sigma ≈ grid_size / 10 keeps ~10-17 neighbors passing threshold=0.3 with k_sample=200.
+
+### Grid search: parameter sensitivity (80×80)
+
+Ran 18 experiments in parallel (6 at a time, ~429s total) to map the parameter space.
+
+**Sweep 1: sigma × threshold** (k_sample=200, T=200 fixed)
+
+| | thresh=0.15 | thresh=0.3 | thresh=0.5 |
+|----------|-------------|------------|------------|
+| sigma=5  | 0.2671      | 0.1174     | 0.0568     |
+| sigma=8  | 0.1949      | 0.0437     | **0.0225** |
+| sigma=12 | 0.1682      | 0.1486     | 0.0926     |
+
+Best: sigma=8, threshold=0.5 → **0.0225**. Higher threshold consistently wins across all sigma values — precision matters more than recall. sigma=8 is the sweet spot; sigma=12 is worse despite broader correlation, likely because too many distant neurons pass the filter.
+
+Start (random embeddings):
+
+![Sweep 1 start](sweep1_start.png)
+
+Final (5000 ticks):
+
+![Sweep 1 final](sweep1_final.png)
+
+**Sweep 2: k_sample × signal_T** (sigma=8, threshold=0.3 fixed)
+
+| | T=50 | T=100 | T=200 |
+|--------------|--------|--------|--------|
+| k_sample=100 | 0.6063 | 0.1110 | 0.1628 |
+| k_sample=200 | 0.2764 | **0.0404** | 0.1185 |
+| k_sample=400 | 0.4747 | 0.0670 | 0.0768 |
+
+Best: k_sample=200, T=100 → **0.0404**. T=50 is consistently bad (unreliable correlation estimates). Surprisingly, T=100 beats T=200 — longer buffers may oversmooth transient correlation structure. k_sample=200 is the sweet spot; k_sample=400 doesn't help much and adds compute.
+
+Start (random embeddings):
+
+![Sweep 2 start](sweep2_start.png)
+
+Final (5000 ticks):
+
+![Sweep 2 final](sweep2_final.png)
+
+**Key findings:**
+- Threshold is the single most impactful parameter — higher is better (0.5 > 0.3 > 0.15)
+- sigma=8 is optimal for 80×80 — too small misses neighbors, too large includes non-neighbors
+- T=100 is sufficient and slightly better than T=200
+- k_sample=200 is the sweet spot — 100 misses too many, 400 adds little value
+- Best overall config: sigma=8, threshold=0.5, k_sample=200, T=100–200 → disparity 0.02–0.04
+
+```bash
+# Grid search command
+python run_correlation_grid.py -i K_80_g.png -o output_9_grid -j 6
+```
+
 ## Thoughts
 
 ### It works — spatial maps from correlation alone
@@ -128,15 +218,15 @@ This is the core biological claim: if neurons that are spatially close tend to f
 
 Tests 1-2 vs Test 3 show that the bottleneck wasn't the learner — it was whether the correlation signal was strong enough to identify real neighbors. The skip-gram learner is very tolerant of noise (it's designed for noisy co-occurrence counts in NLP). The critical parameters are sigma (correlation radius), T (estimation reliability), and threshold (signal-to-noise filter).
 
-### Threshold is a precision/recall knob
+### Threshold is a precision/recall knob — and precision wins
 
 - High threshold: fewer neighbors, higher precision (real neighbors only), but slower learning
 - Low threshold: more neighbors, lower precision (false positives), but noisier gradients
-- In between: enough signal to learn, few enough false positives to converge
+- Grid search settled it: higher threshold is strictly better. 0.5 > 0.3 > 0.15 across all sigma values. The skip-gram learner handles sparse data well but is sensitive to false positives. Better to find 5 real neighbors than 15 noisy ones.
 
-### Scaling question
+### Scaling
 
-At 80x80 (6400 neurons), k_sample=200 checks 3% of all neurons per anchor. At larger scales this becomes a smaller fraction — need to check if the approach still finds enough neighbors, or if k_sample must grow.
+At 80x80 (6400 neurons), k_sample=200 checks 3% of all neurons. At 160x160 (25,600), it's only 0.8%. The approach still works without increasing k_sample — the key is scaling sigma with grid size so that enough of the random candidates fall within the correlation radius. More ticks are needed at larger scales (4x neurons → disparity 0.17 vs 0.08 at same tick count).
 
 ### Possible extensions
 
@@ -148,4 +238,6 @@ At 80x80 (6400 neurons), k_sample=200 checks 3% of all neurons per anchor. At la
 
 - `main.py` — `correlation` mode in `run_word2vec()`
 - `solvers/drift_torch.py` — `tick_correlation()` method in `DriftSolver`
+- `run_correlation_grid.py` — Parallel grid search over correlation parameters
 - `output_9_run*` — Output frames and logs
+- `output_9_grid_*` — Grid search output directories
