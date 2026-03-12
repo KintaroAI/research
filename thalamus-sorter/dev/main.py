@@ -231,6 +231,33 @@ def _eval_embeddings(emb, w, h):
     return result
 
 
+def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
+                            total_pairs=None):
+    """Common end-of-run: eval, info.json, model save."""
+    import time
+    if output_dir:
+        s = dsolver.stats()
+        results = {
+            "ticks": max_frames,
+            "std": round(s['std'], 4),
+            "elapsed": round(time.time() - t0, 1),
+        }
+        if total_pairs is not None:
+            results["total_pairs"] = total_pairs
+        if getattr(args, 'eval', False):
+            emb = dsolver.get_positions()
+            results["eval"] = _eval_embeddings(emb, w, h)
+        _save_run_info(output_dir, args, results=results)
+
+    if args.save_model or args.save_model_path:
+        save_path = args.save_model_path
+        if not save_path and output_dir:
+            save_path = os.path.join(output_dir, "model.npy")
+        if save_path:
+            np.save(save_path, dsolver.get_positions())
+            print(f"  model saved: {save_path}")
+
+
 def _save_run_info(output_dir, args, results=None):
     """Save/update info.json with command, parameters, and results."""
     import json, subprocess, datetime
@@ -475,27 +502,7 @@ def run_word2vec(args):
                     cv2.imwrite(path, normalized)
                     print(f"  final frame saved: {path}")
 
-        # Save results to info.json
-        if output_dir:
-            s = dsolver.stats()
-            results = {
-                "ticks": max_frames,
-                "std": round(s['std'], 4),
-                "elapsed": round(time.time() - t0, 1),
-            }
-            if getattr(args, 'eval', False):
-                emb = dsolver.get_positions()
-                results["eval"] = _eval_embeddings(emb, w, h)
-            _save_run_info(output_dir, args, results=results)
-
-        # Save model (only if explicitly requested)
-        if args.save_model or args.save_model_path:
-            save_path = args.save_model_path
-            if not save_path and output_dir:
-                save_path = os.path.join(output_dir, "model.npy")
-            if save_path:
-                np.save(save_path, dsolver.get_positions())
-                print(f"  model saved: {save_path}")
+        _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames)
         return
 
     if mode == "correlation":
@@ -723,27 +730,8 @@ def run_word2vec(args):
                     cv2.imwrite(path, normalized)
                     print(f"  final frame saved: {path}")
 
-        # Save results to info.json
-        if output_dir:
-            s = dsolver.stats()
-            results = {
-                "ticks": max_frames,
-                "total_pairs": total_pairs,
-                "std": round(s['std'], 4),
-                "elapsed": round(time.time() - t0, 1),
-            }
-            if getattr(args, 'eval', False):
-                emb = dsolver.get_positions()
-                results["eval"] = _eval_embeddings(emb, w, h)
-            _save_run_info(output_dir, args, results=results)
-
-        if args.save_model or args.save_model_path:
-            save_path = args.save_model_path
-            if not save_path and output_dir:
-                save_path = os.path.join(output_dir, "model.npy")
-            if save_path:
-                np.save(save_path, dsolver.get_positions())
-                print(f"  model saved: {save_path}")
+        _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
+                               total_pairs=total_pairs)
         return
 
     if mode == "similarity":
