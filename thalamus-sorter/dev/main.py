@@ -198,6 +198,38 @@ def run_continuous(args):
             break
 
 
+def _save_run_info(output_dir, args, results=None):
+    """Save/update info.json with command, parameters, and results."""
+    import json, subprocess, datetime
+    info_path = os.path.join(output_dir, "info.json")
+
+    if os.path.exists(info_path):
+        with open(info_path) as f:
+            info = json.load(f)
+    else:
+        # Git hash for reproducibility
+        try:
+            git_hash = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            git_hash = None
+
+        info = {
+            "command": " ".join(sys.argv),
+            "timestamp": datetime.datetime.now().isoformat(),
+            "git_hash": git_hash,
+            "args": {k: v for k, v in vars(args).items()
+                     if not k.startswith("_") and k != "func"},
+        }
+
+    if results:
+        info["results"] = results
+
+    with open(info_path, "w") as f:
+        json.dump(info, f, indent=2, default=str)
+
+
 def run_word2vec(args):
     w, h = args.width, args.height
 
@@ -288,6 +320,7 @@ def run_word2vec(args):
         output_dir = args.output_dir
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
+            _save_run_info(output_dir, args)
 
         # Pick projection method
         render_method = args.render
@@ -409,6 +442,15 @@ def run_word2vec(args):
                     cv2.imwrite(path, normalized)
                     print(f"  final frame saved: {path}")
 
+        # Save results to info.json
+        if output_dir:
+            s = dsolver.stats()
+            _save_run_info(output_dir, args, results={
+                "ticks": max_frames,
+                "std": round(s['std'], 4),
+                "elapsed": round(time.time() - t0, 1),
+            })
+
         # Save model (only if explicitly requested)
         if args.save_model or args.save_model_path:
             save_path = args.save_model_path
@@ -465,6 +507,7 @@ def run_word2vec(args):
         output_dir = args.output_dir
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
+            _save_run_info(output_dir, args)
 
         render_method = args.render
         if render_method == 'euclidean':
@@ -589,6 +632,16 @@ def run_word2vec(args):
                     path = os.path.join(output_dir, f"frame_{saved:06d}.png")
                     cv2.imwrite(path, normalized)
                     print(f"  final frame saved: {path}")
+
+        # Save results to info.json
+        if output_dir:
+            s = dsolver.stats()
+            _save_run_info(output_dir, args, results={
+                "ticks": max_frames,
+                "total_pairs": total_pairs,
+                "std": round(s['std'], 4),
+                "elapsed": round(time.time() - t0, 1),
+            })
 
         if args.save_model or args.save_model_path:
             save_path = args.save_model_path
