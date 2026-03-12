@@ -207,13 +207,14 @@ class DriftSolver:
 
     def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
                          anchor_only=False, use_covariance=False,
-                         max_hit_ratio=None):
+                         use_mse=False, max_hit_ratio=None,
+                         signal_var=None):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
         1. Pick a batch of random neurons
         2. For each, sample k_sample random candidates
-        3. Compute correlation (or covariance) between their signals
+        3. Compute similarity score (Pearson, covariance, or MSE-based)
         4. Keep only pairs above threshold
         5. Filter out anchors with too many hits (global signal, not local)
         6. Form variable-length sentences and run skip-gram
@@ -228,10 +229,15 @@ class DriftSolver:
             use_covariance: if True, use covariance (corr × std1 × std2)
                            instead of Pearson correlation. Downweights
                            low-variance neurons (uniform regions).
+            use_mse: if True, use MSE+variance score:
+                     sqrt(var_A * var_B) * (1 - MSE). Bounded [0, 0.25]
+                     for 0-1 signals. No per-frame global mean needed.
             max_hit_ratio: if set, discard anchors where
                           good_neighbors/k_sample > this value. Filters out
                           neurons seeing global signals (correlated with
                           everyone) rather than local spatial structure.
+            signal_var: precomputed per-neuron variance (n,) tensor.
+                       Required for use_mse=True.
         """
         n = self.n
         batch = min(n, 256)  # neurons per tick
@@ -247,19 +253,38 @@ class DriftSolver:
         anchor_sig = signals[anchors]            # (batch, T)
         cand_sig = signals[candidates]           # (batch, k_sample, T)
 
-        # Center signals (subtract mean)
-        anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)  # (batch, T)
-        cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)       # (batch, k_sample, T)
-
-        if use_covariance:
+        if use_mse:
+            # MSE as distance metric with variance gate.
+            # MSE = mean((a_t - b_t)^2) — no centering, no global mean.
+            # Near pairs: MSE ≈ 0.003, far pairs: MSE ≈ 0.05 (15x ratio).
+            # Threshold on MSE directly (lower = more similar).
+            # Variance gate: skip pairs where either neuron is flat
+            # (var < median/4) — they carry no temporal information.
+            diff = anchor_sig.unsqueeze(1) - cand_sig  # (batch, k_sample, T)
+            mse = (diff * diff).mean(dim=2)            # (batch, k_sample)
+            # Threshold: keep pairs with MSE below threshold
+            mask = mse < threshold
+            # Variance gate: discard pairs involving low-variance neurons
+            anchor_var = signal_var[anchors]            # (batch,)
+            cand_var = signal_var[candidates]           # (batch, k_sample)
+            var_median = signal_var.median()
+            min_var = var_median * 0.25
+            var_ok = (anchor_var.unsqueeze(1) > min_var) & (cand_var > min_var)
+            mask = mask & var_ok
+            score = mse  # for diagnostics
+        elif use_covariance:
             # Covariance = dot(centered_a, centered_b) / T
             # = correlation × std_a × std_b
             # Naturally downweights low-variance neurons (flat regions)
+            anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
+            cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
             T = anchor_sig.shape[1]
             score = (anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T
             mask = score.abs() > threshold
         else:
             # Pearson correlation via normalized dot product
+            anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
+            cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
             anchor_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
             cand_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)
             anchor_unit = anchor_centered / anchor_norm

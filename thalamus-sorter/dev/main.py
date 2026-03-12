@@ -506,10 +506,14 @@ def run_word2vec(args):
                 dx = np.clip(dx + np.random.randint(-saccade_step, saccade_step + 1),
                              0, max_dx)
                 crop = source[dy:dy+h, dx:dx+w].ravel()
-                signals_np[:, t] = crop - crop.mean()
+                if args.use_mse:
+                    signals_np[:, t] = crop  # raw values; MSE score handles it
+                else:
+                    signals_np[:, t] = crop - crop.mean()  # remove global luminance
+            mean_sub = "raw" if args.use_mse else "mean-subtracted"
             print(f"  signal buffer: ({n}, {T}), saccades from "
                   f"{args.signal_source} ({src_w}x{src_h}), "
-                  f"step={saccade_step}")
+                  f"step={saccade_step}, {mean_sub}")
         else:
             # Gaussian noise mode (ts-00009)
             from scipy.ndimage import gaussian_filter
@@ -520,6 +524,13 @@ def run_word2vec(args):
             print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
 
         signals = torch.from_numpy(signals_np).to(dsolver.device)
+
+        # Precompute per-neuron variance (for MSE mode)
+        signal_var = None
+        if args.use_mse:
+            signal_var = signals.var(dim=1)  # (n,)
+            print(f"  signal variance: min={signal_var.min():.4f}, "
+                  f"max={signal_var.max():.4f}, mean={signal_var.mean():.4f}")
 
         # Pixel values for rendering
         pixel_values = None
@@ -546,7 +557,9 @@ def run_word2vec(args):
                 threshold=args.threshold, window=args.window,
                 anchor_only=args.anchor_only,
                 use_covariance=args.use_covariance,
-                max_hit_ratio=args.max_hit_ratio)
+                use_mse=args.use_mse,
+                max_hit_ratio=args.max_hit_ratio,
+                signal_var=signal_var)
             return pairs
 
         if args.async_render and output_dir:
@@ -1096,6 +1109,10 @@ def main():
                        help="Max pixels to shift per timestep in saccade mode (default: 5)")
     p_w2v.add_argument("--use-covariance", action="store_true",
                        help="Use covariance (corr×std1×std2) instead of Pearson correlation; downweights flat regions")
+    p_w2v.add_argument("--use-mse", action="store_true",
+                       help="Use MSE+variance score: sqrt(var_A*var_B)*(1-MSE). "
+                            "Bounded [0,0.25], no per-frame global mean needed. "
+                            "Threshold ~0.05 is a good starting point.")
     p_w2v.add_argument("--max-hit-ratio", type=float, default=None,
                        help="Discard anchors where neighbors/k_sample exceeds this ratio (e.g. 0.1). "
                             "Filters out global signals — if a neuron correlates with everyone, skip it.")

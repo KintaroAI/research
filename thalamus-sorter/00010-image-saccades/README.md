@@ -96,26 +96,74 @@ The filter is a **general robustness mechanism**. With clean signals (mean-subtr
 
 **Note on variance across runs:** Saccade results are high-variance depending on which region of the image the random walk traverses. Run14 (0.18) got a favorable walk path; run15/17 (0.57-0.80) got worse ones. This is a fundamental property of natural image signals — correlation structure varies spatially across the image.
 
+### MSE + variance gate (`--use-mse`)
+
+**Problem with Pearson correlation:** requires per-neuron temporal mean centering. While per-neuron means are local (each neuron knows its own average), the real issue is that Pearson doesn't distinguish "both silent" from "both active and similar." Two dead neurons [0,0] vs [0,0] get undefined or trivial correlation, same as two active neurons [1,0] vs [1,0] that are genuinely co-varying.
+
+**Problem with per-frame mean subtraction:** requires knowing what ALL neurons are doing at each timestep — a global operation. Not biologically plausible across modalities (an auditory neuron can't know the average visual firing rate).
+
+**MSE-based approach:** replace correlation with pointwise distance + variance gate. No global dependencies.
+
+```
+MSE(A, B) = (1/T) Σ (a_t - b_t)²    — pointwise distance, no centering
+var(A)    = (1/T) Σ (a_t - μ_A)²     — per-neuron temporal variance (local)
+
+Neighbor if:  MSE < threshold  AND  var_A > min_var  AND  var_B > min_var
+```
+
+MSE measures "are they close in absolute value at each timestep." Nearby pixels in a crop have similar values → low MSE. The variance gate discards flat/dead neurons that would trivially have low MSE with each other.
+
+**Why MSE instead of correlation?**
+
+MSE doesn't need any centering. It directly measures pointwise similarity. For the global luminance problem (all neurons shift together), MSE still discriminates: nearby neurons track each other closely (MSE ≈ 0.003) while distant neurons diverge (MSE ≈ 0.05) — a 15x difference.
+
+**Properties:**
+- T-independent: MSE and variance are both averages (÷T)
+- No per-frame global mean needed — only per-neuron temporal variance
+- Threshold semantics: lower MSE = more similar. Near pairs ≈ 0.003, far pairs ≈ 0.05
+
+**Why not combined score `sqrt(var_A × var_B) × (1 - MSE)`?**
+
+Tried first but the combined score compresses the discriminating MSE signal. With natural images, `(1 - MSE)` ranges 0.95-1.00 (only 5% spread), and the variance multiplier (≈0.05 for all pixels) squashes everything into a narrow band 0.02-0.04. Raw MSE as threshold gives the full 15x discrimination between near and far pairs.
+
+| A | B | MSE | var_A | var_B | Neighbor? (threshold=0.01) |
+|---|---|-----|-------|-------|---------------------------|
+| [0, 0] | [0, 0] | 0 | 0 | 0 | **No** (var gate) |
+| [1, 0] | [1, 0] | 0 | 0.25 | 0.25 | **Yes** (low MSE, high var) |
+| [1, 1] | [1, 1] | 0 | 0 | 0 | **No** (var gate) |
+| [1, 0] | [0, 1] | 1 | 0.25 | 0.25 | **No** (high MSE) |
+
+#### MSE run results
+
+All with step=50, raw signals (no mean subtraction), 80x80 grid on 1536x1024 source.
+
+| Run | Threshold | Pairs | Disparity | Notes |
+|-----|-----------|-------|-----------|-------|
+| run21_mse_low | 0.01 | 71M | ~0.86 | Too strict — only closest neighbors pass |
+| **run22_mse02** | **0.02** | **881M** | **~0.61** | **K visible, no mean subtraction needed** |
+
+MSE mode achieves spatial structure discovery (0.61 disparity, K visible) using only raw firing rates — no per-frame mean subtraction. Slower convergence than Pearson+mean-sub (0.18-0.57) but eliminates the global dependency. The hit ratio filter can be combined for additional robustness.
+
 ### Key findings
 
-1. **Mean subtraction is essential.** Without it, global luminance creates universal correlation and the sorter learns nothing.
+1. **Mean subtraction helps Pearson but isn't the only path.** MSE-based scoring achieves structure without any global operation.
 
 2. **Source size matters.** 3x grid size (240x240 for 80x80 grid) or large-step random walks on the full source both achieve good decorrelation. The key insight: adjacent pixels in the grid always sample adjacent pixels in the source. In natural images, adjacent source pixels are always similar — so distant grid neurons are only decorrelated when the crop positions differ enough to overcome natural image correlation radius.
 
-3. **Random walk > random independent crops.** Random walk with step=50 on the full source (disparity 0.18 at 50k) outperforms both random crops on full source (0.22 at 500k) and random crops on 240x240 (0.20 at 50k). The sequential movement creates richer temporal structure while still decorrelating distant neurons.
+3. **Random walk > random independent crops.** Random walk with step=50 on the full source (disparity 0.18 at 50k with Pearson) outperforms both random crops on full source (0.22 at 500k) and random crops on 240x240 (0.20 at 50k). The sequential movement creates richer temporal structure while still decorrelating distant neurons.
 
-4. **Covariance filtering doesn't help for this image.** The test image has relatively uniform variance across pixels (0.23-0.28 std), so covariance ≈ correlation × constant. Will matter for images with genuinely flat (uniform) regions.
+4. **MSE discriminates near vs far without centering.** Near-pair MSE ≈ 0.003, far-pair MSE ≈ 0.05 (15x ratio). The `(1-MSE)` combined score compresses this; raw MSE threshold works better.
 
-5. **Hit ratio filter is a robustness mechanism, not a performance booster.** When the signal is clean, it does nothing. When global contamination occurs, it prevents bad learning by discarding anchors that correlate with everyone.
+5. **Hit ratio filter is a robustness mechanism.** When the signal is clean, it does nothing. When global contamination occurs, it prevents bad learning by discarding anchors that correlate with everyone.
 
-6. **Natural image signals are harder than Gaussian noise.** ts-00009 achieved disparity ~0.02-0.04 with synthetic Gaussian signals. Best image saccade result is 0.18. The gap reflects that natural image correlation structure is more complex — less cleanly spatial than a Gaussian kernel.
+6. **Natural image signals are harder than Gaussian noise.** ts-00009 achieved disparity ~0.02-0.04 with synthetic Gaussian signals. Best Pearson saccade result is 0.18, best MSE is 0.61. The gap reflects that natural image correlation structure is more complex — less cleanly spatial than a Gaussian kernel.
 
 7. **High variance across runs.** Different random walk paths produce very different results (0.18 to 0.80) because correlation structure varies across regions of the source image.
 
 ## Files
 
-- `main.py` — `correlation` mode with `--signal-source`, `--saccade-step`, `--use-covariance`, `--max-hit-ratio`
-- `solvers/drift_torch.py` — `use_covariance` and `max_hit_ratio` parameters in `tick_correlation()`
+- `main.py` — `correlation` mode with `--signal-source`, `--saccade-step`, `--use-mse`, `--use-covariance`, `--max-hit-ratio`
+- `solvers/drift_torch.py` — `use_mse`, `use_covariance`, `max_hit_ratio` in `tick_correlation()`
 - `saccades_gray.npy` — Pre-normalized source image (1024x1536, float32 0-1)
 - `saccades_gray_240.npy` — 240x240 crop for faster testing
 - `saccades.png` — Original source image
