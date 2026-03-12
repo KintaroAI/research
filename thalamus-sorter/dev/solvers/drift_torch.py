@@ -206,23 +206,26 @@ class DriftSolver:
         self._maybe_normalize()
 
     def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
-                         anchor_only=False):
+                         anchor_only=False, use_covariance=False):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
         1. Pick a batch of random neurons
         2. For each, sample k_sample random candidates
-        3. Compute correlation between their signals
+        3. Compute correlation (or covariance) between their signals
         4. Keep only pairs above threshold
         5. Form variable-length sentences and run skip-gram
 
         Args:
             signals: (n, T) tensor of temporal signals on device
             k_sample: candidates to check per neuron
-            threshold: minimum |correlation| to include as neighbor
+            threshold: minimum score to include as neighbor
             window: sliding window for skip-gram pairs
             anchor_only: if True, only generate (anchor, neighbor) pairs
                          instead of sliding window over full sentence
+            use_covariance: if True, use covariance (corr × std1 × std2)
+                           instead of Pearson correlation. Downweights
+                           low-variance neurons (uniform regions).
         """
         n = self.n
         batch = min(n, 256)  # neurons per tick
@@ -242,18 +245,21 @@ class DriftSolver:
         anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)  # (batch, T)
         cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)       # (batch, k_sample, T)
 
-        # Pearson correlation via dot product of centered/normalized signals
-        anchor_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)  # (batch, 1)
-        cand_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)      # (batch, k_sample, 1)
-
-        anchor_unit = anchor_centered / anchor_norm  # (batch, T)
-        cand_unit = cand_centered / cand_norm        # (batch, k_sample, T)
-
-        # corr[i,j] = dot(anchor_unit[i], cand_unit[i,j])
-        corr = (anchor_unit.unsqueeze(1) * cand_unit).sum(dim=2)  # (batch, k_sample)
-
-        # Filter: keep candidates with |corr| > threshold
-        mask = corr.abs() > threshold  # (batch, k_sample)
+        if use_covariance:
+            # Covariance = dot(centered_a, centered_b) / T
+            # = correlation × std_a × std_b
+            # Naturally downweights low-variance neurons (flat regions)
+            T = anchor_sig.shape[1]
+            score = (anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T
+            mask = score.abs() > threshold
+        else:
+            # Pearson correlation via normalized dot product
+            anchor_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+            cand_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)
+            anchor_unit = anchor_centered / anchor_norm
+            cand_unit = cand_centered / cand_norm
+            score = (anchor_unit.unsqueeze(1) * cand_unit).sum(dim=2)
+            mask = score.abs() > threshold
 
         # Build variable-length sentences and run skip-gram
         # For each anchor, collect good neighbors, form sentence, extract pairs

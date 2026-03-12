@@ -476,9 +476,6 @@ def run_word2vec(args):
             dsolver.positions = torch.from_numpy(warm).to(dsolver.device)
             print(f"Warm start from {args.warm_start} ({warm.shape})")
 
-        # Build signal buffer: Gaussian-smoothed random fields
-        # Each frame is a spatially-correlated 2D signal — nearby pixels
-        # get similar values, giving correlation structure to discover.
         T = args.signal_T
         sigma = args.signal_sigma
         print(f"Word2vec drift (correlation): {w}x{h} grid, "
@@ -487,15 +484,42 @@ def run_word2vec(args):
               f"signal: T={T}, sigma={sigma}, "
               f"normalize_every={norm_every}, align={args.align}")
 
-        # Generate spatially-correlated signals
-        from scipy.ndimage import gaussian_filter
+        # Build signal buffer
         signals_np = np.zeros((n, T), dtype=np.float32)
-        for t in range(T):
-            noise = np.random.randn(h, w).astype(np.float32)
-            smoothed = gaussian_filter(noise, sigma=sigma)
-            signals_np[:, t] = smoothed.ravel()
+
+        if args.signal_source:
+            # Saccade mode: small random movements over a source image
+            source = np.load(args.signal_source)  # (H_src, W_src), float32 0-1
+            src_h, src_w = source.shape
+            max_dy = src_h - h
+            max_dx = src_w - w
+            assert max_dy > 0 and max_dx > 0, \
+                f"Source {src_w}x{src_h} too small for {w}x{h} grid"
+            # Random walk: start at random position, drift by small steps
+            # Simulates biological saccades — eyes move a few pixels at a time
+            saccade_step = args.saccade_step
+            dy = np.random.randint(0, max_dy + 1)
+            dx = np.random.randint(0, max_dx + 1)
+            for t in range(T):
+                dy = np.clip(dy + np.random.randint(-saccade_step, saccade_step + 1),
+                             0, max_dy)
+                dx = np.clip(dx + np.random.randint(-saccade_step, saccade_step + 1),
+                             0, max_dx)
+                crop = source[dy:dy+h, dx:dx+w].ravel()
+                signals_np[:, t] = crop - crop.mean()
+            print(f"  signal buffer: ({n}, {T}), saccades from "
+                  f"{args.signal_source} ({src_w}x{src_h}), "
+                  f"step={saccade_step}")
+        else:
+            # Gaussian noise mode (ts-00009)
+            from scipy.ndimage import gaussian_filter
+            for t in range(T):
+                noise = np.random.randn(h, w).astype(np.float32)
+                smoothed = gaussian_filter(noise, sigma=sigma)
+                signals_np[:, t] = smoothed.ravel()
+            print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
+
         signals = torch.from_numpy(signals_np).to(dsolver.device)
-        print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
 
         # Pixel values for rendering
         pixel_values = None
@@ -520,7 +544,8 @@ def run_word2vec(args):
             pairs = dsolver.tick_correlation(
                 signals, k_sample=args.k_sample,
                 threshold=args.threshold, window=args.window,
-                anchor_only=args.anchor_only)
+                anchor_only=args.anchor_only,
+                use_covariance=args.use_covariance)
             return pairs
 
         if args.async_render and output_dir:
@@ -1064,6 +1089,12 @@ def main():
                        help="Temporal signal buffer length (correlation mode, default: 100)")
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
                        help="Gaussian smoothing sigma for signal generation (correlation mode, default: 3.0)")
+    p_w2v.add_argument("--signal-source", type=str, default=None,
+                       help="Path to pre-normalized grayscale .npy image for saccade signal generation")
+    p_w2v.add_argument("--saccade-step", type=int, default=5,
+                       help="Max pixels to shift per timestep in saccade mode (default: 5)")
+    p_w2v.add_argument("--use-covariance", action="store_true",
+                       help="Use covariance (corr×std1×std2) instead of Pearson correlation; downweights flat regions")
     p_w2v.add_argument("--anchor-only", action="store_true",
                        help="Correlation mode: only (anchor, neighbor) pairs, no transitive sliding window")
     p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
