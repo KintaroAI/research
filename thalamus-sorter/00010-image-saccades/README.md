@@ -1,8 +1,8 @@
 # ts-00010: Image Saccades — Real Image Signals via Random Crops
 
 **Date:** 2026-03-11
-**Status:** In Progress
-**Source:** *tagged on completion as `exp/ts-00010`*
+**Status:** Complete
+**Source:** `exp/ts-00010`
 
 ## Goal
 
@@ -204,14 +204,27 @@ UMAP's nonlinear projection introduces noise that inflates the disparity metric.
 
 7. **Hit ratio filter is a robustness mechanism.** Discards anchors that correlate with everyone (global signal). No effect when signal is clean; essential when contaminated.
 
-8. **TODO: variance weighting.** MSE can't distinguish "both dead" from "both active and similar." Need a formulation that doesn't compress the 15x near/far MSE ratio.
+8. **T=1000 is the sweet spot.** T=200 refreshes too fast (degrades at long runs). T=2000 refreshes too slowly (good local structure but non-planar global layout). T=1000 balances MSE stability with enough buffer refreshes.
 
-7. **High variance across runs.** Different random walk paths produce very different results (0.18 to 0.80) because correlation structure varies across regions of the source image.
+9. **High variance across runs.** Different random walk paths produce very different results (0.18 to 0.80) because correlation structure varies across regions of the source image.
+
+### Open questions for future work
+
+- **Variance weighting.** MSE can't distinguish "both dead" from "both active and similar." Need a formulation that doesn't compress the 15x near/far MSE ratio.
+- **Multi-image / video sources.** Current approach uses a single source image. Video would provide natural temporal structure without artificial saccades.
+- **Cross-modal signals.** MSE-based scoring enables mixing modalities without global mean subtraction. Untested.
+
+## Conclusions
+
+The sorter successfully discovers spatial structure from natural image statistics. The key breakthrough is **MSE-based neighbor scoring** — it requires no global operations (no per-frame mean subtraction), making it compatible with cross-modal setups where neurons from different modalities can't share a global mean. Combined with a **rolling signal buffer** and **large-step random walk saccades**, the system achieves 97-98% of K=10 embedding neighbors within 5 grid pixels, stable over millions of ticks.
+
+The recommended configuration: T=1000, step=50, threshold=0.02, `--use-mse`, rolling buffer. This is now the baseline for future experiments.
 
 ## Files
 
-- `main.py` — `correlation` mode with `--signal-source`, `--saccade-step`, `--use-mse`, `--use-covariance`, `--max-hit-ratio`
+- `main.py` — `correlation` mode with `--signal-source`, `--saccade-step`, `--use-mse`, `--use-covariance`, `--max-hit-ratio`, `--eval`. Sentence and correlation modes share a single training/render loop.
 - `solvers/drift_torch.py` — `use_mse`, `use_covariance`, `max_hit_ratio` in `tick_correlation()`
+- `render_embeddings.py` — UMAP `random_state=42` for deterministic projections
 - `saccades_gray.npy` — Pre-normalized source image (1024x1536, float32 0-1)
 - `saccades_gray_240.npy` — 240x240 crop for faster testing
 - `saccades.png` — Original source image
