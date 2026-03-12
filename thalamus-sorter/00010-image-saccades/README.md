@@ -139,26 +139,48 @@ Tried first but the combined score compresses the discriminating MSE signal. Wit
 
 All with step=50, raw signals (no mean subtraction), 80x80 grid on 1536x1024 source.
 
-| Run | Threshold | Pairs | Disparity | Notes |
-|-----|-----------|-------|-----------|-------|
-| run21_mse_low | 0.01 | 71M | ~0.86 | Too strict — only closest neighbors pass |
-| **run22_mse02** | **0.02** | **881M** | **~0.61** | **K visible, no mean subtraction needed** |
+| Run | Config | Ticks | UMAP disp | PCA disp | K=10 within 5px | Notes |
+|-----|--------|-------|-----------|----------|-----------------|-------|
+| run21_mse_low | static T=200, thresh=0.01 | 50k | ~0.86 | — | — | Too strict |
+| run22_mse02 | static T=200, thresh=0.02 | 50k | ~0.61 | — | — | First working MSE |
+| run23_rolling | rolling T=1000, thresh=0.02 | 50k | ~0.65 | — | — | Continuous walk |
+| run24_gpucrop | rolling T=1000, GPU crop | 50k | ~0.36 | — | — | Good walk path |
+| run25_100k | rolling T=1000 | 100k | ~0.75 | — | — | Bad walk path |
+| run26_emb | rolling T=1000 | 50k | ~0.42 | **0.20** | **96.2%** | First embedding analysis |
+| **run27_seed42** | rolling T=1000, seed=42 | 50k | ~0.74 | **0.27** | **97.1%** | UMAP seed restored |
 
-MSE mode achieves spatial structure discovery (0.61 disparity, K visible) using only raw firing rates — no per-frame mean subtraction. Slower convergence than Pearson+mean-sub (0.18-0.57) but eliminates the global dependency. The hit ratio filter can be combined for additional robustness.
+#### Rolling signal buffer
+
+Instead of a static signal buffer generated once, each tick the random walk takes one step and overwrites `signals[:, tick % T]`. With T=1000, the entire buffer refreshes every 1000 ticks. The walk continuously explores the image — no longer locked to one short path.
+
+#### UMAP disparity is misleading
+
+Direct analysis of the 8D embeddings reveals the learning is much better than UMAP suggests:
+
+| Metric | UMAP Procrustes | PCA Procrustes | Embedding K=10 neighbors |
+|--------|----------------|----------------|--------------------------|
+| run26 | 0.42 | **0.20** | mean grid dist **2.0**, **96.2%** within 5px |
+| run27 | 0.74 | **0.27** | mean grid dist **1.9**, **97.1%** within 5px |
+
+UMAP's nonlinear projection introduces noise that inflates the disparity metric. PCA gives a more faithful 2D projection. The embedding-space neighbor analysis is the ground truth: nearly every neuron's 10 closest embedding neighbors are within 5 pixels on the real grid.
 
 ### Key findings
 
-1. **Mean subtraction helps Pearson but isn't the only path.** MSE-based scoring achieves structure without any global operation.
+1. **MSE works without any global operation.** Pure MSE thresholding (lower = more similar) discovers spatial structure from raw firing rates. No per-frame mean subtraction needed.
 
-2. **Source size matters.** 3x grid size (240x240 for 80x80 grid) or large-step random walks on the full source both achieve good decorrelation. The key insight: adjacent pixels in the grid always sample adjacent pixels in the source. In natural images, adjacent source pixels are always similar — so distant grid neurons are only decorrelated when the crop positions differ enough to overcome natural image correlation radius.
+2. **Rolling buffer is essential.** Continuous random walk overwrites one signal column per tick. The walk explores the full image over time, providing diverse correlation evidence. Static buffers are locked to one path.
 
-3. **Random walk > random independent crops.** Random walk with step=50 on the full source (disparity 0.18 at 50k with Pearson) outperforms both random crops on full source (0.22 at 500k) and random crops on 240x240 (0.20 at 50k). The sequential movement creates richer temporal structure while still decorrelating distant neurons.
+3. **Source size matters.** 3x grid size (240x240 for 80x80 grid) or large-step random walks on the full source both achieve good decorrelation. The key insight: adjacent pixels in the grid always sample adjacent pixels in the source. In natural images, adjacent source pixels are always similar — so distant grid neurons are only decorrelated when the crop positions differ enough to overcome natural image correlation radius.
 
-4. **MSE discriminates near vs far without centering.** Near-pair MSE ≈ 0.003, far-pair MSE ≈ 0.05 (15x ratio). The `(1-MSE)` combined score compresses this; raw MSE threshold works better.
+4. **Random walk > random independent crops.** Sequential movement creates richer temporal structure while decorrelating distant neurons.
 
-5. **Hit ratio filter is a robustness mechanism.** When the signal is clean, it does nothing. When global contamination occurs, it prevents bad learning by discarding anchors that correlate with everyone.
+5. **MSE discriminates near vs far without centering.** Near-pair MSE ≈ 0.003, far-pair MSE ≈ 0.05 (15x ratio). The combined score `sqrt(var)×(1-MSE)` compressed this; raw MSE threshold preserves the full range.
 
-6. **Natural image signals are harder than Gaussian noise.** ts-00009 achieved disparity ~0.02-0.04 with synthetic Gaussian signals. Best Pearson saccade result is 0.18, best MSE is 0.61. The gap reflects that natural image correlation structure is more complex — less cleanly spatial than a Gaussian kernel.
+6. **UMAP disparity is unreliable.** UMAP reports 0.42-0.74 while PCA shows 0.20-0.27 and embedding neighbors are 97% within 5 grid pixels. Always verify with direct embedding analysis.
+
+7. **Hit ratio filter is a robustness mechanism.** Discards anchors that correlate with everyone (global signal). No effect when signal is clean; essential when contaminated.
+
+8. **TODO: variance weighting.** MSE can't distinguish "both dead" from "both active and similar." Need a formulation that doesn't compress the 15x near/far MSE ratio.
 
 7. **High variance across runs.** Different random walk paths produce very different results (0.18 to 0.80) because correlation structure varies across regions of the source image.
 
