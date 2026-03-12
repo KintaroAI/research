@@ -517,7 +517,8 @@ def run_word2vec(args):
             print(f"  signal buffer: ({n}, {T}), rolling saccades from "
                   f"{args.signal_source} ({src_w}x{src_h}), "
                   f"step={saccade_step}, {mean_sub}")
-            saccade_source = source
+            saccade_source = torch.from_numpy(source).to(
+                torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
         else:
             # Gaussian noise mode (ts-00009) — static buffer
             from scipy.ndimage import gaussian_filter
@@ -558,12 +559,13 @@ def run_word2vec(args):
                                   0, max_dy)
                 walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
                                   0, max_dx)
-                crop = saccade_source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].ravel()
+                # Crop on GPU — no CPU→GPU transfer per tick
+                crop = saccade_source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].reshape(-1)
                 col = tick_counter[0] % T
                 if use_mse:
-                    signals[:, col] = torch.from_numpy(crop).to(signals.device)
+                    signals[:, col] = crop
                 else:
-                    signals[:, col] = torch.from_numpy(crop - crop.mean()).to(signals.device)
+                    signals[:, col] = crop - crop.mean()
                 tick_counter[0] += 1
             pairs = dsolver.tick_correlation(
                 signals, k_sample=args.k_sample,
