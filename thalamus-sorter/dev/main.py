@@ -198,6 +198,39 @@ def run_continuous(args):
             break
 
 
+def _eval_embeddings(emb, w, h):
+    """Evaluate embedding quality: PCA Procrustes disparity + K-neighbor metrics."""
+    from scipy.spatial import procrustes as scipy_procrustes, cKDTree
+    n = emb.shape[0]
+    grid = np.column_stack([np.arange(n) % w, np.arange(n) // w]).astype(np.float64)
+
+    # PCA Procrustes
+    _, _, Vt = np.linalg.svd(emb, full_matrices=False)
+    pca_2d = (emb @ Vt[:2].T).astype(np.float64)
+    _, _, pca_disp = scipy_procrustes(grid, pca_2d)
+
+    # K=10 neighbors in embedding space → grid distance
+    tree = cKDTree(emb)
+    _, idx = tree.query(emb, k=11)
+    idx = idx[:, 1:]  # remove self
+    gx = np.arange(n) % w
+    gy = np.arange(n) // w
+    dists = np.abs(gx[idx] - gx[:, None]) + np.abs(gy[idx] - gy[:, None])
+    mean_dist = float(dists.mean())
+    within_3 = float((dists <= 3).mean())
+    within_5 = float((dists <= 5).mean())
+
+    result = {
+        "pca_disparity": round(pca_disp, 4),
+        "k10_mean_dist": round(mean_dist, 2),
+        "k10_within_3px": round(within_3 * 100, 1),
+        "k10_within_5px": round(within_5 * 100, 1),
+    }
+    print(f"  eval: PCA={pca_disp:.4f} K10: mean={mean_dist:.2f} "
+          f"<3px={within_3*100:.1f}% <5px={within_5*100:.1f}%")
+    return result
+
+
 def _save_run_info(output_dir, args, results=None):
     """Save/update info.json with command, parameters, and results."""
     import json, subprocess, datetime
@@ -445,11 +478,15 @@ def run_word2vec(args):
         # Save results to info.json
         if output_dir:
             s = dsolver.stats()
-            _save_run_info(output_dir, args, results={
+            results = {
                 "ticks": max_frames,
                 "std": round(s['std'], 4),
                 "elapsed": round(time.time() - t0, 1),
-            })
+            }
+            if getattr(args, 'eval', False):
+                emb = dsolver.get_positions()
+                results["eval"] = _eval_embeddings(emb, w, h)
+            _save_run_info(output_dir, args, results=results)
 
         # Save model (only if explicitly requested)
         if args.save_model or args.save_model_path:
@@ -689,12 +726,16 @@ def run_word2vec(args):
         # Save results to info.json
         if output_dir:
             s = dsolver.stats()
-            _save_run_info(output_dir, args, results={
+            results = {
                 "ticks": max_frames,
                 "total_pairs": total_pairs,
                 "std": round(s['std'], 4),
                 "elapsed": round(time.time() - t0, 1),
-            })
+            }
+            if getattr(args, 'eval', False):
+                emb = dsolver.get_positions()
+                results["eval"] = _eval_embeddings(emb, w, h)
+            _save_run_info(output_dir, args, results=results)
 
         if args.save_model or args.save_model_path:
             save_path = args.save_model_path
@@ -1150,6 +1191,8 @@ def main():
                        help="Render in separate process (default: on)")
     p_w2v.add_argument("--sync-render", action="store_true",
                        help="Force synchronous rendering")
+    p_w2v.add_argument("--eval", action="store_true",
+                       help="Evaluate embeddings (PCA Procrustes + K-neighbor) and save to info.json")
     p_w2v.add_argument("--save-model", action="store_true",
                        help="Save final embeddings to .npy file")
     p_w2v.add_argument("--save-model-path", type=str, default=None,
