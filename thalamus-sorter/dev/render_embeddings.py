@@ -109,7 +109,7 @@ def project(emb, width, height, method, prev_2d=None):
             init = prev_2d.astype(np.float32)
             n_epochs = 50
         reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1,
-                            init=init, n_epochs=n_epochs, random_state=42)
+                            init=init, n_epochs=n_epochs, low_memory=False)
         pos_2d = reducer.fit_transform(emb).astype(np.float64)
         warm = "warm " if prev_2d is not None else ""
         print(f"  umap: {warm}n_epochs={n_epochs or 'default'}")
