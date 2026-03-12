@@ -5,10 +5,26 @@ Consolidated codebase for topographic map formation experiments. All algorithms 
 ## Setup
 
 ```bash
-make setup
+make setup          # creates venv, installs deps
+source venv/bin/activate   # activate before running any python commands
 ```
 
-This creates a venv and installs numpy, opencv-python-headless, and scikit-learn.
+## Current baseline
+
+MSE-based correlation sorting with rolling saccade buffer on a real image:
+
+```bash
+python main.py word2vec --mode correlation \
+  -W 80 -H 80 --dims 8 --k-neg 5 --lr 0.001 \
+  --normalize-every 100 --k-sample 200 --threshold 0.02 \
+  --signal-T 1000 --signal-source saccades_gray.npy \
+  --saccade-step 50 --use-mse \
+  -i K_80_g.png -f 50000 --save-every 500 \
+  --save-model --eval \
+  -o output_run --render umap --align
+```
+
+Typical 50k results: PCA disparity ~0.2-0.6, K=10 neighbors 95-98% within 5 grid pixels.
 
 ## Quick start
 
