@@ -206,7 +206,8 @@ class DriftSolver:
         self._maybe_normalize()
 
     def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
-                         anchor_only=False, use_covariance=False):
+                         anchor_only=False, use_covariance=False,
+                         max_hit_ratio=None):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -214,7 +215,8 @@ class DriftSolver:
         2. For each, sample k_sample random candidates
         3. Compute correlation (or covariance) between their signals
         4. Keep only pairs above threshold
-        5. Form variable-length sentences and run skip-gram
+        5. Filter out anchors with too many hits (global signal, not local)
+        6. Form variable-length sentences and run skip-gram
 
         Args:
             signals: (n, T) tensor of temporal signals on device
@@ -226,6 +228,10 @@ class DriftSolver:
             use_covariance: if True, use covariance (corr × std1 × std2)
                            instead of Pearson correlation. Downweights
                            low-variance neurons (uniform regions).
+            max_hit_ratio: if set, discard anchors where
+                          good_neighbors/k_sample > this value. Filters out
+                          neurons seeing global signals (correlated with
+                          everyone) rather than local spatial structure.
         """
         n = self.n
         batch = min(n, 256)  # neurons per tick
@@ -264,6 +270,16 @@ class DriftSolver:
         # Build variable-length sentences and run skip-gram
         # For each anchor, collect good neighbors, form sentence, extract pairs
         good_counts = mask.sum(dim=1)  # (batch,)
+
+        # Filter: discard anchors with too many hits (global signal detection)
+        # If a neuron correlates with 50% of random candidates, it's seeing
+        # a global signal (flickering lights, slow drift), not local structure.
+        if max_hit_ratio is not None:
+            max_hits = int(k_sample * max_hit_ratio)
+            too_popular = good_counts > max_hits
+            good_counts[too_popular] = 0
+            mask[too_popular] = False
+
         max_good = int(good_counts.max().item())
 
         if max_good == 0:

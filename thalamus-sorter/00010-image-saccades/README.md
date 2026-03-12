@@ -76,6 +76,25 @@ Base parameters: 80x80 grid, dims=8, k_neg=5, lr=0.001, normalize_every=100, k_s
 | run12_240ms | Mean sub, Pearson | 240x240 | 50k | ~0.20 | Same as run9 (confirming) |
 | run13_walk | Walk step=5 | 1536x1024 | 50k | ~0.45 | Failed — temporal autocorrelation |
 | **run14_step50** | **Walk step=50** | **1536x1024** | **50k** | **~0.18** | **Best result — K emerging** |
+| run15_hitratio | Walk step=50, max_hit_ratio=0.1 | 1536x1024 | 50k | ~0.80 | Filter has no effect (clean signal), bad walk path |
+| run17_baseline | Walk step=50 (no filter) | 1536x1024 | 50k | ~0.57 | Different walk path, worse than run14 |
+
+### Hit ratio filter (`--max-hit-ratio`)
+
+**Idea:** If a neuron correlates with a large fraction of random candidates, it's seeing a global signal (flickering lights, slow drift), not local spatial structure. Discard these anchors — they'd inject noise into learning.
+
+**Implementation:** After computing which candidates pass the threshold, compute `hit_ratio = good_neighbors / k_sample`. Discard anchors where ratio exceeds `--max-hit-ratio`.
+
+**Diagnostic results:**
+
+| Signal type | Mean hit ratio | Max hit ratio | Filter effect at 0.1 |
+|-------------|---------------|---------------|----------------------|
+| Step=50 + mean sub (clean) | 3.6% | 9.0% | No anchors cut — signal already clean |
+| Step=50, NO mean sub (raw) | 22.0% | 45.0% | 90% of anchors cut — catches global signal |
+
+The filter is a **general robustness mechanism**. With clean signals (mean-subtracted, large steps), it has no effect. But it defends against any global contamination — flickering lights, correlated noise bursts — that mean subtraction alone may not catch. For a real-time biological system where signal quality varies, this is a safety net.
+
+**Note on variance across runs:** Saccade results are high-variance depending on which region of the image the random walk traverses. Run14 (0.18) got a favorable walk path; run15/17 (0.57-0.80) got worse ones. This is a fundamental property of natural image signals — correlation structure varies spatially across the image.
 
 ### Key findings
 
@@ -87,12 +106,16 @@ Base parameters: 80x80 grid, dims=8, k_neg=5, lr=0.001, normalize_every=100, k_s
 
 4. **Covariance filtering doesn't help for this image.** The test image has relatively uniform variance across pixels (0.23-0.28 std), so covariance ≈ correlation × constant. Will matter for images with genuinely flat (uniform) regions.
 
-5. **Natural image signals are harder than Gaussian noise.** ts-00009 achieved disparity ~0.02-0.04 with synthetic Gaussian signals. Best image saccade result is 0.18. The gap reflects that natural image correlation structure is more complex — less cleanly spatial than a Gaussian kernel.
+5. **Hit ratio filter is a robustness mechanism, not a performance booster.** When the signal is clean, it does nothing. When global contamination occurs, it prevents bad learning by discarding anchors that correlate with everyone.
+
+6. **Natural image signals are harder than Gaussian noise.** ts-00009 achieved disparity ~0.02-0.04 with synthetic Gaussian signals. Best image saccade result is 0.18. The gap reflects that natural image correlation structure is more complex — less cleanly spatial than a Gaussian kernel.
+
+7. **High variance across runs.** Different random walk paths produce very different results (0.18 to 0.80) because correlation structure varies across regions of the source image.
 
 ## Files
 
-- `main.py` — `correlation` mode with `--signal-source`, `--saccade-step`, `--use-covariance`
-- `solvers/drift_torch.py` — `use_covariance` parameter in `tick_correlation()`
+- `main.py` — `correlation` mode with `--signal-source`, `--saccade-step`, `--use-covariance`, `--max-hit-ratio`
+- `solvers/drift_torch.py` — `use_covariance` and `max_hit_ratio` parameters in `tick_correlation()`
 - `saccades_gray.npy` — Pre-normalized source image (1024x1536, float32 0-1)
 - `saccades_gray_240.npy` — 240x240 crop for faster testing
 - `saccades.png` — Original source image

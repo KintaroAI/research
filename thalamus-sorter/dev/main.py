@@ -545,7 +545,8 @@ def run_word2vec(args):
                 signals, k_sample=args.k_sample,
                 threshold=args.threshold, window=args.window,
                 anchor_only=args.anchor_only,
-                use_covariance=args.use_covariance)
+                use_covariance=args.use_covariance,
+                max_hit_ratio=args.max_hit_ratio)
             return pairs
 
         if args.async_render and output_dir:
@@ -1095,6 +1096,9 @@ def main():
                        help="Max pixels to shift per timestep in saccade mode (default: 5)")
     p_w2v.add_argument("--use-covariance", action="store_true",
                        help="Use covariance (corr×std1×std2) instead of Pearson correlation; downweights flat regions")
+    p_w2v.add_argument("--max-hit-ratio", type=float, default=None,
+                       help="Discard anchors where neighbors/k_sample exceeds this ratio (e.g. 0.1). "
+                            "Filters out global signals — if a neuron correlates with everyone, skip it.")
     p_w2v.add_argument("--anchor-only", action="store_true",
                        help="Correlation mode: only (anchor, neighbor) pairs, no transitive sliding window")
     p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
