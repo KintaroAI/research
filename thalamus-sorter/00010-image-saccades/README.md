@@ -152,7 +152,7 @@ All with step=50, raw signals (no mean subtraction), 80x80 grid on 1536x1024 sou
 | run30_T200_50k | rolling T=200 | 50k | — | **0.14** | 95.6% | Best PCA disp, fast buffer refresh |
 | run31_T200_1M | rolling T=200 | 1M | — | 0.18 | 82.0% | **Degraded** — overtraining / noisy MSE |
 
-#### T=200 vs T=1000 comparison
+#### Buffer size comparison (T=200 vs T=1000 vs T=2000)
 
 | Config | PCA disp | Mean dist | <3px | <5px |
 |--------|----------|-----------|------|------|
@@ -160,10 +160,16 @@ All with step=50, raw signals (no mean subtraction), 80x80 grid on 1536x1024 sou
 | T=200, 1M | 0.18 | 3.14 | 57.6% | 82.0% |
 | T=1000, 50k | 0.27 | 1.94 | 81.5% | 97.1% |
 | T=1000, 9M | **0.17** | 2.00 | 80.4% | 97.4% |
+| T=2000, 50k | 0.24 | 2.09 | 77.3% | 95.7% |
+| T=2000, 1M | 0.58 | 2.26 | **86.9%** | **98.0%** |
 
 **T=200 starts faster but degrades.** The buffer refreshes every 200 ticks — MSE estimates are based on a rapidly changing window. At 50k this is fine (0.14 PCA), but by 1M the signal churn destabilizes embeddings (82% within 5px, down from 95.6%).
 
-**T=1000 is stable for long runs.** The larger buffer gives more consistent MSE estimates per tick. Quality improves steadily from 50k (97.1%) to 9M (97.4%). Better choice for production runs.
+**T=1000 is stable for long runs.** The larger buffer gives more consistent MSE estimates per tick. Quality improves steadily from 50k (97.1%) to 9M (97.4%). Best balance of convergence speed and stability.
+
+**T=2000 has strong local structure but poor global projection.** At 1M, K-neighbor metrics are the best (98.0% within 5px, 86.9% within 3px), meaning local neighborhoods are very accurate. But PCA disparity is high (0.58) — the global layout in the 8D embedding doesn't project cleanly to 2D. The buffer refreshes only every 2000 ticks (500 refreshes in 1M), so learning sees fewer distinct MSE windows. Each window is more stable but the slower refresh means the embedding dimensions may develop non-planar structure that PCA can't flatten.
+
+**Takeaway:** T=1000 is the sweet spot. T=200 refreshes too fast (noisy MSE → degradation). T=2000 refreshes too slowly (good local structure but global layout becomes non-planar). T=1000 balances MSE stability with enough buffer refreshes to maintain a clean global map.
 
 #### Rolling signal buffer
 
