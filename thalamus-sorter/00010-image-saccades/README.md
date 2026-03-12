@@ -147,7 +147,8 @@ All with step=50, raw signals (no mean subtraction), 80x80 grid on 1536x1024 sou
 | run24_gpucrop | rolling T=1000, GPU crop | 50k | ~0.36 | — | — | Good walk path |
 | run25_100k | rolling T=1000 | 100k | ~0.75 | — | — | Bad walk path |
 | run26_emb | rolling T=1000 | 50k | ~0.42 | **0.20** | **96.2%** | First embedding analysis |
-| **run27_seed42** | rolling T=1000, seed=42 | 50k | ~0.74 | **0.27** | **97.1%** | UMAP seed restored |
+| run27_seed42 | rolling T=1000, seed=42 | 50k | ~0.74 | **0.27** | **97.1%** | UMAP seed restored |
+| **run28_6h** | **rolling T=1000** | **9M** | — | **0.17** | **97.4%** | **6h run, 1k frames, no crashes** |
 
 #### Rolling signal buffer
 
@@ -160,6 +161,8 @@ Direct analysis of the 8D embeddings reveals the learning is much better than UM
 | Metric | UMAP Procrustes | PCA Procrustes | Embedding K=10 neighbors |
 |--------|----------------|----------------|--------------------------|
 | run26 | 0.42 | **0.20** | mean grid dist **2.0**, **96.2%** within 5px |
+| run27 | 0.74 | **0.27** | mean grid dist **1.9**, **97.1%** within 5px |
+| run28 (9M) | — | **0.17** | mean grid dist **2.0**, **97.4%** within 5px, **80.4%** within 3px |
 | run27 | 0.74 | **0.27** | mean grid dist **1.9**, **97.1%** within 5px |
 
 UMAP's nonlinear projection introduces noise that inflates the disparity metric. PCA gives a more faithful 2D projection. The embedding-space neighbor analysis is the ground truth: nearly every neuron's 10 closest embedding neighbors are within 5 pixels on the real grid.
