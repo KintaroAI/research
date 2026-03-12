@@ -149,6 +149,21 @@ All with step=50, raw signals (no mean subtraction), 80x80 grid on 1536x1024 sou
 | run26_emb | rolling T=1000 | 50k | ~0.42 | **0.20** | **96.2%** | First embedding analysis |
 | run27_seed42 | rolling T=1000, seed=42 | 50k | ~0.74 | **0.27** | **97.1%** | UMAP seed restored |
 | **run28_6h** | **rolling T=1000** | **9M** | — | **0.17** | **97.4%** | **6h run, 1k frames, no crashes** |
+| run30_T200_50k | rolling T=200 | 50k | — | **0.14** | 95.6% | Best PCA disp, fast buffer refresh |
+| run31_T200_1M | rolling T=200 | 1M | — | 0.18 | 82.0% | **Degraded** — overtraining / noisy MSE |
+
+#### T=200 vs T=1000 comparison
+
+| Config | PCA disp | Mean dist | <3px | <5px |
+|--------|----------|-----------|------|------|
+| T=200, 50k | **0.14** | 2.14 | 77.5% | 95.6% |
+| T=200, 1M | 0.18 | 3.14 | 57.6% | 82.0% |
+| T=1000, 50k | 0.27 | 1.94 | 81.5% | 97.1% |
+| T=1000, 9M | **0.17** | 2.00 | 80.4% | 97.4% |
+
+**T=200 starts faster but degrades.** The buffer refreshes every 200 ticks — MSE estimates are based on a rapidly changing window. At 50k this is fine (0.14 PCA), but by 1M the signal churn destabilizes embeddings (82% within 5px, down from 95.6%).
+
+**T=1000 is stable for long runs.** The larger buffer gives more consistent MSE estimates per tick. Quality improves steadily from 50k (97.1%) to 9M (97.4%). Better choice for production runs.
 
 #### Rolling signal buffer
 
