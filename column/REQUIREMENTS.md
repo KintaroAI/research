@@ -20,6 +20,7 @@ Cell should:
 
    * `n` inputs
    * typically around **10–20**
+   * **Optional: temporal context.** Input can be a single vector of `n` scalars, or an `(n, T)` matrix where each input carries a temporal trace of `T` recent values. When temporal context is provided, the cell can use it to compute richer similarity measures (e.g., MSE, correlation) between inputs rather than relying on instantaneous values alone. This enables the cell to distinguish "both silent" from "both co-varying" and to detect structure that only emerges over time.
 
 2. Produce **small output vector**
 
