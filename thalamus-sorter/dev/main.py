@@ -525,13 +525,6 @@ def run_word2vec(args):
 
         signals = torch.from_numpy(signals_np).to(dsolver.device)
 
-        # Precompute per-neuron variance (for MSE mode)
-        signal_var = None
-        if args.use_mse:
-            signal_var = signals.var(dim=1)  # (n,)
-            print(f"  signal variance: min={signal_var.min():.4f}, "
-                  f"max={signal_var.max():.4f}, mean={signal_var.mean():.4f}")
-
         # Pixel values for rendering
         pixel_values = None
         if image is not None:
@@ -558,8 +551,7 @@ def run_word2vec(args):
                 anchor_only=args.anchor_only,
                 use_covariance=args.use_covariance,
                 use_mse=args.use_mse,
-                max_hit_ratio=args.max_hit_ratio,
-                signal_var=signal_var)
+                max_hit_ratio=args.max_hit_ratio)
             return pairs
 
         if args.async_render and output_dir:

@@ -126,12 +126,14 @@ MSE doesn't need any centering. It directly measures pointwise similarity. For t
 
 Tried first but the combined score compresses the discriminating MSE signal. With natural images, `(1 - MSE)` ranges 0.95-1.00 (only 5% spread), and the variance multiplier (≈0.05 for all pixels) squashes everything into a narrow band 0.02-0.04. Raw MSE as threshold gives the full 15x discrimination between near and far pairs.
 
-| A | B | MSE | var_A | var_B | Neighbor? (threshold=0.01) |
-|---|---|-----|-------|-------|---------------------------|
-| [0, 0] | [0, 0] | 0 | 0 | 0 | **No** (var gate) |
-| [1, 0] | [1, 0] | 0 | 0.25 | 0.25 | **Yes** (low MSE, high var) |
-| [1, 1] | [1, 1] | 0 | 0 | 0 | **No** (var gate) |
-| [1, 0] | [0, 1] | 1 | 0.25 | 0.25 | **No** (high MSE) |
+| A | B | MSE | Neighbor? (threshold=0.01) |
+|---|---|-----|---------------------------|
+| [0, 0] | [0, 0] | 0 | **Yes** (both dead — MSE is 0) |
+| [1, 0] | [1, 0] | 0 | **Yes** (similar + varying) |
+| [1, 1] | [1, 1] | 0 | **Yes** (both flat-high — MSE is 0) |
+| [1, 0] | [0, 1] | 1 | **No** (high MSE) |
+
+**TODO: variance weighting.** Current MSE alone can't distinguish "both dead" from "both active and similar" — both get MSE=0. Need a variance component that doesn't compress the MSE discrimination range (15x near/far ratio). The combined score `sqrt(var_A×var_B)×(1-MSE)` compressed too much; need a better formulation. Will revisit.
 
 #### MSE run results
 

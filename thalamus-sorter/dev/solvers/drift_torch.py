@@ -207,8 +207,7 @@ class DriftSolver:
 
     def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
                          anchor_only=False, use_covariance=False,
-                         use_mse=False, max_hit_ratio=None,
-                         signal_var=None):
+                         use_mse=False, max_hit_ratio=None):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -229,15 +228,13 @@ class DriftSolver:
             use_covariance: if True, use covariance (corr × std1 × std2)
                            instead of Pearson correlation. Downweights
                            low-variance neurons (uniform regions).
-            use_mse: if True, use MSE+variance score:
-                     sqrt(var_A * var_B) * (1 - MSE). Bounded [0, 0.25]
-                     for 0-1 signals. No per-frame global mean needed.
+            use_mse: if True, use MSE as distance metric.
+                     Keep pairs where MSE < threshold.
+                     No per-frame global mean needed.
             max_hit_ratio: if set, discard anchors where
                           good_neighbors/k_sample > this value. Filters out
                           neurons seeing global signals (correlated with
                           everyone) rather than local spatial structure.
-            signal_var: precomputed per-neuron variance (n,) tensor.
-                       Required for use_mse=True.
         """
         n = self.n
         batch = min(n, 256)  # neurons per tick
@@ -254,24 +251,18 @@ class DriftSolver:
         cand_sig = signals[candidates]           # (batch, k_sample, T)
 
         if use_mse:
-            # MSE as distance metric with variance gate.
-            # MSE = mean((a_t - b_t)^2) — no centering, no global mean.
+            # MSE as distance metric — no centering, no global mean.
+            # MSE = mean((a_t - b_t)^2)
             # Near pairs: MSE ≈ 0.003, far pairs: MSE ≈ 0.05 (15x ratio).
             # Threshold on MSE directly (lower = more similar).
-            # Variance gate: skip pairs where either neuron is flat
-            # (var < median/4) — they carry no temporal information.
             diff = anchor_sig.unsqueeze(1) - cand_sig  # (batch, k_sample, T)
             mse = (diff * diff).mean(dim=2)            # (batch, k_sample)
-            # Threshold: keep pairs with MSE below threshold
             mask = mse < threshold
-            # Variance gate: discard pairs involving low-variance neurons
-            anchor_var = signal_var[anchors]            # (batch,)
-            cand_var = signal_var[candidates]           # (batch, k_sample)
-            var_median = signal_var.median()
-            min_var = var_median * 0.25
-            var_ok = (anchor_var.unsqueeze(1) > min_var) & (cand_var > min_var)
-            mask = mask & var_ok
             score = mse  # for diagnostics
+            # TODO: incorporate per-neuron variance to downweight flat neurons.
+            # Current MSE alone can't distinguish "both dead" from "both active
+            # and similar." Need a variance weighting that doesn't compress the
+            # MSE discrimination range (15x near/far ratio).
         elif use_covariance:
             # Covariance = dot(centered_a, centered_b) / T
             # = correlation × std_a × std_b
