@@ -109,7 +109,7 @@ def project(emb, width, height, method, prev_2d=None, gpu=False):
             n_epochs = 50
         if gpu:
             from cuml.manifold import UMAP as cuUMAP
-            reducer = cuUMAP(n_components=2, n_neighbors=15, min_dist=0.1,
+            reducer = cuUMAP(n_components=2, n_neighbors=50, min_dist=0.1,
                              init=init, n_epochs=n_epochs or 200,
                              random_state=42)
         else:
