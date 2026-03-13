@@ -247,7 +247,18 @@ def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
         if getattr(args, 'eval', False):
             emb = dsolver.get_positions()
             results["eval"] = _eval_embeddings(emb, w, h)
+        if dsolver.knn_k > 0:
+            results["knn"] = {
+                "K": dsolver.knn_k,
+                "history": dsolver.get_knn_history(),
+            }
         _save_run_info(output_dir, args, results=results)
+
+    # Save KNN lists alongside model
+    if output_dir and dsolver.knn_k > 0:
+        knn_path = os.path.join(output_dir, "knn_lists.npy")
+        np.save(knn_path, dsolver.get_knn_lists())
+        print(f"  knn saved: {knn_path}")
 
     if args.save_model or args.save_model_path:
         save_path = args.save_model_path
@@ -364,9 +375,11 @@ def run_word2vec(args):
                                   mode='dot', k_neg=args.k_neg,
                                   normalize_every=norm_every, device='cuda')
         else:
+            knn_k = getattr(args, 'knn_track', 0)
             dsolver = DriftSolver(n, top_k=None, k=args.k, dims=args.dims,
                                   lr=args.lr, mode='dot', k_neg=args.k_neg,
-                                  normalize_every=norm_every, device='cuda')
+                                  normalize_every=norm_every, device='cuda',
+                                  knn_k=knn_k)
 
         if args.warm_start:
             warm = np.load(args.warm_start)
@@ -546,8 +559,18 @@ def run_word2vec(args):
             max_frames = args.frames
             write_slot = 1
             total_pairs = 0
+            knn_report_every = getattr(args, 'knn_report_every', 1000)
             for tick in range(1, max_frames + 1):
                 total_pairs += do_tick()
+
+                # KNN stability reporting
+                if dsolver.knn_k > 0 and tick % knn_report_every == 0:
+                    dsolver._refresh_knn_dists()
+                    overlap, n_changed = dsolver.knn_stability()
+                    dsolver._knn_overlap_history.append((tick, overlap))
+                    print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
+                          f"({n_changed}/{n} neurons changed)")
+
                 if tick % args.save_every == 0:
                     emb = dsolver.get_positions()
                     dst = np.frombuffer(bufs[write_slot].get_obj(),
@@ -594,8 +617,17 @@ def run_word2vec(args):
             max_frames = args.frames
             saved = 0
             total_pairs = 0
+            knn_report_every = getattr(args, 'knn_report_every', 1000)
             for tick in range(1, max_frames + 1):
                 total_pairs += do_tick()
+
+                # KNN stability reporting
+                if dsolver.knn_k > 0 and tick % knn_report_every == 0:
+                    dsolver._refresh_knn_dists()
+                    overlap, n_changed = dsolver.knn_stability()
+                    dsolver._knn_overlap_history.append((tick, overlap))
+                    print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
+                          f"({n_changed}/{n} neurons changed)")
 
                 if output_dir and tick % args.save_every == 0:
                     frame = render_frame()
@@ -1075,6 +1107,11 @@ def main():
                             "Filters out global signals — if a neuron correlates with everyone, skip it.")
     p_w2v.add_argument("--anchor-only", action="store_true",
                        help="Correlation mode: only (anchor, neighbor) pairs, no transitive sliding window")
+    p_w2v.add_argument("--knn-track", type=int, default=0,
+                       help="Track per-neuron KNN list of this size (0=off). "
+                            "Monitors embedding convergence via neighbor stability.")
+    p_w2v.add_argument("--knn-report-every", type=int, default=1000,
+                       help="Report KNN stability every N ticks (default: 1000)")
     p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
                                             "direct", "procrustes", "lstsq",
                                             "umap", "tsne", "spectral", "mds"],

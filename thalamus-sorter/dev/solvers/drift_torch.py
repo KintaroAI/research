@@ -38,7 +38,7 @@ class DriftSolver:
 
     def __init__(self, n, top_k=None, k=24, dims=3, lr=0.05,
                  mode='euclidean', k_neg=5, margin=0.1,
-                 normalize_every=0, device='cuda'):
+                 normalize_every=0, device='cuda', knn_k=0):
         self.n = n
         self.dims = dims
         self.lr = lr
@@ -71,6 +71,16 @@ class DriftSolver:
 
         # Helper: arange for indexing
         self._arange = torch.arange(n, device=self.device)
+
+        # Online KNN tracking
+        self.knn_k = knn_k
+        if knn_k > 0:
+            self.knn_lists = torch.randint(0, n, (n, knn_k), device=self.device)
+            self.knn_dists = torch.full((n, knn_k), -float('inf'), device=self.device)
+            self._knn_prev = self.knn_lists.clone()
+            self._knn_overlap_history = []
+        else:
+            self.knn_lists = None
 
     # ---- Euclidean mode ----
 
@@ -311,6 +321,9 @@ class DriftSolver:
             good_counts[too_popular] = 0
             mask[too_popular] = False
 
+        # Update online KNN with correlation-passing candidates
+        self._update_knn(anchors, candidates, mask)
+
         max_good = int(good_counts.max().item())
 
         if max_good == 0:
@@ -412,6 +425,81 @@ class DriftSolver:
             if vecs is not None:
                 norms = vecs.norm(dim=1, keepdim=True).clamp(min=1e-8)
                 vecs.div_(norms)
+
+    # ---- Online KNN tracking ----
+
+    def _update_knn(self, anchors, candidates, mask):
+        """Update per-neuron KNN lists with correlation-passing candidates.
+
+        For each anchor, compute cosine similarity to passing candidates
+        in W-vector space. Merge with existing KNN, keep top-K.
+        """
+        if self.knn_k <= 0:
+            return
+
+        anchor_w = self.positions[anchors]          # (batch, dims)
+        cand_w = self.positions[candidates]          # (batch, k_sample, dims)
+
+        a_norm = anchor_w / anchor_w.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        c_norm = cand_w / cand_w.norm(dim=2, keepdim=True).clamp(min=1e-8)
+        emb_sim = (a_norm.unsqueeze(1) * c_norm).sum(dim=2)  # (batch, k_sample)
+        emb_sim[~mask] = -float('inf')
+
+        # Merge current KNN with new candidates, keep top-K
+        cur_ids = self.knn_lists[anchors]           # (batch, knn_k)
+        cur_dists = self.knn_dists[anchors]         # (batch, knn_k)
+
+        all_ids = torch.cat([cur_ids, candidates], dim=1)     # (batch, knn_k + k_sample)
+        all_dists = torch.cat([cur_dists, emb_sim], dim=1)
+
+        # Mask out self-references
+        all_dists[all_ids == anchors.unsqueeze(1)] = -float('inf')
+
+        topk_dists, topk_idx = all_dists.topk(self.knn_k, dim=1)
+        topk_ids = torch.gather(all_ids, 1, topk_idx)
+
+        self.knn_lists[anchors] = topk_ids
+        self.knn_dists[anchors] = topk_dists
+
+    def _refresh_knn_dists(self):
+        """Recompute cosine similarities for all KNN entries using current W vectors."""
+        if self.knn_k <= 0:
+            return
+        w = self.positions / self.positions.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        nb_w = w[self.knn_lists]  # (n, knn_k, dims)
+        self.knn_dists = (w.unsqueeze(1) * nb_w).sum(dim=2)
+
+    def knn_stability(self):
+        """Compute overlap between current and previous KNN snapshot.
+
+        Returns:
+            overlap: float in [0, 1], fraction of KNN entries unchanged
+            n_changed: int, number of neurons with at least one change
+        """
+        if self.knn_k <= 0:
+            return 1.0, 0
+
+        # For each neuron, count how many of prev's entries are in current
+        matches = (self._knn_prev.unsqueeze(2) == self.knn_lists.unsqueeze(1))  # (n, K, K)
+        per_neuron = matches.any(dim=2).sum(dim=1).float()  # (n,)
+
+        overlap = float(per_neuron.mean().item()) / self.knn_k
+        n_changed = int((per_neuron < self.knn_k).sum().item())
+
+        self._knn_prev = self.knn_lists.clone()
+        return overlap, n_changed
+
+    def get_knn_lists(self):
+        """Return KNN lists as numpy array (n, knn_k)."""
+        if self.knn_k > 0:
+            return self.knn_lists.detach().cpu().numpy()
+        return None
+
+    def get_knn_history(self):
+        """Return list of (tick, overlap) tuples."""
+        if self.knn_k > 0:
+            return self._knn_overlap_history
+        return []
 
     # ---- Dual-XY mode ----
 
