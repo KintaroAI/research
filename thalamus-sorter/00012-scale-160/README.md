@@ -48,6 +48,21 @@ Base parameters: 160x160 grid, dims=8, k_neg=5, lr=0.001, normalize_every=100, s
 
 **k_sample=800 matches pair count but needs more ticks.** 110M pairs (comparable to 80x80 baseline), but 4x more neurons to organize. At 10k ticks the map is just starting to form (5.2% within 5px).
 
+### Neighbor capture analysis
+
+How many true grid neighbors land in a random k_sample candidate set?
+
+| Grid | k_sample | Fraction | Captured ≤5px (mean) | Zero ≤5px captures | Closest candidate |
+|------|----------|----------|----------------------|--------------------|-------------------|
+| 80x80 | 200 | 3.1% | 1.89 | 14.9% | 3.57 |
+| 160x160 | 200 | 0.78% | 0.46 | **64.8%** | 7.52 |
+| 160x160 | 800 | 3.1% | 1.90 | 14.3% | 3.58 |
+| 160x160 | 1600 | 6.25% | 3.74 | 1.8% | 2.58 |
+
+**k_sample=800 at 160x160 exactly matches 80x80 k=200**: same capture rate (1.9 neighbors ≤5px), same zero-hit rate (14%), same closest candidate distance (3.6). The scaling rule is simple: **k_sample scales linearly with n** to maintain sampling fraction.
+
+k_sample=200 at 160x160 is catastrophic — 64.8% of anchors find zero neighbors, closest candidate averages 7.5px away. The grid can't learn from nothing.
+
 ### Longer runs (k_sample=800)
 
 | k_sample | Ticks | Total pairs | PCA disp | Mean dist | <3px | <5px |
