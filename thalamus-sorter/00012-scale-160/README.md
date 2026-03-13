@@ -53,9 +53,13 @@ Base parameters: 160x160 grid, dims=8, k_neg=5, lr=0.001, normalize_every=100, s
 | k_sample | Ticks | Total pairs | PCA disp | Mean dist | <3px | <5px |
 |----------|-------|-------------|----------|-----------|------|------|
 | 800 | 10k | 110M | 0.98 | 77.4 | 2.4% | 5.2% |
-| 800 | 50k | | | | | |
-| 800 | 100k | | | | | |
+| 800 | 50k | 461M | 0.81 | 2.33 | 86.2% | **97.2%** |
+| 800 | 100k | 1.09B | 0.75 | 2.91 | 76.6% | 91.2% |
 | 800 | 1M | | | | | |
+
+**50k hits 97.2% — matches 80x80 baseline.** The 160x160 grid converges to the same quality, just needs k_sample scaled to maintain the sampling fraction.
+
+**100k degrades.** PCA disparity improves (0.81→0.75) but K-neighbor quality drops (97.2%→91.2%). Same pattern seen in ts-00010 with T=200 MSE — possible walk path variance or overtraining where later walk regions have weaker correlation structure, pushing embeddings away from early good positions.
 
 ## Files
 
