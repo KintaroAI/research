@@ -48,18 +48,18 @@ python main.py word2vec --preset rgb_80x80_garden --dims 16 -f 500000 -o output_
 
 ### Output directory naming
 
-Format: `output_{experiment}_{run}_{short_desc}`
+Format: `~/data/research/thalamus-sorter/exp_NNNNN/{run}_{short_desc}`
 
-- `{experiment}` — experiment number (e.g. `13`)
-- `{run}` — autoincrementing run number, zero-padded to 3 digits (e.g. `001`)
-- `{short_desc}` — brief description using underscores (e.g. `rgb_garden_50k_d16`)
+- `exp_NNNNN` — experiment subfolder, zero-padded to 5 digits
+- `{run}` — autoincrementing run number, zero-padded to 3 digits
+- `{short_desc}` — brief description using underscores
 
 All outputs go to `~/data/research/thalamus-sorter/`:
 ```
-~/data/research/thalamus-sorter/output_13_001_gray_80x80_50k/
-~/data/research/thalamus-sorter/output_13_002_rgbg_saccades_50k/
-~/data/research/thalamus-sorter/output_13_003_rgb_garden_500k_d16/
-~/data/research/thalamus-sorter/output_14_001_baseline/
+~/data/research/thalamus-sorter/exp_00013/001_gray_80x80_50k/
+~/data/research/thalamus-sorter/exp_00013/002_rgbg_saccades_50k/
+~/data/research/thalamus-sorter/exp_00013/003_rgb_garden_500k_d16/
+~/data/research/thalamus-sorter/exp_00014/001_baseline/
 ```
 
 Use `output_name.py` to auto-generate the next path:
