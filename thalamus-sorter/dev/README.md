@@ -28,6 +28,8 @@ Typical 50k results: PCA disparity ~0.2-0.6, K=10 neighbors 95-98% within 5 grid
 
 **Note for production:** Use `--max-hit-ratio 0.1` in the final system. It filters out anchors that correlate with too many candidates (global signal like flickering lights). No effect with clean signals but essential as a safety net when signal quality varies.
 
+**TODO: auto-adjust k_sample.** Currently k_sample must be manually scaled with grid size (k_sample=200 for 80x80, 800 for 160x160). Implement adaptive k_sample: track the fraction of anchors that find zero neighbors per tick. If the zero-hit rate exceeds ~15%, double k_sample; if it drops below ~5%, halve it. This keeps the effective sampling fraction constant regardless of grid size. See ts-00012 for data: at 160x160 with k_sample=200, 64.8% of anchors find zero neighbors (dead); k_sample=800 restores the 14.3% baseline.
+
 ## Quick start
 
 ```bash
