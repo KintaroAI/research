@@ -157,6 +157,50 @@ Very close K-neighbor quality (96.4% vs 97.1%). PCA disparity is higher for deri
 
 Deriv-corr is ~1-2% below MSE in K-neighbor quality and has worse PCA disparity (0.57 vs 0.17-0.27). MSE continues to improve slowly over millions of ticks; deriv-corr plateaus early. However, deriv-corr handles dead neurons intrinsically — no separate variance gate needed. For cross-modal systems where some neurons are inactive, this property is essential.
 
+### Head-to-head: same walk, same anchors, same candidates
+
+Diagnostic script (`compare_mse_dc.py`) runs both methods on identical signal buffers and anchor/candidate sets.
+
+#### Neighbor overlap
+
+| Category | Count | % | Notes |
+|----------|-------|---|-------|
+| Both agree (neighbor) | 83,877 | 3.3% | Core consensus |
+| MSE only | 40,031 | 1.6% | MSE false positives — DC rejects these |
+| DC only | 473 | 0.02% | Almost zero exclusive DC picks |
+| Neither | 2,435,619 | 95.1% | Both reject |
+
+**99.4% of deriv-corr neighbors are also MSE neighbors.** DC is a strict subset of MSE — it finds the same good neighbors but filters out MSE's noise. MSE has 40k extra picks that DC correctly rejects (mean grid dist 12.7, 0% within 5px).
+
+#### Discrimination ratio
+
+| Method | Near (dist≤3) mean | Far (dist≥30) mean | Ratio |
+|--------|--------------------|--------------------|-------|
+| MSE | 0.006 | 0.039 | 6.3x |
+| deriv-corr | 0.820 | 0.042 | **19.3x** |
+
+Deriv-corr separates near from far 3x better than MSE.
+
+#### Precision vs true grid neighbors
+
+For each anchor, what fraction of selected neighbors are actually among the K nearest on the real grid?
+
+| True K | MSE precision | DC precision | Both-agree precision |
+|--------|---------------|--------------|----------------------|
+| 5 | 1.2% | 1.7% | 1.7% |
+| 10 | 3.2% | 4.6% | 4.6% |
+| 20 | 7.0% | **10.2%** | **10.2%** |
+
+DC precision is ~1.5x better than MSE across all K values. The "both agree" set matches DC precision exactly — the consensus adds nothing beyond what DC already selects.
+
+#### Recall
+
+Of the true K=10 nearest that appeared in the random candidate pool, both methods find **100%**. Neither misses a true neighbor when it's available — the difference is entirely in false positive rate.
+
+#### Interpretation
+
+Deriv-corr doesn't find different neighbors — it finds the same good ones with fewer false positives. The 1-2% lower K-neighbor quality in the embedding runs (96.4% vs 97.1%) may come from having fewer total training pairs rather than worse pair quality. The pairs DC provides are higher precision, but there are fewer of them.
+
 ## Files
 
 - `main.py` — `--use-deriv-corr` flag, raw signal mode for derivative methods
