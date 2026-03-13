@@ -1,8 +1,8 @@
 # ts-00011: Variance Weighting for MSE-Based Neighbor Scoring
 
 **Date:** 2026-03-12
-**Status:** In Progress
-**Source:** *tagged on completion as `exp/ts-00011`*
+**Status:** Complete
+**Source:** `exp/ts-00011`
 
 ## Goal
 
@@ -200,6 +200,20 @@ Of the true K=10 nearest that appeared in the random candidate pool, both method
 #### Interpretation
 
 Deriv-corr doesn't find different neighbors — it finds the same good ones with fewer false positives. The 1-2% lower K-neighbor quality in the embedding runs (96.4% vs 97.1%) may come from having fewer total training pairs rather than worse pair quality. The pairs DC provides are higher precision, but there are fewer of them.
+
+## Conclusions
+
+1. **Derivative correlation solves the variance problem.** `mean(dA * dB)` naturally produces zero for dead neurons — no separate variance gate needed. The product encodes both activity and similarity in one operation.
+
+2. **DC is a strict subset of MSE.** 99.4% of DC neighbors are also MSE neighbors. DC doesn't find different structure — it filters out MSE's false positives (40k noise pairs rejected, mean grid distance 12.7).
+
+3. **DC has 3x better discrimination.** Near/far ratio 19.3x vs MSE's 6.3x. Higher precision at all K values (10.2% vs 7.0% at K=20).
+
+4. **Both methods have 100% recall.** When a true grid neighbor appears in the candidate pool, both always find it. The difference is purely in false positive rate.
+
+5. **DC plateaus slightly below MSE in embedding quality.** 95-96% vs 97% within 5px. Likely because fewer total training pairs — DC's stricter filtering means less data per tick. The pairs are better, but there are fewer of them.
+
+6. **Recommendation:** Use `--use-deriv-corr` for cross-modal systems where dead neurons are expected. Use `--use-mse` for single-modality runs where all neurons are active and maximum embedding quality matters. Both are viable; DC is the more principled choice for biological plausibility.
 
 ## Files
 
