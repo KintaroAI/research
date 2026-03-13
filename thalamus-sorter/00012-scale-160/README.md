@@ -34,7 +34,28 @@ The saccades source (1536x1024) gives max offsets of 1376x864 for 160x160 crops 
 
 ## Results
 
-*(to be filled)*
+Base parameters: 160x160 grid, dims=8, k_neg=5, lr=0.001, normalize_every=100, signal_T=1000, step=50, MSE threshold=0.02, rolling buffer.
+
+### Initial runs (10k ticks)
+
+| Grid | k_sample | Fraction | Ticks | Total pairs | PCA disp | Mean dist | <3px | <5px |
+|------|----------|----------|-------|-------------|----------|-----------|------|------|
+| 80x80 | 200 | 3.1% | 10k | 120M | 0.60 | 2.58 | 80.3% | 94.5% |
+| 160x160 | 200 | 0.78% | 10k | 10.7M | 1.00 | 106.4 | 0.1% | 0.2% |
+| 160x160 | 800 | 3.1% | 10k | 110M | 0.98 | 77.4 | 2.4% | 5.2% |
+
+**k_sample=200 is dead at 160x160.** Only 10.7M pairs in 10k ticks (vs 120M at 80x80). The 0.78% sampling fraction finds almost no true neighbors — expected: with ~80 true-5px neighbors out of 25,600, a 200-sample draws 0.6 of them on average.
+
+**k_sample=800 matches pair count but needs more ticks.** 110M pairs (comparable to 80x80 baseline), but 4x more neurons to organize. At 10k ticks the map is just starting to form (5.2% within 5px).
+
+### Longer runs (k_sample=800)
+
+| k_sample | Ticks | Total pairs | PCA disp | Mean dist | <3px | <5px |
+|----------|-------|-------------|----------|-----------|------|------|
+| 800 | 10k | 110M | 0.98 | 77.4 | 2.4% | 5.2% |
+| 800 | 50k | | | | | |
+| 800 | 100k | | | | | |
+| 800 | 1M | | | | | |
 
 ## Files
 
