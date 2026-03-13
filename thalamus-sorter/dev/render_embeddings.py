@@ -28,7 +28,7 @@ import cv2
 from scipy.spatial import cKDTree
 
 
-def project(emb, width, height, method, prev_2d=None):
+def project(emb, width, height, method, prev_2d=None, gpu=False):
     """Project embeddings to 2D using the specified method.
 
     Args:
@@ -102,18 +102,25 @@ def project(emb, width, height, method, prev_2d=None):
         r_y = np.corrcoef(pos_2d[:, 1], grid_coords[:, 1])[0, 1]
         print(f"  lstsq: r_x={r_x:.4f}, r_y={r_y:.4f}")
     elif method == 'umap':
-        import umap
         init = 'spectral'
         n_epochs = None  # default
         if prev_2d is not None:
             init = prev_2d.astype(np.float32)
             n_epochs = 50
-        reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1,
-                            init=init, n_epochs=n_epochs, low_memory=False,
-                            random_state=42)
+        if gpu:
+            from cuml.manifold import UMAP as cuUMAP
+            reducer = cuUMAP(n_components=2, n_neighbors=15, min_dist=0.1,
+                             init=init, n_epochs=n_epochs or 200,
+                             random_state=42)
+        else:
+            import umap
+            reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1,
+                                init=init, n_epochs=n_epochs, low_memory=False,
+                                random_state=42)
         pos_2d = reducer.fit_transform(emb).astype(np.float64)
         warm = "warm " if prev_2d is not None else ""
-        print(f"  umap: {warm}n_epochs={n_epochs or 'default'}")
+        gpu_tag = "gpu " if gpu else ""
+        print(f"  umap: {gpu_tag}{warm}n_epochs={n_epochs or 'default'}")
     elif method == 'tsne':
         from sklearn.manifold import TSNE
         init = 'pca'

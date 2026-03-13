@@ -302,7 +302,8 @@ def run_word2vec(args):
 
     def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
                        shm_done, n, dims, w, h, pixel_values,
-                       render_method, do_align, cold_proj, output_dir):
+                       render_method, do_align, cold_proj, output_dir,
+                       gpu=False):
         """Pull-based render worker. Reads from active double-buffer slot."""
         import time
         from render_embeddings import (project, align_to_grid,
@@ -323,7 +324,8 @@ def run_word2vec(args):
                 last_rendered_tick = cur_tick
 
                 warm = None if cold_proj else prev_2d
-                pos_2d = project(emb, w, h, render_method, prev_2d=warm)
+                pos_2d = project(emb, w, h, render_method, prev_2d=warm,
+                                 gpu=gpu)
                 if do_align:
                     pos_2d = align_to_grid(pos_2d, w, h)
                 if not cold_proj:
@@ -540,7 +542,7 @@ def run_word2vec(args):
                                       render_w, render_h, pixel_values,
                                       render_method,
                                       args.align, args.cold_projection,
-                                      output_dir))
+                                      output_dir, args.gpu))
             worker.start()
 
             t0 = time.time()
@@ -584,7 +586,7 @@ def run_word2vec(args):
                 emb = dsolver.get_positions()
                 warm = None if args.cold_projection else prev_2d
                 pos_2d = project(emb, render_w, render_h, render_method,
-                                 prev_2d=warm)
+                                 prev_2d=warm, gpu=args.gpu)
                 if args.align:
                     pos_2d = align_to_grid(pos_2d, render_w, render_h)
                 if not args.cold_projection:
