@@ -86,6 +86,16 @@ This makes sense mechanically: the correlation between same-channel nearby pixel
 
 **Why no cross-channel clustering despite high same-pixel correlation:** When the saccade window shifts by 1 pixel, R(x,y) changes to R(x+1,y) — a small change if the image is locally smooth. But R(x,y) and G(x,y) both change — R goes to R(x+1,y) and G goes to G(x+1,y). The MSE between R(x,y) and G(x,y) over time is dominated by their different mean values (R and G channels have different intensities), not their co-variation. The solver correctly identifies this as "different signal, different cluster."
 
+### Convergence comparison (grayscale vs RGBG)
+
+| Run | n | Ticks | PCA disp | <3px | <5px |
+|-----|---|-------|----------|------|------|
+| Gray 80x80 | 6,400 | 1k | 0.67 | 50.0% | 73.3% |
+| RGBG 80x80 | 25,600 | 1k | 0.999 | 0.3% | 0.7% |
+| RGBG 80x80 | 25,600 | 50k | 0.999 | 2.2% | 5.5% |
+
+Grayscale at 1k ticks is already 73% sorted. RGBG hasn't started — the solver spends its first ticks discovering channel identity (strong signal) before sorting spatially within channels (weaker signal). Even at 50k, within-channel spatial quality is poor (R: 3.8%, B: 27%, G/GS: ~19% at <5px).
+
 ### Color-tinted rendering
 
 Added color-tinted pixel values so channels are visually distinguishable in UMAP renders:

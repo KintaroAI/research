@@ -333,15 +333,12 @@ def run_word2vec(args):
                 frame = render_emb(pos_2d, w, h, pixel_values)
 
                 if frame is not None:
-                    if frame.ndim == 3:
-                        out = frame  # color: already uint8
-                    else:
-                        out = cv2.normalize(
-                            frame, None, 0, 255, cv2.NORM_MINMAX,
-                            dtype=cv2.CV_8U)
+                    normalized = cv2.normalize(
+                        frame, None, 0, 255, cv2.NORM_MINMAX,
+                        dtype=cv2.CV_8U)
                     path = os.path.join(output_dir,
                                         f"frame_{frame_idx:06d}.png")
-                    cv2.imwrite(path, out)
+                    cv2.imwrite(path, normalized)
                     frame_idx += 1
 
             elif done:
@@ -603,14 +600,11 @@ def run_word2vec(args):
                 if output_dir and tick % args.save_every == 0:
                     frame = render_frame()
                     if frame is not None:
-                        if frame.ndim == 3:
-                            out = frame
-                        else:
-                            out = cv2.normalize(
-                                frame, None, 0, 255, cv2.NORM_MINMAX,
-                                dtype=cv2.CV_8U)
+                        normalized = cv2.normalize(
+                            frame, None, 0, 255, cv2.NORM_MINMAX,
+                            dtype=cv2.CV_8U)
                         path = os.path.join(output_dir, f"frame_{saved:06d}.png")
-                        cv2.imwrite(path, out)
+                        cv2.imwrite(path, normalized)
                         saved += 1
                         if saved % 100 == 0:
                             elapsed = time.time() - t0
@@ -634,14 +628,11 @@ def run_word2vec(args):
             if output_dir:
                 frame = render_frame()
                 if frame is not None:
-                    if frame.ndim == 3:
-                        out = frame
-                    else:
-                        out = cv2.normalize(
-                            frame, None, 0, 255, cv2.NORM_MINMAX,
-                            dtype=cv2.CV_8U)
+                    normalized = cv2.normalize(
+                        frame, None, 0, 255, cv2.NORM_MINMAX,
+                        dtype=cv2.CV_8U)
                     path = os.path.join(output_dir, f"frame_{saved:06d}.png")
-                    cv2.imwrite(path, out)
+                    cv2.imwrite(path, normalized)
                     print(f"  final frame saved: {path}")
 
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
