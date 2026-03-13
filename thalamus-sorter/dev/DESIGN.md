@@ -4,6 +4,20 @@
 
 Discovers topographic spatial organization from temporal correlations alone. Neurons that fire together end up as spatial neighbors — the thalamic principle. No supervision, no precomputed neighborhoods, no ground truth layout.
 
+## Design goal: capture the full richness of neural activity
+
+The embeddings should encode **everything meaningful about a neuron's activity pattern**, not just its spatial position on the grid. Spatial proximity is one important structure, but there is more:
+
+- **Correlation strength**: Two neurons 3px apart may have very different correlation profiles — one in a smooth region (high correlation with all neighbors), another on an edge (high correlation in one direction, low in another). The embedding should reflect this.
+- **Multi-scale neighborhood structure**: A neuron may be tightly correlated with its immediate neighbors but also weakly correlated with distant neurons that share a texture or color. Both relationships should be encoded.
+- **Channel/modality identity**: In multi-channel input (RGB), each channel produces a distinct activity pattern. The embedding should capture channel membership as a natural emergent property, not as something we engineer in.
+- **Temporal dynamics**: Neurons that respond to the same edge orientations, motion directions, or texture frequencies share temporal response patterns even if spatially distant. These functional similarities should be encoded.
+- **Activity characteristics**: A neuron in a high-contrast region has different variance and temporal structure than one in a flat region. These differences carry information about what the neuron "sees."
+
+This is why we use **dot product with high-dimensional embeddings** rather than forcing everything into a 2D spatial map. A D=8 or D=16 embedding can simultaneously encode spatial position (2-3 dims worth), channel identity (1-2 dims), local texture properties (remaining dims). Euclidean distance in 2D would collapse all of this into just "how far apart are they."
+
+The rendering step (PCA/UMAP → 2D grid) is lossy by design — it extracts the spatial component for visualization. But the full embedding is the real output and preserves the complete learned structure.
+
 ## Architecture
 
 Two-stage pipeline:
