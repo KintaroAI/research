@@ -43,7 +43,7 @@ python main.py word2vec --preset rgb_80x80_garden --dims 16 -f 500000 -o output_
 
 - No co-authored-by lines in commit messages
 - Experiment READMEs are technical reports (hypothesis, method, results, analysis)
-- Don't store large output directories in git — use /tmp for runs, save only model.npy and info.json if needed
+- Output directories go to `~/data/research/thalamus-sorter/`, not in the repo. This is a separate larger partition for experiment binary data
 - Always include `--max-hit-ratio 0.1` and `--eval` in production runs
 
 ### Output directory naming
@@ -54,12 +54,18 @@ Format: `output_{experiment}_{run}_{short_desc}`
 - `{run}` — autoincrementing run number, zero-padded to 3 digits (e.g. `001`)
 - `{short_desc}` — brief description using underscores (e.g. `rgb_garden_50k_d16`)
 
-Examples:
+All outputs go to `~/data/research/thalamus-sorter/`:
 ```
-output_13_001_gray_80x80_50k
-output_13_002_rgbg_saccades_50k
-output_13_003_rgb_garden_500k_d16
-output_14_001_baseline
+~/data/research/thalamus-sorter/output_13_001_gray_80x80_50k/
+~/data/research/thalamus-sorter/output_13_002_rgbg_saccades_50k/
+~/data/research/thalamus-sorter/output_13_003_rgb_garden_500k_d16/
+~/data/research/thalamus-sorter/output_14_001_baseline/
 ```
 
-Use `-o $(python -c "from output_name import next_output; print(next_output(13, 'rgb_garden_50k'))")` or just pass `-o` manually following the convention. Directories sort chronologically within each experiment.
+Use `output_name.py` to auto-generate the next path:
+```bash
+python main.py word2vec --preset rgb_80x80_garden -f 500000 \
+  -o $(python output_name.py 13 rgb_garden_500k_d16)
+```
+
+Directories sort chronologically within each experiment.
