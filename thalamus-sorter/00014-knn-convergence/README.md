@@ -105,14 +105,37 @@ This insight reframes the convergence problem. Three paths to stable embeddings:
 2. **Reduce normalization frequency** — longer gaps between resets allow more natural self-dampening between wake-ups (e.g., normalize_every=1000 instead of 100)
 3. **Remove normalization entirely** — let magnitude growth self-regulate gradients. Risks: unchecked magnitude blow-up, eventual numerical issues. But the self-dampening *is* a form of convergence.
 
-Option 2 is interesting because it creates a hybrid: the system self-dampens for longer stretches (gradients decay naturally as magnitudes grow), then gets a periodic reset. Lower normalization frequency → more time in the dampened state → less churn. This could be tested easily by sweeping normalize_every={100, 500, 1000, 5000}.
+Option 2 is interesting because it creates a hybrid: the system self-dampens for longer stretches (gradients decay naturally as magnitudes grow), then gets a periodic reset. Lower normalization frequency → more time in the dampened state → less churn.
 
 Option 1 (lr decay) is the cleanest and most controllable. The KNN overlap metric could serve as the decay trigger itself — when overlap crosses a threshold, halve lr.
 
+### Normalization frequency sweep (Runs 005–008, 50k ticks each)
+
+Tested normalize_every={100, 500, 1000, 5000} with KNN K=10, report every 2000 ticks.
+
+| normalize_every | Avg overlap (20k–50k) | Peak overlap | Spatial <3px | Spatial <5px |
+|----------------|----------------------|-------------|-------------|-------------|
+| 100 (default)  | ~0.61                | 0.69        | 88.3%       | 98.4%       |
+| 500            | ~0.69                | 0.77        | 86.5%       | 97.8%       |
+| 1000           | ~0.70                | 0.75        | 94.5%       | 99.7%       |
+| 5000           | ~0.81                | 0.87        | 96.2%       | 99.7%       |
+
+**Theory confirmed.** Less frequent normalization → higher KNN stability AND better spatial quality. The gradient self-dampening mechanism works: between normalizations, magnitudes grow, sigmoid saturates, gradients shrink, and the system partially relaxes. Longer gaps = more relaxation = less churn.
+
+Notable observations:
+- **normalize_every=5000 wins on all metrics**: 0.81 avg overlap, 96.2% <3px — substantially better than default 100
+- **Normalization events are visible at low frequency**: The norm=5000 run shows a dip at tick 50000 (overlap drops from 0.83 to 0.73) — exactly at the 10th normalization. At higher frequency, these perturbations are too frequent and small to distinguish.
+- **Spatial quality improves too**: This was unexpected. Less normalization doesn't just stabilize embeddings — it produces better spatial layout. The self-dampening may act as a natural annealing, where early ticks have large updates and later ticks (before the next normalization) have smaller, refinement-scale updates.
+- **500 vs 1000 is noisy**: Similar overlap but 1000 has much better spatial quality (94.5% vs 86.5%). Need more runs to separate signal from noise.
+
+### Implication for default settings
+
+The current default (normalize_every=100) appears to be too aggressive. It keeps the effective learning rate permanently high when the system would benefit from self-dampening. A value of 1000–5000 seems more appropriate, though the optimal value likely depends on training length — longer runs may benefit from even less frequent normalization.
+
 ## Next Steps
 
-- **Normalization frequency sweep**: Test normalize_every={100, 500, 1000, 5000} and measure KNN stability. If the theory is correct, lower frequency → higher overlap (at the cost of slower early learning).
-- **Learning rate decay**: Implement lr decay triggered by KNN overlap (e.g., halve lr when overlap > 0.7 for N consecutive reports). This is the most direct path to convergence.
-- **Early stopping**: Stop training when overlap exceeds a threshold (e.g., 0.95) for several consecutive snapshots — the embeddings have converged and further training adds only jitter.
+- **Extend norm=5000 to 200k ticks**: See if overlap continues climbing or plateaus. With only 10 normalizations in 50k ticks, may need more time.
+- **Test normalize_every=0 (off)**: Does the system fully self-dampen to convergence? Or do magnitudes blow up and cause numerical issues?
+- **Learning rate decay**: Still the most controllable approach. Implement and compare against normalization tuning.
 - **Sweep KNN K**: Test K=20, K=50 to see if larger neighborhoods are more/less stable.
-- **No-normalization baseline**: Run with normalize_every=0 to see if natural self-dampening produces convergence (and whether spatial quality suffers).
+- **Update default preset**: Consider changing normalize_every from 100 to 1000 based on these results.
