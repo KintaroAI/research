@@ -26,6 +26,8 @@ python main.py word2vec --mode correlation \
 
 Typical 50k results: PCA disparity ~0.2-0.6, K=10 neighbors 95-98% within 5 grid pixels.
 
+**Note for production:** Use `--max-hit-ratio 0.1` in the final system. It filters out anchors that correlate with too many candidates (global signal like flickering lights). No effect with clean signals but essential as a safety net when signal quality varies.
+
 ## Quick start
 
 ```bash
