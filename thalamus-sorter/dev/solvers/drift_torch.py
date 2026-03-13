@@ -38,10 +38,12 @@ class DriftSolver:
 
     def __init__(self, n, top_k=None, k=24, dims=3, lr=0.05,
                  mode='euclidean', k_neg=5, margin=0.1,
-                 normalize_every=0, device='cuda', knn_k=0):
+                 normalize_every=0, device='cuda', knn_k=0,
+                 lr_decay=1.0):
         self.n = n
         self.dims = dims
         self.lr = lr
+        self.lr_decay = lr_decay
         self.mode = mode
         self.k_neg = k_neg
         self.margin = margin
@@ -415,7 +417,8 @@ class DriftSolver:
         return B  # number of training pairs
 
     def _maybe_normalize(self):
-        """Periodic L2 normalization of W and C to prevent magnitude blow-up."""
+        """Periodic L2 normalization of W and C to prevent magnitude blow-up.
+        Also applies lr_decay if set."""
         if self.normalize_every <= 0:
             return
         self._tick_count += 1
@@ -425,6 +428,8 @@ class DriftSolver:
             if vecs is not None:
                 norms = vecs.norm(dim=1, keepdim=True).clamp(min=1e-8)
                 vecs.div_(norms)
+        if self.lr_decay < 1.0:
+            self.lr *= self.lr_decay
 
     # ---- Online KNN tracking ----
 

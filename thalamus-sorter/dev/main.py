@@ -376,10 +376,11 @@ def run_word2vec(args):
                                   normalize_every=norm_every, device='cuda')
         else:
             knn_k = getattr(args, 'knn_track', 0)
+            lr_decay = getattr(args, 'lr_decay', 1.0)
             dsolver = DriftSolver(n, top_k=None, k=args.k, dims=args.dims,
                                   lr=args.lr, mode='dot', k_neg=args.k_neg,
                                   normalize_every=norm_every, device='cuda',
-                                  knn_k=knn_k)
+                                  knn_k=knn_k, lr_decay=lr_decay)
 
         if args.warm_start:
             warm = np.load(args.warm_start)
@@ -568,8 +569,9 @@ def run_word2vec(args):
                     dsolver._refresh_knn_dists()
                     overlap, n_changed = dsolver.knn_stability()
                     dsolver._knn_overlap_history.append((tick, overlap))
+                    lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
                     print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
-                          f"({n_changed}/{n} neurons changed)")
+                          f"({n_changed}/{n} neurons changed){lr_str}")
 
                 if tick % args.save_every == 0:
                     emb = dsolver.get_positions()
@@ -626,8 +628,9 @@ def run_word2vec(args):
                     dsolver._refresh_knn_dists()
                     overlap, n_changed = dsolver.knn_stability()
                     dsolver._knn_overlap_history.append((tick, overlap))
+                    lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
                     print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
-                          f"({n_changed}/{n} neurons changed)")
+                          f"({n_changed}/{n} neurons changed){lr_str}")
 
                 if output_dir and tick % args.save_every == 0:
                     frame = render_frame()
@@ -1112,6 +1115,8 @@ def main():
                             "Monitors embedding convergence via neighbor stability.")
     p_w2v.add_argument("--knn-report-every", type=int, default=1000,
                        help="Report KNN stability every N ticks (default: 1000)")
+    p_w2v.add_argument("--lr-decay", type=float, default=1.0,
+                       help="Multiply lr by this factor at each normalization event (default: 1.0 = no decay)")
     p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
                                             "direct", "procrustes", "lstsq",
                                             "umap", "tsne", "spectral", "mds"],

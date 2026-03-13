@@ -132,10 +132,38 @@ Notable observations:
 
 The current default (normalize_every=100) appears to be too aggressive. It keeps the effective learning rate permanently high when the system would benefit from self-dampening. A value of 1000–5000 seems more appropriate, though the optimal value likely depends on training length — longer runs may benefit from even less frequent normalization.
 
+### LR decay at normalization events (Runs 009–011, 50k ticks, normalize_every=5000)
+
+Implemented `--lr-decay` flag: multiply lr by decay factor at each normalization event. With normalize_every=5000 and 50k ticks, that's 10 decay events.
+
+| lr_decay | Final lr | Final overlap | Spatial <3px | Spatial <5px |
+|----------|----------|---------------|-------------|-------------|
+| 1.0 (no decay) | 0.001000 | 0.81 | 96.2% | 99.7% |
+| 0.9 | 0.000349 | 0.84 | 96.4% | 99.9% |
+| **0.8** | **0.000107** | **0.95** | **96.2%** | **100.0%** |
+| 0.5 | 0.000001 | 0.997 | 94.8% | 99.3% |
+
+**decay=0.8 is the sweet spot.** Overlap reaches 0.95 (near convergence) with no spatial quality loss — 96.2% <3px, 100.0% <5px.
+
+**decay=0.5 over-dampens.** KNN converges beautifully (0.997 — only 77 neurons still changing out of 6400) but spatial quality drops slightly to 94.8% <3px. The lr decayed too fast (to 0.000001 by tick 50k), freezing the embeddings before they were fully sorted. This confirms the user's prediction: stable KNN alone isn't sufficient — must verify quality doesn't degrade.
+
+Convergence trajectory for decay=0.8:
+- Tick 10k: overlap=0.43, lr=0.00064 (still learning aggressively)
+- Tick 20k: overlap=0.78, lr=0.00041 (structure forming)
+- Tick 30k: overlap=0.91, lr=0.00026 (refining)
+- Tick 40k: overlap=0.93, lr=0.00017 (nearly stable)
+- Tick 50k: overlap=0.95, lr=0.00011 (converged, quality preserved)
+
+**Key insight**: The combination of normalize_every=5000 + lr_decay=0.8 provides two complementary annealing mechanisms:
+1. **Intra-cycle annealing**: Between normalizations, magnitude growth naturally dampens gradients (free, automatic)
+2. **Inter-cycle annealing**: Each normalization resets to a *lower* base lr (controlled, monotonic)
+
+This dual annealing is more biologically plausible than a global lr schedule — the system's own dynamics (magnitude growth) provide local self-regulation, while the decay provides global convergence pressure.
+
 ## Next Steps
 
-- **Extend norm=5000 to 200k ticks**: See if overlap continues climbing or plateaus. With only 10 normalizations in 50k ticks, may need more time.
-- **Test normalize_every=0 (off)**: Does the system fully self-dampen to convergence? Or do magnitudes blow up and cause numerical issues?
-- **Learning rate decay**: Still the most controllable approach. Implement and compare against normalization tuning.
+- **Extend decay=0.8 to 200k ticks**: Verify overlap reaches ~1.0 and quality doesn't degrade at very low lr.
+- **Test normalize_every=0 (off)**: Does the system fully self-dampen to convergence without any normalization?
+- **Test on garden.png / RGB**: Verify these settings work on harder inputs (pair starvation, multi-channel).
 - **Sweep KNN K**: Test K=20, K=50 to see if larger neighborhoods are more/less stable.
-- **Update default preset**: Consider changing normalize_every from 100 to 1000 based on these results.
+- **Update default preset**: Consider normalize_every=5000 + lr_decay=0.8 as new defaults.
