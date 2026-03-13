@@ -141,8 +141,21 @@ Very close K-neighbor quality (96.4% vs 97.1%). PCA disparity is higher for deri
 | Method | Threshold | Ticks | PCA disp | Mean dist | <3px | <5px |
 |--------|-----------|-------|----------|-----------|------|------|
 | deriv-corr | 0.5 | 50k | 0.57 | 2.50 | 80.5% | 96.4% |
-| deriv-corr | 0.5 | 100k | | | | |
-| deriv-corr | 0.5 | 1M | | | | |
+| deriv-corr | 0.5 | 100k | 0.57 | 2.65 | 76.1% | 94.7% |
+| deriv-corr | 0.5 | 1M | 0.57 | 2.55 | 78.8% | 95.7% |
+
+**Stable but plateaued.** PCA disparity stays at 0.57 across all runs. K-neighbor metrics hover 95-96% within 5px — no degradation (unlike T=200 MSE) but no improvement past 50k either.
+
+### Comparison: deriv-corr vs MSE (T=1000)
+
+| Method | Ticks | PCA disp | Mean dist | <3px | <5px |
+|--------|-------|----------|-----------|------|------|
+| MSE | 50k | 0.27 | 1.94 | 81.5% | 97.1% |
+| MSE | 9M | 0.17 | 2.00 | 80.4% | 97.4% |
+| deriv-corr | 50k | 0.57 | 2.50 | 80.5% | 96.4% |
+| deriv-corr | 1M | 0.57 | 2.55 | 78.8% | 95.7% |
+
+Deriv-corr is ~1-2% below MSE in K-neighbor quality and has worse PCA disparity (0.57 vs 0.17-0.27). MSE continues to improve slowly over millions of ticks; deriv-corr plateaus early. However, deriv-corr handles dead neurons intrinsically — no separate variance gate needed. For cross-modal systems where some neurons are inactive, this property is essential.
 
 ## Files
 
