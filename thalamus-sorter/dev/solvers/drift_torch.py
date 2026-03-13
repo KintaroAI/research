@@ -207,7 +207,8 @@ class DriftSolver:
 
     def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
                          anchor_only=False, use_covariance=False,
-                         use_mse=False, max_hit_ratio=None):
+                         use_mse=False, use_deriv_corr=False,
+                         max_hit_ratio=None):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -250,7 +251,25 @@ class DriftSolver:
         anchor_sig = signals[anchors]            # (batch, T)
         cand_sig = signals[candidates]           # (batch, k_sample, T)
 
-        if use_mse:
+        if use_deriv_corr:
+            # Pearson correlation on temporal derivatives.
+            # dA[t] = A[t+1] - A[t] — captures *when* neurons change.
+            # mean(dA * dB) is the covariance of derivatives.
+            # Normalizing gives Pearson correlation on derivatives.
+            #
+            # Key property: dead neurons have dA = 0 → norm = 0 → score = 0.
+            # Solves the "both dead = MSE 0" problem without a separate gate.
+            # Co-varying pairs get high positive score, uncorrelated → ~0.
+            anchor_d = anchor_sig[:, 1:] - anchor_sig[:, :-1]       # (batch, T-1)
+            cand_d = cand_sig[:, :, 1:] - cand_sig[:, :, :-1]       # (batch, k_sample, T-1)
+            anchor_dc = anchor_d - anchor_d.mean(dim=1, keepdim=True)
+            cand_dc = cand_d - cand_d.mean(dim=2, keepdim=True)
+            anchor_norm = anchor_dc.norm(dim=1, keepdim=True).clamp(min=1e-8)
+            cand_norm = cand_dc.norm(dim=2, keepdim=True).clamp(min=1e-8)
+            score = (anchor_dc.unsqueeze(1) / anchor_norm.unsqueeze(1) *
+                     cand_dc / cand_norm).sum(dim=2)    # (batch, k_sample)
+            mask = score > threshold
+        elif use_mse:
             # MSE as distance metric — no centering, no global mean.
             # MSE = mean((a_t - b_t)^2)
             # Near pairs: MSE ≈ 0.003, far pairs: MSE ≈ 0.05 (15x ratio).
@@ -259,10 +278,6 @@ class DriftSolver:
             mse = (diff * diff).mean(dim=2)            # (batch, k_sample)
             mask = mse < threshold
             score = mse  # for diagnostics
-            # TODO: incorporate per-neuron variance to downweight flat neurons.
-            # Current MSE alone can't distinguish "both dead" from "both active
-            # and similar." Need a variance weighting that doesn't compress the
-            # MSE discrimination range (15x near/far ratio).
         elif use_covariance:
             # Covariance = dot(centered_a, centered_b) / T
             # = correlation × std_a × std_b

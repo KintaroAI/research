@@ -26,7 +26,7 @@ The combined score `sqrt(var_A × var_B) × (1 - MSE)` compressed the discrimina
 - variance multiplier (≈0.05 for all pixels) squashes everything into 0.02-0.04
 - The 15x near/far ratio in raw MSE is destroyed
 
-## Approach candidates
+## Approach candidates (score-based)
 
 ### 1. Two-stage: MSE gates, variance weights
 
@@ -66,11 +66,68 @@ Simple binary filter. With natural images it's a no-op (all pixels have similar 
 **Pros:** Simplest. No new hyperparameters if min_var is set conservatively.
 **Cons:** Binary — no soft transition. Borderline-variance neurons are either fully in or fully out.
 
+## Approach 4: Derivative correlation (`--use-deriv-corr`)
+
+### Key insight: derivatives encode both activity and similarity
+
+Instead of computing variance separately, work with **temporal derivatives** of the signal. Given signal A = [a_1, a_2, ..., a_T], the derivative is dA = [a_2 - a_1, a_3 - a_2, ...].
+
+**Derivatives as activity proxy:** A dead neuron (constant signal) has dA = [0, 0, 0, ...]. An active neuron has nonzero derivatives. `mean(dA²)` is a natural variance measure — sum of squared changes — purely local, no global info.
+
+**Derivatives as similarity:** If two neurons spike up at the same times and down at the same times, their derivatives align. The dot product `mean(dA * dB)` measures this temporal co-variation.
+
+### Why multiply instead of subtract?
+
+MSE on derivatives would compute `mean((dA - dB)²)` — but dead-dead pairs still get 0. The product `dA[i] * dB[i]` is different:
+
+| Case | dA | dB | Products | mean(dA*dB) |
+|------|----|----|----------|-------------|
+| Both dead | [0, 0, 0] | [0, 0, 0] | [0, 0, 0] | **0** |
+| Dead + active | [0, 0, 0] | [-0.5, 0.3, 0.4] | [0, 0, 0] | **0** |
+| Co-varying (near) | [-0.6, 0.3, 0.4] | [-0.5, 0.25, 0.35] | [0.30, 0.075, 0.14] | **+0.17** |
+| Uncorrelated (far) | [-0.6, 0.3, 0.4] | [0.1, 0.4, -0.2] | [-0.06, 0.12, -0.08] | **~0** |
+| Anti-correlated | [-0.6, 0.3, 0.4] | [0.4, -0.3, -0.5] | [-0.24, -0.09, -0.20] | **-0.18** |
+
+The product naturally combines activity and similarity into one operation:
+- Dead neurons produce zero regardless of partner → **no separate variance gate needed**
+- Co-varying pairs produce large positive values
+- Uncorrelated pairs cancel out to ~0
+- Score magnitude scales with both neurons' activity levels
+
+### Normalization → Pearson correlation on derivatives
+
+`mean(dA * dB)` is the unnormalized dot product (covariance of derivatives). Normalizing by the norms gives Pearson correlation on derivatives — bounded [-1, 1]:
+
+```
+dA = diff(A),  dB = diff(B)
+dA_centered = dA - mean(dA),  dB_centered = dB - mean(dB)
+score = dot(dA_centered, dB_centered) / (norm(dA_centered) * norm(dB_centered))
+```
+
+Dead neurons: norm = 0, clamped to ε → score = 0. Active co-varying pairs: score → 1. Threshold semantics: `score > threshold` (higher = more similar).
+
+### Properties
+
+- **No global operations.** Each neuron only needs its own temporal trace.
+- **Dead-dead = 0.** Solved intrinsically by the product — no separate gate.
+- **Biologically plausible.** Neurons respond to changes (derivatives), not absolute levels. Comparing derivative patterns is a natural Hebbian operation.
+- **Works on raw signals.** No per-frame mean subtraction needed. Derivatives remove DC offset.
+
 ## Results
 
-*(to be filled)*
+Base parameters: 80x80 grid, dims=8, k_neg=5, lr=0.001, normalize_every=100, k_sample=200, signal_T=1000, step=50, rolling buffer.
+
+### 10k tick comparison: MSE vs derivative correlation
+
+| Method | Threshold | Total pairs | PCA disp | Mean dist | <3px | <5px |
+|--------|-----------|-------------|----------|-----------|------|------|
+| MSE | 0.02 | 120M | 0.60 | 2.58 | 80.3% | 94.5% |
+| deriv-corr | 0.3 | 795M | 0.56 | 3.29 | 63.4% | 87.4% |
+| **deriv-corr** | **0.5** | **222M** | **0.55** | **2.37** | **84.0%** | **97.2%** |
+
+At threshold=0.5, derivative correlation beats MSE at 10k ticks — 97.2% vs 94.5% within 5px. Threshold=0.3 is too loose (795M pairs, too many false neighbors dilute learning). Threshold=0.5 gives a cleaner signal with fewer but higher-quality pairs.
 
 ## Files
 
-- `main.py` — variance weighting implementation
-- `solvers/drift_torch.py` — `tick_correlation()` modifications
+- `main.py` — `--use-deriv-corr` flag, raw signal mode for derivative methods
+- `solvers/drift_torch.py` — `use_deriv_corr` in `tick_correlation()`

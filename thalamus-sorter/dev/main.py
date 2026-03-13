@@ -391,7 +391,7 @@ def run_word2vec(args):
                 assert max_dy > 0 and max_dx > 0, \
                     f"Source {src_w}x{src_h} too small for {w}x{h} grid"
                 saccade_step = args.saccade_step
-                use_mse = args.use_mse
+                use_raw = args.use_mse or args.use_deriv_corr
                 walk_dy = np.random.randint(0, max_dy + 1)
                 walk_dx = np.random.randint(0, max_dx + 1)
                 for t in range(T):
@@ -400,11 +400,11 @@ def run_word2vec(args):
                     walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
                                       0, max_dx)
                     crop = source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].ravel()
-                    if use_mse:
+                    if use_raw:
                         signals_np[:, t] = crop
                     else:
                         signals_np[:, t] = crop - crop.mean()
-                mean_sub = "raw" if use_mse else "mean-subtracted"
+                mean_sub = "raw" if use_raw else "mean-subtracted"
                 print(f"  signal buffer: ({n}, {T}), rolling saccades from "
                       f"{args.signal_source} ({src_w}x{src_h}), "
                       f"step={saccade_step}, {mean_sub}")
@@ -437,7 +437,7 @@ def run_word2vec(args):
                                       0, max_dx)
                     crop = saccade_source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].reshape(-1)
                     col = tick_counter[0] % T
-                    if use_mse:
+                    if use_raw:
                         signals[:, col] = crop
                     else:
                         signals[:, col] = crop - crop.mean()
@@ -448,6 +448,7 @@ def run_word2vec(args):
                     anchor_only=args.anchor_only,
                     use_covariance=args.use_covariance,
                     use_mse=args.use_mse,
+                    use_deriv_corr=args.use_deriv_corr,
                     max_hit_ratio=args.max_hit_ratio)
         else:
             def do_tick():
@@ -1007,9 +1008,12 @@ def main():
     p_w2v.add_argument("--use-covariance", action="store_true",
                        help="Use covariance (corr×std1×std2) instead of Pearson correlation; downweights flat regions")
     p_w2v.add_argument("--use-mse", action="store_true",
-                       help="Use MSE+variance score: sqrt(var_A*var_B)*(1-MSE). "
-                            "Bounded [0,0.25], no per-frame global mean needed. "
-                            "Threshold ~0.05 is a good starting point.")
+                       help="Use MSE as distance metric (lower=more similar). "
+                            "No per-frame global mean needed. Threshold ~0.02.")
+    p_w2v.add_argument("--use-deriv-corr", action="store_true",
+                       help="Pearson correlation on temporal derivatives. "
+                            "Dead neurons get score=0 (no variance gate needed). "
+                            "Threshold ~0.3-0.5 (higher=more similar).")
     p_w2v.add_argument("--max-hit-ratio", type=float, default=None,
                        help="Discard anchors where neighbors/k_sample exceeds this ratio (e.g. 0.1). "
                             "Filters out global signals — if a neuron correlates with everyone, skip it.")
