@@ -1,0 +1,19 @@
+{
+    "width": 80,
+    "height": 80,
+    "mode": "correlation",
+    "dims": 8,
+    "k_neg": 5,
+    "lr": 0.001,
+    "normalize_every": 100,
+    "k_sample": 600,
+    "threshold": 0.02,
+    "signal_T": 1000,
+    "signal_source": "garden.png",
+    "signal_channels": 3,
+    "saccade_step": 50,
+    "use_mse": true,
+    "image": "K_80_g.png",
+    "eval": true,
+    "save_model": true
+}

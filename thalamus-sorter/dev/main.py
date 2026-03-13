@@ -1021,6 +1021,9 @@ def main():
     # --- word2vec ---
     p_w2v = sub.add_parser("word2vec",
                            help="Word2vec-style drift (skip-gram or similarity mode)")
+    p_w2v.add_argument("--preset", type=str, default=None,
+                       help="Load parameter preset from presets/ directory (e.g. 'gray_80x80'). "
+                            "CLI args override preset values.")
     p_w2v.add_argument("--width", "-W", type=int, default=40,
                        help="Grid width (default: 40)")
     p_w2v.add_argument("--height", "-H", type=int, default=40,
@@ -1189,7 +1192,29 @@ def main():
                        help="Optimization epochs per frame (default: 1000)")
     p_csp.set_defaults(func=run_camera_spatial)
 
-    args = parser.parse_args()
+    # Two-pass parsing: first extract --preset, then apply defaults from
+    # preset file, then re-parse so CLI args override preset values.
+    args, remaining = parser.parse_known_args()
+
+    if hasattr(args, 'preset') and args.preset:
+        import json
+        preset_path = args.preset
+        if not os.path.isabs(preset_path) and not os.path.exists(preset_path):
+            # Look in presets/ subdirectory
+            preset_path = os.path.join(os.path.dirname(__file__), 'presets', preset_path)
+            if not preset_path.endswith('.json'):
+                preset_path += '.json'
+        with open(preset_path) as f:
+            preset = json.load(f)
+        print(f"Preset: {args.preset} -> {preset}")
+        # Apply preset as defaults, CLI args will override
+        # Find the subparser that matches the command
+        subparser = sub.choices.get(args.command)
+        if subparser:
+            subparser.set_defaults(**preset)
+        # Re-parse with preset defaults applied
+        args = parser.parse_args()
+
     args.func(args)
 
 
