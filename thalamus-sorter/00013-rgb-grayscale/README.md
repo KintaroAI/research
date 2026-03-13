@@ -147,7 +147,26 @@ Switched to a color-diverse garden image (flowers, sky, foliage) to reduce inter
 | G | 43.2% | 0.7% | 1.6% | 47.35 |
 | B | 35.0% | 0.5% | 1.1% | 53.36 |
 
-Runs in progress: 500k/8D, 50k/16D, 500k/16D — testing whether more ticks or more dimensions help.
+#### garden.png — dims and ticks comparison
+
+| Run | Dims | Flat <5px | R self | G self | B self | R <5px | G <5px | B <5px |
+|-----|------|-----------|--------|--------|--------|--------|--------|--------|
+| 50k | 8 | 0.4% | 37% | 43% | 35% | 0.9% | 1.6% | 1.1% |
+| 50k | 16 | 0.3% | 33% | 33% | 33% | 1.0% | 1.1% | 1.0% |
+| 500k | 8 | 46.2% | 98% | 99% | 98% | 23.2% | 93.2% | 97.1% |
+| 500k | 16 | 63.8% | 98% | 99% | 100% | 51.0% | 99.2% | 100% |
+
+**Key findings:**
+
+1. **At 50k, nothing has happened.** No channel separation, no spatial sorting, regardless of dims. With lower inter-channel correlation, the solver needs more ticks to discover channel identity.
+
+2. **At 500k, channels fully separate and spatial sorting is excellent.** B and G reach near-perfect within-channel sorting (93-100% <5px). The garden's color diversity just delays separation — it doesn't prevent it. Given enough ticks, channel identity still dominates.
+
+3. **16D helps R significantly (23→51% <5px).** Red in garden.png has a complex spatial distribution (scattered flowers, mixed regions), needing more embedding capacity. G and B have simpler spatial structure (contiguous sky, foliage) and sort well even in 8D.
+
+4. **Cross-channel spatial proximity remains near-zero.** At 500k only 2-3k cross-channel neighbor pairs exist (out of 192k total), with mean pixel distance ~63. The solver never discovers that R/G/B at the same (x,y) see the same spatial region.
+
+5. **Ticks matter more than dims.** The 50k→500k jump (10x ticks) transforms random embeddings into well-sorted channels. The 8D→16D jump helps the hardest channel (R) but G and B are already saturated at 8D.
 
 ## Commands
 
