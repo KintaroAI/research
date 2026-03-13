@@ -115,9 +115,44 @@ Added color-tinted pixel values so channels are visually distinguishable in UMAP
 
 Confirmed visually: 3 distinct colored blobs (red, green+gray mixed, blue), each with internal spatial structure. Exactly matches the quantitative analysis.
 
-## Command
+### Pure RGB (no grayscale channel)
+
+Removing the GS channel eliminates the G/GS merge noise. `--signal-channels 3` gives 80×80×3 = 19,200 neurons on a 240×80 render grid. k_sample=600 (3.1% fraction).
+
+#### saccades.png — high inter-channel correlation (R-G=0.95, R-B=0.78, G-B=0.92)
+
+50k ticks, 8 dims: PCA=0.9997, flat eval <5px=6.1%.
+
+Channel separation is total (99.9-100% self-neighbors). Without GS bridging G, all three channels are completely isolated (only 65 cross-channel neighbor pairs out of 192k).
+
+| Channel | <3px | <5px | Mean dist |
+|---------|------|------|-----------|
+| R | 1.6% | 3.4% | 40.83 |
+| G | 17.1% | 34.0% | 9.09 |
+| B | 6.2% | 12.7% | 20.07 |
+
+G sorts best without GS noise (34% <5px vs 19% in RGBG). R remains worst — weakest spatial autocorrelation in this warm-toned image.
+
+#### garden.png — low inter-channel correlation (R-G=0.64, R-B=0.48, G-B=0.74)
+
+Switched to a color-diverse garden image (flowers, sky, foliage) to reduce inter-channel correlation.
+
+50k ticks, 8 dims: PCA=0.9972, flat eval <5px=0.4%.
+
+**Channels do NOT separate.** Neighbor composition is roughly uniform (~35% each), with 117,935 cross-channel neighbor pairs (61% of all neighbors). The lower inter-channel correlation means channel identity is no longer the dominant signal. But spatial quality is near-random (<5px ~1%, mean dist ~52) — the solver hasn't found spatial structure yet either.
+
+| Channel | Self-neighbors | <3px | <5px | Mean dist |
+|---------|---------------|------|------|-----------|
+| R | 37.4% | 0.4% | 0.9% | 53.02 |
+| G | 43.2% | 0.7% | 1.6% | 47.35 |
+| B | 35.0% | 0.5% | 1.1% | 53.36 |
+
+Runs in progress: 500k/8D, 50k/16D, 500k/16D — testing whether more ticks or more dimensions help.
+
+## Commands
 
 ```bash
+# RGBG 4-channel (saccades.png)
 python main.py word2vec --mode correlation \
   -W 80 -H 80 --dims 8 --k-neg 5 --lr 0.001 \
   --normalize-every 100 --k-sample 800 --threshold 0.02 \
@@ -125,13 +160,25 @@ python main.py word2vec --mode correlation \
   --signal-channels 4 \
   --saccade-step 50 --use-mse \
   -i K_80_g.png \
-  -f 50000 --save-every 1000 --eval \
-  --save-model \
-  -o output_13_rgbg_50k --render umap --align
+  -f 50000 --save-every 1000 --eval --save-model \
+  -o output_13_rgbg_50k
+
+# Pure RGB 3-channel (garden.png)
+python main.py word2vec --mode correlation \
+  -W 80 -H 80 --dims 8 --k-neg 5 --lr 0.001 \
+  --normalize-every 100 --k-sample 600 --threshold 0.02 \
+  --signal-T 1000 --signal-source garden.png \
+  --signal-channels 3 \
+  --saccade-step 50 --use-mse \
+  -i K_80_g.png \
+  -f 50000 --save-every 1000 --eval --save-model \
+  -o output_13_rgb_garden_50k
 ```
 
 ## Files
 
-- `main.py` — added `--signal-channels`, PNG source loading (RGB→RGBG)
+- `main.py` — added `--signal-channels`, PNG source loading (RGB/RGBG)
 - `analyze_channels.py` — post-hoc channel structure analysis of embeddings
 - `render_embeddings.py` — extended `render()` to handle (n,3) color pixel values
+- `test_umap_compare.py` — CPU vs GPU UMAP parameter sweep (grayscale)
+- `test_umap_compare_color.py` — CPU vs GPU UMAP parameter sweep (color, 320×80)
