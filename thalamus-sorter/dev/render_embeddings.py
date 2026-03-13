@@ -177,6 +177,8 @@ def render(pos_2d, width, height, pixel_values):
     ])
     tree = cKDTree(pos_2d)
     _, nearest = tree.query(grid_points)
+    if pixel_values.ndim == 2:
+        return pixel_values[nearest].reshape(height, width, pixel_values.shape[1])
     return pixel_values[nearest].reshape(height, width)
 
 

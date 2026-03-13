@@ -331,12 +331,15 @@ def run_word2vec(args):
                 frame = render_emb(pos_2d, w, h, pixel_values)
 
                 if frame is not None:
-                    normalized = cv2.normalize(
-                        frame, None, 0, 255, cv2.NORM_MINMAX,
-                        dtype=cv2.CV_8U)
+                    if frame.ndim == 3:
+                        out = frame  # color: already uint8
+                    else:
+                        out = cv2.normalize(
+                            frame, None, 0, 255, cv2.NORM_MINMAX,
+                            dtype=cv2.CV_8U)
                     path = os.path.join(output_dir,
                                         f"frame_{frame_idx:06d}.png")
-                    cv2.imwrite(path, normalized)
+                    cv2.imwrite(path, out)
                     frame_idx += 1
 
             elif done:
@@ -352,7 +355,8 @@ def run_word2vec(args):
         import time
         import torch
 
-        n = w * h
+        sig_channels = getattr(args, 'signal_channels', 1)
+        n = w * h * sig_channels
 
         if mode == "sentence":
             k = min(args.k, n - 1)
@@ -384,12 +388,34 @@ def run_word2vec(args):
             signals_np = np.zeros((n, T), dtype=np.float32)
 
             if args.signal_source:
-                source = np.load(args.signal_source)
-                src_h, src_w = source.shape
-                max_dy = src_h - h
-                max_dx = src_w - w
+                if args.signal_source.endswith('.png') or args.signal_source.endswith('.jpg'):
+                    img_bgr = cv2.imread(args.signal_source)
+                    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    if sig_channels == 4:
+                        gs = 0.299 * img_rgb[:,:,0] + 0.587 * img_rgb[:,:,1] + 0.114 * img_rgb[:,:,2]
+                        source = np.concatenate([img_rgb, gs[:,:,np.newaxis]], axis=2)
+                    elif sig_channels == 3:
+                        source = img_rgb
+                    else:
+                        source = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+                else:
+                    source = np.load(args.signal_source)
+
+                if source.ndim == 3:
+                    src_h, src_w, src_c = source.shape
+                    assert src_c == sig_channels, \
+                        f"Source has {src_c} channels but --signal-channels={sig_channels}"
+                    crop_h, crop_w = h, w
+                    print(f"  multi-channel: {sig_channels}ch, "
+                          f"crop={crop_w}x{crop_h} pixels -> {n} neurons")
+                else:
+                    src_h, src_w = source.shape
+                    crop_h, crop_w = h, w
+
+                max_dy = src_h - crop_h
+                max_dx = src_w - crop_w
                 assert max_dy > 0 and max_dx > 0, \
-                    f"Source {src_w}x{src_h} too small for {w}x{h} grid"
+                    f"Source {src_w}x{src_h} too small for {crop_w}x{crop_h} crop"
                 saccade_step = args.saccade_step
                 use_raw = args.use_mse or args.use_deriv_corr
                 walk_dy = np.random.randint(0, max_dy + 1)
@@ -399,15 +425,17 @@ def run_word2vec(args):
                                       0, max_dy)
                     walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
                                       0, max_dx)
-                    crop = source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].ravel()
+                    crop = source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].ravel()
                     if use_raw:
                         signals_np[:, t] = crop
                     else:
                         signals_np[:, t] = crop - crop.mean()
+                src_desc = f"{src_w}x{src_h}" + (f"x{sig_channels}" if source.ndim == 3 else "")
+                crop_desc = f"{crop_w}x{crop_h}" + (f"x{sig_channels}" if source.ndim == 3 else "")
                 mean_sub = "raw" if use_raw else "mean-subtracted"
                 print(f"  signal buffer: ({n}, {T}), rolling saccades from "
-                      f"{args.signal_source} ({src_w}x{src_h}), "
-                      f"step={saccade_step}, {mean_sub}")
+                      f"{args.signal_source} ({src_desc}), "
+                      f"crop={crop_desc}, step={saccade_step}, {mean_sub}")
                 saccade_source = torch.from_numpy(source).to(
                     torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
             else:
@@ -435,7 +463,7 @@ def run_word2vec(args):
                                       0, max_dy)
                     walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
                                       0, max_dx)
-                    crop = saccade_source[walk_dy:walk_dy+h, walk_dx:walk_dx+w].reshape(-1)
+                    crop = saccade_source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].reshape(-1)
                     col = tick_counter[0] % T
                     if use_raw:
                         signals[:, col] = crop
@@ -458,9 +486,29 @@ def run_word2vec(args):
         # --- Common setup ---
         pixel_values = None
         if image is not None:
-            pixel_values = np.zeros(n, dtype=np.uint8)
-            for i in range(n):
-                pixel_values[i] = image[i // w, i % w]
+            if sig_channels > 1:
+                # Color-tinted pixel values (BGR for cv2): R=red, G=green, B=blue, GS=gray
+                channel_tints = {
+                    0: np.array([0.3, 0.3, 1.0]),  # R -> red (BGR)
+                    1: np.array([0.3, 1.0, 0.3]),  # G -> green (BGR)
+                    2: np.array([1.0, 0.3, 0.3]),  # B -> blue (BGR)
+                    3: np.array([0.8, 0.8, 0.8]),  # GS -> gray (BGR)
+                }
+                pixel_values = np.zeros((n, 3), dtype=np.uint8)
+                for i in range(n):
+                    px = i // sig_channels
+                    ch = i % sig_channels
+                    gray = float(image[px // w, px % w])
+                    tint = channel_tints.get(ch, np.array([1.0, 1.0, 1.0]))
+                    pixel_values[i] = np.clip(gray * tint, 0, 255).astype(np.uint8)
+            else:
+                pixel_values = np.zeros(n, dtype=np.uint8)
+                for i in range(n):
+                    pixel_values[i] = image[i // w, i % w]
+
+        # Effective grid dimensions for rendering (channels expand width)
+        render_w = w * sig_channels
+        render_h = h
 
         output_dir = args.output_dir
         if output_dir:
@@ -489,7 +537,8 @@ def run_word2vec(args):
             worker = mp.Process(target=_render_worker,
                                 args=(shm_buf0, shm_buf1, shm_active, shm_tick,
                                       shm_done, n, args.dims,
-                                      w, h, pixel_values, render_method,
+                                      render_w, render_h, pixel_values,
+                                      render_method,
                                       args.align, args.cold_projection,
                                       output_dir))
             worker.start()
@@ -534,12 +583,13 @@ def run_word2vec(args):
                 nonlocal prev_2d
                 emb = dsolver.get_positions()
                 warm = None if args.cold_projection else prev_2d
-                pos_2d = project(emb, w, h, render_method, prev_2d=warm)
+                pos_2d = project(emb, render_w, render_h, render_method,
+                                 prev_2d=warm)
                 if args.align:
-                    pos_2d = align_to_grid(pos_2d, w, h)
+                    pos_2d = align_to_grid(pos_2d, render_w, render_h)
                 if not args.cold_projection:
                     prev_2d = pos_2d.copy()
-                return render_emb(pos_2d, w, h, pixel_values)
+                return render_emb(pos_2d, render_w, render_h, pixel_values)
 
             t0 = time.time()
             max_frames = args.frames
@@ -551,11 +601,14 @@ def run_word2vec(args):
                 if output_dir and tick % args.save_every == 0:
                     frame = render_frame()
                     if frame is not None:
-                        normalized = cv2.normalize(
-                            frame, None, 0, 255, cv2.NORM_MINMAX,
-                            dtype=cv2.CV_8U)
+                        if frame.ndim == 3:
+                            out = frame
+                        else:
+                            out = cv2.normalize(
+                                frame, None, 0, 255, cv2.NORM_MINMAX,
+                                dtype=cv2.CV_8U)
                         path = os.path.join(output_dir, f"frame_{saved:06d}.png")
-                        cv2.imwrite(path, normalized)
+                        cv2.imwrite(path, out)
                         saved += 1
                         if saved % 100 == 0:
                             elapsed = time.time() - t0
@@ -579,14 +632,18 @@ def run_word2vec(args):
             if output_dir:
                 frame = render_frame()
                 if frame is not None:
-                    normalized = cv2.normalize(
-                        frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                    if frame.ndim == 3:
+                        out = frame
+                    else:
+                        out = cv2.normalize(
+                            frame, None, 0, 255, cv2.NORM_MINMAX,
+                            dtype=cv2.CV_8U)
                     path = os.path.join(output_dir, f"frame_{saved:06d}.png")
-                    cv2.imwrite(path, normalized)
+                    cv2.imwrite(path, out)
                     print(f"  final frame saved: {path}")
 
-        _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
-                               total_pairs=total_pairs)
+        _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
+                               t0, max_frames, total_pairs=total_pairs)
         return
 
     if mode == "similarity":
@@ -1002,7 +1059,10 @@ def main():
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
                        help="Gaussian smoothing sigma for signal generation (correlation mode, default: 3.0)")
     p_w2v.add_argument("--signal-source", type=str, default=None,
-                       help="Path to pre-normalized grayscale .npy image for saccade signal generation")
+                       help="Path to signal source: .npy (grayscale) or .png/.jpg (auto RGB)")
+    p_w2v.add_argument("--signal-channels", type=int, default=1,
+                       help="Channels per pixel from source: 1=gray, 3=RGB, 4=RGBG (default: 1). "
+                            "n = W*H*channels. PNG auto-loads as RGB.")
     p_w2v.add_argument("--saccade-step", type=int, default=5,
                        help="Max pixels to shift per timestep in saccade mode (default: 5)")
     p_w2v.add_argument("--use-covariance", action="store_true",
