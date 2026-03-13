@@ -168,6 +168,44 @@ Switched to a color-diverse garden image (flowers, sky, foliage) to reduce inter
 
 5. **Ticks matter more than dims.** The 50k→500k jump (10x ticks) transforms random embeddings into well-sorted channels. The 8D→16D jump helps the hardest channel (R) but G and B are already saturated at 8D.
 
+### Pair starvation: why garden.png converges slowly
+
+Training pair counts reveal the real bottleneck:
+
+| Run | Pairs/tick |
+|-----|-----------|
+| Gray 80x80 (saccades, k=200) | 47,921 |
+| RGBG saccades (k=800) | 67,186 |
+| RGB saccades (k=600) | 69,150 |
+| **RGB garden (k=600)** | **383-633** |
+
+Garden.png produces **100x fewer pairs/tick** than saccades.png. The k_sample scaling (proportional to n) is correct — saccades RGB and RGBG produce similar rates. The problem is garden.png's high spatial diversity: even same-channel neighboring pixels have MSE close to the 0.02 threshold, so few pairs pass.
+
+Two factors contribute:
+
+**1. Saccade step too large (50px).** With step=50, the random walk jumps far between frames, weakening local temporal correlation. Step=5 produces smoother walks:
+
+| Step | Hit rate | Pairs/tick | Near (<3px) hit% |
+|------|---------|-----------|-------------------|
+| 50 | 0.05% | 81 | 47% |
+| 5 | 0.16% | 244 | 74% |
+
+Step=5 gives 3x improvement but is still pair-starved compared to saccades.png baseline.
+
+**2. Threshold too strict for this image.** With step=5, relaxing the MSE threshold:
+
+| Threshold | Pairs/tick | Near hit% | Precision |
+|-----------|-----------|-----------|-----------|
+| 0.02 | 244 | 74% | 61% |
+| 0.03 | 844 | 94% | 22% |
+| 0.04 | 3,064 | 98% | 6.5% |
+| 0.05 | 8,767 | 100% | 2.3% |
+| 0.08 | 52,633 | 100% | 0.4% |
+
+Sweet spot: **step=5 + threshold=0.04** gives ~3k pairs/tick with 98% near-pixel coverage. The skip-gram sliding window is tolerant of noise (ts-00009 finding), so lower precision is acceptable.
+
+**Conclusion:** The garden.png convergence delay is not a channel scaling issue — it's signal quality. The combination of high spatial diversity + large saccade steps + strict threshold starves the learner of training pairs. Tuning step and threshold per-image is necessary.
+
 ## Commands
 
 ```bash
