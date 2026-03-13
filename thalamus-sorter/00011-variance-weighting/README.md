@@ -127,6 +127,23 @@ Base parameters: 80x80 grid, dims=8, k_neg=5, lr=0.001, normalize_every=100, k_s
 
 At threshold=0.5, derivative correlation beats MSE at 10k ticks — 97.2% vs 94.5% within 5px. Threshold=0.3 is too loose (795M pairs, too many false neighbors dilute learning). Threshold=0.5 gives a cleaner signal with fewer but higher-quality pairs.
 
+### 50k tick comparison: MSE vs derivative correlation
+
+| Method | Threshold | Ticks | PCA disp | Mean dist | <3px | <5px |
+|--------|-----------|-------|----------|-----------|------|------|
+| MSE | 0.02 | 50k | 0.27 | 1.94 | 81.5% | 97.1% |
+| deriv-corr | 0.5 | 50k | 0.57 | 2.50 | 80.5% | 96.4% |
+
+Very close K-neighbor quality (96.4% vs 97.1%). PCA disparity is higher for deriv-corr but PCA is noisy across runs (different walk paths). The key advantage: deriv-corr handles dead neurons intrinsically.
+
+### Longer runs
+
+| Method | Threshold | Ticks | PCA disp | Mean dist | <3px | <5px |
+|--------|-----------|-------|----------|-----------|------|------|
+| deriv-corr | 0.5 | 50k | 0.57 | 2.50 | 80.5% | 96.4% |
+| deriv-corr | 0.5 | 100k | | | | |
+| deriv-corr | 0.5 | 1M | | | | |
+
 ## Files
 
 - `main.py` — `--use-deriv-corr` flag, raw signal mode for derivative methods
