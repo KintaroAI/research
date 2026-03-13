@@ -1,8 +1,8 @@
 # ts-00012: Scaling to 160x160
 
 **Date:** 2026-03-12
-**Status:** In Progress
-**Source:** *tagged on completion as `exp/ts-00012`*
+**Status:** Complete
+**Source:** `exp/ts-00012`
 
 ## Goal
 
