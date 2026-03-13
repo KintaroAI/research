@@ -1,7 +1,7 @@
 # ts-00013: RGB + Grayscale Multi-Channel Sorting
 
 **Date:** 2026-03-12
-**Status:** In Progress
+**Status:** Complete
 **Source:** `exp/ts-00013`
 
 ## Goal
@@ -93,8 +93,20 @@ This makes sense mechanically: the correlation between same-channel nearby pixel
 | Gray 80x80 | 6,400 | 1k | 0.67 | 50.0% | 73.3% |
 | RGBG 80x80 | 25,600 | 1k | 0.999 | 0.3% | 0.7% |
 | RGBG 80x80 | 25,600 | 50k | 0.999 | 2.2% | 5.5% |
+| RGBG 80x80 | 25,600 | 1M | 0.999 | 1.2% | 3.1% |
 
-Grayscale at 1k ticks is already 73% sorted. RGBG hasn't started — the solver spends its first ticks discovering channel identity (strong signal) before sorting spatially within channels (weaker signal). Even at 50k, within-channel spatial quality is poor (R: 3.8%, B: 27%, G/GS: ~19% at <5px).
+Grayscale at 1k ticks is already 73% sorted. RGBG hasn't started — the solver spends its first ticks discovering channel identity (strong signal) before sorting spatially within channels (weaker signal). Even at 1M ticks (58.9B pairs, 7878s), flat-grid eval shows minimal improvement.
+
+### 1M within-channel spatial quality
+
+| Channel | Self-neighbors | Spatial <5px | Mean dist |
+|---------|---------------|-------------|-----------|
+| R | 96.5% | 7.5% | 31.01 |
+| G | 53.1% (+ 44.2% GS) | 14.1% | 26.35 |
+| B | 100% | 13.9% | 25.62 |
+| GS | 55.0% (+ 44.2% G) | 13.1% | 26.56 |
+
+Compared to 50k: R spatial quality improved 3.8%→7.5%, G/GS similar ~14% vs ~19%, B dropped 27%→14%. Channel separation remains total — 0% same-pixel clustering. 20x more training gives modest within-channel spatial improvement but the channel-dominates-space structure is unchanged.
 
 ### Color-tinted rendering
 
