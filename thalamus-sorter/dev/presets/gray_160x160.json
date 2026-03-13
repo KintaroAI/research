@@ -13,6 +13,7 @@
     "saccade_step": 50,
     "use_mse": true,
     "image": "K_160_g.png",
+    "max_hit_ratio": 0.1,
     "eval": true,
     "save_model": true
 }

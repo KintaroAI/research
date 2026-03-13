@@ -51,6 +51,27 @@ The Euclidean mode (`tick_euclidean`) exists as an alternative for precomputed-n
 - **No global operations** except periodic L2 normalization (debatable; could be local normalization)
 - **Derivative correlation** preferred over raw MSE: neural systems respond to changes, not absolute levels. Dead neurons (constant signal) naturally get zero contribution
 
+### Correlation quality requirements
+
+Good neighbor discovery depends on the quality of pairwise correlation estimates. Three conditions must hold for a pair to be informative:
+
+1. **Silent neurons must produce zero correlation.** If either neuron has constant (or near-constant) signal, the pair tells us nothing about spatial proximity. MSE between two silent neurons is ~0 (false positive!). Derivative correlation handles this naturally: constant signal → zero derivative → zero norm → zero score. MSE requires explicit variance gating or thresholding to avoid this.
+
+2. **Both neurons must have high variance.** Correlation is only meaningful when both signals vary enough to distinguish co-variation from noise. Low-variance neurons (flat regions of the image, dead pixels) produce unreliable scores even when not fully silent. Covariance mode (`use_covariance`) naturally downweights these since `cov = corr × std_a × std_b`. For MSE mode, the saccade walk must ensure all neurons see varying content — this is why step size matters.
+
+3. **Global scene changes must not produce false neighbors (flickering problem).** A brightness flicker, exposure change, or global illumination shift affects all neurons simultaneously. Every neuron's signal shifts by the same amount → low MSE between all pairs → anchor discovers hundreds of "neighbors" that are actually just co-flickering. This is solved by `--max-hit-ratio`: if an anchor's hit rate exceeds the threshold (e.g., 10% of candidates pass), it's seeing a global signal and gets discarded. This filter has zero cost on clean signals but is essential as a safety net.
+
+**Scoring method comparison:**
+
+| Method | Silent neurons | Low variance | Flickering | Per-neuron mean needed |
+|--------|---------------|-------------|------------|----------------------|
+| MSE | false positive (MSE≈0) | unreliable | vulnerable | yes |
+| Pearson corr | undefined (div/0) | noisy | partially resistant | yes |
+| Covariance | zero (std=0) | downweighted | partially resistant | yes |
+| Derivative corr | zero (norm=0) | downweighted | resistant | no |
+
+Derivative correlation is the most robust: dead neurons contribute nothing, low-variance neurons are naturally downweighted, and global additive shifts cancel out in the derivative. However, MSE with `--max-hit-ratio` works well in practice for clean saccade signals.
+
 ### Signal processing
 - **Rolling saccade buffer**: (n, T) float32 buffer refreshed by random walk over source image. T=1000 balances stability and refresh rate
 - **Mean subtraction**: per-neuron, per-tick. Essential for MSE scoring to work
@@ -60,7 +81,7 @@ The Euclidean mode (`tick_euclidean`) exists as an alternative for precomputed-n
 - `k_sample ~ 0.03 * n` (3% sampling fraction)
 - `sigma ~ grid_size / 10`
 - Dead anchor rate should be 10-15%. If >50%, k_sample too low. If <5%, k_sample wastefully high
-- `--max-hit-ratio 0.1` as safety net: filters anchors correlated with everything (global signals like brightness flicker)
+- `--max-hit-ratio 0.1` as safety net: filters anchors correlated with everything (global signals like brightness flicker). Should always be set in production.
 
 ## Parameters and tradeoffs
 
