@@ -45,3 +45,21 @@ python main.py word2vec --preset rgb_80x80_garden --dims 16 -f 500000 -o output_
 - Experiment READMEs are technical reports (hypothesis, method, results, analysis)
 - Don't store large output directories in git — use /tmp for runs, save only model.npy and info.json if needed
 - Always include `--max-hit-ratio 0.1` and `--eval` in production runs
+
+### Output directory naming
+
+Format: `output_{experiment}_{run}_{short_desc}`
+
+- `{experiment}` — experiment number (e.g. `13`)
+- `{run}` — autoincrementing run number, zero-padded to 3 digits (e.g. `001`)
+- `{short_desc}` — brief description using underscores (e.g. `rgb_garden_50k_d16`)
+
+Examples:
+```
+output_13_001_gray_80x80_50k
+output_13_002_rgbg_saccades_50k
+output_13_003_rgb_garden_500k_d16
+output_14_001_baseline
+```
+
+Use `-o $(python -c "from output_name import next_output; print(next_output(13, 'rgb_garden_50k'))")` or just pass `-o` manually following the convention. Directories sort chronologically within each experiment.
