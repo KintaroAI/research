@@ -89,9 +89,30 @@ Contributing factors:
 
 **What normalization is NOT doing**: L2 normalization every 100 ticks does not visibly disrupt the KNN landscape. Since cosine similarity is scale-invariant, resetting magnitudes to 1.0 doesn't change neighbor rankings. The gradient dynamics do change (all dot products become cosine similarities right after normalization), but this doesn't produce measurable KNN instability.
 
+### Normalization as implicit learning rate control
+
+While normalization doesn't directly disrupt KNN rankings, it has a critical *indirect* effect: it **prevents natural gradient decay**, keeping the effective learning rate permanently high.
+
+The mechanism:
+1. **Between normalizations** (100 ticks): skip-gram updates grow vector magnitudes → dot products `w · c` increase → sigmoid saturates → gradients shrink → effective lr naturally decreases
+2. **At normalization**: magnitudes reset to 1.0 → dot products shrink back to cosine range [-1, 1] → sigmoid unsaturates → gradients restored to full strength
+
+Without normalization, the system would self-dampen: magnitude growth → sigmoid saturation → gradient vanishing → embeddings stop moving. Normalization prevents this, acting as a **periodic gradient wake-up** that keeps learning active indefinitely. This is why the KNN lists can never fully stabilize with constant lr + periodic normalization — the system is never allowed to relax.
+
+This insight reframes the convergence problem. Three paths to stable embeddings:
+
+1. **Explicit lr decay** — reduce update magnitude directly, independent of normalization
+2. **Reduce normalization frequency** — longer gaps between resets allow more natural self-dampening between wake-ups (e.g., normalize_every=1000 instead of 100)
+3. **Remove normalization entirely** — let magnitude growth self-regulate gradients. Risks: unchecked magnitude blow-up, eventual numerical issues. But the self-dampening *is* a form of convergence.
+
+Option 2 is interesting because it creates a hybrid: the system self-dampens for longer stretches (gradients decay naturally as magnitudes grow), then gets a periodic reset. Lower normalization frequency → more time in the dampened state → less churn. This could be tested easily by sweeping normalize_every={100, 500, 1000, 5000}.
+
+Option 1 (lr decay) is the cleanest and most controllable. The KNN overlap metric could serve as the decay trigger itself — when overlap crosses a threshold, halve lr.
+
 ## Next Steps
 
-- **Learning rate decay**: If overlap triggers lr reduction (e.g., halve lr when overlap > 0.7 for N consecutive reports), embeddings should converge toward full stability. The KNN overlap metric could serve as the decay trigger itself.
+- **Normalization frequency sweep**: Test normalize_every={100, 500, 1000, 5000} and measure KNN stability. If the theory is correct, lower frequency → higher overlap (at the cost of slower early learning).
+- **Learning rate decay**: Implement lr decay triggered by KNN overlap (e.g., halve lr when overlap > 0.7 for N consecutive reports). This is the most direct path to convergence.
 - **Early stopping**: Stop training when overlap exceeds a threshold (e.g., 0.95) for several consecutive snapshots — the embeddings have converged and further training adds only jitter.
 - **Sweep KNN K**: Test K=20, K=50 to see if larger neighborhoods are more/less stable.
-- **Compare with lr decay**: Run identical configuration but with lr decay schedule, measure how overlap responds.
+- **No-normalization baseline**: Run with normalize_every=0 to see if natural self-dampening produces convergence (and whether spatial quality suffers).
