@@ -70,12 +70,32 @@ k_sample=200 at 160x160 is catastrophic — 64.8% of anchors find zero neighbors
 | 800 | 10k | 110M | 0.98 | 77.4 | 2.4% | 5.2% |
 | 800 | 50k | 461M | 0.81 | 2.33 | 86.2% | **97.2%** |
 | 800 | 100k | 1.09B | 0.75 | 2.91 | 76.6% | 91.2% |
-| 800 | 1M | | | | | |
+| 800 | 1M | 10.0B | 0.65 | 2.66 | 80.3% | 94.2% |
 
-**50k hits 97.2% — matches 80x80 baseline.** The 160x160 grid converges to the same quality, just needs k_sample scaled to maintain the sampling fraction.
+**50k is the sweet spot — 97.2%, matches 80x80 baseline.** The 160x160 grid converges to the same quality, just needs k_sample scaled to maintain the sampling fraction.
 
-**100k degrades.** PCA disparity improves (0.81→0.75) but K-neighbor quality drops (97.2%→91.2%). Same pattern seen in ts-00010 with T=200 MSE — possible walk path variance or overtraining where later walk regions have weaker correlation structure, pushing embeddings away from early good positions.
+**100k dips, 1M partially recovers.** K-neighbor quality drops at 100k (91.2%) then recovers at 1M (94.2%), while PCA disparity keeps improving (0.98→0.65). The dip is likely walk path variance — different regions of the source image have different correlation structure. Over 1M ticks the walk visits enough regions to average out, but doesn't surpass the 50k peak.
+
+**Comparison with 80x80 at same tick counts:**
+
+| Grid | k_sample | Ticks | <5px | Notes |
+|------|----------|-------|------|-------|
+| 80x80 | 200 | 50k | 97.1% | ts-00010 baseline |
+| 80x80 | 200 | 9M | 97.4% | ts-00010 long run |
+| 160x160 | 800 | 50k | 97.2% | Matches baseline |
+| 160x160 | 800 | 1M | 94.2% | Slightly below |
+
+## Conclusions
+
+1. **k_sample must scale linearly with n.** At 160x160, k_sample=200 is dead (64.8% zero-hit). k_sample=800 (same 3.1% fraction) restores identical capture statistics.
+
+2. **160x160 converges to the same quality as 80x80.** 97.2% within 5px at 50k — no quality loss from scaling, just need proportional sampling.
+
+3. **Long runs show diminishing returns with walk path variance.** Quality dips at 100k, partially recovers at 1M. The random walk visits regions with varying correlation strength — some help, some hurt.
+
+4. **TODO: auto-adjust k_sample.** Track zero-hit rate per tick. If >15%, increase k_sample. If <5%, decrease. This would eliminate manual tuning when grid size changes.
 
 ## Files
 
-- `main.py` — same code, just `-W 160 -H 160`
+- `main.py` — same code, just `-W 160 -H 160` and `--k-sample 800`
+- `check_k_capture.py` — neighbor capture rate analysis script
