@@ -336,8 +336,59 @@ Same wall time (79.1s). 2 batches at 5k ticks reaches 95.6% <3px vs 96.8% for 1 
 
 **Conclusion**: `anchor_sample` is an effective coverage multiplier. Doubling anchors per tick ≈ doubling ticks at half the count, with identical wall time. The parameter is useful for trading tick count for per-tick coverage without increasing memory.
 
+### GPU/rendering infrastructure tests (Runs 032–043)
+
+Validated separate `--gpu` (solver) and `--render-gpu` (CuPy/cuML UMAP) flags, spawn multiprocessing for CUDA context isolation, and cold projection default.
+
+#### 160×160 scaling (Runs 032–035)
+
+All runs at 160×160 (n=25,600) with 1k or fewer ticks — insufficient training for this scale.
+
+| Run | Grid | Preset | Ticks | k_sample | Pairs | <3px | <5px | Time |
+|-----|------|--------|-------|----------|-------|------|------|------|
+| 032 | 160² | garden | 100 | 768 | 39.6M | 0.1% | 0.3% | 5.3s |
+| 033 | 160² | garden | 1k | 768 | 369M | 0.2% | 0.5% | 50.2s |
+| 034 | 160² | saccades | 1k | 800 | 20.2M | 0.1% | 0.2% | 12.8s |
+| 035 | 160² | saccades | 1k | 800 | 20.1M | 0.1% | 0.2% | 12.9s |
+
+160×160 needs significantly more ticks to converge. Garden with threshold=0.1 generates far more pairs (369M vs 20M for saccades at threshold=0.5) but still doesn't sort — the pairs are low-quality (weak correlations pass the threshold). Saccades at threshold=0.5 generates fewer but cleaner pairs, though also insufficient at 1k ticks.
+
+#### GPU vs CPU solver/rendering (Runs 036–042)
+
+Tested all four GPU/CPU combinations for solver and renderer at 80×80.
+
+| Run | Solver | Renderer | Ticks | <3px | Time | Notes |
+|-----|--------|----------|-------|------|------|-------|
+| 036 | GPU | GPU | 1k | 1.1% | 4.3s | Baseline short run |
+| 037 | GPU | CPU | 1k | 0.7% | 29.1s | CPU UMAP 7× slower |
+| 038 | CPU | GPU | 1k | 0.8% | 272.4s | CPU solver 63× slower |
+| 041 | GPU | GPU | 1k | 0.5% | 7.7s | Both GPU |
+| 039 | GPU | CPU | 10k | 97.6% | 67.9s | Save last frame only |
+| 042 | GPU | GPU | 10k | 93.5% | 44.8s | Save every 100 ticks |
+
+**Key findings**:
+- **CPU solver is impractical**: 272s vs 4.3s for 1k ticks (63× slower), no quality benefit
+- **GPU UMAP rendering** via cuML saves ~23s at 10k ticks (44.8s vs 67.9s) by parallelizing rendering with solver
+- **1k ticks underfits at 80×80**: All 1k runs show <2% <3px regardless of GPU config
+- **Rendering frequency matters**: Run 039 renders only 1 frame (67.9s), Run 042 renders 100 frames (44.8s) — async rendering with GPU UMAP is faster than CPU rendering even with 100× more frames
+- **Spawn multiprocessing works**: Separate CUDA contexts for PyTorch solver and CuPy/cuML render worker avoid initialization conflicts
+
+Run 040 (CPU solver + GPU render, 10k ticks) was killed — CPU solver too slow for 10k.
+
+#### Cold vs warm projection (Runs 042–043)
+
+| Run | Projection | Ticks | <3px | <5px | Pairs | Time |
+|-----|-----------|-------|------|------|-------|------|
+| 042 | warm | 10k | 93.5% | 99.5% | 187.6M | 44.8s |
+| 043 | cold | 10k | 95.5% | 99.9% | 216.1M | 53.5s |
+
+**Cold projection produces better quality renders.** UMAP from scratch each frame avoids warm-start drift artifacts where early (poor) projections bias later frames. The 2% quality improvement (93.5% → 95.5%) comes at a modest 8.7s time cost. Made cold projection the default (`--cold-projection` is now `BooleanOptionalAction` with `default=True`).
+
+Note: the pair count difference (187M vs 216M) is due to random sampling variance, not the projection mode — rendering doesn't affect solver training.
+
 ## Next Steps
 
+- **160×160 with more ticks**: 10k+ ticks needed to validate scaling at this grid size
 - **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated (old runs used MSE)
 - **anchor_sample scaling**: Test higher values (e.g., 1024, 2048) — is there diminishing returns?
 - **No-norm + lr decay**: Combine for quality + convergence
