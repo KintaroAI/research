@@ -209,6 +209,38 @@ Final: overlap=0.77, spatial=99.5% <3px, 100% <5px, std=1.30.
 
 This makes physical sense: the skip-gram keeps receiving new correlation pairs every tick (the signal buffer refreshes continuously). Even if all vectors were perfectly positioned, new random negative samples would still push them around. The equilibrium is between "learning from new data" and "magnitude-dampened gradients."
 
+### Vector magnitude analysis
+
+Checked W-vector magnitudes across runs to understand the self-dampening mechanism quantitatively.
+
+| Run | Mean ||w|| | Min | Max | Std |
+|-----|-----------|-----|-----|-----|
+| norm=100 50k (baseline) | 1.000 | 1.000 | 1.000 | 0.000 |
+| norm=5000 50k | 1.000 | 1.000 | 1.000 | 0.000 |
+| no-norm lr=0.0001 50k | 1.326 | 0.876 | 1.596 | 0.136 |
+| no-norm lr=0.0005 50k | 3.815 | 3.133 | 4.244 | 0.173 |
+| no-norm lr=0.001 50k | 4.030 | 3.443 | 4.439 | 0.179 |
+| no-norm lr=0.001 200k | 3.934 | 3.188 | 4.541 | 0.255 |
+
+**Magnitudes stabilize around 4.0.** The 50k and 200k runs with lr=0.001 are nearly identical (4.03 vs 3.93) — magnitudes are not growing unboundedly, they've reached equilibrium.
+
+At magnitude ~4, dot products between vectors are ~16× larger than at unit length (4×4), pushing the sigmoid well into saturation. This is the self-dampening: σ(16×cos) ≈ 1.0 for positive pairs, so gradients (1-σ) ≈ 0. But not fully zero — enough gradient remains for continuous slow refinement.
+
+**lr=0.0001 barely grew** (1.33 after 50k ticks) — not enough updates to reach the dampening regime, explaining both the poor spatial quality (29.4% <3px) and the oscillating overlap.
+
+The magnitude spread is tight (std ≈ 0.18–0.26) — all neurons reach similar magnitudes regardless of position or local correlation structure. This uniformity suggests the equilibrium is a global property of the skip-gram dynamics, not neuron-specific.
+
+### Normalization as implicit learning rate control — full picture
+
+The experiments reveal that normalization and lr interact in a way that was previously misunderstood:
+
+1. **Normalization does not just prevent blow-up** — it actively prevents the system from reaching its natural equilibrium magnitude (~4.0), which is where self-dampening provides the best spatial quality
+2. **Frequent normalization (100) acts as permanent high lr** — resets gradients to full strength every 100 ticks, keeping the system in constant high-churn
+3. **No normalization lets the system find its own equilibrium** — magnitudes grow to ~4.0 where gradient flow balances between positive and negative forces, producing the best spatial layout
+4. **The "blow-up" that normalization prevents isn't actually harmful** — magnitude 4.0 is stable and produces superior results
+
+The original rationale for normalization ("prevents magnitude blow-up") was based on the assumption that growing magnitudes are dangerous. In practice, magnitude growth IS the annealing mechanism, and preventing it hurts quality.
+
 ### Summary: convergence comparison
 
 | Config | 50k overlap | 200k overlap | 200k <3px | Converges? |

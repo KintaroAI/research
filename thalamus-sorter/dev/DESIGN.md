@@ -33,17 +33,16 @@ The correlation mode uses dot product with dual vectors (W, C) rather than Eucli
 
 - **Dot product captures richer structure.** Angular relationships in high-D can encode nuances beyond simple spatial proximity — channel identity, correlation strength, multi-scale neighborhoods. Euclidean mode forces everything into a spatial distance metric, which may discard useful information.
 - **Dual vectors (W, C) prevent feedback loops.** Single-vector dot product collapses (ts-00005). Separate W and C vectors break the symmetry — W encodes "what I am", C encodes "what my neighbors look like".
-- **Periodic L2 normalization** (`--normalize-every 100`) prevents magnitude blow-up. The dot product sigmoid naturally self-regulates, but explicit normalization keeps gradients stable long-term.
+- **No L2 normalization** (default `--normalize-every 0`). Vector magnitudes grow to ~4× unit length and stabilize — this natural magnitude growth IS the annealing mechanism. At magnitude ~4, dot products are ~16× larger, sigmoid saturates, gradients shrink, and the system self-dampens. Normalization prevents this equilibrium and hurts spatial quality (ts-00014: 99.5% <3px without normalization vs 88-96% with).
 - **Spatial layout is derived, not learned directly.** The embeddings capture correlation structure; PCA/UMAP then projects to 2D for spatial rendering. This separation means the embeddings can encode structure that doesn't map to a flat 2D grid (e.g., channel clusters with internal spatial organization).
 
 The Euclidean mode (`tick_euclidean`) exists as an alternative for precomputed-neighbor scenarios but is not used in the correlation pipeline.
 
 ## What works
 
-- **Dual-vector dot product skip-gram** with periodic L2 normalization — captures correlation structure including nuances beyond pure spatial proximity
+- **Dual-vector dot product skip-gram** without normalization — captures correlation structure including nuances beyond pure spatial proximity. Vector magnitudes grow to ~4× and self-stabilize, providing natural annealing.
 - **Sliding window pairs** from variable-length sentences: transitive inference (B correlated with A and C → B-C pair) gives 10-20x more training signal than anchor-only pairs
 - **MSE-based scoring** from real image saccades: 97-98% K-neighbor precision with proper sigma/threshold
-- **L2 normalization** on W and C vectors: prevents magnitude blow-up in dot product mode
 - **D=8-16** embedding dims: D<3 collapses, D=8 is the practical minimum, D=16 helps for complex spatial distributions
 - **k_sample proportional to N**: maintains constant sampling fraction (~3%) regardless of grid size
 - **sigma proportional to grid size**: sigma ~ grid_size/10 keeps correlation reach constant
@@ -54,6 +53,7 @@ The Euclidean mode (`tick_euclidean`) exists as an alternative for precomputed-n
 - **Single-vector dot product** (no W/C separation): feedback loop, uniform PCA, no spatial structure
 - **Low threshold / high sigma** in correlation scoring: too many false positives, noisy sentences
 - **Fixed k_sample at larger grids**: k_sample=200 at 160x160 gives 65% dead anchors
+- **Frequent L2 normalization** (normalize_every=100): prevents natural magnitude growth that provides self-annealing. Keeps effective lr permanently high, producing 88-96% <3px vs 99.5% without normalization (ts-00014)
 - **Gaussian noise signals with T<200**: |r| < 0.005, below noise floor
 - **T=200 buffer at >500k ticks**: signal churn destabilizes embeddings; T=1000 is the stable default
 
