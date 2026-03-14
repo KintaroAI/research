@@ -591,11 +591,14 @@ def run_word2vec(args):
                 # KNN stability reporting
                 if dsolver.knn_k > 0 and tick % knn_report_every == 0:
                     dsolver._refresh_knn_dists()
-                    overlap, n_changed = dsolver.knn_stability()
-                    dsolver._knn_overlap_history.append((tick, overlap))
+                    overlap, n_changed, top50_swaps, top90_swaps = dsolver.knn_stability()
+                    spatial_acc = dsolver.knn_spatial_accuracy(w, radius=3, channels=sig_channels)
+                    dsolver._knn_overlap_history.append((tick, overlap, spatial_acc))
                     lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
                     print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
-                          f"({n_changed}/{n} neurons changed){lr_str}")
+                          f"spatial={spatial_acc:.3f} "
+                          f"({n_changed}/{n} changed) "
+                          f"swaps: top50={top50_swaps:.1f} top90={top90_swaps:.1f}{lr_str}")
 
                 if tick % args.save_every == 0:
                     emb = dsolver.get_positions()
@@ -650,11 +653,14 @@ def run_word2vec(args):
                 # KNN stability reporting
                 if dsolver.knn_k > 0 and tick % knn_report_every == 0:
                     dsolver._refresh_knn_dists()
-                    overlap, n_changed = dsolver.knn_stability()
-                    dsolver._knn_overlap_history.append((tick, overlap))
+                    overlap, n_changed, top50_swaps, top90_swaps = dsolver.knn_stability()
+                    spatial_acc = dsolver.knn_spatial_accuracy(w, radius=3, channels=sig_channels)
+                    dsolver._knn_overlap_history.append((tick, overlap, spatial_acc))
                     lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
                     print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
-                          f"({n_changed}/{n} neurons changed){lr_str}")
+                          f"spatial={spatial_acc:.3f} "
+                          f"({n_changed}/{n} changed) "
+                          f"swaps: top50={top50_swaps:.1f} top90={top90_swaps:.1f}{lr_str}")
 
                 if output_dir and tick % args.save_every == 0:
                     frame = render_frame()

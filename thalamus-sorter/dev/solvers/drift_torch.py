@@ -524,8 +524,54 @@ class DriftSolver:
         overlap = float(per_neuron.mean().item()) / self.knn_k
         n_changed = int((per_neuron < self.knn_k).sum().item())
 
+        # Per-neuron swap counts (K - matches = swaps)
+        swaps = self.knn_k - per_neuron  # (n,)
+        sorted_swaps = swaps.sort().values
+        n = self.n
+        # Overlap for top 50% most stable neurons (lowest swap count)
+        top50_swaps = sorted_swaps[:n // 2].mean().item()
+        # Overlap for top 90% most stable (bottom 10% excluded)
+        top90_swaps = sorted_swaps[:n * 9 // 10].mean().item()
+
         self._knn_prev = self.knn_lists.clone()
-        return overlap, n_changed
+        return overlap, n_changed, top50_swaps, top90_swaps
+
+    def knn_spatial_accuracy(self, width, radius=3, channels=1):
+        """Fraction of KNN neighbors that are within `radius` pixels on the grid.
+
+        Args:
+            width: grid width (neurons laid out row-major within each channel)
+            radius: spatial proximity threshold in pixels
+            channels: number of signal channels (neurons 0..w*h-1 = ch0, etc.)
+
+        Returns:
+            accuracy: float in [0, 1], mean fraction of K neighbors within radius
+        """
+        if self.knn_k <= 0:
+            return 0.0
+
+        hw = self.n // channels  # pixels per channel
+        # Grid coords for all neurons (channel-aware: neuron i → pixel i % hw)
+        pixel_ids = torch.arange(self.n, device=self.device) % hw
+        gy = pixel_ids // width
+        gx = pixel_ids % width
+        ch = torch.arange(self.n, device=self.device) // hw
+
+        # Coords of each neuron and its KNN neighbors
+        nx, ny, nc = gx, gy, ch
+        knn_flat = self.knn_lists  # (n, K)
+        kx = gx[knn_flat]  # (n, K)
+        ky = gy[knn_flat]
+        kc = ch[knn_flat]
+
+        # Spatial distance (only meaningful within same channel)
+        dx = (nx.unsqueeze(1) - kx).float()
+        dy = (ny.unsqueeze(1) - ky).float()
+        dist = (dx * dx + dy * dy).sqrt()
+        same_ch = (nc.unsqueeze(1) == kc)
+
+        within = (dist <= radius) & same_ch
+        return float(within.float().mean().item())
 
     def get_knn_lists(self):
         """Return KNN lists as numpy array (n, knn_k)."""
