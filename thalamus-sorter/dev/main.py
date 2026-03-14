@@ -377,10 +377,12 @@ def run_word2vec(args):
         else:
             knn_k = getattr(args, 'knn_track', 0)
             lr_decay = getattr(args, 'lr_decay', 1.0)
+            knn_nofn = getattr(args, 'knn_nofn', False)
             dsolver = DriftSolver(n, top_k=None, k=args.k, dims=args.dims,
                                   lr=args.lr, mode='dot', k_neg=args.k_neg,
                                   normalize_every=norm_every, device='cuda',
-                                  knn_k=knn_k, lr_decay=lr_decay)
+                                  knn_k=knn_k, lr_decay=lr_decay,
+                                  knn_nofn=knn_nofn)
 
         if args.warm_start:
             warm = np.load(args.warm_start)
@@ -1117,6 +1119,9 @@ def main():
                        help="Report KNN stability every N ticks (default: 1000)")
     p_w2v.add_argument("--lr-decay", type=float, default=1.0,
                        help="Multiply lr by this factor at each normalization event (default: 1.0 = no decay)")
+    p_w2v.add_argument("--knn-nofn", action="store_true",
+                       help="Add neighbor-of-neighbor candidates to correlation probing. "
+                            "Requires --knn-track. Breaks O(n²) scaling.")
     p_w2v.add_argument("--render", choices=["euclidean", "angular", "bestpc",
                                             "direct", "procrustes", "lstsq",
                                             "umap", "tsne", "spectral", "mds"],

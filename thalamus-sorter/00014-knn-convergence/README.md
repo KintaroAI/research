@@ -254,9 +254,31 @@ The original rationale for normalization ("prevents magnitude blow-up") was base
 **Best convergence**: lr decay (0.95 overlap and climbing)
 **These are different goals.** For a system running indefinitely on live signal, equilibrium may be preferable to full convergence — the system stays responsive to new input while maintaining excellent spatial structure.
 
+### Neighbor-of-neighbor candidate sampling (Runs 017–020)
+
+Implemented `--knn-nofn` flag: for each anchor, also probe neighbors-of-neighbors (minus direct neighbors) as correlation candidates. Goal: break O(n²) scaling by replacing large random k_sample with targeted KNN-guided search.
+
+**First attempt (Run 017)**: max_hit_ratio counted all candidates including nofn — the targeted nofn candidates inflated hit counts, causing most anchors to be discarded. Result: 0.4% <3px, pair starvation. **Fix**: max_hit_ratio only counts hits in the random portion.
+
+**50k comparison at 80×80 (Runs 019–020)**:
+
+| | Without nofn | With nofn |
+|---|---|---|
+| Candidates/anchor | 200 random | 200 random + 100 nofn |
+| Pairs/tick | ~11k | ~128k |
+| Spatial <3px | 99.5% | 59.9% |
+| KNN overlap | 0.80 | 0.47 |
+| Wall time | 235s | 311s |
+
+**Nofn hurts at 80×80.** The 100 nofn candidates pass threshold at a much higher rate than random ones (they're targeted toward correlated neurons), generating 11× more training pairs. These targeted pairs dominate the training signal, drowning out unbiased random exploration. The system reinforces its current (possibly wrong) embedding structure instead of discovering new connections.
+
+**Key insight**: At 80×80 (n=6400) with k_sample=200 (3% of n), random sampling already provides good coverage. Nofn adds redundant signal biased toward existing structure. The real value of nofn is at larger grids where random k_sample would need to scale quadratically — there, nofn can provide targeted coverage with a fixed-size random sample.
+
+**Next test**: 320×320 (n=102,400) where k_sample would need to be 3072 for 3% coverage. Test nofn with reduced k_sample (e.g., 50–200 random + 100 nofn) vs baseline with k_sample=3072.
+
 ## Next Steps
 
-- **No-norm + lr decay**: Combine the best of both — no normalization for quality, with gentle lr decay (triggered by KNN overlap or on a schedule) for eventual convergence when needed
+- **320×320 nofn scaling test**: Does nofn + small k_sample match or beat large k_sample at scale?
+- **No-norm + lr decay**: Combine for quality + convergence
 - **Test on garden.png / RGB**: Verify no-norm works on harder inputs
-- **Very long run (1M+ ticks)**: Does the equilibrium hold indefinitely? Do magnitudes keep growing or stabilize?
-- **Adaptive regime**: Start with lr=0.001 no-norm for fast structure formation, switch to lr decay once spatial quality plateaus
+- **1M garden run in progress**: Testing no-norm stability on harder input

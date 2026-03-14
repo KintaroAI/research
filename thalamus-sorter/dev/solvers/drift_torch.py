@@ -39,11 +39,12 @@ class DriftSolver:
     def __init__(self, n, top_k=None, k=24, dims=3, lr=0.05,
                  mode='euclidean', k_neg=5, margin=0.1,
                  normalize_every=0, device='cuda', knn_k=0,
-                 lr_decay=1.0):
+                 lr_decay=1.0, knn_nofn=False):
         self.n = n
         self.dims = dims
         self.lr = lr
         self.lr_decay = lr_decay
+        self.knn_nofn = knn_nofn
         self.mode = mode
         self.k_neg = k_neg
         self.margin = margin
@@ -257,6 +258,13 @@ class DriftSolver:
 
         # Sample random candidates for each anchor
         candidates = torch.randint(0, n, (batch, k_sample), device=self.device)
+        k_random = k_sample  # remember original random count for max_hit_ratio
+
+        # Neighbor-of-neighbor sampling: add KNN-guided candidates
+        if self.knn_k > 0 and self.knn_nofn:
+            nofn = self._sample_nofn(anchors)  # (batch, nofn_count)
+            candidates = torch.cat([candidates, nofn], dim=1)
+            k_sample = candidates.shape[1]  # update for downstream
 
         # Compute correlations: signals are (n, T)
         # Gather anchor and candidate signals
@@ -317,9 +325,12 @@ class DriftSolver:
         # Filter: discard anchors with too many hits (global signal detection)
         # If a neuron correlates with 50% of random candidates, it's seeing
         # a global signal (flickering lights, slow drift), not local structure.
+        # Only count hits in the random portion — nofn candidates are expected
+        # to pass threshold at high rates.
         if max_hit_ratio is not None:
-            max_hits = int(k_sample * max_hit_ratio)
-            too_popular = good_counts > max_hits
+            random_hits = mask[:, :k_random].sum(dim=1)
+            max_hits = int(k_random * max_hit_ratio)
+            too_popular = random_hits > max_hits
             good_counts[too_popular] = 0
             mask[too_popular] = False
 
@@ -430,6 +441,46 @@ class DriftSolver:
                 vecs.div_(norms)
         if self.lr_decay < 1.0:
             self.lr *= self.lr_decay
+
+    # ---- Neighbor-of-neighbor sampling ----
+
+    def _sample_nofn(self, anchors):
+        """Generate neighbor-of-neighbor candidates for each anchor.
+
+        For each anchor:
+        1. Get its K neighbors from KNN list
+        2. Get each neighbor's K neighbors (K² total)
+        3. Remove the anchor itself and its direct neighbors
+        4. Return unique candidates
+
+        Returns: (batch, nofn_count) tensor, padded with self-references
+                 (which get masked out by correlation check anyway).
+        """
+        batch = anchors.shape[0]
+        K = self.knn_k
+
+        # Get neighbors of each anchor: (batch, K)
+        anchor_nbs = self.knn_lists[anchors]
+
+        # Get neighbors-of-neighbors: (batch, K, K)
+        nofn = self.knn_lists[anchor_nbs]
+
+        # Reshape to (batch, K*K)
+        nofn = nofn.reshape(batch, K * K)
+
+        # Build mask of entries to exclude: anchor itself + direct neighbors
+        # Exclude self
+        is_self = (nofn == anchors.unsqueeze(1))
+        # Exclude direct neighbors
+        is_nb = (nofn.unsqueeze(2) == anchor_nbs.unsqueeze(1)).any(dim=2)
+        exclude = is_self | is_nb
+
+        # Replace excluded entries with a random neuron (will likely fail
+        # correlation check, acting as extra random sampling)
+        replacements = torch.randint(0, self.n, nofn.shape, device=self.device)
+        nofn = torch.where(exclude, replacements, nofn)
+
+        return nofn
 
     # ---- Online KNN tracking ----
 
