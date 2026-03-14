@@ -185,16 +185,46 @@ The self-dampening mechanism works as predicted: magnitudes grow (std=1.41 vs 0.
 
 Without normalization, the system smoothly converges — no perturbations, no resets, just continuous refinement that naturally slows down as the structure solidifies.
 
-**Overlap trajectory for lr=0.001 no-norm**:
+**Overlap trajectory for lr=0.001 no-norm (50k run)**:
 - Tick 10k: 0.52 (structure forming)
 - Tick 20k: 0.78 (rapid improvement)
 - Tick 30k: 0.84 (self-dampening kicks in)
 - Tick 40k: 0.87 (slowing down)
-- Tick 50k: 0.90 (still climbing — extending to 200k)
+- Tick 50k: 0.90 (still climbing)
+
+### 200k run — self-dampening has a ceiling (Run 015)
+
+Extended lr=0.001 no-norm to 200k ticks. Overlap does NOT continue climbing to 1.0.
+
+| Window (ticks) | Avg overlap |
+|----------------|-------------|
+| 5k–50k         | 0.68        |
+| 50k–100k       | 0.78        |
+| 100k–150k      | 0.76        |
+| 150k–200k      | 0.79        |
+
+Final: overlap=0.77, spatial=99.5% <3px, 100% <5px, std=1.30.
+
+**The self-dampening reaches equilibrium, not convergence.** Magnitudes grow until positive and negative gradient forces balance — but at that equilibrium, the system still has enough gradient flow to keep churning ~23% of KNN neighbors every 5000 ticks. The sigmoid is partially saturated but not fully.
+
+This makes physical sense: the skip-gram keeps receiving new correlation pairs every tick (the signal buffer refreshes continuously). Even if all vectors were perfectly positioned, new random negative samples would still push them around. The equilibrium is between "learning from new data" and "magnitude-dampened gradients."
+
+### Summary: convergence comparison
+
+| Config | 50k overlap | 200k overlap | 200k <3px | Converges? |
+|--------|-----------|-------------|----------|------------|
+| norm=100, no decay (default) | 0.61 | 0.58 | 90.7% | No — plateaus at 0.58 |
+| norm=5000, no decay | 0.81 | 0.81 | 96.2% | No — plateaus at 0.81 |
+| norm=5000, decay=0.8 | 0.95 | — | 96.2% | Yes — approaching 1.0 |
+| **no norm, no decay** | **0.90** | **0.77** | **99.5%** | **No — equilibrium at ~0.77** |
+
+**Best spatial quality**: no normalization (99.5% <3px)
+**Best convergence**: lr decay (0.95 overlap and climbing)
+**These are different goals.** For a system running indefinitely on live signal, equilibrium may be preferable to full convergence — the system stays responsive to new input while maintaining excellent spatial structure.
 
 ## Next Steps
 
-- **200k run in progress**: lr=0.001 no-norm — see if overlap approaches 1.0
+- **No-norm + lr decay**: Combine the best of both — no normalization for quality, with gentle lr decay (triggered by KNN overlap or on a schedule) for eventual convergence when needed
 - **Test on garden.png / RGB**: Verify no-norm works on harder inputs
-- **Very long run**: Does the system stay stable at high magnitude indefinitely, or do numerical issues emerge?
-- **Update default preset**: Consider removing normalization entirely
+- **Very long run (1M+ ticks)**: Does the equilibrium hold indefinitely? Do magnitudes keep growing or stabilize?
+- **Adaptive regime**: Start with lr=0.001 no-norm for fast structure formation, switch to lr decay once spatial quality plateaus
