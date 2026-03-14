@@ -461,10 +461,38 @@ Per-channel neighbor composition (run 054):
 - Deriv_corr at threshold=0.1 allows ~30% cross-channel mixing (derivative correlation between co-located pixels of different channels is real signal) but distributes training pairs more uniformly → all three channels reach ~80% <5px.
 - The total pair count difference is enormous (92B vs 264M) — deriv_corr + step=5 + 3 batches generates 348× more pairs. But quality improvement is modest (flat 32% vs 25.5% <3px), confirming that garden's bottleneck is signal quality, not pair volume.
 
+#### RGB saccades — channel separation at 1k and 10k (Runs 055–056)
+
+Ran RGB saccades (threshold=0.5, saccade_step=50) with 3 anchor batches. Run 056 warm-started from run 055's model (+9k ticks).
+
+| | Run 055 (1k) | Run 056 (1k+9k) |
+|---|---|---|
+| Flat <3px | 3.8% | 38.4% |
+| Flat <5px | 8.2% | 68.1% |
+| Channel self-neighbors | 35–40% | **99.3%** |
+| Cross-channel mixing | 62% | 0.5% |
+| R <5px (within-ch) | 21.6% | **100%** |
+| G <5px (within-ch) | 24.1% | **100%** |
+| B <5px (within-ch) | 19.1% | **100%** |
+| k10 mean dist | 13.49 | 1.86 |
+
+At 1k ticks: no channel separation (35–40% self, near-random). At 10k: near-perfect separation (99.3%) AND perfect within-channel spatial sorting (100% <5px, mean dist 1.87px for all channels).
+
+**Saccades vs garden with deriv_corr:**
+
+| | Saccades (10k, thr=0.5) | Garden (500k, thr=0.1) |
+|---|---|---|
+| Channel self-neighbors | 99.3% | 63–73% |
+| R <5px (within-ch) | 100% | 82.8% |
+| G <5px (within-ch) | 100% | 79.2% |
+| B <5px (within-ch) | 100% | 79.1% |
+| Ticks needed | 10k | 500k+ (not converged) |
+
+Saccades achieves perfect channel separation and spatial sorting 50× faster than garden. The key difference is threshold: 0.5 for saccades is strict enough to separate channels (only truly correlated same-channel pairs pass), while 0.1 for garden is permissive (cross-channel pairs pass → 30% mixing). Garden's weaker correlations require the lower threshold to generate pairs at all, but this comes at the cost of channel purity.
+
 ## Next Steps
 
-- **Deriv_corr threshold tuning for garden**: 0.1 may be too permissive (30% cross-channel mixing). Try 0.2–0.3 to improve channel separation while keeping R fed
-- **RGB saccades long run**: Compare channel structure with saccades (stronger correlations)
+- **Garden threshold tuning**: Try 0.2–0.3 to improve channel separation while keeping R fed
 - **D8 vs D16 at scale**: Re-compare at 50k+ where extra capacity may help (ts-00013 showed D16 doubles R quality)
 - **160×160 with more ticks**: 10k+ ticks needed to validate scaling at this grid size
 - **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated (old runs used MSE)
