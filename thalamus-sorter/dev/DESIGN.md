@@ -170,14 +170,27 @@ Number of temporal frames in the rolling signal buffer.
 
 **Tradeoff**: longer buffer = more stable MSE estimates = better discrimination, but slower adaptation to signal changes and more memory (n × T float32).
 
-### Learning rate (lr=0.001)
+### Learning rate (lr=0.001) and convergence
 
-Skip-gram update step size. Currently constant throughout training.
+Skip-gram update step size. Initial value lr=0.001 for all runs.
 
-- All successful runs use lr=0.001
-- No schedule tested yet — potential improvement for late-stage refinement
 - Too high: oscillation, structure doesn't stabilize
 - Too low: slow convergence
+
+**This system is designed to run indefinitely** — potentially for days, weeks, or longer — continuously refining embeddings from a live signal stream. Convergence must happen naturally without a predetermined training length. A constant lr prevents convergence: embeddings jitter around optimal positions forever (ts-00014: KNN overlap plateaus at ~0.58 with constant lr).
+
+**Dual annealing via `--lr-decay` + `--normalize-every`** (ts-00014):
+
+The algorithm couples lr decay to normalization events, creating a self-regulating convergence mechanism that works without knowing the total training duration:
+
+1. **Intra-cycle self-dampening** (automatic, free): Between normalizations, skip-gram updates grow vector magnitudes → dot products increase → sigmoid saturates → gradients shrink toward zero. The system naturally slows down within each cycle.
+2. **Inter-cycle lr decay** (controlled, monotonic): At each normalization event, vectors are reset to unit length (restoring gradient flow) but lr is multiplied by the decay factor. Each cycle starts with full-strength gradients at a lower lr than the last.
+
+The result is a series of diminishing warm-restarts. Early cycles make large structural changes; late cycles do fine positioning. The system asymptotically converges without needing to know when to stop.
+
+Best tested configuration (ts-00014): `normalize_every=5000, lr_decay=0.8` — achieves 0.95 KNN overlap with 96.2% <3px spatial quality at 50k ticks. The decay factor and normalization interval together control the convergence speed: `lr_final = lr_init × decay^(ticks / normalize_every)`.
+
+**Caution**: If lr decays too aggressively (decay=0.5), embeddings freeze before fully sorting — KNN stabilizes (0.997) but spatial quality degrades (94.8% vs 96.2%). Monitor both KNN stability AND spatial quality to detect over-dampening.
 
 ### Negative sampling (k_neg=5)
 
@@ -187,14 +200,15 @@ Number of random negative samples per positive pair. Push-away force prevents em
 - Lower: faster per tick but may not prevent collapse
 - Higher: stronger repulsion, may over-separate
 
-### Normalization interval (normalize_every=100)
+### Normalization interval (normalize_every=5000)
 
 How often to L2-normalize W and C vectors.
 
 - Prevents magnitude blow-up in dot product mode
-- Too frequent: constrains learning, may slow convergence
-- Too infrequent: magnitudes grow, sigmoid saturates, gradients vanish
-- 100 works well empirically
+- **Too frequent** (100): keeps effective lr permanently high, prevents convergence. Acts as a periodic "gradient wake-up" that never lets the system relax.
+- **Too infrequent**: long periods of near-zero gradients (sigmoid saturation) where the system learns nothing
+- **Sweet spot** (1000–5000): allows natural self-dampening within each cycle while keeping the system from fully stalling. Acts as natural annealing — early in each cycle updates are large, late in each cycle they shrink.
+- Normalization frequency interacts with lr_decay: together they control convergence speed (see Learning rate section above)
 
 ### Sliding window size (window=5)
 
@@ -218,6 +232,6 @@ When multiple signal channels (R, G, B) are fed as independent neurons:
 ## Open questions
 
 - Can we force cross-channel spatial structure (e.g., shared spatial dimensions + channel-specific dimensions)?
-- Optimal learning rate schedule? All runs use constant lr=0.001
 - Auto-adaptive k_sample based on dead anchor rate?
 - Scaling beyond 160x160? Estimated need: k_sample ~ 0.03n, training time ~ O(n * ticks)
+- Optimal lr_decay / normalize_every for very long runs (millions of ticks)?
