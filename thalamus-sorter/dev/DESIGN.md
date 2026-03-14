@@ -99,36 +99,33 @@ Derivative correlation is the most robust and is the **default scoring method**:
 
 ## Parameters and tradeoffs
 
-### Anchor batch size (`batch_size=256`) and anchor batches (`anchor_batches=1`)
+### Anchor sampling (`anchor_sample`, `batch_size=256`)
 
-Controls how many neurons act as anchors per tick and how they're processed.
+Controls how many neurons act as anchors per tick and how they're processed. Two mutually exclusive CLI flags:
+- `--anchor-sample N`: set total unique anchors directly (e.g. `--anchor-sample 500`)
+- `--anchor-batches M`: compute as `M × batch_size` (e.g. `--anchor-batches 2` → 512)
+- Default: `batch_size` (256)
 
-`batch_size` is the GPU batch dimension — how many anchors are processed in parallel. `anchor_batches` is a coverage multiplier — how many sequential batches to run per tick. Total unique anchors per tick = `min(anchor_batches × batch_size, n)`.
+`batch_size` is the GPU batch dimension — how many anchors are processed in parallel. `anchor_sample` is the total unique anchors per tick, split into sequential chunks of `batch_size`.
 
-Implementation: `randperm(n)` shuffles all neuron indices, take the first `anchor_batches × batch_size` (capped at n), then `split(batch_size)` into sequential chunks. Each chunk gets independent candidate sampling, correlation, and skip-gram updates. Peak memory stays constant (determined by `batch_size × k_sample × T`).
+Implementation: `randperm(n)[:anchor_sample]` selects unique anchors (capped at n), then `split(batch_size)` into sequential chunks. Each chunk gets independent candidate sampling, correlation, and skip-gram updates. Peak memory stays constant (determined by `batch_size × k_sample × T`).
 
-| anchor_batches | batch_size | Unique anchors | GPU batches | Memory |
-|----------------|------------|----------------|-------------|--------|
-| 1 (default)    | 256        | 256            | 1           | 1×     |
-| 4              | 256        | 1024           | 4           | 1×     |
-| 25             | 256        | 6400 (all)     | 25          | 1×     |
-
-**When `anchor_batches × batch_size ≥ n`**, the cap kicks in and anchors cover all neurons:
-
-| n    | anchor_batches | batch_size | Requested | Capped to | Chunks               |
-|------|----------------|------------|-----------|-----------|----------------------|
-| 1000 | 4              | 256        | 1024      | 1000      | 256 + 256 + 256 + 232 |
-| 300  | 2              | 256        | 512       | 300       | 256 + 44             |
-| 100  | 2              | 256        | 512       | 100       | 100 (one chunk)      |
-
-With n=1000, anchor_batches=4: `min(1024, 1000) = 1000` anchors, `split(256)` → four chunks (256, 256, 256, 232). Nearly full coverage, last chunk slightly smaller. With n=300: `min(512, 300) = 300` anchors, `split(256)` → two chunks of 256 and 44. Every neuron is an anchor exactly once. With n=100: `min(512, 100) = 100` anchors, `split(256)` → one chunk of 100 (smaller than batch_size, so only one batch despite requesting two).
+| anchor_sample | batch_size | GPU batches | Chunks          | Memory |
+|---------------|------------|-------------|-----------------|--------|
+| 256 (default) | 256        | 1           | 256             | 1×     |
+| 500           | 256        | 2           | 256 + 244       | 1×     |
+| 1000          | 256        | 4           | 256+256+256+232 | 1×     |
+| 6400 (all)    | 256        | 25          | 25 × 256        | 1×     |
 
 - More anchors = more pairs/tick = faster convergence, but linear wall-clock cost per tick
-- `batch_size=256` is a reasonable GPU batch; `anchor_batches` scales coverage without increasing memory
+- `batch_size=256` is a reasonable GPU batch; `anchor_sample` scales coverage without increasing memory
+- At 80×80 (n=6400): 5k ticks with `--anchor-sample 512` ≈ 10k ticks with default 256, same wall time
 
 ### k_sample (candidate pool per anchor)
 
 Number of random candidates each anchor compares against. **Must scale linearly with n** to maintain a constant sampling fraction.
+
+**`anchor_sample` and `k_sample` are independent knobs.** `anchor_sample` controls coverage (how many neurons get a turn as anchor). `k_sample` controls discovery reach (how many candidates each anchor probes). `threshold` is also independent of both — it's a property of the signal (near neighbor correlation vs far neuron correlation), not the sampling. Calibrated thresholds: 0.5 for saccades deriv_corr, 0.1 for garden deriv_corr.
 
 | Grid | n | k_sample | Fraction | Dead anchor rate |
 |------|---|----------|----------|-----------------|
