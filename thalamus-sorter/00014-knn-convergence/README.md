@@ -490,6 +490,33 @@ At 1k ticks: no channel separation (35–40% self, near-random). At 10k: near-pe
 
 Saccades achieves perfect channel separation and spatial sorting 50× faster than garden. The key difference is threshold: 0.5 for saccades is strict enough to separate channels (only truly correlated same-channel pairs pass), while 0.1 for garden is permissive (cross-channel pairs pass → 30% mixing). Garden's weaker correlations require the lower threshold to generate pairs at all, but this comes at the cost of channel purity.
 
+### Pair quality analysis — why garden is hard
+
+Analyzed deriv_corr score distributions per channel pair type and distance bin (256 anchors × 600 candidates, single tick).
+
+**Score by distance — same channel vs cross channel:**
+
+| Distance | Saccades same-ch | Saccades cross-ch | Garden same-ch | Garden cross-ch |
+|----------|-----------------|-------------------|---------------|----------------|
+| 0-3px | 0.85 (100% pass) | 0.69 (97% pass) | 0.57 (100% pass) | 0.39 (94% pass) |
+| 3-5px | 0.72 (100%) | 0.59 (83%) | 0.21 (77%) | 0.13 (55%) |
+| 5-10px | 0.57 (79%) | 0.47 (35%) | 0.02 (22%) | 0.01 (18%) |
+| 10-20px | 0.36 (11%) | 0.30 (2%) | 0.02 (15%) | 0.01 (11%) |
+| 20+px | 0.08 (0%) | 0.06 (0%) | -0.00 (3.6%) | -0.00 (3.6%) |
+
+**Saccades has clean signal**: Near same-ch scores (0.85) are 10× higher than far (0.08). Zero far pairs pass threshold=0.5. Same-ch vs cross-ch gap is clear (0.85 vs 0.69 at <3px) — enough for the solver to learn channel identity over time.
+
+**Garden has noisy signal**: Near same-ch (0.57) only 2× higher than 5-10px (0.02). 3.6% of far pairs leak through threshold=0.1, producing ~4700 noise pairs vs ~1200 real near pairs (4:1 noise ratio). Same-ch vs cross-ch gap (0.57 vs 0.39) is small relative to the noise — channels are nearly indistinguishable to the solver.
+
+**Per-channel pair pass rates (garden):** All channel pairs (R→R, R→G, G→B, etc.) have similar pass rates (5–8%) and similar far-pair leak (3–4%). No channel combination stands out — the garden signal simply doesn't differentiate channels well.
+
+**Same-pixel cross-channel pairs:** Extremely high scores for both (0.7–0.9) because co-located R/G/B neurons see the same spatial content. But these are vanishingly rare in random sampling (~3–7 per channel pair in 153k candidates).
+
+**Root cause is image content diversity, not saccade step.** Saccade frame sequences saved to `exp_00014/saccade_frames_*/` confirm visually:
+- **Saccades step=50**: Spatially homogeneous source (book pages). Even large jumps produce similar frames → strong temporal correlations between nearby pixels.
+- **Garden step=5**: Smooth, small shifts. But garden has sharp color boundaries (flower petals → leaves → sky) so adjacent pixels have very different values → weak correlations.
+- **Garden step=50**: Chaotic — each frame shows a completely different part of the garden. Derivatives between frames are essentially random.
+
 ## Next Steps
 
 - **Garden threshold tuning**: Try 0.2–0.3 to improve channel separation while keeping R fed
