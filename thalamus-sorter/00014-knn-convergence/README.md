@@ -517,9 +517,25 @@ Analyzed deriv_corr score distributions per channel pair type and distance bin (
 - **Garden step=5**: Smooth, small shifts. But garden has sharp color boundaries (flower petals → leaves → sky) so adjacent pixels have very different values → weak correlations.
 - **Garden step=50**: Chaotic — each frame shows a completely different part of the garden. Derivatives between frames are essentially random.
 
+**Reframing the "noise" pairs:** The far pairs that pass threshold aren't necessarily harmful noise. If two distant pixels are both on a pink flower, they genuinely share color/derivative correlation — their deriv_corr score is real signal, not statistical artifact. The solver correctly identifies them as similar. The problem is that our spatial eval (k10 <5px) penalizes this: color-similar distant pixels get embedded nearby, which is semantically correct but spatially "wrong." This is the sorter discovering **color similarity** rather than **spatial proximity** — a valid but different structure.
+
+**Embedding dims don't affect pair discovery.** Deriv_corr scores are computed from the raw signal buffer `(n, T)`, independent of D. D=8 vs D=16 produces identical pairs, scores, and pass rates. The difference is downstream: more dims give the skip-gram more capacity to encode the discovered relationships. This is why ts-00013 showed D16 helps R (complex spatial distribution needs more embedding capacity) — same pairs, better representation.
+
+## Summary
+
+Experiment ts-00014 started as KNN convergence tracking and expanded into a comprehensive investigation of training dynamics:
+
+1. **KNN overlap** plateaus at ~0.58 with default settings. Normalization prevents convergence by periodically resetting gradient magnitudes.
+2. **No normalization** achieves best spatial quality (99.5% <3px) via self-dampening: magnitudes grow to ~4.0, sigmoid saturates, gradients vanish naturally.
+3. **Anchor_sample** is an effective coverage multiplier. 2× anchors ≈ 2× ticks at same wall time.
+4. **Deriv_corr vs MSE**: deriv_corr trades channel purity for uniform spatial quality. Saccades at threshold=0.5 achieves perfect separation; garden at 0.1 has 30% cross-channel mixing.
+5. **Signal quality is the bottleneck for garden**: 4:1 noise ratio in pairs, weak same-ch vs cross-ch gap. But "noise" pairs between color-similar distant pixels are real signal — the sorter discovers color similarity, not just spatial proximity.
+6. **GPU infrastructure**: separate solver/render GPU flags, spawn multiprocessing, cold projection default — all working reliably.
+
 ## Next Steps
 
 - **Garden threshold tuning**: Try 0.2–0.3 to improve channel separation while keeping R fed
-- **D8 vs D16 at scale**: Re-compare at 50k+ where extra capacity may help (ts-00013 showed D16 doubles R quality)
-- **160×160 with more ticks**: 10k+ ticks needed to validate scaling at this grid size
-- **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated (old runs used MSE)
+- **Color-aware eval**: Current <5px metric penalizes color-based clustering. Need a metric that rewards both spatial and color structure
+- **D8 vs D16 at scale**: Re-compare at 50k+ where extra capacity may help
+- **160×160 with more ticks**: 10k+ ticks needed to validate scaling
+- **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated
