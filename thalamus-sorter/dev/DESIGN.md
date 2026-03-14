@@ -51,7 +51,7 @@ The Euclidean mode (`tick_euclidean`) exists as an alternative for precomputed-n
 
 - **D=2 continuous drift** without external signal: collapses to 1D
 - **Single-vector dot product** (no W/C separation): feedback loop, uniform PCA, no spatial structure
-- **Low threshold / high sigma** in correlation scoring: too many false positives, noisy sentences
+- **Low threshold** (0.1) on garden images: admits color-similarity noise pairs that overwhelm spatial signal (ts-00015). Use 0.5 for all deriv_corr signals
 - **Fixed k_sample at larger grids**: k_sample=200 at 160x160 gives 65% dead anchors
 - **Frequent L2 normalization** (normalize_every=100): prevents natural magnitude growth that provides self-annealing. Keeps effective lr permanently high, producing 88-96% <3px vs 99.5% without normalization (ts-00014)
 - **Gaussian noise signals with T<200**: |r| < 0.005, below noise floor
@@ -125,7 +125,7 @@ Implementation: `randperm(n)[:anchor_sample]` selects unique anchors (capped at 
 
 Number of random candidates each anchor compares against. **Must scale linearly with n** to maintain a constant sampling fraction.
 
-**`anchor_sample` and `k_sample` are independent knobs.** `anchor_sample` controls coverage (how many neurons get a turn as anchor). `k_sample` controls discovery reach (how many candidates each anchor probes). `threshold` is also independent of both — it's a property of the signal (near neighbor correlation vs far neuron correlation), not the sampling. Calibrated thresholds: 0.5 for saccades deriv_corr, 0.1 for garden deriv_corr.
+**`anchor_sample` and `k_sample` are independent knobs.** `anchor_sample` controls coverage (how many neurons get a turn as anchor). `k_sample` controls discovery reach (how many candidates each anchor probes). `threshold` is also independent of both — it's a property of the signal (near neighbor correlation vs far neuron correlation), not the sampling. Calibrated threshold: **0.5 for deriv_corr** (both saccades and garden images — see Saccade signal section below).
 
 | Grid | n | k_sample | Fraction | Dead anchor rate |
 |------|---|----------|----------|-----------------|
@@ -140,31 +140,71 @@ Number of random candidates each anchor compares against. **Must scale linearly 
 
 **TODO**: Auto-adaptive k_sample — track dead anchor rate, double k_sample if >15%, halve if <5%.
 
-### MSE threshold
+### Correlation threshold
 
-Maximum MSE for a candidate to be accepted as a neighbor. Controls precision vs pair volume.
+Minimum derivative correlation for a candidate to be accepted as a neighbor. Controls precision vs pair volume.
 
-- **Too strict** (0.02 on garden.png): 74% near-pixel hit rate but only 244 pairs/tick — pair starvation
-- **Too loose** (0.08): 52k pairs/tick but 0.4% precision — noise overwhelms signal
-- **Sweet spot**: depends on image. Saccades.png works at 0.02; garden.png needs 0.04-0.05
+With deriv_corr (the default and recommended method), **threshold=0.5 works for all tested images** — both saccades and garden. This was established in ts-00015 after discovering that the old garden threshold of 0.1 was admitting massive numbers of color-similarity noise pairs.
 
-The skip-gram sliding window is noise-tolerant (ts-00009: transitive pairs help even with false positives), so erring toward more pairs at lower precision is generally better than pair starvation.
+- **Too strict** (>0.7): pair starvation — too few candidates exceed this correlation
+- **Too loose** (0.1 for garden): admits distant same-color pixels as neighbors. At threshold=0.1, garden generates 706M pairs in 50k ticks but only achieves 78% <3px. The noise pairs encode color similarity rather than spatial proximity.
+- **Sweet spot** (0.5): clean signal for both saccades and garden. Garden at 0.5 produces 179M pairs in 50k ticks and achieves 99.7% <3px.
+
+The skip-gram sliding window is noise-tolerant (ts-00009: transitive pairs help even with false positives), but ts-00015 showed that excessive noise (4:1 noise-to-signal ratio at threshold=0.1) overwhelms even this tolerance. **Threshold precision matters more than pair volume.**
 
 **Tradeoff**: `precision × pairs/tick` — want both high enough. If pairs/tick < 1000, the learner is starving regardless of precision.
 
 ### Saccade step size
 
-Pixels the random walk moves per frame in the source image.
+Pixels the random walk moves per frame in the source image. Each frame, the crop window jumps to a random position within `step` pixels of its current location.
 
-- **Large step (50)**: covers more of the image → diverse training signal, but weakens local temporal correlation between neighboring pixels
-- **Small step (5)**: stronger local correlations → more pairs pass threshold, but explores the image slowly (may not see the full image in T=1000 frames)
+- **Large step (50)**: covers more of the image → diverse training signal, broader spatial sampling. Each frame shows a substantially different region.
+- **Small step (5)**: consecutive frames overlap heavily → stronger local temporal correlation between neighboring pixels, but explores the image slowly (may not see the full image in T=1000 frames)
 
-**Image-dependent**: Smooth images (saccades.png: warm browns) tolerate large steps. High-diversity images (garden.png: colorful flowers) need small steps to maintain neighbor correlation above threshold.
+**Step=50 is the correct default for both images** when using deriv_corr with threshold=0.5 (ts-00015). The old guidance that garden needed step=5 was based on a threshold misconfiguration (threshold=0.1).
 
-| Image | Step | Near MSE | Near hit% | Pairs/tick |
-|-------|------|----------|-----------|-----------|
-| garden | 50 | 0.018 | 47% | 81 |
-| garden | 5 | 0.015 | 74% | 244 |
+| Image | Step | Threshold | Pairs (50k) | <3px | KNN spatial | Notes |
+|-------|------|-----------|-------------|------|-------------|-------|
+| garden | 5 | 0.5 | 8.7M | 0.4% | 0.89 | **Starved** — too few pairs above threshold |
+| garden | 50 | 0.5 | 179M | 99.7% | 0.998 | **Correct** |
+| garden | 5 | 0.1 | 706M (50k) | 78% | 0.95 | Old config — noise overwhelms |
+| saccades | 50 | 0.5 | 213M (10k) | 96.2% | 0.99 | Reference |
+
+**Why step=5 fails with threshold=0.5**: Garden pixels within a 5px saccade window rarely produce derivative correlations above 0.5. The small window means consecutive frames are nearly identical — derivatives are small, correlations are noisy. Step=50 provides the spatial diversity needed for meaningful temporal variation.
+
+#### Saccade signal visualization
+
+The source images have very different spatial structure:
+
+**Garden** (1024×1536, colorful flowers and foliage):
+
+![garden source](garden.png)
+
+**Saccades** (1536×1024, warm brown desk/objects):
+
+![saccades source](saccades.png)
+
+Each tick, the saccade window crops an 80×80 region from the source. The crop position random-walks with the configured step size. Below are the first 5 and last 5 frames (out of T=1000) showing how different step sizes explore the image.
+
+**Garden step=5** — consecutive frames barely move, heavy overlap:
+
+First 5: ![](design/garden_s5_frame_0000.png) ![](design/garden_s5_frame_0001.png) ![](design/garden_s5_frame_0002.png) ![](design/garden_s5_frame_0003.png) ![](design/garden_s5_frame_0004.png)
+
+Last 5: ![](design/garden_s5_frame_0995.png) ![](design/garden_s5_frame_0996.png) ![](design/garden_s5_frame_0997.png) ![](design/garden_s5_frame_0998.png) ![](design/garden_s5_frame_0999.png)
+
+**Garden step=50** — each frame jumps to a substantially different region:
+
+First 5: ![](design/garden_s50_frame_0000.png) ![](design/garden_s50_frame_0001.png) ![](design/garden_s50_frame_0002.png) ![](design/garden_s50_frame_0003.png) ![](design/garden_s50_frame_0004.png)
+
+Last 5: ![](design/garden_s50_frame_0995.png) ![](design/garden_s50_frame_0996.png) ![](design/garden_s50_frame_0997.png) ![](design/garden_s50_frame_0998.png) ![](design/garden_s50_frame_0999.png)
+
+**Saccades step=50** — same step size, smoother image:
+
+First 5: ![](design/saccades_s50_frame_0000.png) ![](design/saccades_s50_frame_0001.png) ![](design/saccades_s50_frame_0002.png) ![](design/saccades_s50_frame_0003.png) ![](design/saccades_s50_frame_0004.png)
+
+Last 5: ![](design/saccades_s50_frame_0995.png) ![](design/saccades_s50_frame_0996.png) ![](design/saccades_s50_frame_0997.png) ![](design/saccades_s50_frame_0998.png) ![](design/saccades_s50_frame_0999.png)
+
+With step=5, garden frames are nearly identical — neighboring pixels see the same content and produce low derivatives. With step=50, each frame shows a different region, creating the temporal variation that derivative correlation needs to identify spatially close pixels.
 
 ### Embedding dimensions (D)
 
@@ -242,7 +282,7 @@ Context window for generating skip-gram pairs from sentences.
 When multiple signal channels (R, G, B) are fed as independent neurons:
 - **Channel identity always dominates** spatial proximity in embeddings, regardless of inter-channel correlation
 - High inter-channel correlation (saccades.png, r=0.95): instant channel separation, no spatial mixing
-- Low inter-channel correlation (garden.png, r=0.48-0.74): delayed but still total channel separation by 500k ticks
+- Low inter-channel correlation (garden.png, r=0.48-0.74): total channel separation by 50k ticks with threshold=0.5
 - Within-channel spatial sorting quality varies by channel complexity (simple spatial structure sorts faster)
 - Cross-channel pixel proximity is never learned — the solver treats each channel as an independent spatial map
 

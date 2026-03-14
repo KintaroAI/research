@@ -6,7 +6,7 @@ Topographic map formation via temporal correlation — neurons that fire togethe
 
 - **`dev/`** — Active development (work here)
 - **`NNNNN-experiment-name/`** — Archived experiment snapshots with README documenting results
-- Experiments use `ts-NNNNN` naming. Latest: ts-00013 (RGB multi-channel)
+- Experiments use `ts-NNNNN` naming. Latest: ts-00015 (KNN stability)
 
 ## Setup & Run
 
