@@ -180,7 +180,7 @@ The source images have very different spatial structure:
 
 ![garden source](garden.png)
 
-**Saccades** (1536×1024, warm brown desk/objects):
+**Desktop** (1536×1024, warm brown desk/objects):
 
 ![saccades source](saccades.png)
 
@@ -198,7 +198,7 @@ First 5: ![](design/garden_s50_frame_0000.png) ![](design/garden_s50_frame_0001.
 
 Last 5: ![](design/garden_s50_frame_0995.png) ![](design/garden_s50_frame_0996.png) ![](design/garden_s50_frame_0997.png) ![](design/garden_s50_frame_0998.png) ![](design/garden_s50_frame_0999.png)
 
-**Saccades step=50** — same step size, smoother image:
+**Desktop step=50** — same step size, smoother image:
 
 First 5: ![](design/saccades_s50_frame_0000.png) ![](design/saccades_s50_frame_0001.png) ![](design/saccades_s50_frame_0002.png) ![](design/saccades_s50_frame_0003.png) ![](design/saccades_s50_frame_0004.png)
 
