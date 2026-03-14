@@ -15,6 +15,7 @@
     "use_deriv_corr": true,
     "image": "K_80_g.png",
     "max_hit_ratio": 0.1,
+    "render": "umap",
     "eval": true,
     "save_model": true,
     "gpu": true

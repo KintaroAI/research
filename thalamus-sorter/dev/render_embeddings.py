@@ -206,6 +206,8 @@ def main():
                         help="Override grid size (default: inferred from sqrt(n))")
     parser.add_argument("--align", action="store_true",
                         help="Procrustes-align output to grid (fixes rotation/flip)")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Use CuPy/cuML GPU acceleration for UMAP")
     args = parser.parse_args()
 
     emb = np.load(args.model)
@@ -230,7 +232,7 @@ def main():
     pixel_values = img.ravel()
 
     # Project and render
-    pos_2d = project(emb, w, h, args.method)
+    pos_2d = project(emb, w, h, args.method, gpu=args.gpu)
     if args.align:
         pos_2d = align_to_grid(pos_2d, w, h)
     output = render(pos_2d, w, h, pixel_values)

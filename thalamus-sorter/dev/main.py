@@ -301,6 +301,59 @@ def _save_run_info(output_dir, args, results=None):
         json.dump(info, f, indent=2, default=str)
 
 
+def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
+                   shm_done, n, dims, w, h, pixel_values,
+                   render_method, do_align, cold_proj, output_dir,
+                   gpu=False):
+    """Pull-based render worker. Reads from active double-buffer slot."""
+    import time
+    import os
+    import cv2
+    import numpy as np
+    from render_embeddings import (project, align_to_grid,
+                                   render as render_emb)
+    bufs = [shm_buf0, shm_buf1]
+    prev_2d = None
+    last_rendered_tick = 0
+    frame_idx = 0
+
+    while True:
+        cur_tick = shm_tick.value
+        done = shm_done.value
+
+        if cur_tick > last_rendered_tick:
+            slot = shm_active.value
+            emb = np.frombuffer(bufs[slot].get_obj(),
+                                dtype=np.float32).reshape(n, dims).copy()
+            last_rendered_tick = cur_tick
+
+            warm = None if cold_proj else prev_2d
+            pos_2d = project(emb, w, h, render_method, prev_2d=warm,
+                             gpu=gpu)
+            if do_align:
+                pos_2d = align_to_grid(pos_2d, w, h)
+            if not cold_proj:
+                prev_2d = pos_2d.copy()
+            frame = render_emb(pos_2d, w, h, pixel_values)
+
+            if frame is not None:
+                normalized = cv2.normalize(
+                    frame, None, 0, 255, cv2.NORM_MINMAX,
+                    dtype=cv2.CV_8U)
+                path = os.path.join(output_dir,
+                                    f"frame_{frame_idx:06d}.png")
+                cv2.imwrite(path, normalized)
+                frame_idx += 1
+
+        elif done:
+            break
+        else:
+            time.sleep(0.001)
+
+    print(f"  render worker: {frame_idx} frames saved, "
+          f"last tick={last_rendered_tick}")
+
+
 def run_word2vec(args):
     w, h = args.width, args.height
 
@@ -321,55 +374,6 @@ def run_word2vec(args):
         anchor_sample = args.anchor_batches * args.batch_size
     else:
         anchor_sample = args.batch_size  # default: 1 batch
-
-    def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
-                       shm_done, n, dims, w, h, pixel_values,
-                       render_method, do_align, cold_proj, output_dir,
-                       gpu=False):
-        """Pull-based render worker. Reads from active double-buffer slot."""
-        import time
-        from render_embeddings import (project, align_to_grid,
-                                       render as render_emb)
-        bufs = [shm_buf0, shm_buf1]
-        prev_2d = None
-        last_rendered_tick = 0
-        frame_idx = 0
-
-        while True:
-            cur_tick = shm_tick.value
-            done = shm_done.value
-
-            if cur_tick > last_rendered_tick:
-                slot = shm_active.value
-                emb = np.frombuffer(bufs[slot].get_obj(),
-                                    dtype=np.float32).reshape(n, dims).copy()
-                last_rendered_tick = cur_tick
-
-                warm = None if cold_proj else prev_2d
-                pos_2d = project(emb, w, h, render_method, prev_2d=warm,
-                                 gpu=gpu)
-                if do_align:
-                    pos_2d = align_to_grid(pos_2d, w, h)
-                if not cold_proj:
-                    prev_2d = pos_2d.copy()
-                frame = render_emb(pos_2d, w, h, pixel_values)
-
-                if frame is not None:
-                    normalized = cv2.normalize(
-                        frame, None, 0, 255, cv2.NORM_MINMAX,
-                        dtype=cv2.CV_8U)
-                    path = os.path.join(output_dir,
-                                        f"frame_{frame_idx:06d}.png")
-                    cv2.imwrite(path, normalized)
-                    frame_idx += 1
-
-            elif done:
-                break
-            else:
-                time.sleep(0.001)
-
-        print(f"  render worker: {frame_idx} frames saved, "
-              f"last tick={last_rendered_tick}")
 
     if mode in ("sentence", "correlation"):
         from render_embeddings import project, align_to_grid, render as render_emb
@@ -554,6 +558,10 @@ def run_word2vec(args):
         # --- Training + rendering ---
         if args.async_render and output_dir:
             import multiprocessing as mp
+            try:
+                mp.set_start_method('spawn')
+            except RuntimeError:
+                pass  # already set
 
             buf_size = n * args.dims
             shm_buf0 = mp.Array('f', buf_size)
@@ -569,7 +577,7 @@ def run_word2vec(args):
                                       render_w, render_h, pixel_values,
                                       render_method,
                                       args.align, args.cold_projection,
-                                      output_dir, args.gpu))
+                                      output_dir, args.render_gpu))
             worker.start()
 
             t0 = time.time()
@@ -624,7 +632,7 @@ def run_word2vec(args):
                 emb = dsolver.get_positions()
                 warm = None if args.cold_projection else prev_2d
                 pos_2d = project(emb, render_w, render_h, render_method,
-                                 prev_2d=warm, gpu=args.gpu)
+                                 prev_2d=warm, gpu=args.render_gpu)
                 if args.align:
                     pos_2d = align_to_grid(pos_2d, render_w, render_h)
                 if not args.cold_projection:
@@ -1155,8 +1163,8 @@ def main():
                        help="Procrustes-align rendered output to grid (fixes rotation/flip)")
     p_w2v.add_argument("--warm-start", type=str, default=None,
                        help="Load .npy embeddings as initial positions (warm start)")
-    p_w2v.add_argument("--cold-projection", action="store_true",
-                       help="Disable projection warm start (run UMAP/t-SNE from scratch each frame)")
+    p_w2v.add_argument("--cold-projection", action=argparse.BooleanOptionalAction, default=True,
+                       help="Run UMAP/t-SNE from scratch each frame (--no-cold-projection for warm start)")
     p_w2v.add_argument("--async-render", action="store_true", default=True,
                        help="Render in separate process (default: on)")
     p_w2v.add_argument("--sync-render", action="store_true",
@@ -1181,7 +1189,9 @@ def main():
     p_w2v.add_argument("--save-every", type=int, default=1,
                        help="Save every Nth frame (default: 1)")
     p_w2v.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True,
-                       help="Use GPU for solver and rendering (--no-gpu for CPU)")
+                       help="Use GPU for solver (--no-gpu for CPU)")
+    p_w2v.add_argument("--render-gpu", action=argparse.BooleanOptionalAction, default=False,
+                       help="Use CuPy GPU for rendering (--no-render-gpu for CPU, default: CPU)")
     p_w2v.set_defaults(func=run_word2vec)
 
     # --- temporal ---

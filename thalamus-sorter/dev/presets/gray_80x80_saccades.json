@@ -9,11 +9,12 @@
     "k_sample": 200,
     "threshold": 0.5,
     "signal_T": 1000,
-    "signal_source": "saccades.png",
+    "signal_source": "saccades_gray.npy",
     "saccade_step": 50,
     "use_deriv_corr": true,
     "image": "K_80_g.png",
     "max_hit_ratio": 0.1,
+    "render": "umap",
     "eval": true,
     "save_model": true,
     "gpu": true
