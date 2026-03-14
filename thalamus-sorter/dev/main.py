@@ -1190,7 +1190,7 @@ def main():
                        help="Save every Nth frame (default: 1)")
     p_w2v.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True,
                        help="Use GPU for solver (--no-gpu for CPU)")
-    p_w2v.add_argument("--render-gpu", action=argparse.BooleanOptionalAction, default=False,
+    p_w2v.add_argument("--render-gpu", action=argparse.BooleanOptionalAction, default=True,
                        help="Use CuPy GPU for rendering (--no-render-gpu for CPU, default: CPU)")
     p_w2v.set_defaults(func=run_word2vec)
 

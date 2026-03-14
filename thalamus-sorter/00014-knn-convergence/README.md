@@ -532,10 +532,30 @@ Experiment ts-00014 started as KNN convergence tracking and expanded into a comp
 5. **Signal quality is the bottleneck for garden**: 4:1 noise ratio in pairs, weak same-ch vs cross-ch gap. But "noise" pairs between color-similar distant pixels are real signal — the sorter discovers color similarity, not just spatial proximity.
 6. **GPU infrastructure**: separate solver/render GPU flags, spawn multiprocessing, cold projection default — all working reliably.
 
+### Multi-metric evaluation of garden 500k model (Run 054)
+
+The flat spatial eval (32% <3px) underestimates the model. Alternative metrics reveal the embeddings capture meaningful structure:
+
+| Metric | K10 neighbors | Random baseline | Ratio |
+|--------|--------------|-----------------|-------|
+| Deriv_corr (what solver optimizes) | 0.457 | 0.004 | 114× |
+| RGB color distance | 0.194 | 0.564 | 0.34× (3× closer) |
+| Mean signal MSE | 0.0212 | 0.0587 | 0.36× (3× closer) |
+
+**Deriv_corr of neighbors**: 80% of K10 neighbors have corr > 0.1, 50% have corr > 0.5. The solver successfully found genuinely correlated neurons — median neighbor correlation is 0.505.
+
+**Color similarity**: Embedding neighbors are 3× more color-similar than random. The solver groups same-color neurons (e.g., two pink flower pixels far apart) — valid structure that flat spatial eval penalizes.
+
+**Channel-aware spatial quality**: Within same-channel, spatial quality is 84.7% <5px (vs flat 48%). The 66.8% same-channel neighbor rate means cross-channel pairs still contribute — those are mostly co-located pixels (58% <5px), not random.
+
+**By signal variance**: High-variance (interesting) neurons have slightly better neighbor correlations (0.50 vs 0.41 for low-variance). The solver has more signal to work with for pixels that change during saccades.
+
+**Conclusion**: The garden model is doing exactly what it should — grouping neurons with correlated temporal signals. The flat <5px metric just doesn't capture color-based and cross-channel structure. For garden, the solver discovers a hybrid of spatial proximity + color similarity, which is the correct answer given the input signal.
+
 ## Next Steps
 
 - **Garden threshold tuning**: Try 0.2–0.3 to improve channel separation while keeping R fed
-- **Color-aware eval**: Current <5px metric penalizes color-based clustering. Need a metric that rewards both spatial and color structure
+- **Integrate multi-metric eval**: Add deriv_corr and color-distance eval alongside spatial <5px in standard output
 - **D8 vs D16 at scale**: Re-compare at 50k+ where extra capacity may help
 - **160×160 with more ticks**: 10k+ ticks needed to validate scaling
 - **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated
