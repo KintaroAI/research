@@ -5,7 +5,7 @@
     "dims": 8,
     "k_neg": 5,
     "lr": 0.001,
-    "normalize_every": 100,
+    "normalize_every": 0,
     "k_sample": 200,
     "threshold": 0.02,
     "signal_T": 1000,
