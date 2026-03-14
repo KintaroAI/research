@@ -429,13 +429,42 @@ Tested D16 vs D8 and normalization impact at 1k ticks, 3 anchor batches, saccade
 
 All three are indistinguishable at 1k ticks — too early for dims or normalization to matter. D16 is ~10% slower (more parameters). Normalization boosts pair count by ~30% (215M vs 166M) by periodically resetting gradient magnitudes, but this doesn't translate to better quality yet.
 
-**Run 054 (in progress)**: RGB garden D8, no normalization, 500k ticks, 3 anchor batches — the long run to test whether garden RGB can converge. Estimated ~6 hours.
+#### Garden 500k — deriv_corr vs MSE channel analysis (Run 054)
+
+Run 054: RGB garden D8, no normalization, 500k ticks, 3 anchor batches, saccade_step=5, deriv_corr threshold=0.1.
+
+**Flat grid eval**: 32.0% <3px, 48.2% <5px, 92B pairs, 16,178s (~4.5 hours).
+
+Compared with ts-00013's garden 500k run (MSE, norm=100, saccade_step=50, 1 batch):
+
+| | ts-00013 MSE 500k | Run 054 deriv_corr 500k |
+|---|---|---|
+| Scoring | MSE, threshold=0.02 | deriv_corr, threshold=0.1 |
+| Pairs | 264M | 92B (348×) |
+| Channel self-neighbors | 98–99% | 63–73% |
+| Cross-channel mixing | ~2% | ~30% |
+| R <5px (within-ch) | 23.2% | **82.8%** |
+| G <5px (within-ch) | 93.2% | 79.2% |
+| B <5px (within-ch) | 97.1% | 79.1% |
+
+Per-channel neighbor composition (run 054):
+
+| Channel | R | G | B | Self-neighbors | <5px (within-ch) |
+|---------|---|---|---|---------------|-------------------|
+| R | **73.1%** | 14.9% | 12.0% | 73.1% | 82.8% |
+| G | 15.8% | **63.2%** | 21.0% | 63.2% | 79.2% |
+| B | 12.8% | 21.5% | **65.8%** | 65.8% | 79.1% |
+
+**Key finding: deriv_corr trades channel purity for uniform spatial quality.**
+
+- MSE at threshold=0.02 cleanly separates channels (98%+ self-neighbors) but starves R of training pairs → R sorts poorly (23% <5px). G and B sort well (93–97%) because they have stronger spatial autocorrelation in this image.
+- Deriv_corr at threshold=0.1 allows ~30% cross-channel mixing (derivative correlation between co-located pixels of different channels is real signal) but distributes training pairs more uniformly → all three channels reach ~80% <5px.
+- The total pair count difference is enormous (92B vs 264M) — deriv_corr + step=5 + 3 batches generates 348× more pairs. But quality improvement is modest (flat 32% vs 25.5% <3px), confirming that garden's bottleneck is signal quality, not pair volume.
 
 ## Next Steps
 
-- **RGB garden 500k**: Run 054 in progress — will show if garden converges to 80%+ <3px
-- **RGB saccades 10k**: Complete saccades RGB comparison at full convergence
-- **D8 vs D16 at scale**: Re-compare at 50k+ where extra capacity may help
+- **Deriv_corr threshold tuning for garden**: 0.1 may be too permissive (30% cross-channel mixing). Try 0.2–0.3 to improve channel separation while keeping R fed
+- **RGB saccades long run**: Compare channel structure with saccades (stronger correlations)
+- **D8 vs D16 at scale**: Re-compare at 50k+ where extra capacity may help (ts-00013 showed D16 doubles R quality)
 - **160×160 with more ticks**: 10k+ ticks needed to validate scaling at this grid size
 - **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated (old runs used MSE)
-- **anchor_sample scaling**: Test higher values (e.g., 1024, 2048) — is there diminishing returns?
