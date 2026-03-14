@@ -22,7 +22,7 @@ The rendering step (PCA/UMAP → 2D grid) is lossy by design — it extracts the
 
 Two-stage pipeline:
 
-1. **Signal → Neighbor discovery**: Random anchor sampling, MSE/derivative-correlation scoring against random candidates from a rolling temporal buffer. Outputs variable-length "sentences" of correlated neurons.
+1. **Signal → Neighbor discovery**: Random anchor sampling, derivative-correlation scoring against random candidates from a rolling temporal buffer. Outputs variable-length "sentences" of correlated neurons.
 2. **Sentences → Embeddings**: Dual-vector dot product skip-gram (W and C vectors), sliding window pairs, negative sampling. Outputs continuous D-dimensional embeddings that capture correlation structure.
 
 Rendering (PCA/UMAP projection + Voronoi quantization) is purely for visualization — the embeddings are the real output.
@@ -42,7 +42,7 @@ The Euclidean mode (`tick_euclidean`) exists as an alternative for precomputed-n
 
 - **Dual-vector dot product skip-gram** without normalization — captures correlation structure including nuances beyond pure spatial proximity. Vector magnitudes grow to ~4× and self-stabilize, providing natural annealing.
 - **Sliding window pairs** from variable-length sentences: transitive inference (B correlated with A and C → B-C pair) gives 10-20x more training signal than anchor-only pairs
-- **MSE-based scoring** from real image saccades: 97-98% K-neighbor precision with proper sigma/threshold
+- **Derivative correlation scoring** (`--use-deriv-corr`): Pearson correlation on temporal derivatives. Dead neurons produce zero score naturally, no variance gating needed. 97-98% K-neighbor precision with proper threshold
 - **D=8-16** embedding dims: D<3 collapses, D=8 is the practical minimum, D=16 helps for complex spatial distributions
 - **k_sample proportional to N**: maintains constant sampling fraction (~3%) regardless of grid size
 - **sigma proportional to grid size**: sigma ~ grid_size/10 keeps correlation reach constant
@@ -84,11 +84,11 @@ Good neighbor discovery depends on the quality of pairwise correlation estimates
 | Covariance | zero (std=0) | downweighted | partially resistant | yes |
 | Derivative corr | zero (norm=0) | downweighted | resistant | no |
 
-Derivative correlation is the most robust: dead neurons contribute nothing, low-variance neurons are naturally downweighted, and global additive shifts cancel out in the derivative. However, MSE with `--max-hit-ratio` works well in practice for clean saccade signals.
+Derivative correlation is the most robust and is the **default scoring method**: dead neurons contribute nothing, low-variance neurons are naturally downweighted, and global additive shifts cancel out in the derivative. MSE with `--max-hit-ratio` also works in practice for clean saccade signals but is no longer used in presets.
 
 ### Signal processing
 - **Rolling saccade buffer**: (n, T) float32 buffer refreshed by random walk over source image. T=1000 balances stability and refresh rate
-- **Mean subtraction**: per-neuron, per-tick. Essential for MSE scoring to work
+- **No mean subtraction needed** with derivative correlation (derivatives are naturally zero-mean for stationary signals). MSE mode requires per-neuron mean subtraction
 - **Threshold precision > recall**: high threshold (few but correct neighbors) beats low threshold (many but noisy). Skip-gram learner tolerates missing pairs but not false pairs
 
 ### Scaling rules

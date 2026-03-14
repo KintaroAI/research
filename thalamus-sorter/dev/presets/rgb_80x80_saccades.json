@@ -12,7 +12,7 @@
     "signal_source": "saccades.png",
     "signal_channels": 3,
     "saccade_step": 50,
-    "use_mse": true,
+    "use_deriv_corr": true,
     "image": "K_80_g.png",
     "max_hit_ratio": 0.1,
     "eval": true,
