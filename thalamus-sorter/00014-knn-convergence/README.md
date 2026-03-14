@@ -417,11 +417,25 @@ Garden.png has high spatial diversity — with saccade_step=50, the signal chang
 
 Garden RGB at 10k ticks shows early sorting (~30% <3px) but is far from converged. The run-to-run variance is high (33% vs 29%) — typical for early training where random seed and saccade sequence matter. For comparison, grayscale saccades at 80×80 (6,400 neurons) reaches 97% <3px at 10k ticks. Garden RGB has 3× more neurons and weaker correlations — likely needs 50k+ ticks.
 
+#### Dims and normalization probes (Runs 051–053)
+
+Tested D16 vs D8 and normalization impact at 1k ticks, 3 anchor batches, saccade_step=5.
+
+| Run | Dims | norm_every | Pairs | <3px | <5px | Time |
+|-----|------|-----------|-------|------|------|------|
+| 051 | 16 | 0 | 187M | 0.2% | 0.4% | 50.6s |
+| 052 | 8 | 0 | 166M | 0.2% | 0.6% | 45.5s |
+| 053 | 8 | 100 | 215M | 0.2% | 0.4% | 46.9s |
+
+All three are indistinguishable at 1k ticks — too early for dims or normalization to matter. D16 is ~10% slower (more parameters). Normalization boosts pair count by ~30% (215M vs 166M) by periodically resetting gradient magnitudes, but this doesn't translate to better quality yet.
+
+**Run 054 (in progress)**: RGB garden D8, no normalization, 500k ticks, 3 anchor batches — the long run to test whether garden RGB can converge. Estimated ~6 hours.
+
 ## Next Steps
 
-- **RGB garden 50k+**: Extend garden training to see if it converges to 80%+ <3px
+- **RGB garden 500k**: Run 054 in progress — will show if garden converges to 80%+ <3px
 - **RGB saccades 10k**: Complete saccades RGB comparison at full convergence
+- **D8 vs D16 at scale**: Re-compare at 50k+ where extra capacity may help
 - **160×160 with more ticks**: 10k+ ticks needed to validate scaling at this grid size
 - **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated (old runs used MSE)
 - **anchor_sample scaling**: Test higher values (e.g., 1024, 2048) — is there diminishing returns?
-- **No-norm + lr decay**: Combine for quality + convergence
