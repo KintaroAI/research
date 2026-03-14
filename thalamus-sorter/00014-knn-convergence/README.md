@@ -160,10 +160,41 @@ Convergence trajectory for decay=0.8:
 
 This dual annealing is more biologically plausible than a global lr schedule — the system's own dynamics (magnitude growth) provide local self-regulation, while the decay provides global convergence pressure.
 
+### No normalization — pure self-dampening (Runs 012–014, 50k ticks)
+
+Tested normalize_every=0 (no normalization at all) with varying lr, no decay.
+
+| lr | Normalization | Final overlap | Spatial <3px | <5px | std |
+|----|--------------|---------------|-------------|------|-----|
+| 0.001 | off | 0.90 | **99.0%** | 100% | 1.41 |
+| 0.0005 | off | 0.90 | **99.5%** | 100% | 1.34 |
+| 0.0001 | off | 0.83 | 29.4% | 54.3% | 0.46 |
+| 0.001 | every 5000 | 0.81 | 96.2% | 99.7% | 0.35 |
+| 0.001 | every 5000 + decay=0.8 | 0.95 | 96.2% | 100% | 0.35 |
+
+**No normalization beats all previous configurations on spatial quality.** lr=0.001 without normalization achieves 99.0% <3px — the best result so far. lr=0.0005 is even better at 99.5% <3px.
+
+The self-dampening mechanism works as predicted: magnitudes grow (std=1.41 vs 0.35 at init), dot products increase, sigmoid saturates, gradients vanish. The system naturally anneals without any explicit decay or normalization schedule. No hyperparameters to tune, no floor to set, no risk of lr underflowing to zero.
+
+**lr=0.0001 is too slow**: Only 29.4% <3px at 50k ticks — not enough learning. The overlap oscillates (peaks at 0.96, drops to 0.83) suggesting the system is still in early transient phases. Magnitudes haven't grown enough to trigger self-dampening (std=0.46, barely above init).
+
+**Why normalization hurts quality**: Normalization periodically resets magnitude to 1.0, which:
+1. Erases the self-dampening progress (gradients jump back up)
+2. Forces the system to re-learn magnitude structure it already had
+3. Creates periodic perturbations that push embeddings away from their settled positions
+
+Without normalization, the system smoothly converges — no perturbations, no resets, just continuous refinement that naturally slows down as the structure solidifies.
+
+**Overlap trajectory for lr=0.001 no-norm**:
+- Tick 10k: 0.52 (structure forming)
+- Tick 20k: 0.78 (rapid improvement)
+- Tick 30k: 0.84 (self-dampening kicks in)
+- Tick 40k: 0.87 (slowing down)
+- Tick 50k: 0.90 (still climbing — extending to 200k)
+
 ## Next Steps
 
-- **Extend decay=0.8 to 200k ticks**: Verify overlap reaches ~1.0 and quality doesn't degrade at very low lr.
-- **Test normalize_every=0 (off)**: Does the system fully self-dampen to convergence without any normalization?
-- **Test on garden.png / RGB**: Verify these settings work on harder inputs (pair starvation, multi-channel).
-- **Sweep KNN K**: Test K=20, K=50 to see if larger neighborhoods are more/less stable.
-- **Update default preset**: Consider normalize_every=5000 + lr_decay=0.8 as new defaults.
+- **200k run in progress**: lr=0.001 no-norm — see if overlap approaches 1.0
+- **Test on garden.png / RGB**: Verify no-norm works on harder inputs
+- **Very long run**: Does the system stay stable at high magnitude indefinitely, or do numerical issues emerge?
+- **Update default preset**: Consider removing normalization entirely
