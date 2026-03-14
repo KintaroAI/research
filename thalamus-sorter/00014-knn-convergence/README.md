@@ -1,7 +1,7 @@
 # ts-00014: Online KNN Convergence Tracking
 
 **Date:** 2026-03-13
-**Status:** In progress
+**Status:** Complete
 **Source:** `exp/ts-00014`
 
 ## Goal
