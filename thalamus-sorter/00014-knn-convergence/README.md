@@ -386,10 +386,42 @@ Run 040 (CPU solver + GPU render, 10k ticks) was killed — CPU solver too slow 
 
 Note: the pair count difference (187M vs 216M) is due to random sampling variance, not the projection mode — rendering doesn't affect solver training.
 
+### RGB multi-channel experiments (Runs 044–050)
+
+First RGB (3-channel) runs at 80×80. Each channel has its own neurons → 19,200 total neurons on a 240×80 render grid. Color-tinted pixel values (R/G/B) from K_80_g.png.
+
+#### Saccade step matters for garden (Runs 044–048)
+
+Garden.png has high spatial diversity — with saccade_step=50, the signal changes so much between frames that deriv_corr scores are weak. Reducing saccade_step from 50→5 dramatically increases pair generation.
+
+| Run | Signal | step | Ticks | Batches | Pairs | <3px | <5px | Time |
+|-----|--------|------|-------|---------|-------|------|------|------|
+| 044 | garden | 50 | 100 | 1 | 0.1M | 0.1% | 0.3% | 34.0s |
+| 045 | garden | 50 | 1k | 1 | 1.9M | 0.1% | 0.3% | 15.4s |
+| 046 | garden | 50 | 1k | 3 | 7.5M | 0.1% | 0.3% | 44.4s |
+| 047 | saccades | 50 | 1k | 3 | 179M | 7.3% | 16.0% | 48.4s |
+| 048 | garden | 5 | 1k | 3 | 166M | 0.2% | 0.5% | 45.2s |
+
+**Saccade_step=50 with garden is pair-starved**: Only 7.5M pairs at 1k×3 batches (vs 179M for saccades). The garden image changes too rapidly between distant frames — most candidate pairs fail the threshold=0.1 deriv_corr check, and those that pass are low-quality (weak correlation signal).
+
+**Saccade_step=5 fixes pair generation** (166M, comparable to saccades 179M) but quality remains low at 1k ticks — garden's spatial complexity means 19,200 neurons need far more training than 1k ticks to sort.
+
+**Saccades RGB works well**: 7.3% <3px at 1k ticks with 3 batches, on track for strong convergence with more ticks.
+
+#### Garden 10k ticks (Runs 049–050)
+
+| Run | Ticks | Batches | Pairs | <3px | <5px | k10_dist | Time |
+|-----|-------|---------|-------|------|------|----------|------|
+| 049 | 10k | 3 | 1.95B | 33.0% | 46.2% | 13.89 | 450s |
+| 050 | 10k | 3 | 2.05B | 28.6% | 39.1% | 12.93 | 452s |
+
+Garden RGB at 10k ticks shows early sorting (~30% <3px) but is far from converged. The run-to-run variance is high (33% vs 29%) — typical for early training where random seed and saccade sequence matter. For comparison, grayscale saccades at 80×80 (6,400 neurons) reaches 97% <3px at 10k ticks. Garden RGB has 3× more neurons and weaker correlations — likely needs 50k+ ticks.
+
 ## Next Steps
 
+- **RGB garden 50k+**: Extend garden training to see if it converges to 80%+ <3px
+- **RGB saccades 10k**: Complete saccades RGB comparison at full convergence
 - **160×160 with more ticks**: 10k+ ticks needed to validate scaling at this grid size
 - **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated (old runs used MSE)
 - **anchor_sample scaling**: Test higher values (e.g., 1024, 2048) — is there diminishing returns?
 - **No-norm + lr decay**: Combine for quality + convergence
-- **Garden deriv_corr validation**: Verify threshold=0.1 works on garden at scale
