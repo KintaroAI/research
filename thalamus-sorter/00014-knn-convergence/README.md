@@ -276,9 +276,69 @@ Implemented `--knn-nofn` flag: for each anchor, also probe neighbors-of-neighbor
 
 **Next test**: 320×320 (n=102,400) where k_sample would need to be 3072 for 3% coverage. Test nofn with reduced k_sample (e.g., 50–200 random + 100 nofn) vs baseline with k_sample=3072.
 
+### 320×320 scaling tests (Runs 021–025)
+
+Tested at 320×320 grayscale (n=102,400) to validate scaling. All runs use MSE scoring with threshold=0.02, no normalization, 10k ticks.
+
+| Run | k_sample | batch_size | nofn | Total pairs | Notes |
+|-----|----------|------------|------|-------------|-------|
+| 021 | 3072 (3%) | 256 | no | 71M | Baseline — works but slow |
+| 022 | 200 | 256 | yes | 470M | Nofn: 5× faster, 6.6× more pairs |
+| 023 | 200 | 256 | no | 1.9M | k_sample too small without nofn — pair starvation |
+| 024 | 1600 | 2048 | no | OOM | batch×k_sample×T too large |
+| 025 | 800 | 1024 | no | OOM | Same OOM issue |
+
+At 320×320, nofn proves its value: Run 022 (200 random + nofn) generates 6.6× more pairs than Run 021 (3072 random) in ~5× less time per tick. Run 023 confirms that k_sample=200 alone is useless at this scale (only 0.2% sampling fraction → pair starvation).
+
+Runs 024–025 attempted proportional scaling (batch×k_sample proportional to n) but OOM'd — the MSE tensor `(batch, k_sample, T)` exceeded GPU memory at these sizes.
+
+### Derivative correlation threshold fix
+
+Presets were switched from `use_mse` to `use_deriv_corr` but the threshold (0.02) was never recalibrated. MSE threshold 0.02 means "MSE < 0.02" (small distance = similar). Deriv_corr threshold 0.02 means "correlation > 0.02" — which 67.6% of all random pairs pass. With `max_hit_ratio=0.1`, every anchor was discarded → zero pairs → no learning.
+
+**Score distributions** (deriv_corr, 80×80 grayscale, saccades.png):
+
+| | Near (<3px) | Far (>20px) |
+|---|---|---|
+| Mean score | 0.869 | 0.015 |
+| Score range | 0.775 – 1.000 | -0.179 – 0.295 |
+
+Clean separation. Threshold 0.5 gives 100% near pass / 0% far pass. Calibrated from ts-00011 experiment (97.2% <5px at threshold=0.5 vs 87.4% at threshold=0.3).
+
+**Garden.png** has weaker correlations (step=5, high spatial diversity): near mean=0.412 (range 0.099–1.0), far max=0.113. Threshold 0.1 gives 96% near / 0% far.
+
+Updated all presets: saccades→threshold=0.5, garden→threshold=0.1. Deprecated `--use-mse` with assert.
+
+### Anchor batches and anchor_sample (Runs 026–031)
+
+Implemented `anchor_sample` parameter: total unique anchor neurons per tick, split into sequential chunks of `batch_size`. More coverage per tick without increasing GPU memory. Two mutually exclusive CLI flags: `--anchor-sample N` (direct) or `--anchor-batches M` (= M × batch_size).
+
+**Broken runs (026, first attempts)**: Used old threshold=0.02 with deriv_corr → zero pairs. Fixed after threshold recalibration.
+
+**Short comparison (Runs 027–029, deriv_corr threshold=0.5)**:
+
+| Run | Ticks | anchor_sample | Total pairs | <3px | <5px | Time |
+|-----|-------|---------------|-------------|------|------|------|
+| 028 | 1k | 256 (1 batch) | 19M | 0.6% | 1.4% | 4.3s |
+| 027 | 1k | 512 (2 batches) | 50M | 5.6% | 12.6% | 8.0s |
+| 029 | 2k | 256 (1 batch) | 40M | 3.8% | 8.3% | 8.2s |
+
+2 batches at 1k ticks (50M pairs, 5.6%) outperforms 1 batch at 2k ticks (40M pairs, 3.8%) in the same wall time. More unique anchors per tick generates more pairs than more ticks with fewer anchors.
+
+**Longer comparison (Runs 030–031, deriv_corr threshold=0.5)**:
+
+| Run | Ticks | anchor_sample | Total pairs | <3px | <5px | Time |
+|-----|-------|---------------|-------------|------|------|------|
+| 030 | 10k | 256 (1 batch) | 201M | 96.8% | 100.0% | 79.1s |
+| 031 | 5k | 512 (2 batches) | 181M | 95.6% | 99.9% | 79.1s |
+
+Same wall time (79.1s). 2 batches at 5k ticks reaches 95.6% <3px vs 96.8% for 1 batch at 10k — nearly equivalent. The slight gap (~1.2%) comes from 2 batches processing anchors sequentially within a tick (second batch sees embeddings already updated by first batch), introducing a small ordering effect.
+
+**Conclusion**: `anchor_sample` is an effective coverage multiplier. Doubling anchors per tick ≈ doubling ticks at half the count, with identical wall time. The parameter is useful for trading tick count for per-tick coverage without increasing memory.
+
 ## Next Steps
 
-- **320×320 nofn scaling test**: Does nofn + small k_sample match or beat large k_sample at scale?
+- **320×320 with deriv_corr**: Re-test scaling now that threshold is calibrated (old runs used MSE)
+- **anchor_sample scaling**: Test higher values (e.g., 1024, 2048) — is there diminishing returns?
 - **No-norm + lr decay**: Combine for quality + convergence
-- **Test on garden.png / RGB**: Verify no-norm works on harder inputs
-- **1M garden run in progress**: Testing no-norm stability on harder input
+- **Garden deriv_corr validation**: Verify threshold=0.1 works on garden at scale
