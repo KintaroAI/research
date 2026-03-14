@@ -222,7 +222,7 @@ class DriftSolver:
                          anchor_only=False, use_covariance=False,
                          use_mse=False, use_deriv_corr=False,
                          max_hit_ratio=None, batch_size=256,
-                         anchor_batches=1):
+                         anchor_sample=256):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -250,15 +250,15 @@ class DriftSolver:
                           good_neighbors/k_sample > this value. Filters out
                           neurons seeing global signals (correlated with
                           everyone) rather than local spatial structure.
-            anchor_batches: split all n neurons into this many chunks and
-                           process each. 1 = single random batch (default).
-                           Higher values = more coverage per tick, same memory.
+            anchor_sample: total unique anchor neurons per tick.
+                          Split into sequential chunks of batch_size.
+                          Default 256 = one batch.
         """
         n = self.n
 
-        # Generate anchor chunks: anchor_batches × batch_size unique anchors,
+        # Generate anchor chunks: anchor_sample unique anchors,
         # processed sequentially in chunks of batch_size
-        total_anchors = min(anchor_batches * batch_size, n)
+        total_anchors = min(anchor_sample, n)
         perm = torch.randperm(n, device=self.device)[:total_anchors]
         all_anchors = list(perm.split(batch_size))
 

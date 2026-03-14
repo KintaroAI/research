@@ -314,6 +314,14 @@ def run_word2vec(args):
     assert not getattr(args, 'use_mse', False), \
         "--use-mse is deprecated. Use --use-deriv-corr with threshold=0.5 instead."
 
+    # Resolve anchor_sample from --anchor-sample or --anchor-batches
+    if getattr(args, 'anchor_sample', None) is not None:
+        anchor_sample = args.anchor_sample
+    elif getattr(args, 'anchor_batches', None) is not None:
+        anchor_sample = args.anchor_batches * args.batch_size
+    else:
+        anchor_sample = args.batch_size  # default: 1 batch
+
     def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
                        shm_done, n, dims, w, h, pixel_values,
                        render_method, do_align, cold_proj, output_dir,
@@ -498,7 +506,7 @@ def run_word2vec(args):
                     use_deriv_corr=args.use_deriv_corr,
                     max_hit_ratio=args.max_hit_ratio,
                     batch_size=args.batch_size,
-                    anchor_batches=args.anchor_batches)
+                    anchor_sample=anchor_sample)
         else:
             def do_tick():
                 dsolver.tick_sentence(window=args.window)
@@ -1094,9 +1102,12 @@ def main():
     p_w2v.add_argument("--k-sample", type=int, default=50,
                        help="Random candidates to check per neuron (correlation mode, default: 50)")
     p_w2v.add_argument("--batch-size", type=int, default=256,
-                       help="Anchor neurons sampled per tick (default: 256)")
-    p_w2v.add_argument("--anchor-batches", type=int, default=1,
-                       help="Split all n neurons into this many chunks per tick (default: 1)")
+                       help="GPU batch size for anchor processing (default: 256)")
+    anchor_group = p_w2v.add_mutually_exclusive_group()
+    anchor_group.add_argument("--anchor-sample", type=int, default=None,
+                       help="Total unique anchor neurons per tick (split into batch_size chunks)")
+    anchor_group.add_argument("--anchor-batches", type=int, default=None,
+                       help="Number of batches per tick (anchor_sample = anchor_batches * batch_size)")
     p_w2v.add_argument("--signal-T", type=int, default=100,
                        help="Temporal signal buffer length (correlation mode, default: 100)")
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
