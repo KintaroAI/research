@@ -7,7 +7,7 @@
     "lr": 0.001,
     "normalize_every": 0,
     "k_sample": 600,
-    "threshold": 0.02,
+    "threshold": 0.1,
     "signal_T": 1000,
     "signal_source": "garden.png",
     "signal_channels": 3,

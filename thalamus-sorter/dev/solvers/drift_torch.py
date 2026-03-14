@@ -221,11 +221,12 @@ class DriftSolver:
     def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
                          anchor_only=False, use_covariance=False,
                          use_mse=False, use_deriv_corr=False,
-                         max_hit_ratio=None):
+                         max_hit_ratio=None, batch_size=256,
+                         anchor_batches=1):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
-        1. Pick a batch of random neurons
+        1. Pick anchor neurons (all n split into anchor_batches chunks)
         2. For each, sample k_sample random candidates
         3. Compute similarity score (Pearson, covariance, or MSE-based)
         4. Keep only pairs above threshold
@@ -249,183 +250,164 @@ class DriftSolver:
                           good_neighbors/k_sample > this value. Filters out
                           neurons seeing global signals (correlated with
                           everyone) rather than local spatial structure.
+            anchor_batches: split all n neurons into this many chunks and
+                           process each. 1 = single random batch (default).
+                           Higher values = more coverage per tick, same memory.
         """
         n = self.n
-        batch = min(n, 256)  # neurons per tick
 
-        # Pick random anchor neurons
-        anchors = torch.randint(0, n, (batch,), device=self.device)
+        # Generate anchor chunks: anchor_batches × batch_size unique anchors,
+        # processed sequentially in chunks of batch_size
+        total_anchors = min(anchor_batches * batch_size, n)
+        perm = torch.randperm(n, device=self.device)[:total_anchors]
+        all_anchors = list(perm.split(batch_size))
 
-        # Sample random candidates for each anchor
-        candidates = torch.randint(0, n, (batch, k_sample), device=self.device)
-        k_random = k_sample  # remember original random count for max_hit_ratio
+        total_pairs = 0
+        for anchors in all_anchors:
+            batch = anchors.shape[0]
 
-        # Neighbor-of-neighbor sampling: add KNN-guided candidates
-        if self.knn_k > 0 and self.knn_nofn:
-            nofn = self._sample_nofn(anchors)  # (batch, nofn_count)
-            candidates = torch.cat([candidates, nofn], dim=1)
-            k_sample = candidates.shape[1]  # update for downstream
+            # Sample random candidates for each anchor
+            candidates = torch.randint(0, n, (batch, k_sample), device=self.device)
+            k_random = k_sample  # remember original random count for max_hit_ratio
 
-        # Compute correlations: signals are (n, T)
-        # Gather anchor and candidate signals
-        anchor_sig = signals[anchors]            # (batch, T)
-        cand_sig = signals[candidates]           # (batch, k_sample, T)
+            # Neighbor-of-neighbor sampling: add KNN-guided candidates
+            if self.knn_k > 0 and self.knn_nofn:
+                nofn = self._sample_nofn(anchors)  # (batch, nofn_count)
+                candidates = torch.cat([candidates, nofn], dim=1)
 
-        if use_deriv_corr:
-            # Pearson correlation on temporal derivatives.
-            # dA[t] = A[t+1] - A[t] — captures *when* neurons change.
-            # mean(dA * dB) is the covariance of derivatives.
-            # Normalizing gives Pearson correlation on derivatives.
-            #
-            # Key property: dead neurons have dA = 0 → norm = 0 → score = 0.
-            # Solves the "both dead = MSE 0" problem without a separate gate.
-            # Co-varying pairs get high positive score, uncorrelated → ~0.
-            anchor_d = anchor_sig[:, 1:] - anchor_sig[:, :-1]       # (batch, T-1)
-            cand_d = cand_sig[:, :, 1:] - cand_sig[:, :, :-1]       # (batch, k_sample, T-1)
-            anchor_dc = anchor_d - anchor_d.mean(dim=1, keepdim=True)
-            cand_dc = cand_d - cand_d.mean(dim=2, keepdim=True)
-            anchor_norm = anchor_dc.norm(dim=1, keepdim=True).clamp(min=1e-8)
-            cand_norm = cand_dc.norm(dim=2, keepdim=True).clamp(min=1e-8)
-            score = (anchor_dc.unsqueeze(1) / anchor_norm.unsqueeze(1) *
-                     cand_dc / cand_norm).sum(dim=2)    # (batch, k_sample)
-            mask = score > threshold
-        elif use_mse:
-            # MSE as distance metric — no centering, no global mean.
-            # MSE = mean((a_t - b_t)^2)
-            # Near pairs: MSE ≈ 0.003, far pairs: MSE ≈ 0.05 (15x ratio).
-            # Threshold on MSE directly (lower = more similar).
-            diff = anchor_sig.unsqueeze(1) - cand_sig  # (batch, k_sample, T)
-            mse = (diff * diff).mean(dim=2)            # (batch, k_sample)
-            mask = mse < threshold
-            score = mse  # for diagnostics
-        elif use_covariance:
-            # Covariance = dot(centered_a, centered_b) / T
-            # = correlation × std_a × std_b
-            # Naturally downweights low-variance neurons (flat regions)
-            anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
-            cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
-            T = anchor_sig.shape[1]
-            score = (anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T
-            mask = score.abs() > threshold
-        else:
-            # Pearson correlation via normalized dot product
-            anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
-            cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
-            anchor_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
-            cand_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)
-            anchor_unit = anchor_centered / anchor_norm
-            cand_unit = cand_centered / cand_norm
-            score = (anchor_unit.unsqueeze(1) * cand_unit).sum(dim=2)
-            mask = score.abs() > threshold
+            # Compute correlations: signals are (n, T)
+            # Gather anchor and candidate signals
+            anchor_sig = signals[anchors]            # (batch, T)
+            cand_sig = signals[candidates]           # (batch, k_total, T)
 
-        # Build variable-length sentences and run skip-gram
-        # For each anchor, collect good neighbors, form sentence, extract pairs
-        good_counts = mask.sum(dim=1)  # (batch,)
+            if use_deriv_corr:
+                anchor_d = anchor_sig[:, 1:] - anchor_sig[:, :-1]
+                cand_d = cand_sig[:, :, 1:] - cand_sig[:, :, :-1]
+                anchor_dc = anchor_d - anchor_d.mean(dim=1, keepdim=True)
+                cand_dc = cand_d - cand_d.mean(dim=2, keepdim=True)
+                anchor_norm = anchor_dc.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                cand_norm = cand_dc.norm(dim=2, keepdim=True).clamp(min=1e-8)
+                score = (anchor_dc.unsqueeze(1) / anchor_norm.unsqueeze(1) *
+                         cand_dc / cand_norm).sum(dim=2)
+                mask = score > threshold
+            elif use_mse:
+                diff = anchor_sig.unsqueeze(1) - cand_sig
+                mse = (diff * diff).mean(dim=2)
+                mask = mse < threshold
+                score = mse
+            elif use_covariance:
+                anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
+                cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
+                T = anchor_sig.shape[1]
+                score = (anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T
+                mask = score.abs() > threshold
+            else:
+                anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
+                cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
+                anchor_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                cand_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)
+                anchor_unit = anchor_centered / anchor_norm
+                cand_unit = cand_centered / cand_norm
+                score = (anchor_unit.unsqueeze(1) * cand_unit).sum(dim=2)
+                mask = score.abs() > threshold
 
-        # Filter: discard anchors with too many hits (global signal detection)
-        # If a neuron correlates with 50% of random candidates, it's seeing
-        # a global signal (flickering lights, slow drift), not local structure.
-        # Only count hits in the random portion — nofn candidates are expected
-        # to pass threshold at high rates.
-        if max_hit_ratio is not None:
-            random_hits = mask[:, :k_random].sum(dim=1)
-            max_hits = int(k_random * max_hit_ratio)
-            too_popular = random_hits > max_hits
-            good_counts[too_popular] = 0
-            mask[too_popular] = False
+            # Per-anchor good neighbor counts
+            good_counts = mask.sum(dim=1)  # (batch,)
 
-        # Update online KNN with correlation-passing candidates
-        self._update_knn(anchors, candidates, mask)
+            # Filter: discard anchors with too many hits (global signal detection)
+            # Only count hits in the random portion — nofn candidates are expected
+            # to pass threshold at high rates.
+            if max_hit_ratio is not None:
+                random_hits = mask[:, :k_random].sum(dim=1)
+                max_hits = int(k_random * max_hit_ratio)
+                too_popular = random_hits > max_hits
+                good_counts[too_popular] = 0
+                mask[too_popular] = False
 
-        max_good = int(good_counts.max().item())
+            # Update online KNN with correlation-passing candidates
+            self._update_knn(anchors, candidates, mask)
 
-        if max_good == 0:
-            # No correlated pairs found at this threshold
-            self._maybe_normalize()
-            return 0
+            max_good = int(good_counts.max().item())
+            if max_good == 0:
+                continue
 
-        # Pack good candidates: for each anchor, gather the ones that passed
-        # Sort mask so True values come first
-        sorted_mask, sort_idx = mask.int().sort(dim=1, descending=True)
-        sorted_cands = torch.gather(candidates, 1, sort_idx)  # (batch, k_sample)
-        trimmed = sorted_cands[:, :max_good]  # (batch, max_good)
+            # Pack good candidates: sort mask so True values come first
+            sorted_mask, sort_idx = mask.int().sort(dim=1, descending=True)
+            sorted_cands = torch.gather(candidates, 1, sort_idx)
+            trimmed = sorted_cands[:, :max_good]
 
-        if anchor_only:
-            # Anchor-center pairs only: each (anchor, neighbor) is a training pair
-            # Only verified pairs — no transitive neighbor-to-neighbor pairs
-            pos_idx = torch.arange(max_good, device=self.device).unsqueeze(0)
-            valid = pos_idx < good_counts.unsqueeze(1)  # (batch, max_good)
-            valid_flat = valid.reshape(-1)
-            anchor_exp = anchors.unsqueeze(1).expand_as(trimmed).reshape(-1)
-            neighbor_flat = trimmed.reshape(-1)
-            center_flat = anchor_exp[valid_flat]
-            ctx_flat = neighbor_flat[valid_flat]
-        else:
-            # Sliding window over sentences: [anchor, nb1, nb2, ...]
-            # Includes transitive neighbor-to-neighbor pairs
-            sentences = torch.cat([anchors.unsqueeze(1), trimmed], dim=1)
-            seq_len = max_good + 1
+            if anchor_only:
+                pos_idx = torch.arange(max_good, device=self.device).unsqueeze(0)
+                valid = pos_idx < good_counts.unsqueeze(1)
+                valid_flat = valid.reshape(-1)
+                anchor_exp = anchors.unsqueeze(1).expand_as(trimmed).reshape(-1)
+                neighbor_flat = trimmed.reshape(-1)
+                center_flat = anchor_exp[valid_flat]
+                ctx_flat = neighbor_flat[valid_flat]
+            else:
+                # Sliding window over sentences: [anchor, nb1, nb2, ...]
+                sentences = torch.cat([anchors.unsqueeze(1), trimmed], dim=1)
+                seq_len = max_good + 1
 
-            offsets = []
-            for c in range(seq_len):
-                for ctx in range(max(0, c - window), min(seq_len, c + window + 1)):
-                    if ctx != c:
-                        offsets.append((c, ctx))
-            if not offsets:
-                self._maybe_normalize()
-                return 0
-            offset_t = torch.tensor(offsets, device=self.device)  # (P, 2)
+                offsets = []
+                for c in range(seq_len):
+                    for ctx in range(max(0, c - window), min(seq_len, c + window + 1)):
+                        if ctx != c:
+                            offsets.append((c, ctx))
+                if not offsets:
+                    continue
+                offset_t = torch.tensor(offsets, device=self.device)
 
-            c_offs = offset_t[:, 0]
-            x_offs = offset_t[:, 1]
-            limits = (good_counts + 1).unsqueeze(1)  # (batch, 1)
-            valid = (c_offs.unsqueeze(0) < limits) & (x_offs.unsqueeze(0) < limits)
+                c_offs = offset_t[:, 0]
+                x_offs = offset_t[:, 1]
+                limits = (good_counts + 1).unsqueeze(1)
+                valid = (c_offs.unsqueeze(0) < limits) & (x_offs.unsqueeze(0) < limits)
 
-            center_ids = sentences[:, c_offs]  # (batch, P)
-            ctx_ids = sentences[:, x_offs]     # (batch, P)
+                center_ids = sentences[:, c_offs]
+                ctx_ids = sentences[:, x_offs]
 
-            valid_flat = valid.reshape(-1)
-            center_flat = center_ids.reshape(-1)[valid_flat]
-            ctx_flat = ctx_ids.reshape(-1)[valid_flat]
+                valid_flat = valid.reshape(-1)
+                center_flat = center_ids.reshape(-1)[valid_flat]
+                ctx_flat = ctx_ids.reshape(-1)[valid_flat]
 
-        B = center_flat.shape[0]
+            B = center_flat.shape[0]
+            if B == 0:
+                continue
 
-        if B == 0:
-            self._maybe_normalize()
-            return 0
+            # --- Positive updates ---
+            w_center = self.positions[center_flat]
+            c_ctx = self.contexts[ctx_flat]
+            dot = (w_center * c_ctx).sum(dim=1)
+            sig = torch.sigmoid(-dot)
 
-        # --- Positive updates (same as tick_sentence) ---
-        w_center = self.positions[center_flat]
-        c_ctx = self.contexts[ctx_flat]
-        dot = (w_center * c_ctx).sum(dim=1)
-        sig = torch.sigmoid(-dot)
+            grad_w = self.lr * sig.unsqueeze(1) * c_ctx
+            grad_c = self.lr * sig.unsqueeze(1) * w_center
 
-        grad_w = self.lr * sig.unsqueeze(1) * c_ctx
-        grad_c = self.lr * sig.unsqueeze(1) * w_center
+            self.positions.scatter_add_(
+                0, center_flat.unsqueeze(1).expand_as(grad_w), grad_w)
+            self.contexts.scatter_add_(
+                0, ctx_flat.unsqueeze(1).expand_as(grad_c), grad_c)
 
-        self.positions.scatter_add_(
-            0, center_flat.unsqueeze(1).expand_as(grad_w), grad_w)
-        self.contexts.scatter_add_(
-            0, ctx_flat.unsqueeze(1).expand_as(grad_c), grad_c)
+            # --- Negative sampling ---
+            j_neg = torch.randint(0, self.n, (B, self.k_neg), device=self.device)
+            c_neg = self.contexts[j_neg]
+            dot_neg = (w_center.unsqueeze(1) * c_neg).sum(dim=2)
+            sig_neg = torch.sigmoid(dot_neg)
 
-        # --- Negative sampling ---
-        j_neg = torch.randint(0, self.n, (B, self.k_neg), device=self.device)
-        c_neg = self.contexts[j_neg]
-        dot_neg = (w_center.unsqueeze(1) * c_neg).sum(dim=2)
-        sig_neg = torch.sigmoid(dot_neg)
+            push_w = (sig_neg.unsqueeze(2) * c_neg).sum(dim=1)
+            self.positions.scatter_add_(
+                0, center_flat.unsqueeze(1).expand_as(push_w), -self.lr * push_w)
 
-        push_w = (sig_neg.unsqueeze(2) * c_neg).sum(dim=1)
-        self.positions.scatter_add_(
-            0, center_flat.unsqueeze(1).expand_as(push_w), -self.lr * push_w)
+            push_c = sig_neg.unsqueeze(2) * w_center.unsqueeze(1)
+            j_neg_flat = j_neg.reshape(-1)
+            push_c_flat = (self.lr * push_c).reshape(-1, self.dims)
+            self.contexts.scatter_add_(
+                0, j_neg_flat.unsqueeze(1).expand_as(push_c_flat), -push_c_flat)
 
-        push_c = sig_neg.unsqueeze(2) * w_center.unsqueeze(1)
-        j_neg_flat = j_neg.reshape(-1)
-        push_c_flat = (self.lr * push_c).reshape(-1, self.dims)
-        self.contexts.scatter_add_(
-            0, j_neg_flat.unsqueeze(1).expand_as(push_c_flat), -push_c_flat)
+            total_pairs += B
 
         self._maybe_normalize()
-        return B  # number of training pairs
+        return total_pairs
 
     def _maybe_normalize(self):
         """Periodic L2 normalization of W and C to prevent magnitude blow-up.

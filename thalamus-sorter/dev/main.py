@@ -311,6 +311,9 @@ def run_word2vec(args):
     mode = args.mode
     norm_every = args.normalize_every
 
+    assert not getattr(args, 'use_mse', False), \
+        "--use-mse is deprecated. Use --use-deriv-corr with threshold=0.5 instead."
+
     def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
                        shm_done, n, dims, w, h, pixel_values,
                        render_method, do_align, cold_proj, output_dir,
@@ -371,16 +374,18 @@ def run_word2vec(args):
         if mode == "sentence":
             k = min(args.k, n - 1)
             top_k = topk_decay2d(w, h, k)
+            device = 'cuda' if (args.gpu and torch.cuda.is_available()) else 'cpu'
             dsolver = DriftSolver(n, top_k=top_k, dims=args.dims, lr=args.lr,
                                   mode='dot', k_neg=args.k_neg,
-                                  normalize_every=norm_every, device='cuda')
+                                  normalize_every=norm_every, device=device)
         else:
             knn_k = getattr(args, 'knn_track', 0)
             lr_decay = getattr(args, 'lr_decay', 1.0)
             knn_nofn = getattr(args, 'knn_nofn', False)
+            device = 'cuda' if (args.gpu and torch.cuda.is_available()) else 'cpu'
             dsolver = DriftSolver(n, top_k=None, k=args.k, dims=args.dims,
                                   lr=args.lr, mode='dot', k_neg=args.k_neg,
-                                  normalize_every=norm_every, device='cuda',
+                                  normalize_every=norm_every, device=device,
                                   knn_k=knn_k, lr_decay=lr_decay,
                                   knn_nofn=knn_nofn)
 
@@ -451,8 +456,7 @@ def run_word2vec(args):
                 print(f"  signal buffer: ({n}, {T}), rolling saccades from "
                       f"{args.signal_source} ({src_desc}), "
                       f"crop={crop_desc}, step={saccade_step}, {mean_sub}")
-                saccade_source = torch.from_numpy(source).to(
-                    torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+                saccade_source = torch.from_numpy(source).to(dsolver.device)
             else:
                 from scipy.ndimage import gaussian_filter
                 for t in range(T):
@@ -492,7 +496,9 @@ def run_word2vec(args):
                     use_covariance=args.use_covariance,
                     use_mse=args.use_mse,
                     use_deriv_corr=args.use_deriv_corr,
-                    max_hit_ratio=args.max_hit_ratio)
+                    max_hit_ratio=args.max_hit_ratio,
+                    batch_size=args.batch_size,
+                    anchor_batches=args.anchor_batches)
         else:
             def do_tick():
                 dsolver.tick_sentence(window=args.window)
@@ -1087,6 +1093,10 @@ def main():
     # correlation mode args
     p_w2v.add_argument("--k-sample", type=int, default=50,
                        help="Random candidates to check per neuron (correlation mode, default: 50)")
+    p_w2v.add_argument("--batch-size", type=int, default=256,
+                       help="Anchor neurons sampled per tick (default: 256)")
+    p_w2v.add_argument("--anchor-batches", type=int, default=1,
+                       help="Split all n neurons into this many chunks per tick (default: 1)")
     p_w2v.add_argument("--signal-T", type=int, default=100,
                        help="Temporal signal buffer length (correlation mode, default: 100)")
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
@@ -1159,8 +1169,8 @@ def main():
                        help="Directory to save output frames as PNGs")
     p_w2v.add_argument("--save-every", type=int, default=1,
                        help="Save every Nth frame (default: 1)")
-    p_w2v.add_argument("--gpu", action="store_true",
-                       help="Use GPU acceleration via CuPy")
+    p_w2v.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True,
+                       help="Use GPU for solver and rendering (--no-gpu for CPU)")
     p_w2v.set_defaults(func=run_word2vec)
 
     # --- temporal ---
