@@ -1,6 +1,7 @@
 # 00006 — Compositional Logic (Negative Result)
 
 **Status:** Complete
+**Source:** `exp/00006` (`b709b89`)
 
 ## Goal
 
