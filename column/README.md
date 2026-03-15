@@ -80,6 +80,7 @@ Cell 1 extracts direction per segment; Cell 2 categorizes the transition matrix
 | 00005 | Hierarchical stack | Two-cell pipeline for movement patterns, NMI=0.565 vs 0.328 alone |
 | 00006 | Compositional logic | Negative result: relational tasks defeat prototype matching with outer product |
 | 00007 | Composition wiring | Circular convolution + compare stats partially rescue composition (NMI 0.24–0.38) |
+| 00008 | Catastrophic forgetting | Task B overwrites A (0.857→0.289), but retraining is 10x faster (500 vs 5000 frames) |
 
 ## Repository structure
 
