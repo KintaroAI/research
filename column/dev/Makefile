@@ -114,7 +114,54 @@ test:
 	assert 'confidence_gap' in sqm; \
 	assert 'prototype_spread' in sqm; \
 	\
-	# Test 14: zero input — uniform output, no prototype drift \
+	# Test 14: temporal — forward produces valid probs for (n, T) input \
+	cell_t = SoftWTACell(16, 4, temporal_mode='correlation'); \
+	xt = torch.randn(16, 10); \
+	pt = cell_t.forward(xt); \
+	assert pt.shape == (4,), f'temporal bad shape: {pt.shape}'; \
+	assert abs(pt.sum().item() - 1.0) < 1e-5, f'temporal probs sum to {pt.sum()}'; \
+	assert (pt >= 0).all(), 'temporal negative probs'; \
+	\
+	# Test 15: temporal — update returns valid winner \
+	wt, mqt = cell_t.update(xt); \
+	assert 0 <= wt < 4, f'temporal bad winner: {wt}'; \
+	assert 0.0 <= mqt <= 1.0, f'temporal bad match quality: {mqt}'; \
+	\
+	# Test 16: temporal — separates co-variation clusters \
+	rng_t = np.random.default_rng(42); \
+	dirs = rng_t.standard_normal((4, 16)); \
+	dirs = dirs / np.linalg.norm(dirs, axis=1, keepdims=True); \
+	cell_tc = SoftWTACell(16, 4, temperature=0.5, lr=0.05, \
+	    match_threshold=0.1, temporal_mode='correlation'); \
+	cluster_winners_t = {i: [] for i in range(4)}; \
+	for _ in range(3000): \
+	    ci = rng_t.integers(4); \
+	    sig = rng_t.standard_normal(10); \
+	    trace = np.outer(dirs[ci], sig) + rng_t.standard_normal((16, 10)) * 0.3; \
+	    xt2 = torch.tensor(trace, dtype=torch.float32); \
+	    wt2, _ = cell_tc.update(xt2); \
+	    cluster_winners_t[ci].append(wt2); \
+	modes_t = set(); \
+	for ci in range(4): \
+	    last = cluster_winners_t[ci][-200:]; \
+	    mode = max(set(last), key=last.count); \
+	    modes_t.add(mode); \
+	assert len(modes_t) >= 3, \
+	    f'temporal poor separation: only {len(modes_t)} distinct modes'; \
+	\
+	# Test 17: temporal — zero trace produces uniform output \
+	cell_t2 = SoftWTACell(16, 4, temporal_mode='correlation'); \
+	pz_t = cell_t2.forward(torch.zeros(16, 10)); \
+	assert abs(pz_t.max().item() - pz_t.min().item()) < 1e-3, \
+	    f'temporal zero should be uniform, range={pz_t.max()-pz_t.min()}'; \
+	\
+	# Test 18: temporal — state roundtrip preserves temporal_mode \
+	sd_t = cell_tc.state_dict(); \
+	cell_tc2 = SoftWTACell.from_state_dict(sd_t); \
+	assert cell_tc2.temporal_mode == 'correlation'; \
+	assert torch.allclose(cell_tc.prototypes, cell_tc2.prototypes); \
+	\
+	# Test 19: zero input (instantaneous) — uniform output, no prototype drift \
 	cell_z = SoftWTACell(16, 4, temperature=0.3, lr=0.05); \
 	rng_z = np.random.default_rng(7); \
 	cz = [torch.tensor(c, dtype=torch.float32) for c in \

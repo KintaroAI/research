@@ -1,7 +1,7 @@
 # 00002 — Temporal Context Support
 
 **Date:** 2026-03-15
-**Status:** Planned
+**Status:** Complete
 
 ## Context
 
