@@ -256,7 +256,7 @@ def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
                 "K": dsolver.knn_k,
                 "history": dsolver.get_knn_history(),
             }
-        _save_run_info(output_dir, args, results=results)
+        _save_run_info(output_dir, args, results=results, wlog=wlog)
 
     # Save KNN lists alongside model
     if output_dir and dsolver.knn_k > 0:
@@ -273,7 +273,7 @@ def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
             print(f"  model saved: {save_path}")
 
 
-def _save_run_info(output_dir, args, results=None):
+def _save_run_info(output_dir, args, results=None, wlog=None):
     """Save/update info.json with command, parameters, and results."""
     import json, subprocess, datetime
     info_path = os.path.join(output_dir, "info.json")
@@ -300,6 +300,9 @@ def _save_run_info(output_dir, args, results=None):
 
     if results:
         info["results"] = results
+
+    if wlog and wlog.run_url:
+        info["wandb_url"] = wlog.run_url
 
     with open(info_path, "w") as f:
         json.dump(info, f, indent=2, default=str)

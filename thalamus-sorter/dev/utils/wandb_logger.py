@@ -65,6 +65,14 @@ class WandbLogger:
             save_code=False,
         )
         self._initialized = True
+        self.url = wandb.run.get_url() if wandb.run else None
+
+    @property
+    def run_url(self):
+        """Return the wandb run URL, or None if not initialized."""
+        if not self._initialized or not self.enabled:
+            return None
+        return self.url
 
     def log_knn(self, tick, overlap, spatial_acc, n_changed, n_total,
                 top50_swaps, top90_swaps, lr=None):
