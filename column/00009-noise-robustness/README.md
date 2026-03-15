@@ -1,6 +1,7 @@
 # 00009 — Noise Robustness
 
 **Status:** Complete
+**Source:** `exp/00009` (`2a5cc93`)
 
 ## Goal
 
