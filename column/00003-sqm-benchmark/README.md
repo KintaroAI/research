@@ -1,6 +1,7 @@
 # 00003 — SQM Benchmark
 
 **Status:** Complete
+**Source:** `exp/00003` (`a0a018b`)
 
 ## Goal
 
