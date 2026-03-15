@@ -78,6 +78,7 @@ Cell 1 extracts direction per segment; Cell 2 categorizes the transition matrix
 | 00003 | SQM benchmark | Full evaluation suite, temporal converges 2x faster |
 | 00004 | 3D movement | Direction categorization from position traces, NMI=0.70–0.78 |
 | 00005 | Hierarchical stack | Two-cell pipeline for movement patterns, NMI=0.565 vs 0.328 alone |
+| 00006 | Compositional logic | Negative result: relational tasks (same/diff, sum mod 4) defeat prototype matching |
 
 ## Repository structure
 
