@@ -81,6 +81,7 @@ Cell 1 extracts direction per segment; Cell 2 categorizes the transition matrix
 | 00006 | Compositional logic | Negative result: relational tasks defeat prototype matching with outer product |
 | 00007 | Composition wiring | Circular convolution + compare stats partially rescue composition (NMI 0.24–0.38) |
 | 00008 | Catastrophic forgetting | Task B overwrites A (0.857→0.289), but retraining is 10x faster (500 vs 5000 frames) |
+| 00009 | Noise robustness | 2 noisy channels (12%) drops NMI 1.0→0.14; low-amplitude noise (0.3) at 50% channels OK |
 
 ## Repository structure
 
