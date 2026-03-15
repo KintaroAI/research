@@ -113,6 +113,27 @@ test:
 	assert 'nmi' in sqm; \
 	assert 'confidence_gap' in sqm; \
 	assert 'prototype_spread' in sqm; \
+	assert 'consistency' in sqm; \
+	\
+	# Test 13b: winner consistency \
+	from metrics import winner_consistency; \
+	assert abs(winner_consistency(w_perfect, l_perfect) - 1.0) < 1e-6, \
+	    'perfect assignment should have consistency 1.0'; \
+	w_scattered = np.array([0,1,2,3,1,2,3,0,2,3,0,1]); \
+	assert winner_consistency(w_scattered, l_perfect) < 0.5, \
+	    'scattered assignment should have low consistency'; \
+	\
+	# Test 13c: lock-in score \
+	from metrics import lock_in_score; \
+	fake_snaps = [ \
+	    {'nmi': 0.2, 'frame': 1000}, \
+	    {'nmi': 0.7, 'frame': 2000}, \
+	    {'nmi': 0.85, 'frame': 3000}, \
+	    {'nmi': 0.9, 'frame': 4000}, \
+	    {'nmi': 0.91, 'frame': 5000}]; \
+	lv, lf = lock_in_score(fake_snaps, 'nmi'); \
+	assert abs(lv - 0.905) < 0.01, f'lock-in value wrong: {lv}'; \
+	assert lf == 3000, f'lock-in frame wrong: {lf}'; \
 	\
 	# Test 14: temporal — forward produces valid probs for (n, T) input \
 	cell_t = SoftWTACell(16, 4, temporal_mode='correlation'); \

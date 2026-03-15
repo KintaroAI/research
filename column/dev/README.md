@@ -30,6 +30,7 @@ dev/
 ├── main.py              # CLI entry point — train on synthetic data
 ├── column.py            # SoftWTACell implementation
 ├── metrics.py           # Separation Quality Metrics (SQM)
+├── benchmark.py         # SQM benchmark — 4-scenario quality evaluation
 ├── output_name.py       # Auto-generate output directory paths
 ├── Makefile
 └── requirements.txt

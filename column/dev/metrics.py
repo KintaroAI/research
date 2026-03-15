@@ -1,9 +1,10 @@
 """Separation quality metrics (SQM) for competitive categorization cells.
 
-Three axes:
-  Coverage  — are all output units alive?
+Four axes:
+  Coverage    — are all output units alive?
   Selectivity — does each unit respond to a distinct pattern?
-  Separation — do learned categories match true structure?
+  Separation  — do learned categories match true structure?
+  Stability   — does the mapping hold steady / adapt when needed?
 
 All functions take numpy arrays. Use compute_sqm() for the full report.
 """
@@ -133,6 +134,83 @@ def confusion_matrix(winners, labels, n_outputs):
     return mat
 
 
+# ── Consistency ───────────────────────────────────────────────────────
+
+def winner_consistency(winners, labels):
+    """Per-cluster consistency: fraction of samples assigned to the modal winner.
+
+    For each true cluster, what fraction of its samples go to the most common
+    output unit? High = stable mapping from input region to output unit.
+    1.0 = every sample in a cluster goes to the same unit.
+    """
+    n_clusters = labels.max() + 1
+    scores = []
+    for c in range(n_clusters):
+        mask = labels == c
+        if mask.sum() == 0:
+            continue
+        w = winners[mask]
+        mode_count = np.bincount(w).max()
+        scores.append(mode_count / len(w))
+    return float(np.mean(scores)) if scores else 0.0
+
+
+# ── Stability ─────────────────────────────────────────────────────────
+
+def lock_in_score(sqm_snapshots, metric='nmi'):
+    """Measure how quickly a metric stabilizes during training.
+
+    Returns (converged_value, convergence_frame):
+    - converged_value: mean of last 2 snapshots
+    - convergence_frame: first snapshot where metric reaches 90% of converged value
+    """
+    if len(sqm_snapshots) < 2:
+        return 0.0, 0
+    values = [s[metric] for s in sqm_snapshots if metric in s]
+    frames = [s['frame'] for s in sqm_snapshots if metric in s]
+    if len(values) < 2:
+        return 0.0, 0
+    converged = np.mean(values[-2:])
+    threshold = converged * 0.9
+    for v, f in zip(values, frames):
+        if v >= threshold:
+            return float(converged), int(f)
+    return float(converged), int(frames[-1])
+
+
+def adaptation_speed(winners_before, winners_after, labels_after, n_outputs, window=100):
+    """After a distribution shift, measure frames until NMI recovers.
+
+    Args:
+        winners_before: winners from pre-shift phase (to establish baseline NMI)
+        winners_after: winners from post-shift phase
+        labels_after: true labels in post-shift phase
+        n_outputs: number of output units
+        window: sliding window size for NMI computation
+
+    Returns:
+        frames_to_recover: first window where NMI exceeds 0.5 (or -1 if never)
+        final_nmi: NMI over last window
+    """
+    n = len(winners_after)
+    if n < window:
+        return -1, 0.0
+
+    final_nmi = normalized_mutual_info(
+        winners_after[-window:], labels_after[-window:]
+    )
+
+    for start in range(0, n - window + 1, window // 4):
+        end = start + window
+        nmi = normalized_mutual_info(
+            winners_after[start:end], labels_after[start:end]
+        )
+        if nmi >= 0.5:
+            return start + window, final_nmi
+
+    return -1, final_nmi
+
+
 # ── Full report ───────────────────────────────────────────────────────
 
 def compute_sqm(winners, probs, prototypes, n_outputs, labels=None):
@@ -158,6 +236,7 @@ def compute_sqm(winners, probs, prototypes, n_outputs, labels=None):
     if labels is not None:
         results['purity'] = purity(winners, labels, n_outputs)
         results['nmi'] = normalized_mutual_info(winners, labels)
+        results['consistency'] = winner_consistency(winners, labels)
 
     return results
 
@@ -174,4 +253,6 @@ def format_sqm(sqm):
         parts.append(f"nmi={sqm['nmi']:.3f}")
     if 'purity' in sqm:
         parts.append(f"purity={sqm['purity']:.3f}")
+    if 'consistency' in sqm:
+        parts.append(f"consist={sqm['consistency']:.3f}")
     return "  ".join(parts)
