@@ -59,9 +59,19 @@ python main.py word2vec --preset rgb_80x80_garden -f 50000 --wandb --wandb-tags 
 ```
 
 Logged metrics:
+- `tick/elapsed_s`, `tick/total_pairs`, `tick/ms_per_tick` — every `--log-every` ticks (default 1000)
 - `knn/overlap`, `knn/spatial`, `knn/n_changed`, `knn/pct_changed`, `knn/top50_swaps`, `knn/top90_swaps` — per KNN report tick
 - `summary/ticks`, `summary/elapsed_s`, `summary/std`, `summary/total_pairs` — at training end
 - `eval/pca_disparity`, `eval/k10_mean_dist`, `eval/k10_within_3px`, `eval/k10_within_5px` — if `--eval` is set
+
+Tick progress is also printed to stdout regardless of `--wandb`:
+
+```
+  tick 500/3000 (7.9s, 15.9 ms/tick, pairs=7959624)
+  tick 1000/3000 (13.6s, 11.3 ms/tick, pairs=15363278)
+```
+
+Control the interval with `--log-every N` (default 1000, 0 to disable).
 
 If wandb is not installed, `--wandb` prints a warning and runs without logging.
 

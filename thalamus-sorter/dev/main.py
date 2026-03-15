@@ -305,6 +305,69 @@ def _save_run_info(output_dir, args, results=None):
         json.dump(info, f, indent=2, default=str)
 
 
+def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
+                       on_save=None, on_display=None, can_break=None):
+    """Shared training loop for async and sync render paths.
+
+    Callbacks:
+        on_save(tick, total_pairs) — called every save_every ticks
+        on_display(tick) — called every tick (caller filters as needed)
+        can_break() — return True to exit loop early
+
+    Returns (t0, total_pairs).
+    """
+    import time
+    t0 = time.time()
+    max_frames = args.frames
+    total_pairs = 0
+    prev_pairs = 0
+    knn_report_every = getattr(args, 'knn_report_every', 1000)
+    log_every = getattr(args, 'log_every', 1000)
+    t_log = t0
+
+    for tick in range(1, max_frames + 1):
+        total_pairs += do_tick()
+
+        # Tick progress logging
+        if log_every > 0 and tick % log_every == 0:
+            now = time.time()
+            elapsed = now - t0
+            ms_tick = (now - t_log) / log_every * 1000
+            pairs_per_tick = (total_pairs - prev_pairs) / log_every
+            print(f"  tick {tick}/{max_frames} "
+                  f"({elapsed:.1f}s, {ms_tick:.1f} ms/tick, "
+                  f"pairs={total_pairs}, {pairs_per_tick:.0f}/tick)")
+            wlog.log_tick(tick, elapsed, total_pairs, ms_tick, pairs_per_tick)
+            t_log = now
+            prev_pairs = total_pairs
+
+        # KNN stability reporting
+        if dsolver.knn_k > 0 and tick % knn_report_every == 0:
+            dsolver._refresh_knn_dists()
+            overlap, n_changed, top50_swaps, top90_swaps = dsolver.knn_stability()
+            spatial_acc = dsolver.knn_spatial_accuracy(w, radius=3, channels=sig_channels)
+            dsolver._knn_overlap_history.append((tick, overlap, spatial_acc))
+            lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
+            print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
+                  f"spatial={spatial_acc:.3f} "
+                  f"({n_changed}/{n} changed) "
+                  f"swaps: top50={top50_swaps:.1f} top90={top90_swaps:.1f}{lr_str}")
+            wlog.log_knn(tick, overlap, spatial_acc, n_changed, n,
+                         top50_swaps, top90_swaps,
+                         lr=dsolver.lr if dsolver.lr_decay < 1.0 else None)
+
+        if on_save is not None and tick % args.save_every == 0:
+            on_save(tick, total_pairs)
+
+        if on_display is not None:
+            on_display(tick)
+
+        if can_break is not None and can_break():
+            break
+
+    return t0, total_pairs
+
+
 def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
                    shm_done, n, dims, w, h, pixel_values,
                    render_method, do_align, cold_proj, output_dir,
@@ -393,6 +456,72 @@ def run_word2vec(args):
         sig_channels = getattr(args, 'signal_channels', 1)
         n = w * h * sig_channels
 
+        # --- Pixel values for rendering (no model dependency) ---
+        pixel_values = None
+        if image is not None:
+            if sig_channels > 1:
+                channel_tints = {
+                    0: np.array([0.3, 0.3, 1.0]),  # R -> red (BGR)
+                    1: np.array([0.3, 1.0, 0.3]),  # G -> green (BGR)
+                    2: np.array([1.0, 0.3, 0.3]),  # B -> blue (BGR)
+                    3: np.array([0.8, 0.8, 0.8]),  # GS -> gray (BGR)
+                }
+                pixel_values = np.zeros((n, 3), dtype=np.uint8)
+                for i in range(n):
+                    px = i // sig_channels
+                    ch = i % sig_channels
+                    gray = float(image[px // w, px % w])
+                    tint = channel_tints.get(ch, np.array([1.0, 1.0, 1.0]))
+                    pixel_values[i] = np.clip(gray * tint, 0, 255).astype(np.uint8)
+            else:
+                pixel_values = np.zeros(n, dtype=np.uint8)
+                for i in range(n):
+                    pixel_values[i] = image[i // w, i % w]
+
+        render_w = w * sig_channels
+        render_h = h
+
+        output_dir = args.output_dir
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            _save_run_info(output_dir, args)
+
+        render_method = args.render
+        if render_method == 'euclidean':
+            render_method = 'pca'
+
+        if getattr(args, 'sync_render', False):
+            args.async_render = False
+
+        # --- Spawn render worker early so its imports overlap with model init ---
+        worker = None
+        bufs = None
+        shm_active = shm_tick = shm_done = None
+        if args.async_render and output_dir:
+            import multiprocessing as mp
+            try:
+                mp.set_start_method('spawn')
+            except RuntimeError:
+                pass  # already set
+
+            buf_size = n * args.dims
+            shm_buf0 = mp.Array('f', buf_size)
+            shm_buf1 = mp.Array('f', buf_size)
+            shm_active = mp.Value('i', 0)
+            shm_tick = mp.Value('i', 0)
+            shm_done = mp.Value('i', 0)
+
+            bufs = [shm_buf0, shm_buf1]
+            worker = mp.Process(target=_render_worker,
+                                args=(shm_buf0, shm_buf1, shm_active, shm_tick,
+                                      shm_done, n, args.dims,
+                                      render_w, render_h, pixel_values,
+                                      render_method,
+                                      args.align, args.cold_projection,
+                                      output_dir, args.render_gpu))
+            worker.start()
+
+        # --- Create solver (imports torch/cuml in main process) ---
         if mode == "sentence":
             k = min(args.k, n - 1)
             top_k = topk_decay2d(w, h, k)
@@ -528,116 +657,37 @@ def run_word2vec(args):
                 dsolver.tick_sentence(window=args.window)
                 return 0
 
-        # --- Common setup ---
-        pixel_values = None
-        if image is not None:
-            if sig_channels > 1:
-                # Color-tinted pixel values (BGR for cv2): R=red, G=green, B=blue, GS=gray
-                channel_tints = {
-                    0: np.array([0.3, 0.3, 1.0]),  # R -> red (BGR)
-                    1: np.array([0.3, 1.0, 0.3]),  # G -> green (BGR)
-                    2: np.array([1.0, 0.3, 0.3]),  # B -> blue (BGR)
-                    3: np.array([0.8, 0.8, 0.8]),  # GS -> gray (BGR)
-                }
-                pixel_values = np.zeros((n, 3), dtype=np.uint8)
-                for i in range(n):
-                    px = i // sig_channels
-                    ch = i % sig_channels
-                    gray = float(image[px // w, px % w])
-                    tint = channel_tints.get(ch, np.array([1.0, 1.0, 1.0]))
-                    pixel_values[i] = np.clip(gray * tint, 0, 255).astype(np.uint8)
-            else:
-                pixel_values = np.zeros(n, dtype=np.uint8)
-                for i in range(n):
-                    pixel_values[i] = image[i // w, i % w]
-
-        # Effective grid dimensions for rendering (channels expand width)
-        render_w = w * sig_channels
-        render_h = h
-
-        output_dir = args.output_dir
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            _save_run_info(output_dir, args)
-
-        render_method = args.render
-        if render_method == 'euclidean':
-            render_method = 'pca'
-
-        if getattr(args, 'sync_render', False):
-            args.async_render = False
-
         # --- Training + rendering ---
-        if args.async_render and output_dir:
-            import multiprocessing as mp
-            try:
-                mp.set_start_method('spawn')
-            except RuntimeError:
-                pass  # already set
+        if worker is not None:
+            write_slot = [1]
 
-            buf_size = n * args.dims
-            shm_buf0 = mp.Array('f', buf_size)
-            shm_buf1 = mp.Array('f', buf_size)
-            shm_active = mp.Value('i', 0)
-            shm_tick = mp.Value('i', 0)
-            shm_done = mp.Value('i', 0)
+            def on_save_async(tick, total_pairs):
+                emb = dsolver.get_positions()
+                dst = np.frombuffer(bufs[write_slot[0]].get_obj(),
+                                    dtype=np.float32)
+                np.copyto(dst, emb.ravel())
+                shm_active.value = write_slot[0]
+                shm_tick.value = tick
+                write_slot[0] = 1 - write_slot[0]
 
-            bufs = [shm_buf0, shm_buf1]
-            worker = mp.Process(target=_render_worker,
-                                args=(shm_buf0, shm_buf1, shm_active, shm_tick,
-                                      shm_done, n, args.dims,
-                                      render_w, render_h, pixel_values,
-                                      render_method,
-                                      args.align, args.cold_projection,
-                                      output_dir, args.render_gpu))
-            worker.start()
-
-            t0 = time.time()
-            max_frames = args.frames
-            write_slot = 1
-            total_pairs = 0
-            knn_report_every = getattr(args, 'knn_report_every', 1000)
-            for tick in range(1, max_frames + 1):
-                total_pairs += do_tick()
-
-                # KNN stability reporting
-                if dsolver.knn_k > 0 and tick % knn_report_every == 0:
-                    dsolver._refresh_knn_dists()
-                    overlap, n_changed, top50_swaps, top90_swaps = dsolver.knn_stability()
-                    spatial_acc = dsolver.knn_spatial_accuracy(w, radius=3, channels=sig_channels)
-                    dsolver._knn_overlap_history.append((tick, overlap, spatial_acc))
-                    lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
-                    print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
-                          f"spatial={spatial_acc:.3f} "
-                          f"({n_changed}/{n} changed) "
-                          f"swaps: top50={top50_swaps:.1f} top90={top90_swaps:.1f}{lr_str}")
-                    wlog.log_knn(tick, overlap, spatial_acc, n_changed, n,
-                                 top50_swaps, top90_swaps,
-                                 lr=dsolver.lr if dsolver.lr_decay < 1.0 else None)
-
-                if tick % args.save_every == 0:
-                    emb = dsolver.get_positions()
-                    dst = np.frombuffer(bufs[write_slot].get_obj(),
-                                        dtype=np.float32)
-                    np.copyto(dst, emb.ravel())
-                    shm_active.value = write_slot
-                    shm_tick.value = tick
-                    write_slot = 1 - write_slot
+            t0, total_pairs = _run_training_loop(
+                do_tick, dsolver, args, n, w, sig_channels, wlog,
+                on_save=on_save_async)
 
             # Final snapshot
             emb = dsolver.get_positions()
-            dst = np.frombuffer(bufs[write_slot].get_obj(), dtype=np.float32)
+            dst = np.frombuffer(bufs[write_slot[0]].get_obj(), dtype=np.float32)
             np.copyto(dst, emb.ravel())
-            shm_active.value = write_slot
-            shm_tick.value = max_frames + 1
+            shm_active.value = write_slot[0]
+            shm_tick.value = args.frames + 1
             time.sleep(0.01)
             shm_done.value = 1
 
             elapsed_train = time.time() - t0
             s = dsolver.stats()
-            print(f"Training done: {max_frames} ticks in {elapsed_train:.1f}s, "
+            print(f"Training done: {args.frames} ticks in {elapsed_train:.1f}s, "
                   f"std={s['std']:.4f}, total_pairs={total_pairs}")
-            wlog.log_done(max_frames, elapsed_train, s['std'], total_pairs)
+            wlog.log_done(args.frames, elapsed_train, s['std'], total_pairs)
 
             worker.join()
             elapsed_total = time.time() - t0
@@ -658,57 +708,41 @@ def run_word2vec(args):
                     prev_2d = pos_2d.copy()
                 return render_emb(pos_2d, render_w, render_h, pixel_values)
 
-            t0 = time.time()
-            max_frames = args.frames
-            saved = 0
-            total_pairs = 0
-            knn_report_every = getattr(args, 'knn_report_every', 1000)
-            for tick in range(1, max_frames + 1):
-                total_pairs += do_tick()
+            saved = [0]
 
-                # KNN stability reporting
-                if dsolver.knn_k > 0 and tick % knn_report_every == 0:
-                    dsolver._refresh_knn_dists()
-                    overlap, n_changed, top50_swaps, top90_swaps = dsolver.knn_stability()
-                    spatial_acc = dsolver.knn_spatial_accuracy(w, radius=3, channels=sig_channels)
-                    dsolver._knn_overlap_history.append((tick, overlap, spatial_acc))
-                    lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
-                    print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
-                          f"spatial={spatial_acc:.3f} "
-                          f"({n_changed}/{n} changed) "
-                          f"swaps: top50={top50_swaps:.1f} top90={top90_swaps:.1f}{lr_str}")
-                    wlog.log_knn(tick, overlap, spatial_acc, n_changed, n,
-                                 top50_swaps, top90_swaps,
-                                 lr=dsolver.lr if dsolver.lr_decay < 1.0 else None)
+            def on_save_sync(tick, total_pairs):
+                frame = render_frame()
+                if frame is not None:
+                    normalized = cv2.normalize(
+                        frame, None, 0, 255, cv2.NORM_MINMAX,
+                        dtype=cv2.CV_8U)
+                    path = os.path.join(output_dir, f"frame_{saved[0]:06d}.png")
+                    cv2.imwrite(path, normalized)
+                    saved[0] += 1
+                    if saved[0] % 100 == 0:
+                        s = dsolver.stats()
+                        print(f"  tick {tick}, saved {saved[0]} frames, "
+                              f"std={s['std']:.4f}, pairs={total_pairs}")
 
-                if output_dir and tick % args.save_every == 0:
-                    frame = render_frame()
-                    if frame is not None:
-                        normalized = cv2.normalize(
-                            frame, None, 0, 255, cv2.NORM_MINMAX,
-                            dtype=cv2.CV_8U)
-                        path = os.path.join(output_dir, f"frame_{saved:06d}.png")
-                        cv2.imwrite(path, normalized)
-                        saved += 1
-                        if saved % 100 == 0:
-                            elapsed = time.time() - t0
-                            s = dsolver.stats()
-                            print(f"  tick {tick}, saved {saved} frames, "
-                                  f"std={s['std']:.4f}, pairs={total_pairs}, "
-                                  f"elapsed={elapsed:.1f}s")
-                elif not output_dir and tick % 10 == 0:
-                    frame = render_frame()
-                    if frame is not None:
-                        show_grid(f"{mode} skip-gram", frame)
+            def on_display_sync(tick):
+                if tick % 10 == 0:
+                    if pixel_values is not None:
+                        frame = render_frame()
+                        if frame is not None:
+                            show_grid(f"{mode} skip-gram", frame)
                     wait()
-                if poll_quit():
-                    break
+
+            t0, total_pairs = _run_training_loop(
+                do_tick, dsolver, args, n, w, sig_channels, wlog,
+                on_save=on_save_sync if output_dir else None,
+                on_display=on_display_sync if not output_dir else None,
+                can_break=poll_quit)
 
             elapsed = time.time() - t0
             s = dsolver.stats()
-            print(f"Done: {max_frames} ticks in {elapsed:.1f}s, "
+            print(f"Done: {args.frames} ticks in {elapsed:.1f}s, "
                   f"std={s['std']:.4f}, total_pairs={total_pairs}")
-            wlog.log_done(max_frames, elapsed, s['std'], total_pairs)
+            wlog.log_done(args.frames, elapsed, s['std'], total_pairs)
 
             if output_dir:
                 frame = render_frame()
@@ -716,12 +750,12 @@ def run_word2vec(args):
                     normalized = cv2.normalize(
                         frame, None, 0, 255, cv2.NORM_MINMAX,
                         dtype=cv2.CV_8U)
-                    path = os.path.join(output_dir, f"frame_{saved:06d}.png")
+                    path = os.path.join(output_dir, f"frame_{saved[0]:06d}.png")
                     cv2.imwrite(path, normalized)
                     print(f"  final frame saved: {path}")
 
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
-                               t0, max_frames, total_pairs=total_pairs,
+                               t0, args.frames, total_pairs=total_pairs,
                                wlog=wlog)
         wlog.finish()
         return
@@ -1174,6 +1208,8 @@ def main():
                             "Monitors embedding convergence via neighbor stability.")
     p_w2v.add_argument("--knn-report-every", type=int, default=1000,
                        help="Report KNN stability every N ticks (default: 1000)")
+    p_w2v.add_argument("--log-every", type=int, default=1000,
+                       help="Print tick progress every N ticks (default: 1000)")
     p_w2v.add_argument("--lr-decay", type=float, default=1.0,
                        help="Multiply lr by this factor at each normalization event (default: 1.0 = no decay)")
     p_w2v.add_argument("--knn-nofn", action="store_true",

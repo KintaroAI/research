@@ -618,23 +618,67 @@ Final: pairs=39M, <3px=98.6%, spatial=0.986
 
 Final: pairs=1.11B, <3px=98.9%, spatial=0.990
 
+### Run 068: 320×320 saccades, 50k (n=102,400, k_sample=3200)
+
+First successful 320×320 run. Uses matmul correlation path (previous attempt with gather path hung — 3GB tensor per tick caused GPU thrashing with async render worker).
+
+| Tick | Overlap | Spatial | top50 | top90 |
+|------|---------|---------|-------|-------|
+| 5000 | 0.000 | 0.085 | 10.0 | 10.0 |
+| 10000 | 0.507 | 0.083 | 3.3 | 4.5 |
+| 15000 | 0.271 | 0.075 | 5.5 | 7.0 |
+| 20000 | 0.103 | 0.097 | 8.1 | 8.9 |
+| 25000 | 0.266 | 0.086 | 6.0 | 7.1 |
+| 30000 | 0.584 | 0.085 | 2.8 | 3.8 |
+| 35000 | 0.720 | 0.089 | 1.5 | 2.5 |
+| 40000 | 0.746 | 0.122 | 1.3 | 2.2 |
+| 45000 | 0.648 | 0.225 | 1.9 | 3.1 |
+| 50000 | 0.553 | 0.427 | 2.8 | 4.1 |
+
+Final: pairs=1.12B, elapsed=336s (6.7 ms/tick), PCA=0.808, <3px=58.2%, <5px=82.8%, spatial=0.427
+
+**320×320 does not converge at 50k ticks.** Overlap is unstable (peaks at 0.746 at tick 40k, then drops), spatial accuracy is only 0.427 (vs 0.99 at smaller grids). With batch_size=256 (default), only 256 anchors are updated per tick — that's 0.25% of 102k neurons. At 80×80, 256/6400 = 4% coverage per tick. The 16× lower coverage rate likely explains the slow convergence.
+
+### Run 069: 320×320 saccades, anchor_batches=4, 50k (n=102,400, k_sample=3200)
+
+Same as run 068 but with `--anchor-batches 4` (1024 anchors/tick, 1% coverage). Logged to wandb: `320x320-ab4-50k`.
+
+| Tick | Overlap | Spatial | top50 | top90 |
+|------|---------|---------|-------|-------|
+| 5000 | 0.000 | 0.083 | 10.0 | 10.0 |
+| 10000 | 0.101 | 0.093 | 8.2 | 8.9 |
+| 15000 | 0.258 | 0.574 | 5.6 | 7.1 |
+| 20000 | 0.321 | 0.922 | 5.2 | 6.5 |
+| 25000 | 0.590 | 0.969 | 2.5 | 3.7 |
+| 30000 | 0.708 | 0.981 | 1.4 | 2.5 |
+| 35000 | 0.775 | 0.987 | 0.7 | 1.8 |
+| 40000 | 0.824 | 0.990 | 0.3 | 1.4 |
+| 45000 | 0.846 | 0.992 | 0.2 | 1.1 |
+| 50000 | 0.872 | 0.993 | 0.1 | 0.9 |
+
+Final: pairs=4.52B, elapsed=794s (15.9 ms/tick), PCA=0.901, <3px=99.2%, <5px=100%, spatial=0.993
+
+**4× anchors fully restores convergence at 320×320.** Spatial accuracy reaches 0.993 (vs 0.427 with default anchors), <3px jumps from 58.2% to 99.2%, and overlap is monotonically increasing (0.872 vs unstable 0.553). The convergence trajectory closely matches 160×160 run 025.
+
 **Grid size comparison at 50k ticks:**
 
-| Grid | n | k_sample | Pairs | Overlap | Spatial | <3px | top50 | top90 | % neurons changed |
-|------|---|----------|-------|---------|---------|------|-------|-------|-------------------|
-| 40×40 | 1,600 | 50 | 39M | 0.79 | 0.986 | 98.6% | 0.3 | 1.5 | 67% |
-| 80×80 | 6,400 | 200 | 1.03B | 0.72 | 0.997 | 95.0% | 0.8 | 2.3 | 78% |
-| 160×160 | 25,600 | 800 | 1.11B | 0.82 | 0.990 | 98.9% | 0.3 | 1.4 | 64% |
+| Grid | n | k_sample | Anchors/tick | Coverage | Pairs | Overlap | Spatial | <3px | top50 | top90 |
+|------|---|----------|-------------|----------|-------|---------|---------|------|-------|-------|
+| 40×40 | 1,600 | 50 | 256 | 16% | 39M | 0.79 | 0.986 | 98.6% | 0.3 | 1.5 |
+| 80×80 | 6,400 | 200 | 256 | 4% | 1.03B | 0.72 | 0.997 | 95.0% | 0.8 | 2.3 |
+| 160×160 | 25,600 | 800 | 256 | 1% | 1.11B | 0.82 | 0.990 | 98.9% | 0.3 | 1.4 |
+| 320×320 | 102,400 | 3,200 | 256 | 0.25% | 1.12B | 0.55 | 0.427 | 58.2% | 2.8 | 4.1 |
+| 320×320 | 102,400 | 3,200 | 1024 | 1% | 4.52B | 0.87 | 0.993 | 99.2% | 0.1 | 0.9 |
 
 **Findings:**
 
-1. **All grid sizes converge to >98% <3px at 50k ticks.** The algorithm scales correctly — k_sample proportional to n keeps convergence speed roughly constant.
+1. **Both k_sample and anchor_sample must scale with n.** k_sample at ~3% of n keeps neighbor discovery effective, but anchor_sample must also scale to maintain sufficient per-tick coverage. At 320×320, 256 anchors (0.25% coverage) is insufficient; 1024 anchors (1% coverage) restores convergence.
 
-2. **Larger grids converge slightly slower in overlap** (160×160 reaches 0.82 vs 40×40's 0.79) but the spatial accuracy is comparable (~0.99). The absolute number of changing neurons is proportional to grid size, but the fraction is similar (~65–78%).
+2. **Coverage rate threshold is ~1%.** 160×160 converges at 1% coverage (256/25600), 320×320 fails at 0.25% but succeeds at 1%. This suggests ~1% per-tick coverage is the minimum for stable convergence at 50k ticks.
 
-3. **Tail fraction is consistent across scales.** top50=0.3 and top90=1.4–1.5 for both 40×40 and 160×160. The swapping tail is ~10% of neurons regardless of grid size — this appears to be a fundamental property of the algorithm, not a scale artifact.
+3. **Overlap instability is a coverage problem, not a scale problem.** Run 068's non-monotonic overlap (peaking then dropping) disappears entirely with 4× anchors. The embedding space needs enough updates per tick to make coherent progress rather than random walks.
 
-4. **80×80 shows slightly worse overlap (0.72)** — this may be run-to-run variance rather than a systematic effect. Spatial quality is still 0.997.
+4. **Tail fraction at 320×320 with sufficient anchors** (top50=0.1, top90=0.9) is actually *better* than smaller grids, suggesting the larger embedding space has more room for stable neighbor assignments.
 
 ### K Value and Ring Completion
 

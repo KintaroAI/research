@@ -84,6 +84,19 @@ class WandbLogger:
             metrics['lr'] = lr
         wandb.log(metrics, step=tick)
 
+    def log_tick(self, tick, elapsed_s, total_pairs, ms_per_tick, pairs_per_tick=None):
+        if not self.enabled:
+            return
+        self._ensure_init()
+        metrics = {
+            'tick/elapsed_s': elapsed_s,
+            'tick/total_pairs': total_pairs,
+            'tick/ms_per_tick': ms_per_tick,
+        }
+        if pairs_per_tick is not None:
+            metrics['tick/pairs_per_tick'] = pairs_per_tick
+        wandb.log(metrics, step=tick)
+
     def log_done(self, ticks, elapsed_s, std, total_pairs):
         if not self.enabled:
             return
