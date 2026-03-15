@@ -1,6 +1,7 @@
 # 00004 — 3D Movement Direction Categorization
 
 **Status:** Complete
+**Source:** `exp/00004` (`12981aa`)
 
 ## Goal
 
