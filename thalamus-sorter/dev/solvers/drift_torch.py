@@ -19,6 +19,11 @@ Usage:
 import torch
 import numpy as np
 
+# When True, KNN updates preserve existing entry positions (tenure-ordered).
+# New candidates only replace the worst slot. When False, topk re-sorts by
+# current cosine similarity (original behavior).
+KNN_STABLE_INSERT = True
+
 
 class DriftSolver:
     """Unified GPU drift solver for topographic map formation.
@@ -544,21 +549,39 @@ class DriftSolver:
         emb_sim = (a_norm.unsqueeze(1) * c_norm).sum(dim=2)  # (batch, k_sample)
         emb_sim[~mask] = -float('inf')
 
-        # Merge current KNN with new candidates, keep top-K
         cur_ids = self.knn_lists[anchors]           # (batch, knn_k)
         cur_dists = self.knn_dists[anchors]         # (batch, knn_k)
 
-        all_ids = torch.cat([cur_ids, candidates], dim=1)     # (batch, knn_k + k_sample)
-        all_dists = torch.cat([cur_dists, emb_sim], dim=1)
+        if KNN_STABLE_INSERT:
+            # Stable insert: replace worst slot in-place, preserving positions
+            passing = emb_sim.clone()
+            passing[candidates == anchors.unsqueeze(1)] = -float('inf')
 
-        # Mask out self-references
-        all_dists[all_ids == anchors.unsqueeze(1)] = -float('inf')
+            for _ in range(self.knn_k):
+                cur_min_val, cur_min_pos = cur_dists.min(dim=1)
+                best_new_val, best_new_pos = passing.max(dim=1)
+                do_swap = best_new_val > cur_min_val
+                if not do_swap.any():
+                    break
+                swap_idx = cur_min_pos[do_swap]
+                batch_idx = torch.arange(cur_ids.size(0), device=self.device)[do_swap]
+                cur_ids[batch_idx, swap_idx] = candidates[batch_idx, best_new_pos[do_swap]]
+                cur_dists[batch_idx, swap_idx] = best_new_val[do_swap]
+                passing[batch_idx, best_new_pos[do_swap]] = -float('inf')
 
-        topk_dists, topk_idx = all_dists.topk(self.knn_k, dim=1)
-        topk_ids = torch.gather(all_ids, 1, topk_idx)
+            self.knn_lists[anchors] = cur_ids
+            self.knn_dists[anchors] = cur_dists
+        else:
+            # Original: concat + topk (re-sorts by cosine similarity)
+            all_ids = torch.cat([cur_ids, candidates], dim=1)
+            all_dists = torch.cat([cur_dists, emb_sim], dim=1)
+            all_dists[all_ids == anchors.unsqueeze(1)] = -float('inf')
 
-        self.knn_lists[anchors] = topk_ids
-        self.knn_dists[anchors] = topk_dists
+            topk_dists, topk_idx = all_dists.topk(self.knn_k, dim=1)
+            topk_ids = torch.gather(all_ids, 1, topk_idx)
+
+            self.knn_lists[anchors] = topk_ids
+            self.knn_dists[anchors] = topk_dists
 
     def _refresh_knn_dists(self):
         """Recompute cosine similarities for all KNN entries using current W vectors."""
