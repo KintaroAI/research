@@ -36,13 +36,15 @@ Typical 50k results: PCA disparity ~0.2-0.6, K=10 neighbors 95-98% within 5 grid
 
 ## Performance
 
-Add `--fp16` to run correlation computation in float16. Halves memory bandwidth for the signal gather and correlation math — the dominant bottleneck for large grids. ~1.75x faster on 80×80, larger gains expected at 160×160+.
+Correlation computation uses matmul instead of per-candidate signal gather — precomputes normalized signals for all neurons once per tick, then correlation is a single cuBLAS `anchor @ normed.T` matmul. This eliminates the `(batch, k_sample, T)` gather (3GB+ for 320×320) and replaces it with a `(batch, T)` gather + fast matmul. **~5x faster** at 80×80.
+
+Add `--fp16` to run the correlation matmul in float16 for additional speedup on large grids:
 
 ```bash
 python main.py word2vec --preset gray_80x80_saccades -f 50000 --fp16
 ```
 
-Skip-gram updates and KNN tracking remain in float32 — only the correlation path (signal gather, derivative, centering, norm, dot product) uses fp16.
+Skip-gram updates and KNN tracking remain in float32.
 
 ## W&B logging
 

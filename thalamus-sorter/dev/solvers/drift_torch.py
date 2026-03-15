@@ -256,6 +256,32 @@ class DriftSolver:
             fp16: if True, run correlation computation in float16 for speed.
         """
         n = self.n
+        compute_dtype = torch.float16 if fp16 else torch.float32
+
+        # Precompute normalized signals for matmul-based correlation.
+        # Instead of gathering (batch, k_sample, T) per batch (huge random copy),
+        # we precompute a normalized (n, T') matrix once, then correlations are
+        # just anchor_normed @ normed.T — a single fast cuBLAS matmul.
+        if use_deriv_corr:
+            sig = signals.to(compute_dtype)
+            deriv = sig[:, 1:] - sig[:, :-1]  # (n, T-1)
+            centered = deriv - deriv.mean(dim=1, keepdim=True)
+            norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+            sig_normed = centered / norms  # (n, T-1)
+        elif use_mse:
+            sig = signals.to(compute_dtype)
+            T_len = sig.shape[1]
+            sig_sq_mean = (sig * sig).mean(dim=1)  # (n,) precomputed self-MSE term
+            sig_normed = sig  # use raw signals for cross-term matmul
+        elif use_covariance:
+            sig = signals.to(compute_dtype)
+            T_len = sig.shape[1]
+            sig_normed = sig - sig.mean(dim=1, keepdim=True)  # (n, T) centered
+        else:  # Pearson correlation
+            sig = signals.to(compute_dtype)
+            centered = sig - sig.mean(dim=1, keepdim=True)
+            norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+            sig_normed = centered / norms  # (n, T)
 
         # Generate anchor chunks: anchor_sample unique anchors,
         # processed sequentially in chunks of batch_size
@@ -276,50 +302,28 @@ class DriftSolver:
                 nofn = self._sample_nofn(anchors)  # (batch, nofn_count)
                 candidates = torch.cat([candidates, nofn], dim=1)
 
-            # Compute correlations: signals are (n, T)
-            # Gather anchor and candidate signals
-            anchor_sig = signals[anchors]            # (batch, T)
-            cand_sig = signals[candidates]           # (batch, k_total, T)
+            # Compute correlations via matmul: anchor_normed @ sig_normed.T
+            # Produces (batch, n) — all correlations at once, then index candidates.
+            # This replaces the massive signals[candidates] gather (3GB+ for 320x320).
+            anchor_normed = sig_normed[anchors]  # (batch, T') — tiny gather
 
-            # Optional FP16 for correlation computation
-            if fp16:
-                anchor_sig = anchor_sig.half()
-                cand_sig = cand_sig.half()
-
-            if use_deriv_corr:
-                anchor_d = anchor_sig[:, 1:] - anchor_sig[:, :-1]
-                cand_d = cand_sig[:, :, 1:] - cand_sig[:, :, :-1]
-                anchor_dc = anchor_d - anchor_d.mean(dim=1, keepdim=True)
-                cand_dc = cand_d - cand_d.mean(dim=2, keepdim=True)
-                anchor_norm = anchor_dc.norm(dim=1, keepdim=True).clamp(min=1e-8)
-                cand_norm = cand_dc.norm(dim=2, keepdim=True).clamp(min=1e-8)
-                score = (anchor_dc.unsqueeze(1) / anchor_norm.unsqueeze(1) *
-                         cand_dc / cand_norm).sum(dim=2)
-                mask = score > threshold
-            elif use_mse:
-                diff = anchor_sig.unsqueeze(1) - cand_sig
-                mse = (diff * diff).mean(dim=2)
-                mask = mse < threshold
-                score = mse
+            if use_mse:
+                # MSE(i,j) = mean(si²) + mean(sj²) - 2*mean(si*sj)
+                cross = (anchor_normed @ sig_normed.T) / T_len  # (batch, n)
+                score_all = sig_sq_mean[anchors].unsqueeze(1) + sig_sq_mean.unsqueeze(0) - 2 * cross
+                score = score_all.gather(1, candidates).float()
+                mask = score < threshold
             elif use_covariance:
-                anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
-                cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
-                T_len = anchor_sig.shape[1]
-                score = (anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T_len
+                score_all = (anchor_normed @ sig_normed.T) / T_len  # (batch, n)
+                score = score_all.gather(1, candidates).float()
                 mask = score.abs() > threshold
-            else:
-                anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
-                cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
-                anchor_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
-                cand_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)
-                anchor_unit = anchor_centered / anchor_norm
-                cand_unit = cand_centered / cand_norm
-                score = (anchor_unit.unsqueeze(1) * cand_unit).sum(dim=2)
-                mask = score.abs() > threshold
-
-            # Back to float32 for downstream ops
-            if fp16:
-                score = score.float()
+            else:  # deriv_corr or Pearson — both use normalized dot product
+                score_all = anchor_normed @ sig_normed.T  # (batch, n) — cuBLAS matmul
+                score = score_all.gather(1, candidates).float()
+                if use_deriv_corr:
+                    mask = score > threshold
+                else:
+                    mask = score.abs() > threshold
 
             # Per-anchor good neighbor counts
             good_counts = mask.sum(dim=1)  # (batch,)
