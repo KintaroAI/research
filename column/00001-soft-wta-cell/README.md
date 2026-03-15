@@ -1,6 +1,7 @@
 # 00001 — Soft-WTA Cell
 
 **Status:** Complete
+**Source:** `exp/00001` (`f5bb5d9`)
 
 ## Goal
 
