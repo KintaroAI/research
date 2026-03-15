@@ -46,6 +46,8 @@ python main.py word2vec --preset gray_80x80_saccades -f 50000 --fp16
 
 Skip-gram updates and KNN tracking remain in float32.
 
+**Future: CUDA C kernel.** The matmul trick exists because PyTorch can't express a fused gather-correlate kernel. In CUDA C, a custom kernel could read each anchor signal once, loop over only its k_sample candidates, compute derivative + correlation inline, and write the score — no intermediate `sig_normed` buffer, no wasted O(n²) work. This would be genuinely O(batch × k_sample × T) with ~30x less computation than the current matmul at 320×320 (k_sample=3200 vs n=102400). The matmul is the right solution for PyTorch, but a fused CUDA kernel is the next step if correlation becomes the bottleneck again at larger scales.
+
 ## W&B logging
 
 Add `--wandb` to log KNN stability, training summary, and eval metrics to Weights & Biases in real-time:
