@@ -1,6 +1,7 @@
 # 00005 — Hierarchical Cell Stack
 
 **Status:** Complete
+**Source:** `exp/00005` (`ea1da96`)
 
 ## Goal
 

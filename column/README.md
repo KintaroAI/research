@@ -30,7 +30,8 @@ Connects to prior work in thalamus-sorter (derivative correlation buffers, tempo
 ## Benchmarks
 
 All implementations are evaluated with the **Separation Quality Metrics (SQM)** suite
-(`dev/benchmark.py`, `dev/benchmark_3d.py`). Run `make test` (19 tests) to verify.
+(`dev/benchmark.py`, `dev/benchmark_3d.py`, `dev/benchmark_hierarchy.py`).
+Run `make test` (19 tests) to verify.
 
 ### Standard benchmark (synthetic clusters, 16 inputs, 4 outputs)
 
@@ -54,6 +55,20 @@ Can the cell learn which direction an object is moving from x,y,z position trace
 Instantaneous mode gets chance-level (NMI=0.04) because random starting positions
 hide direction — only temporal co-variation reveals it.
 
+### Hierarchical stack benchmark (2 cells, movement patterns)
+
+Can two stacked cells learn movement *patterns* (steady, oscillate, zigzag, circle)
+that neither cell can learn alone?
+
+| Architecture | Pattern NMI | Consistency |
+|---|---|---|
+| **Cell 1 → transition matrix → Cell 2** | **0.565** | **0.752** |
+| Cell 1 alone (full trajectory) | 0.328 | 0.443 |
+| Single cell on raw positions | 0.218 | 0.472 |
+
+Cell 1 extracts direction per segment; Cell 2 categorizes the transition matrix
+(how direction changes over time). Neither cell alone can distinguish patterns.
+
 ## Experiments
 
 | # | Name | Key result |
@@ -62,6 +77,7 @@ hide direction — only temporal co-variation reveals it.
 | 00002 | Temporal context | Correlation mode NMI=0.822 where instantaneous gets 0.003 |
 | 00003 | SQM benchmark | Full evaluation suite, temporal converges 2x faster |
 | 00004 | 3D movement | Direction categorization from position traces, NMI=0.70–0.78 |
+| 00005 | Hierarchical stack | Two-cell pipeline for movement patterns, NMI=0.565 vs 0.328 alone |
 
 ## Repository structure
 
@@ -78,6 +94,7 @@ column/
 │   ├── metrics.py             # Separation Quality Metrics (SQM)
 │   ├── benchmark.py           # SQM benchmark — 4-scenario evaluation
 │   ├── benchmark_3d.py        # 3D movement direction benchmark
+│   ├── benchmark_hierarchy.py # Hierarchical cell stack benchmark
 │   ├── output_name.py         # auto-generate output directory paths
 │   ├── Makefile               # setup, test, clean
 │   └── requirements.txt       # numpy, torch
