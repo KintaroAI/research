@@ -1,6 +1,7 @@
 # 00008 — Catastrophic Forgetting
 
 **Status:** Complete
+**Source:** `exp/00008` (`d39e9fb`)
 
 ## Goal
 
