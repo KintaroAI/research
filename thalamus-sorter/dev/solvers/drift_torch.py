@@ -222,7 +222,8 @@ class DriftSolver:
                          anchor_only=False, use_covariance=False,
                          use_mse=False, use_deriv_corr=False,
                          max_hit_ratio=None, batch_size=256,
-                         anchor_sample=256, fp16=False):
+                         anchor_sample=256, fp16=False,
+                         matmul_corr=True):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -254,39 +255,46 @@ class DriftSolver:
                           Split into sequential chunks of batch_size.
                           Default 256 = one batch.
             fp16: if True, run correlation computation in float16 for speed.
+            matmul_corr: if True (default), precompute normalized signals and
+                use matmul for O(n²) but fast correlation. If False, gather
+                candidate signals directly for O(batch*k_sample*T) with less
+                total work but slower random memory access.
         """
         n = self.n
         compute_dtype = torch.float16 if fp16 else torch.float32
 
-        # Matmul-based correlation: precompute normalized signals for all n
-        # neurons, then anchor @ normed.T gives (batch, n) — all pairwise
-        # correlations at once via a single cuBLAS matmul. We only need
-        # (batch, k_sample) scores, so this computes O(n²) correlations when
-        # O(batch * k_sample) would suffice. But the matmul is vastly faster
-        # than the alternative: gathering (batch, k_sample, T) from random
-        # memory locations (3GB+ for 320x320) and doing element-wise ops.
-        # The "wasted" computation is free — GPU matmul throughput >> random
-        # memory gather bandwidth.
-        if use_deriv_corr:
-            sig = signals.to(compute_dtype)
-            deriv = sig[:, 1:] - sig[:, :-1]  # (n, T-1)
-            centered = deriv - deriv.mean(dim=1, keepdim=True)
-            norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
-            sig_normed = centered / norms  # (n, T-1)
-        elif use_mse:
-            sig = signals.to(compute_dtype)
-            T_len = sig.shape[1]
-            sig_sq_mean = (sig * sig).mean(dim=1)  # (n,) precomputed self-MSE term
-            sig_normed = sig  # use raw signals for cross-term matmul
-        elif use_covariance:
-            sig = signals.to(compute_dtype)
-            T_len = sig.shape[1]
-            sig_normed = sig - sig.mean(dim=1, keepdim=True)  # (n, T) centered
-        else:  # Pearson correlation
-            sig = signals.to(compute_dtype)
-            centered = sig - sig.mean(dim=1, keepdim=True)
-            norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
-            sig_normed = centered / norms  # (n, T)
+        # Matmul path: precompute normalized signals for all n neurons once,
+        # then anchor @ normed.T gives (batch, n) — all pairwise correlations
+        # via a single cuBLAS matmul. This is O(n²) — we compute correlations
+        # against every neuron even though we only need k_sample of them. But
+        # GPU matmul throughput >> random memory gather bandwidth, so the
+        # "wasted" computation is free.
+        #
+        # Gather path (matmul_corr=False): gather (batch, k_sample, T) candidate
+        # signals and compute correlations element-wise. O(batch * k_sample * T)
+        # — less total work but slower due to random memory access. Better on
+        # CPU or when k_sample << n and memory is tight.
+        if matmul_corr:
+            if use_deriv_corr:
+                sig = signals.to(compute_dtype)
+                deriv = sig[:, 1:] - sig[:, :-1]
+                centered = deriv - deriv.mean(dim=1, keepdim=True)
+                norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                sig_normed = centered / norms
+            elif use_mse:
+                sig = signals.to(compute_dtype)
+                T_len = sig.shape[1]
+                sig_sq_mean = (sig * sig).mean(dim=1)
+                sig_normed = sig
+            elif use_covariance:
+                sig = signals.to(compute_dtype)
+                T_len = sig.shape[1]
+                sig_normed = sig - sig.mean(dim=1, keepdim=True)
+            else:
+                sig = signals.to(compute_dtype)
+                centered = sig - sig.mean(dim=1, keepdim=True)
+                norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                sig_normed = centered / norms
 
         # Generate anchor chunks: anchor_sample unique anchors,
         # processed sequentially in chunks of batch_size
@@ -307,27 +315,61 @@ class DriftSolver:
                 nofn = self._sample_nofn(anchors)  # (batch, nofn_count)
                 candidates = torch.cat([candidates, nofn], dim=1)
 
-            # Compute correlations via matmul: anchor_normed @ sig_normed.T
-            # Produces (batch, n) — all correlations at once, then index candidates.
-            # This replaces the massive signals[candidates] gather (3GB+ for 320x320).
-            anchor_normed = sig_normed[anchors]  # (batch, T') — tiny gather
+            if matmul_corr:
+                # Matmul path: (batch, T') @ (T', n) → (batch, n), then index
+                anchor_normed = sig_normed[anchors]
 
-            if use_mse:
-                # MSE(i,j) = mean(si²) + mean(sj²) - 2*mean(si*sj)
-                cross = (anchor_normed @ sig_normed.T) / T_len  # (batch, n)
-                score_all = sig_sq_mean[anchors].unsqueeze(1) + sig_sq_mean.unsqueeze(0) - 2 * cross
-                score = score_all.gather(1, candidates).float()
-                mask = score < threshold
-            elif use_covariance:
-                score_all = (anchor_normed @ sig_normed.T) / T_len  # (batch, n)
-                score = score_all.gather(1, candidates).float()
-                mask = score.abs() > threshold
-            else:  # deriv_corr or Pearson — both use normalized dot product
-                score_all = anchor_normed @ sig_normed.T  # (batch, n) — cuBLAS matmul
-                score = score_all.gather(1, candidates).float()
-                if use_deriv_corr:
-                    mask = score > threshold
+                if use_mse:
+                    cross = (anchor_normed @ sig_normed.T) / T_len
+                    score_all = sig_sq_mean[anchors].unsqueeze(1) + sig_sq_mean.unsqueeze(0) - 2 * cross
+                    score = score_all.gather(1, candidates).float()
+                    mask = score < threshold
+                elif use_covariance:
+                    score_all = (anchor_normed @ sig_normed.T) / T_len
+                    score = score_all.gather(1, candidates).float()
+                    mask = score.abs() > threshold
                 else:
+                    score_all = anchor_normed @ sig_normed.T
+                    score = score_all.gather(1, candidates).float()
+                    if use_deriv_corr:
+                        mask = score > threshold
+                    else:
+                        mask = score.abs() > threshold
+            else:
+                # Gather path: fetch candidate signals, compute element-wise
+                anchor_sig = signals[anchors]
+                cand_sig = signals[candidates]
+                if fp16:
+                    anchor_sig = anchor_sig.half()
+                    cand_sig = cand_sig.half()
+
+                if use_deriv_corr:
+                    anchor_d = anchor_sig[:, 1:] - anchor_sig[:, :-1]
+                    cand_d = cand_sig[:, :, 1:] - cand_sig[:, :, :-1]
+                    anchor_dc = anchor_d - anchor_d.mean(dim=1, keepdim=True)
+                    cand_dc = cand_d - cand_d.mean(dim=2, keepdim=True)
+                    a_norm = anchor_dc.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                    c_norm = cand_dc.norm(dim=2, keepdim=True).clamp(min=1e-8)
+                    score = (anchor_dc.unsqueeze(1) / a_norm.unsqueeze(1) *
+                             cand_dc / c_norm).sum(dim=2).float()
+                    mask = score > threshold
+                elif use_mse:
+                    diff = anchor_sig.unsqueeze(1) - cand_sig
+                    score = (diff * diff).mean(dim=2).float()
+                    mask = score < threshold
+                elif use_covariance:
+                    anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
+                    cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
+                    T_len = anchor_sig.shape[1]
+                    score = ((anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T_len).float()
+                    mask = score.abs() > threshold
+                else:
+                    anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
+                    cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
+                    a_norm = anchor_centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                    c_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)
+                    score = ((anchor_centered / a_norm).unsqueeze(1) *
+                             (cand_centered / c_norm)).sum(dim=2).float()
                     mask = score.abs() > threshold
 
             # Per-anchor good neighbor counts

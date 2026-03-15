@@ -521,7 +521,8 @@ def run_word2vec(args):
                     max_hit_ratio=args.max_hit_ratio,
                     batch_size=args.batch_size,
                     anchor_sample=anchor_sample,
-                    fp16=getattr(args, 'fp16', False))
+                    fp16=getattr(args, 'fp16', False),
+                    matmul_corr=getattr(args, 'matmul_corr', True))
         else:
             def do_tick():
                 dsolver.tick_sentence(window=args.window)
@@ -1221,6 +1222,9 @@ def main():
                        help="Use CuPy GPU for rendering (--no-render-gpu for CPU, default: CPU)")
     p_w2v.add_argument("--fp16", action="store_true",
                        help="Use float16 for correlation computation (faster on GPU, slight precision loss)")
+    p_w2v.add_argument("--matmul-corr", action=argparse.BooleanOptionalAction, default=True,
+                       help="Use matmul for correlation (default: on). "
+                            "--no-matmul-corr uses gather path (less memory, better on CPU)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")
