@@ -232,7 +232,7 @@ def _eval_embeddings(emb, w, h):
 
 
 def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
-                            total_pairs=None):
+                            total_pairs=None, wlog=None):
     """Common end-of-run: eval, info.json, model save."""
     import time
     if output_dir:
@@ -247,6 +247,10 @@ def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
         if getattr(args, 'eval', False):
             emb = dsolver.get_positions()
             results["eval"] = _eval_embeddings(emb, w, h)
+            if wlog:
+                e = results["eval"]
+                wlog.log_eval(e["pca_disparity"], e["k10_mean_dist"],
+                              e["k10_within_3px"], e["k10_within_5px"])
         if dsolver.knn_k > 0:
             results["knn"] = {
                 "K": dsolver.knn_k,
@@ -355,6 +359,12 @@ def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
 
 
 def run_word2vec(args):
+    from utils.wandb_logger import WandbLogger
+    # Parse comma-separated tags
+    if getattr(args, 'wandb_tags', None):
+        args.wandb_tags = [t.strip() for t in args.wandb_tags.split(',')]
+    wlog = WandbLogger(args)
+
     w, h = args.width, args.height
 
     image = None
@@ -599,6 +609,9 @@ def run_word2vec(args):
                           f"spatial={spatial_acc:.3f} "
                           f"({n_changed}/{n} changed) "
                           f"swaps: top50={top50_swaps:.1f} top90={top90_swaps:.1f}{lr_str}")
+                    wlog.log_knn(tick, overlap, spatial_acc, n_changed, n,
+                                 top50_swaps, top90_swaps,
+                                 lr=dsolver.lr if dsolver.lr_decay < 1.0 else None)
 
                 if tick % args.save_every == 0:
                     emb = dsolver.get_positions()
@@ -622,6 +635,7 @@ def run_word2vec(args):
             s = dsolver.stats()
             print(f"Training done: {max_frames} ticks in {elapsed_train:.1f}s, "
                   f"std={s['std']:.4f}, total_pairs={total_pairs}")
+            wlog.log_done(max_frames, elapsed_train, s['std'], total_pairs)
 
             worker.join()
             elapsed_total = time.time() - t0
@@ -661,6 +675,9 @@ def run_word2vec(args):
                           f"spatial={spatial_acc:.3f} "
                           f"({n_changed}/{n} changed) "
                           f"swaps: top50={top50_swaps:.1f} top90={top90_swaps:.1f}{lr_str}")
+                    wlog.log_knn(tick, overlap, spatial_acc, n_changed, n,
+                                 top50_swaps, top90_swaps,
+                                 lr=dsolver.lr if dsolver.lr_decay < 1.0 else None)
 
                 if output_dir and tick % args.save_every == 0:
                     frame = render_frame()
@@ -689,6 +706,7 @@ def run_word2vec(args):
             s = dsolver.stats()
             print(f"Done: {max_frames} ticks in {elapsed:.1f}s, "
                   f"std={s['std']:.4f}, total_pairs={total_pairs}")
+            wlog.log_done(max_frames, elapsed, s['std'], total_pairs)
 
             if output_dir:
                 frame = render_frame()
@@ -701,7 +719,9 @@ def run_word2vec(args):
                     print(f"  final frame saved: {path}")
 
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
-                               t0, max_frames, total_pairs=total_pairs)
+                               t0, max_frames, total_pairs=total_pairs,
+                               wlog=wlog)
+        wlog.finish()
         return
 
     if mode == "similarity":
@@ -1198,6 +1218,19 @@ def main():
                        help="Use GPU for solver (--no-gpu for CPU)")
     p_w2v.add_argument("--render-gpu", action=argparse.BooleanOptionalAction, default=True,
                        help="Use CuPy GPU for rendering (--no-render-gpu for CPU, default: CPU)")
+    # wandb logging
+    p_w2v.add_argument("--wandb", action="store_true",
+                       help="Log metrics to Weights & Biases")
+    p_w2v.add_argument("--wandb-project", type=str, default="thalamus-sorter",
+                       help="W&B project name (default: thalamus-sorter)")
+    p_w2v.add_argument("--wandb-name", type=str, default=None,
+                       help="W&B run name")
+    p_w2v.add_argument("--wandb-group", type=str, default=None,
+                       help="W&B run group")
+    p_w2v.add_argument("--wandb-tags", type=str, default=None,
+                       help="Comma-separated W&B tags")
+    p_w2v.add_argument("--wandb-entity", type=str, default=None,
+                       help="W&B entity (team/user)")
     p_w2v.set_defaults(func=run_word2vec)
 
     # --- temporal ---

@@ -11,14 +11,20 @@ source venv/bin/activate   # activate before running any python commands
 
 ## Current baseline
 
-MSE-based correlation sorting with rolling saccade buffer on a real image:
+Derivative-correlation sorting with rolling saccade buffer on a real image:
 
 ```bash
+# Using presets (recommended):
+python main.py word2vec --preset gray_80x80_saccades -f 50000 -o output_run
+python main.py word2vec --preset rgb_80x80_garden -f 50000 -o output_run
+
+# Equivalent explicit flags:
 python main.py word2vec --mode correlation \
   -W 80 -H 80 --dims 8 --k-neg 5 --lr 0.001 \
-  --normalize-every 100 --k-sample 200 --threshold 0.02 \
+  --k-sample 200 --threshold 0.5 \
   --signal-T 1000 --signal-source saccades_gray.npy \
-  --saccade-step 50 --use-mse \
+  --saccade-step 50 --use-deriv-corr \
+  --max-hit-ratio 0.1 \
   -i K_80_g.png -f 50000 --save-every 500 \
   --save-model --eval \
   -o output_run --render umap --align
@@ -27,6 +33,23 @@ python main.py word2vec --mode correlation \
 Typical 50k results: PCA disparity ~0.2-0.6, K=10 neighbors 95-98% within 5 grid pixels.
 
 **Note for production:** Use `--max-hit-ratio 0.1` in the final system. It filters out anchors that correlate with too many candidates (global signal like flickering lights). No effect with clean signals but essential as a safety net when signal quality varies.
+
+## W&B logging
+
+Add `--wandb` to log KNN stability, training summary, and eval metrics to Weights & Biases in real-time:
+
+```bash
+python main.py word2vec --preset rgb_80x80_garden -f 50000 --wandb
+python main.py word2vec --preset rgb_80x80_garden -f 50000 --wandb --wandb-name "garden-50k" --wandb-project thalamus
+python main.py word2vec --preset rgb_80x80_garden -f 50000 --wandb --wandb-tags "rgb,garden" --wandb-group knn-stability
+```
+
+Logged metrics:
+- `knn/overlap`, `knn/spatial`, `knn/n_changed`, `knn/pct_changed`, `knn/top50_swaps`, `knn/top90_swaps` — per KNN report tick
+- `summary/ticks`, `summary/elapsed_s`, `summary/std`, `summary/total_pairs` — at training end
+- `eval/pca_disparity`, `eval/k10_mean_dist`, `eval/k10_within_3px`, `eval/k10_within_5px` — if `--eval` is set
+
+If wandb is not installed, `--wandb` prints a warning and runs without logging.
 
 **TODO: auto-adjust k_sample.** Currently k_sample must be manually scaled with grid size (k_sample=200 for 80x80, 800 for 160x160). Implement adaptive k_sample: track the fraction of anchors that find zero neighbors per tick. If the zero-hit rate exceeds ~15%, double k_sample; if it drops below ~5%, halve it. This keeps the effective sampling fraction constant regardless of grid size. See ts-00012 for data: at 160x160 with k_sample=200, 64.8% of anchors find zero neighbors (dead); k_sample=800 restores the 14.3% baseline.
 
@@ -125,6 +148,7 @@ dev/
 │   ├── display.py       # cv2 display helpers
 │   ├── geometry.py      # coords(), to_index(), move_closer()
 │   ├── graph.py         # UnionFind, MST (Kruskal), DFS traversal
+│   ├── wandb_logger.py  # W&B integration (--wandb flag)
 │   └── weights.py       # Weight matrices + OnlineWeightMatrix
 └── solvers/
     ├── greedy_drift.py          # GreedyDrift class
