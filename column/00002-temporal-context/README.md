@@ -1,6 +1,7 @@
 # 00002 — Temporal Context
 
 **Status:** Complete
+**Source:** `exp/00002` (`856c97a`)
 
 ## Goal
 
