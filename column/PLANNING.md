@@ -55,3 +55,28 @@ sum of outputs, or symmetric outer product `(a⊗b + b⊗a) / 2`.
 For N>2 inputs, this generalizes to permutation-invariant aggregation (sum, max,
 attention-weighted mean). Worth exploring if the cell is used as a building block
 in larger architectures where input ordering shouldn't be a degree of freedom.
+
+## Future exploration: noise tolerance per channel
+
+Exp 00009 revealed that the cell is fragile to noisy input channels. Just 2 noisy
+channels out of 16 (12%) at high amplitude collapse separation. Root cause: input
+normalization maps the vector to a unit sphere, so high-amplitude noise in a few
+channels hijacks the direction, drowning out signal channels.
+
+The cell should be **tolerant to noise in individual channels** — a broken or
+irrelevant sensor shouldn't destroy categorization from the remaining channels.
+This is important for real-world inputs where not all channels are reliable.
+
+Approaches to explore:
+- **Per-channel learned gating:** each prototype stores a weight mask indicating
+  which channels matter. Similarity = weighted dot product. Noisy channels get
+  down-weighted over time. Biologically plausible (dendritic gating).
+- **Robust similarity measure:** replace cosine similarity with something less
+  sensitive to outlier channels (e.g., trimmed mean of per-channel similarities,
+  or median-based distance).
+- **Input normalization per channel** instead of per vector: normalize each
+  channel to zero-mean unit-variance over a running window, so no single channel
+  can dominate magnitude.
+- **Attention-weighted input:** a lightweight pre-processing step that scores
+  each channel's usefulness (e.g., by variance or predictability) and scales
+  the input before prototype matching.

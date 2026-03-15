@@ -123,3 +123,9 @@ Additionally:
 * local updates
 * no global error propagation
 
+16. **Noise tolerance per channel**
+
+* noisy or broken input channels should not destroy categorization from remaining channels
+* the cell should degrade gracefully as the fraction of noisy channels increases
+* currently fails: 2 noisy channels out of 16 (12%) collapse separation (exp 00009)
+
