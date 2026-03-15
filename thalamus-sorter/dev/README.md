@@ -34,6 +34,16 @@ Typical 50k results: PCA disparity ~0.2-0.6, K=10 neighbors 95-98% within 5 grid
 
 **Note for production:** Use `--max-hit-ratio 0.1` in the final system. It filters out anchors that correlate with too many candidates (global signal like flickering lights). No effect with clean signals but essential as a safety net when signal quality varies.
 
+## Performance
+
+Add `--fp16` to run correlation computation in float16. Halves memory bandwidth for the signal gather and correlation math — the dominant bottleneck for large grids. ~1.75x faster on 80×80, larger gains expected at 160×160+.
+
+```bash
+python main.py word2vec --preset gray_80x80_saccades -f 50000 --fp16
+```
+
+Skip-gram updates and KNN tracking remain in float32 — only the correlation path (signal gather, derivative, centering, norm, dot product) uses fp16.
+
 ## W&B logging
 
 Add `--wandb` to log KNN stability, training summary, and eval metrics to Weights & Biases in real-time:

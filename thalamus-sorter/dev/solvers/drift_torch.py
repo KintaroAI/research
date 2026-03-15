@@ -222,7 +222,7 @@ class DriftSolver:
                          anchor_only=False, use_covariance=False,
                          use_mse=False, use_deriv_corr=False,
                          max_hit_ratio=None, batch_size=256,
-                         anchor_sample=256):
+                         anchor_sample=256, fp16=False):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -253,6 +253,7 @@ class DriftSolver:
             anchor_sample: total unique anchor neurons per tick.
                           Split into sequential chunks of batch_size.
                           Default 256 = one batch.
+            fp16: if True, run correlation computation in float16 for speed.
         """
         n = self.n
 
@@ -280,6 +281,11 @@ class DriftSolver:
             anchor_sig = signals[anchors]            # (batch, T)
             cand_sig = signals[candidates]           # (batch, k_total, T)
 
+            # Optional FP16 for correlation computation
+            if fp16:
+                anchor_sig = anchor_sig.half()
+                cand_sig = cand_sig.half()
+
             if use_deriv_corr:
                 anchor_d = anchor_sig[:, 1:] - anchor_sig[:, :-1]
                 cand_d = cand_sig[:, :, 1:] - cand_sig[:, :, :-1]
@@ -298,8 +304,8 @@ class DriftSolver:
             elif use_covariance:
                 anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
                 cand_centered = cand_sig - cand_sig.mean(dim=2, keepdim=True)
-                T = anchor_sig.shape[1]
-                score = (anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T
+                T_len = anchor_sig.shape[1]
+                score = (anchor_centered.unsqueeze(1) * cand_centered).sum(dim=2) / T_len
                 mask = score.abs() > threshold
             else:
                 anchor_centered = anchor_sig - anchor_sig.mean(dim=1, keepdim=True)
@@ -310,6 +316,10 @@ class DriftSolver:
                 cand_unit = cand_centered / cand_norm
                 score = (anchor_unit.unsqueeze(1) * cand_unit).sum(dim=2)
                 mask = score.abs() > threshold
+
+            # Back to float32 for downstream ops
+            if fp16:
+                score = score.float()
 
             # Per-anchor good neighbor counts
             good_counts = mask.sum(dim=1)  # (batch,)
