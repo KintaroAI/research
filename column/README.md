@@ -27,6 +27,42 @@ Connects to prior work in thalamus-sorter (derivative correlation buffers, tempo
 - **Biologically plausible** — local competition, local updates, no global error signal
 - **Temporal context** (optional) — input can be an `(n, T)` matrix of recent traces, enabling correlation-based similarity
 
+## Benchmarks
+
+All implementations are evaluated with the **Separation Quality Metrics (SQM)** suite
+(`dev/benchmark.py`, `dev/benchmark_3d.py`). Run `make test` (19 tests) to verify.
+
+### Standard benchmark (synthetic clusters, 16 inputs, 4 outputs)
+
+| Scenario | NMI | Consistency | Lock-in frame |
+|---|---|---|---|
+| Instantaneous clusters | 0.968 | 0.993 | 2000 |
+| Temporal co-variation | 0.965 | 0.993 | 1000 |
+| Temporal data + instant mode (control) | 0.001 | 0.270 | — |
+| Distribution shift adaptation | 0.897 | 0.968 | 200 frames to recover |
+
+### 3D movement direction benchmark (3 inputs, position traces)
+
+Can the cell learn which direction an object is moving from x,y,z position traces?
+
+| Directions | NMI | Consistency | Control (instantaneous) |
+|---|---|---|---|
+| 6 cardinal (±x,±y,±z) | 0.702 | 0.865 | 0.044 |
+| 8 diagonal (±x±y±z) | 0.776 | 0.967 | — |
+| 12 icosahedron | 0.770 | 0.813 | — |
+
+Instantaneous mode gets chance-level (NMI=0.04) because random starting positions
+hide direction — only temporal co-variation reveals it.
+
+## Experiments
+
+| # | Name | Key result |
+|---|---|---|
+| 00001 | Soft-WTA cell | Baseline implementation, NMI=0.875 on 8 clusters |
+| 00002 | Temporal context | Correlation mode NMI=0.822 where instantaneous gets 0.003 |
+| 00003 | SQM benchmark | Full evaluation suite, temporal converges 2x faster |
+| 00004 | 3D movement | Direction categorization from position traces, NMI=0.70–0.78 |
+
 ## Repository structure
 
 ```
@@ -39,6 +75,9 @@ column/
 ├── dev/                       # active development
 │   ├── main.py                # CLI entry point — train on synthetic data
 │   ├── column.py              # SoftWTACell implementation
+│   ├── metrics.py             # Separation Quality Metrics (SQM)
+│   ├── benchmark.py           # SQM benchmark — 4-scenario evaluation
+│   ├── benchmark_3d.py        # 3D movement direction benchmark
 │   ├── output_name.py         # auto-generate output directory paths
 │   ├── Makefile               # setup, test, clean
 │   └── requirements.txt       # numpy, torch
