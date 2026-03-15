@@ -36,7 +36,7 @@ Typical 50k results: PCA disparity ~0.2-0.6, K=10 neighbors 95-98% within 5 grid
 
 ## Performance
 
-Correlation computation uses matmul instead of per-candidate signal gather — precomputes normalized signals for all neurons once per tick, then correlation is a single cuBLAS `anchor @ normed.T` matmul. This eliminates the `(batch, k_sample, T)` gather (3GB+ for 320×320) and replaces it with a `(batch, T)` gather + fast matmul. **~5x faster** at 80×80.
+Correlation computation uses matmul instead of per-candidate signal gather. Each tick precomputes normalized signals for all n neurons, then `anchor @ normed.T` produces a `(batch, n)` matrix of all pairwise correlations via a single cuBLAS matmul. This is O(n²) — we compute correlations against every neuron even though we only need k_sample of them. But GPU matmul throughput vastly exceeds random memory gather bandwidth, so computing n "unnecessary" scores is faster than fetching k_sample signal vectors from random locations. The old approach allocated `(batch, k_sample, T)` temporaries (3GB+ for 320×320); the matmul path replaces that with a `(batch, n)` output (100MB). **~5x faster** at 80×80.
 
 Add `--fp16` to run the correlation matmul in float16 for additional speedup on large grids:
 

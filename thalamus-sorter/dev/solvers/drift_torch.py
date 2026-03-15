@@ -258,10 +258,15 @@ class DriftSolver:
         n = self.n
         compute_dtype = torch.float16 if fp16 else torch.float32
 
-        # Precompute normalized signals for matmul-based correlation.
-        # Instead of gathering (batch, k_sample, T) per batch (huge random copy),
-        # we precompute a normalized (n, T') matrix once, then correlations are
-        # just anchor_normed @ normed.T — a single fast cuBLAS matmul.
+        # Matmul-based correlation: precompute normalized signals for all n
+        # neurons, then anchor @ normed.T gives (batch, n) — all pairwise
+        # correlations at once via a single cuBLAS matmul. We only need
+        # (batch, k_sample) scores, so this computes O(n²) correlations when
+        # O(batch * k_sample) would suffice. But the matmul is vastly faster
+        # than the alternative: gathering (batch, k_sample, T) from random
+        # memory locations (3GB+ for 320x320) and doing element-wise ops.
+        # The "wasted" computation is free — GPU matmul throughput >> random
+        # memory gather bandwidth.
         if use_deriv_corr:
             sig = signals.to(compute_dtype)
             deriv = sig[:, 1:] - sig[:, :-1]  # (n, T-1)
