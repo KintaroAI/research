@@ -1,6 +1,7 @@
 # 00007 — Composition via Wiring Operations
 
 **Status:** Complete
+**Source:** `exp/00007` (`7699067`)
 
 ## Goal
 
