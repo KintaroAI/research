@@ -1,26 +1,23 @@
 """Compositional logic benchmark — multi-cell classification.
 
-Tests whether three cells with multiplicative interaction can learn
-relationships between two input streams that a single cell cannot.
+Tests whether three cells with the right inter-cell wiring can learn
+relational tasks that prototype cells cannot solve alone.
+
+Key insight: the WIRING OPERATION between cells determines what's solvable.
+- Outer product / concatenation → fails (exp 00006)
+- Absolute difference → solves same/different (comparison)
+- Circular convolution → solves sum mod 4 (modular arithmetic)
 
 Architecture:
   input_a (8D) → Cell A (4 outputs) ─┐
-                                      ├─ outer product (16D) → Cell C → category
+                                      ├─ [wiring op] → Cell C → category
   input_b (8D) → Cell B (4 outputs) ─┘
 
-Tasks:
-  1. Same/different: is a == b?  (2 categories)
-  2. Proximity: is |a-b| mod 4 ≤ 1?  (2 categories)
-  3. Sum mod 4: what is (a+b) mod 4?  (4 categories — hard negative result)
-
-Why single cell fails: all categories have identical centroids in the
-concatenated input space (balanced residue classes). No prototype can
-separate them.
-
-Why outer product helps: the product p_a ⊗ p_b creates features that
-encode pairwise interactions. Same-class pairs activate diagonal
-positions, different-class pairs activate off-diagonal positions —
-giving distinct centroids.
+Wiring operations:
+  outer:     p_a ⊗ p_b                → 16D  (pairwise products)
+  concat:    p_a || p_b               → 8D   (concatenation)
+  diff:      |p_a - p_b|              → 4D   (comparison)
+  circ_conv: circular_conv(p_a, p_b)  → 4D   (modular addition of distributions)
 
 Usage:
     python benchmark_composition.py [-o output_dir]
@@ -38,24 +35,20 @@ from metrics import compute_sqm, format_sqm, normalized_mutual_info
 
 
 def make_paired_data(n_samples, n_values=4, n_dims=8, noise=0.3, seed=42):
-    """Generate paired number inputs with multiple task labels.
-
-    Each number 0-3 is encoded as a noisy vector near a cluster center.
-    Returns data, number values, and labels for each task.
-    """
+    """Generate paired number inputs with multiple task labels."""
     rng = np.random.default_rng(seed)
 
     centers = rng.standard_normal((n_values, n_dims)).astype(np.float32)
     centers = centers / np.linalg.norm(centers, axis=1, keepdims=True)
 
-    # Balanced sampling: 50% same, 50% different pairs
+    # Balanced sampling: 50% same, 50% different
     a_vals = rng.integers(n_values, size=n_samples)
     b_vals = np.empty(n_samples, dtype=int)
     for i in range(n_samples):
         if rng.random() < 0.5:
-            b_vals[i] = a_vals[i]  # same
+            b_vals[i] = a_vals[i]
         else:
-            b_vals[i] = (a_vals[i] + rng.integers(1, n_values)) % n_values  # different
+            b_vals[i] = (a_vals[i] + rng.integers(1, n_values)) % n_values
 
     a_data = np.array([centers[a] + rng.standard_normal(n_dims).astype(np.float32) * noise
                        for a in a_vals])
@@ -63,7 +56,7 @@ def make_paired_data(n_samples, n_values=4, n_dims=8, noise=0.3, seed=42):
                        for b in b_vals])
 
     labels = {
-        'same_diff': (a_vals == b_vals).astype(int),  # 0=different, 1=same
+        'same_diff': (a_vals == b_vals).astype(int),
         'proximity': (np.minimum(np.abs(a_vals - b_vals),
                                  n_values - np.abs(a_vals - b_vals)) <= 1).astype(int),
         'sum_mod4': (a_vals + b_vals) % n_values,
@@ -72,12 +65,65 @@ def make_paired_data(n_samples, n_values=4, n_dims=8, noise=0.3, seed=42):
     return a_data, b_data, a_vals, b_vals, labels, centers
 
 
-def run_pipeline(a_data, b_data, a_vals, b_vals, labels, task,
-                 combine='outer', n_dims=8):
-    """Run the three-cell pipeline with specified combination method.
+def circular_conv(pa, pb):
+    """Circular convolution: conv[k] = sum_j pa[j] * pb[(k-j) mod n].
 
-    combine: 'outer' (multiplicative) or 'concat' (additive)
+    Computes the probability distribution over (a+b) mod n.
     """
+    n = len(pa)
+    result = torch.zeros(n)
+    for k in range(n):
+        for j in range(n):
+            result[k] += pa[j] * pb[(k - j) % n]
+    return result
+
+
+def compare_stats(pa, pb):
+    """Comparison statistics — value-independent same/different signal.
+
+    Computes multiple scalar statistics that depend on the RELATIONSHIP
+    between pa and pb, not on which specific value they represent.
+    """
+    cos_sim = (pa * pb).sum()
+    l2_dist = ((pa - pb) ** 2).sum()
+    max_prod = (pa * pb).max()
+    entropy_diff = torch.abs(-(pa * torch.log(pa + 1e-8)).sum()
+                             - (-(pb * torch.log(pb + 1e-8)).sum()))
+    return torch.stack([cos_sim, l2_dist, max_prod, entropy_diff])
+
+
+def combine_outputs(pa, pb, method):
+    """Apply a wiring operation to combine Cell A and B outputs."""
+    if method == 'outer':
+        return (pa.unsqueeze(1) * pb.unsqueeze(0)).flatten()
+    elif method == 'concat':
+        return torch.cat([pa, pb])
+    elif method == 'diff':
+        return torch.abs(pa - pb)
+    elif method == 'circ_conv':
+        return circular_conv(pa, pb)
+    elif method == 'compare':
+        return compare_stats(pa, pb)
+    else:
+        raise ValueError(f"Unknown combine method: {method}")
+
+
+def combine_dim(n_values, method):
+    """Output dimensionality for each wiring operation."""
+    if method == 'outer':
+        return n_values * n_values
+    elif method == 'concat':
+        return n_values * 2
+    elif method in ('diff', 'circ_conv'):
+        return n_values
+    elif method == 'compare':
+        return 4
+    raise ValueError(f"Unknown method: {method}")
+
+
+def run_pipeline(a_data, b_data, a_vals, b_vals, labels, task,
+                 combine='diff', n_dims=8):
+    """Run the three-cell pipeline with specified wiring operation."""
     n_samples = len(a_vals)
     n_values = 4
     task_labels = labels[task]
@@ -86,14 +132,10 @@ def run_pipeline(a_data, b_data, a_vals, b_vals, labels, task,
     cell_a = SoftWTACell(n_dims, n_values, temperature=0.3, lr=0.05)
     cell_b = SoftWTACell(n_dims, n_values, temperature=0.3, lr=0.05)
 
-    if combine == 'outer':
-        c_inputs = n_values * n_values  # 16
-    else:
-        c_inputs = n_values * 2  # 8
-
+    c_inputs = combine_dim(n_values, combine)
     cell_c = SoftWTACell(c_inputs, n_categories, temperature=0.3, lr=0.05)
 
-    # Phase 1: train Cell A and B alone (Cell C sees nothing)
+    # Phase 1: pretrain Cell A and B
     pretrain = n_samples // 3
     for i in range(pretrain):
         xa = torch.from_numpy(a_data[i])
@@ -103,7 +145,7 @@ def run_pipeline(a_data, b_data, a_vals, b_vals, labels, task,
         pb = cell_b.forward(xb)
         cell_b.update(xb, pb)
 
-    # Phase 2: train all three cells
+    # Phase 2: train all three
     winners, probs = [], []
     for i in range(pretrain, n_samples):
         xa = torch.from_numpy(a_data[i])
@@ -114,11 +156,7 @@ def run_pipeline(a_data, b_data, a_vals, b_vals, labels, task,
         pb = cell_b.forward(xb)
         cell_b.update(xb, pb)
 
-        if combine == 'outer':
-            combined = (pa.unsqueeze(1) * pb.unsqueeze(0)).flatten()
-        else:
-            combined = torch.cat([pa, pb])
-
+        combined = combine_outputs(pa.detach(), pb.detach(), combine)
         pc = cell_c.forward(combined)
         wc, _ = cell_c.update(combined, pc)
         winners.append(wc)
@@ -133,7 +171,7 @@ def run_pipeline(a_data, b_data, a_vals, b_vals, labels, task,
 
 
 def run_single_cell(a_data, b_data, labels, task, n_dims=8):
-    """Single cell on concatenated raw input."""
+    """Single cell on concatenated raw input (baseline)."""
     n_samples = len(a_data)
     task_labels = labels[task]
     n_categories = len(np.unique(task_labels))
@@ -154,26 +192,21 @@ def run_single_cell(a_data, b_data, labels, task, n_dims=8):
                        n_categories, labels=task_labels)
 
 
-def run_task(name, a_data, b_data, a_vals, b_vals, labels):
+def run_task(name, a_data, b_data, a_vals, b_vals, labels, methods):
     """Run all architectures on a single task."""
     results = {}
-
-    results['3cell_outer'] = run_pipeline(
-        a_data, b_data, a_vals, b_vals, labels, name, combine='outer')
-
-    results['3cell_concat'] = run_pipeline(
-        a_data, b_data, a_vals, b_vals, labels, name, combine='concat')
-
+    for method in methods:
+        results[method] = run_pipeline(
+            a_data, b_data, a_vals, b_vals, labels, name, combine=method)
     results['single'] = run_single_cell(a_data, b_data, labels, name)
-
     return results
 
 
-def print_task(task_name, results):
+def print_task(results):
     """Print results for one task."""
     scenarios = list(results.keys())
-    col_w = 16
-    keys = ['nmi', 'purity', 'consistency', 'confidence_gap', 'winner_entropy']
+    col_w = 14
+    keys = ['nmi', 'purity', 'consistency', 'confidence_gap']
 
     header = f"  {'metric':<20}" + "".join(f"{s:>{col_w}}" for s in scenarios)
     print(header)
@@ -192,41 +225,47 @@ def print_task(task_name, results):
 def main():
     parser = argparse.ArgumentParser(description='Compositional logic benchmark')
     parser.add_argument('-o', '--output', type=str, default=None)
-    parser.add_argument('--samples', type=int, default=10000)
+    parser.add_argument('--samples', type=int, default=15000)
+    parser.add_argument('--noise', type=float, default=0.1)
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
-    print("=" * 68)
-    print("Compositional Logic Benchmark")
-    print("=" * 68)
-    print(f"Samples: {args.samples}, 4 values encoded as 8D clusters, noise=0.3")
-    print(f"Architectures: 3cell_outer (A⊗B→C), 3cell_concat (A||B→C), single (raw)")
+    print("=" * 74)
+    print("Compositional Logic Benchmark — Wiring Operations Compared")
+    print("=" * 74)
+    print(f"Samples: {args.samples}, 4 values as 8D clusters, noise={args.noise}")
+    print(f"Wiring: compare, circ_conv, diff, outer, concat, single")
 
     a_data, b_data, a_vals, b_vals, labels, centers = \
-        make_paired_data(args.samples, seed=args.seed)
+        make_paired_data(args.samples, noise=args.noise, seed=args.seed)
 
+    all_methods = ['compare', 'circ_conv', 'diff', 'outer', 'concat']
     all_results = {}
 
     for task, desc in [('same_diff', 'Same/Different (a == b?)'),
                        ('proximity', 'Proximity (|a-b| ≤ 1?)'),
                        ('sum_mod4', 'Sum mod 4 ((a+b) % 4)')]:
-        print(f"\n{'─' * 68}")
+        print(f"\n{'─' * 74}")
         print(f"Task: {desc}")
-        print(f"{'─' * 68}")
-        results = run_task(task, a_data, b_data, a_vals, b_vals, labels)
+        print(f"{'─' * 74}")
+        results = run_task(task, a_data, b_data, a_vals, b_vals, labels,
+                           all_methods)
         all_results[task] = results
-        print_task(task, results)
+        print_task(results)
 
-    # Summary
-    print(f"\n{'=' * 68}")
+    # NMI Summary
+    all_archs = all_methods + ['single']
+    print(f"\n{'=' * 74}")
     print("NMI Summary")
-    print(f"{'=' * 68}")
-    print(f"  {'task':<20}{'3cell_outer':>16}{'3cell_concat':>16}{'single':>16}")
-    print("  " + "-" * 64)
+    print(f"{'=' * 74}")
+    col_w = 14
+    header = f"  {'task':<16}" + "".join(f"{a:>{col_w}}" for a in all_archs)
+    print(header)
+    print("  " + "-" * (len(header) - 2))
     for task in ['same_diff', 'proximity', 'sum_mod4']:
-        row = f"  {task:<20}"
-        for arch in ['3cell_outer', '3cell_concat', 'single']:
-            row += f"{all_results[task][arch]['nmi']:>16.3f}"
+        row = f"  {task:<16}"
+        for arch in all_archs:
+            row += f"{all_results[task][arch]['nmi']:>{col_w}.3f}"
         print(row)
 
     if args.output:
