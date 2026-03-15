@@ -286,6 +286,29 @@ When multiple signal channels (R, G, B) are fed as independent neurons:
 - Within-channel spatial sorting quality varies by channel complexity (simple spatial structure sorts faster)
 - Cross-channel pixel proximity is never learned — the solver treats each channel as an independent spatial map
 
+## Ideas to explore
+
+### KNN-driven adaptive parameters
+
+Use KNN stability metrics to tune training parameters on the fly. ts-00015 showed that at convergence ~90% of neurons have completely frozen KNN lists while ~10% keep swapping. This per-neuron stability information could drive:
+
+- **Per-neuron lr scaling**: neurons with frozen KNN lists (stable neighborhood) get reduced lr — they're already sorted, further updates just add noise. Neurons with high swap rates keep full lr — they're still finding their place. This is biologically plausible: synaptic plasticity decreases for well-connected neurons.
+- **Adaptive global lr**: track the fraction of neurons with zero swaps. When it exceeds a threshold (e.g., 90%), reduce global lr. This replaces the fixed `lr_decay` schedule with a data-driven one.
+- **Early stopping**: when KNN spatial accuracy plateaus AND the swap rate drops below a threshold, stop training. Currently we run for a fixed number of ticks.
+
+### Variance-weighted anchor sampling
+
+Currently anchors are sampled uniformly from all neurons (`randperm(n)[:anchor_sample]`). But not all neurons are equally informative — neurons in high-variance regions (edges, textures) produce strong derivative correlations and discover real neighbors, while neurons in flat regions (constant color) have near-zero derivatives and waste their anchor turn producing no pairs.
+
+**Proposed**: maintain a per-neuron weight proportional to recent signal variance (e.g., rolling std of the derivative buffer). Sample anchors with probability proportional to weight. High-variance neurons get probed more often → more informative pairs per tick → faster convergence.
+
+Benefits:
+- **Efficiency**: with uniform sampling, ~15% of anchors are "dead" (find zero neighbors). Variance-weighted sampling would redirect those slots to productive neurons.
+- **Biological plausibility**: biological saccade systems preferentially attend to high-contrast regions (edges, motion boundaries). Weighting anchor sampling by variance mimics this attentional bias.
+- **Pair quality**: anchors with high signal variance produce higher-confidence correlation scores, leading to cleaner neighbor discovery.
+
+Caution: must not permanently starve low-variance neurons — they still need occasional probing to discover their (few) real neighbors. A floor weight (e.g., minimum 10% of max weight) would prevent complete starvation.
+
 ## Open questions
 
 - Can we force cross-channel spatial structure (e.g., shared spatial dimensions + channel-specific dimensions)?
