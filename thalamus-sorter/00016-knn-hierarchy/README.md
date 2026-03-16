@@ -183,3 +183,46 @@ Random centroid init on converged embeddings, then iterative streaming updates
    is unaffected.
 5. **Baseline agreement is lower for small m** (0.961 at m=25 vs 1.000 at m=1600) —
    more valid ways to partition into few large clusters than many small ones.
+
+### Run 004: From scratch — random embeddings → converged (Phase 3)
+
+Embeddings interpolate linearly from random to converged over 20 phases (α=0.05
+→ 1.0). Clusters start random and stream-update alongside the evolving embeddings.
+50 iterations per phase × 256 batch = 256,000 total anchor touches.
+
+| m | Final empty | Final contiguity | knn2_agr | Baseline agree | Notes |
+|---|------------|------------------|----------|----------------|-------|
+| 25 | 0 | 1.000 | 1.000 | 0.967 | Works perfectly |
+| 100 | 3 | 1.000 | 1.000 | 0.990 | 3 clusters died |
+| 400 | **142** | 0.964 | 1.000 | 0.996 | **35% clusters died** |
+
+**m=100 trajectory:**
+
+| Phase | α | reassign/iter | empty | diam | contiguity | agree |
+|-------|------|---------------|-------|------|------------|-------|
+| 0 | 0.05 | 25–38 | 0 | 103 | 0.044 | 0.975 |
+| 5 | 0.30 | 4–33 | 0 | 110 | 0.058 | 0.980 |
+| 10 | 0.55 | 13–57 | 0 | 106 | 0.248 | 0.981 |
+| 13 | 0.70 | 18–53 | 0 | 52 | 0.636 | 0.982 |
+| 15 | 0.80 | 22–55 | 2 | 28 | 0.908 | 0.985 |
+| 17 | 0.90 | 9–42 | 3 | 17 | 0.992 | 0.989 |
+| 19 | 1.00 | 6–35 | 3 | 13 | 1.000 | 0.990 |
+| Final | 1.00 | — | 3 | 12.9 | 1.000 | 0.990 |
+
+**Findings:**
+
+1. **Streaming clusters successfully track embeddings from random to converged.**
+   Contiguity transitions sharply around α=0.75–0.90 — once embeddings have enough
+   spatial structure, clusters snap into place within ~100 iterations.
+
+2. **Cluster death is the main failure mode for large m.** At m=400 (16 neurons/cluster),
+   35% of clusters die during the chaotic early phases. Small clusters lose all members
+   as embeddings shift, and without rebalancing they never recover. At m=25 (256/cluster),
+   clusters are large enough to survive the turbulence — zero deaths.
+
+3. **m=100 is the sweet spot for 80×80.** Only 3 clusters die (97% survival), and the
+   final quality matches the offline baseline (contiguity=1.000, knn2_agr=1.000).
+
+4. **Cluster death needs balance enforcement for high m.** The min_size / split-merge
+   logic from KNN_HIERARCHY.md would prevent this — block moves that would empty a
+   cluster, and periodically split oversized clusters to backfill dead ones.

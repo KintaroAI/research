@@ -558,6 +558,124 @@ def run_streaming(args):
 
 
 # ---------------------------------------------------------------------------
+# Phase 3: Streaming from scratch (random embeddings → converged)
+# ---------------------------------------------------------------------------
+
+def run_from_scratch(args):
+    """Phase 3: streaming clusters while embeddings evolve from random to converged.
+
+    Simulates simultaneous training + clustering: embeddings interpolate from
+    random → converged over `embed_steps` phases. Within each phase, run
+    `iters_per_phase` streaming iterations on the current embeddings. This
+    mimics the real scenario where clustering starts at tick 0 alongside training.
+    """
+    converged_emb = np.load(args.model)
+    knn_lists = np.load(args.knn)
+    n, dims = converged_emb.shape
+    k = knn_lists.shape[1]
+    W, H = args.width, args.height
+    m = args.m
+    k2 = args.k2 if args.k2 else k
+    assert n == W * H
+
+    embed_steps = args.embed_steps
+    iters_per_phase = args.iters_per_phase
+    total_iters = embed_steps * iters_per_phase
+
+    print(f"From-scratch clustering: n={n} ({W}x{H}), m={m}, dims={dims}, k2={k2}")
+    print(f"  {embed_steps} embedding phases × {iters_per_phase} iters/phase "
+          f"= {total_iters} total iters")
+    print(f"  batch_size={args.batch_size}, threshold={args.threshold}, lr={args.lr}")
+
+    out_dir = args.output_dir
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # Offline baseline on converged embeddings for comparison
+    print("\nComputing offline baseline on converged embeddings...")
+    baseline_ids, baseline_centroids = kmeans_cluster(converged_emb, m, seed=42)
+    baseline_knn2, _ = frequency_knn(knn_lists, baseline_ids, m, k2)
+    baseline_metrics = eval_clusters(baseline_ids, baseline_centroids, baseline_knn2,
+                                     W, H, knn_lists)
+    print(f"  baseline: contiguity={baseline_metrics['contiguity_mean']:.3f} "
+          f"diam={baseline_metrics['diameter_mean']:.1f}")
+
+    # Start from random embeddings + random clusters
+    rng = np.random.RandomState(args.seed)
+    random_emb = rng.randn(n, dims).astype(np.float32)
+    # Normalize to similar scale as converged
+    random_emb *= np.std(converged_emb) / np.std(random_emb)
+
+    # Random centroids from the random embeddings
+    idx = rng.choice(n, size=m, replace=False)
+    centroids = random_emb[idx].copy()
+    cluster_ids = _assign_clusters(random_emb, centroids)
+    sizes = np.bincount(cluster_ids, minlength=m)
+
+    print(f"\nRandom init: {(sizes == 0).sum()} empty clusters")
+
+    print(f"\n{'phase':>5} {'alpha':>5} {'iter':>5} {'reassgn':>7} {'empty':>5} "
+          f"{'size_std':>8} {'diam':>6} {'contig':>7} {'knn2_agr':>8} {'agree':>6}")
+
+    report_every = max(1, iters_per_phase // 4)
+
+    for phase in range(embed_steps):
+        # Interpolate: alpha goes from 0 (random) to 1 (converged)
+        alpha = (phase + 1) / embed_steps
+        current_emb = (1 - alpha) * random_emb + alpha * converged_emb
+
+        for it in range(iters_per_phase):
+            anchors = rng.choice(n, size=args.batch_size, replace=False)
+
+            n_reassigned, affected, sizes = streaming_update(
+                current_emb, centroids, cluster_ids, anchors,
+                threshold=args.threshold, lr=args.lr, sizes=sizes)
+
+            if it % report_every == 0 or (it == iters_per_phase - 1 and
+                    phase % max(1, embed_steps // 20) == 0):
+                knn2, _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+                metrics = eval_clusters(cluster_ids, centroids, knn2, W, H, knn_lists)
+                agree = cluster_agreement(cluster_ids, baseline_ids, n, m)
+                print(f"{phase:>5} {alpha:>5.2f} {it:>5} {n_reassigned:>7} "
+                      f"{metrics['n_empty']:>5} {metrics['size_std']:>8.1f} "
+                      f"{metrics['diameter_mean']:>6.1f} "
+                      f"{metrics['contiguity_mean']:>7.3f} "
+                      f"{metrics.get('knn2_agreement', 0):>8.3f} {agree:>6.3f}")
+
+        if out_dir and phase % max(1, embed_steps // 10) == 0:
+            visualize_clusters(cluster_ids, W, H,
+                               os.path.join(out_dir, f"clusters_phase{phase:03d}.png"))
+
+    # Final eval with fully converged embeddings
+    print("\n--- Final (alpha=1.0, converged embeddings) ---")
+    # One more round of streaming on fully converged embeddings
+    for it in range(iters_per_phase):
+        anchors = rng.choice(n, size=args.batch_size, replace=False)
+        n_reassigned, affected, sizes = streaming_update(
+            converged_emb, centroids, cluster_ids, anchors,
+            threshold=args.threshold, lr=args.lr, sizes=sizes)
+
+    knn2, _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+    final_metrics = eval_clusters(cluster_ids, centroids, knn2, W, H, knn_lists)
+    agree = cluster_agreement(cluster_ids, baseline_ids, n, m)
+
+    print(f"  clusters: {m - final_metrics['n_empty']} non-empty "
+          f"({final_metrics['n_empty']} empty)")
+    print(f"  sizes: min={final_metrics['size_min']} max={final_metrics['size_max']} "
+          f"mean={final_metrics['size_mean']:.1f} std={final_metrics['size_std']:.1f}")
+    print(f"  diameter: mean={final_metrics['diameter_mean']:.1f}")
+    print(f"  contiguity: {final_metrics['contiguity_mean']:.3f}")
+    print(f"  knn2 agreement: {final_metrics.get('knn2_agreement', 0):.3f}")
+    print(f"  clustering agreement with baseline: {agree:.3f}")
+
+    if out_dir:
+        visualize_clusters(cluster_ids, W, H,
+                           os.path.join(out_dir, f"clusters_final_m{m}.png"))
+        visualize_clusters(baseline_ids, W, H,
+                           os.path.join(out_dir, f"clusters_baseline_m{m}.png"))
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -595,11 +713,31 @@ def main():
     p_str.add_argument('--seed', type=int, default=42)
     p_str.add_argument('-o', '--output-dir', type=str, default=None)
 
+    # From-scratch
+    p_fs = sub.add_parser('from-scratch', help='Phase 3: streaming with evolving embeddings')
+    p_fs.add_argument('--model', required=True, help='Path to converged model.npy')
+    p_fs.add_argument('--knn', required=True, help='Path to knn_lists.npy')
+    p_fs.add_argument('-W', '--width', type=int, required=True)
+    p_fs.add_argument('-H', '--height', type=int, required=True)
+    p_fs.add_argument('--m', type=int, default=100)
+    p_fs.add_argument('--k2', type=int, default=None)
+    p_fs.add_argument('--batch-size', type=int, default=256)
+    p_fs.add_argument('--threshold', type=float, default=0.5)
+    p_fs.add_argument('--lr', type=float, default=0.1)
+    p_fs.add_argument('--embed-steps', type=int, default=20,
+                       help='Number of embedding interpolation phases')
+    p_fs.add_argument('--iters-per-phase', type=int, default=50,
+                       help='Streaming iterations per embedding phase')
+    p_fs.add_argument('--seed', type=int, default=42)
+    p_fs.add_argument('-o', '--output-dir', type=str, default=None)
+
     args = parser.parse_args()
     if args.command == 'offline':
         run_offline(args)
     elif args.command == 'streaming':
         run_streaming(args)
+    elif args.command == 'from-scratch':
+        run_from_scratch(args)
     else:
         parser.print_help()
 
