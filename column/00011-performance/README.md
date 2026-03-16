@@ -1,6 +1,7 @@
 # 00011 — Performance Characterization
 
 **Status:** Complete
+**Source:** `exp/00011` (`352933b`)
 
 ## Goal
 
