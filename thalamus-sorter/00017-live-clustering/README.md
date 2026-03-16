@@ -185,3 +185,30 @@ jump rate, no quality degradation. The margin filters marginal reassignments
 without blocking genuine ones. Default stays at 0.0 (no resistance) since the
 system is already stable, but the knob is available for higher-m configs where
 boundary churn is more pronounced.
+
+### Run 005: Hysteresis h=0.1, m=640, 50k ticks (wandb)
+
+Full-scale test of hysteresis at high cluster count.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=10, lr_cluster=0.01, hysteresis=0.1
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/wxx6xhgf
+Output: ~/data/research/thalamus-sorter/exp_00017/006_006_m640_h01_50k/
+Runtime: 768s (~15 ms/tick)
+```
+
+| Metric | h=0.0 (Run 003) | h=0.1 (Run 005) |
+|--------|-----------------|-----------------|
+| Contiguity @ 50k | 0.998 | 0.998 |
+| Diameter @ 50k | 4.3 | 4.2 |
+| Jumps/tick steady-state | 8-10 | 4-7 |
+| Total splits | 8,349 | 10,640 |
+| Alive @ 50k | 633/640 | 633/640 |
+| Runtime | 775s | 768s |
+| K10 <3px | 97.5% | **98.0%** |
+
+**Finding:** Hysteresis reduces steady-state churn from ~8-10 to ~4-7 jumps/tick
+at m=640. Cluster quality identical, embedding quality slightly better (98.0% vs
+97.5%). More total splits (10.6k vs 8.3k) because fewer incoming jumps let some
+small clusters die faster, but split recovery handles it.
