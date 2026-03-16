@@ -116,6 +116,21 @@ class WandbLogger:
             'summary/total_pairs': total_pairs,
         })
 
+    def log_clusters(self, tick, n_alive, m, contiguity, diameter,
+                     jumps_per_tick, total_jumps, splits):
+        if not self.enabled:
+            return
+        self._ensure_init()
+        wandb.log({
+            'cluster/alive': n_alive,
+            'cluster/alive_pct': n_alive / m,
+            'cluster/contiguity': contiguity,
+            'cluster/diameter': diameter,
+            'cluster/jumps_per_tick': jumps_per_tick,
+            'cluster/total_jumps': total_jumps,
+            'cluster/splits': splits,
+        }, step=tick)
+
     def log_eval(self, pca_disp, k10_mean, within_3, within_5):
         if not self.enabled:
             return

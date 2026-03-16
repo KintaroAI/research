@@ -73,3 +73,34 @@ Runtime: 552s (~11 ms/tick)
    chaotic), spatial patches are already forming. By tick 5000 (KNN spatial=0.465),
    clusters are nearly contiguous (0.974). The cluster structure tracks embedding
    convergence in real time.
+
+### Run 002: Jump rate over time (m=100, 50k ticks)
+
+Same config as Run 001 but with `cluster_report_every=1000` to capture the
+inter-cluster jump rate at higher resolution.
+
+```
+Output: ~/data/research/thalamus-sorter/exp_00017/002_live_clusters_80x80_m100_jumps/
+```
+
+| Tick | Jumps/tick | Contiguity | Diameter | Phase |
+|------|-----------|------------|----------|-------|
+| 2000 | 38.4 | 0.227 | 95.4 | Chaotic — embeddings random |
+| 3000 | 24.5 | 0.876 | 21.1 | Structure emerging |
+| 4000 | 10.1 | 0.932 | 17.7 | Settling |
+| 5000 | 6.5 | 0.991 | 14.4 | Nearly converged |
+| 6000 | 3.4 | 0.998 | 13.1 | Stable |
+| 7000 | 2.9 | 1.000 | 12.7 | Converged |
+| 10000 | 1.8 | 1.000 | 12.1 | Steady-state |
+| 20000 | 2.6 | 1.000 | 11.8 | Steady-state |
+| 50000 | 3.3 | 1.000 | 12.5 | Steady-state |
+
+**Three regimes:**
+1. **Tick 1000-3000** — high churn (25-38 jumps/tick). Clusters reorganize as
+   embeddings begin forming structure. 132-184 splits in this window.
+2. **Tick 3000-7000** — rapid convergence, drops from 24 to 3 jumps/tick as
+   clusters lock into spatially contiguous regions.
+3. **Tick 7000+** — steady-state ~2-4 jumps/tick, never reaches zero. Boundary
+   neurons trade between adjacent clusters as embeddings continue to drift.
+   With 256 anchors/tick, ~1% of sampled neurons jump — the system stays alive
+   and adaptive rather than frozen.

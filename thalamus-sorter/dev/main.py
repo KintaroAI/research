@@ -156,7 +156,7 @@ def _save_run_info(output_dir, args, results=None, wlog=None):
 class _ClusterManager:
     """Live streaming cluster maintenance during training."""
 
-    def __init__(self, n, m, w, h, k2, lr, split_every, output_dir):
+    def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu, frequency_knn_gpu,
@@ -176,9 +176,12 @@ class _ClusterManager:
         self._split = split_largest_cluster_gpu
         self._visualize = visualize_clusters
         self._eval = eval_clusters
+        self.wlog = wlog
         self.rng = np.random.RandomState(42)
         self.total_reassigned = 0
         self.total_splits = 0
+        self._prev_reassigned = 0
+        self._prev_report_tick = 0
 
     def init_clusters(self, embeddings_t, knn_lists_np):
         """Initialize clusters via GPU k-means on current embeddings."""
@@ -248,10 +251,22 @@ class _ClusterManager:
         metrics = self._eval(self.cluster_ids, centroids_np, self.knn2,
                              self.w, self.h, self.knn_lists)
         n_empty = metrics['n_empty']
-        print(f"  Clusters @ tick {tick}: {self.m - n_empty}/{self.m} alive, "
+        interval_reassigned = self.total_reassigned - self._prev_reassigned
+        interval_ticks = max(1, tick - self._prev_report_tick)
+        jumps_per_tick = interval_reassigned / interval_ticks
+        self._prev_reassigned = self.total_reassigned
+        self._prev_report_tick = tick
+        n_alive = self.m - n_empty
+        print(f"  Clusters @ tick {tick}: {n_alive}/{self.m} alive, "
               f"contiguity={metrics['contiguity_mean']:.3f}, "
               f"diam={metrics['diameter_mean']:.1f}, "
-              f"reassigned={self.total_reassigned}, splits={self.total_splits}")
+              f"jumps/tick={jumps_per_tick:.1f}, "
+              f"total_jumps={self.total_reassigned}, splits={self.total_splits}")
+        if self.wlog:
+            self.wlog.log_clusters(
+                tick, n_alive, self.m, metrics['contiguity_mean'],
+                metrics['diameter_mean'], jumps_per_tick,
+                self.total_reassigned, self.total_splits)
         if self.output_dir:
             path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
             self._visualize(self.cluster_ids, self.w, self.h, path)
@@ -648,7 +663,7 @@ def run_word2vec(args):
                 n, cluster_m, w, h, k2=cluster_k2,
                 lr=getattr(args, 'cluster_lr', 0.01),
                 split_every=getattr(args, 'cluster_split_every', 10),
-                output_dir=output_dir)
+                output_dir=output_dir, wlog=wlog)
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"init@tick={getattr(args, 'cluster_init_tick', 1000)}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
