@@ -301,7 +301,6 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
     prev_pairs = 0
     knn_report_every = getattr(args, 'knn_report_every', 1000)
     log_every = getattr(args, 'log_every', 1000)
-    cluster_init_tick = getattr(args, 'cluster_init_tick', 1000)
     cluster_report_every = getattr(args, 'cluster_report_every', 1000)
     t_log = t0
 
@@ -310,14 +309,14 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
 
         # Live cluster maintenance
         if cluster_mgr is not None:
-            if not cluster_mgr.initialized and tick >= cluster_init_tick:
+            if not cluster_mgr.initialized:
                 if dsolver.knn_k > 0:
                     knn_np = dsolver.get_knn_lists()
                     cluster_mgr.init_clusters(dsolver.positions, knn_np)
                 else:
                     print(f"  Warning: --cluster-m requires --knn-track, skipping")
                     cluster_mgr = None
-            elif cluster_mgr.initialized:
+            if cluster_mgr is not None and cluster_mgr.initialized:
                 anchors_np = dsolver._last_anchors.cpu().numpy()
                 cluster_mgr.tick(dsolver.positions, anchors_np, tick)
                 if tick % cluster_report_every == 0:
@@ -665,7 +664,6 @@ def run_word2vec(args):
                 split_every=getattr(args, 'cluster_split_every', 10),
                 output_dir=output_dir, wlog=wlog)
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
-                  f"init@tick={getattr(args, 'cluster_init_tick', 1000)}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
 
         # --- Training + rendering ---
@@ -971,8 +969,6 @@ def main():
                        help="Cluster-level KNN size (default: same as knn-track)")
     p_w2v.add_argument("--cluster-lr", type=float, default=0.01,
                        help="Centroid nudge learning rate (default: 0.01)")
-    p_w2v.add_argument("--cluster-init-tick", type=int, default=1000,
-                       help="Initialize clusters at this tick (default: 1000)")
     p_w2v.add_argument("--cluster-report-every", type=int, default=1000,
                        help="Save cluster visualization every N ticks (default: 1000)")
     p_w2v.add_argument("--cluster-split-every", type=int, default=10,
