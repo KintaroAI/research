@@ -1,6 +1,7 @@
 # 00012 — Streaming Temporal Mode
 
 **Status:** Complete
+**Source:** `exp/00012` (`80ba95a`)
 
 ## Goal
 
