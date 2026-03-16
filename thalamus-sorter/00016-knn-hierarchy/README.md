@@ -194,7 +194,8 @@ Embeddings interpolate linearly from random to converged over 20 phases (α=0.05
 |---|------------|------------------|----------|----------------|-------|
 | 25 | 0 | 1.000 | 1.000 | 0.967 | Works perfectly |
 | 100 | 3 | 1.000 | 1.000 | 0.990 | 3 clusters died |
-| 400 | **142** | 0.964 | 1.000 | 0.996 | **35% clusters died** |
+| 400 | 142 | 0.964 | 1.000 | 0.996 | 35% clusters died |
+| 1600 | **1209** | 0.588 | 1.000 | 0.997 | **75% clusters died** |
 
 **m=100 trajectory:**
 
@@ -223,6 +224,11 @@ Embeddings interpolate linearly from random to converged over 20 phases (α=0.05
 3. **m=100 is the sweet spot for 80×80.** Only 3 clusters die (97% survival), and the
    final quality matches the offline baseline (contiguity=1.000, knn2_agr=1.000).
 
-4. **Cluster death needs balance enforcement for high m.** The min_size / split-merge
+4. **Cluster death scales with m.** Death rate: m=25→0%, m=100→3%, m=400→35%,
+   m=1600→75%. Clusters with fewer members are more fragile during the chaotic
+   random→converged transition. With 4 neurons/cluster (m=1600), a single
+   embedding shift can empty a cluster permanently.
+
+5. **Balance enforcement is required for high m.** The min_size / split-merge
    logic from KNN_HIERARCHY.md would prevent this — block moves that would empty a
    cluster, and periodically split oversized clusters to backfill dead ones.
