@@ -104,3 +104,58 @@ Output: ~/data/research/thalamus-sorter/exp_00017/002_live_clusters_80x80_m100_j
    neurons trade between adjacent clusters as embeddings continue to drift.
    With 256 anchors/tick, ~1% of sampled neurons jump — the system stays alive
    and adaptive rather than frozen.
+
+### Run 003: m=640 (10 neurons/cluster), 50k ticks, wandb
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=10, lr_cluster=0.01, split_every=10
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/87kzhpwz
+Output: ~/data/research/thalamus-sorter/exp_00017/003_live_clusters_80x80_m640_50k/
+Runtime: 775s (~15 ms/tick)
+```
+
+| Tick | Alive | Contiguity | Diameter | Jumps/tick | Splits |
+|------|-------|------------|----------|-----------|--------|
+| 1000 | 548/640 | 0.194 | 70.9 | 34.1 | 714 |
+| 5000 | 617/640 | 0.956 | 5.8 | 23.6 | 3956 |
+| 10000 | 638/640 | 0.997 | 4.3 | 7.6 | 5485 |
+| 25000 | 640/640 | 0.998 | 4.2 | 8.3 | 6627 |
+| 50000 | 633/640 | 0.998 | 4.3 | 9.7 | 8349 |
+
+**Eval:** PCA=0.543, K10 <3px=97.5%, K10 <5px=100%
+
+| Tick 1000 | Tick 5000 | Tick 10000 | Tick 50000 |
+|-----------|-----------|------------|------------|
+| ![1000](img/003_tick_001000.png) | ![5000](img/003_tick_005000.png) | ![10000](img/003_tick_010000.png) | ![50000](img/003_tick_050000.png) |
+
+**Comparison with m=100:**
+
+| Metric | m=100 | m=640 |
+|--------|-------|-------|
+| Neurons/cluster | 64 | 10 |
+| Contiguity @ 50k | 1.000 | 0.998 |
+| Diameter @ 50k | 11.6 | 4.3 |
+| Steady-state jumps/tick | 2-4 | 8-10 |
+| Total splits | 306 | 8349 |
+| Alive @ 50k | 100/100 | 633/640 |
+| Runtime | 552s | 775s |
+| Overhead per tick | ~1-2ms | ~5ms |
+
+**Key findings:**
+
+1. **m=640 works well live.** Contiguity 0.998, diameter 4.3 — fine-grained
+   spatial clusters that track embedding convergence. Quality converges by
+   tick 10k, same timeline as m=100.
+
+2. **More ongoing churn at higher m.** Steady-state ~8-10 jumps/tick (vs 2-4
+   for m=100). Smaller clusters have proportionally more boundary neurons.
+   This is expected and healthy — the system adapts continuously.
+
+3. **Dynamic equilibrium with cluster death/recovery.** Alive count fluctuates
+   between 614-640 at steady state. Splits continuously recover dead clusters
+   (8349 total). The throttle + split mechanism from ts-00016 handles this
+   gracefully — no intervention needed.
+
+4. **No embedding quality impact.** K10 <3px=97.5% (slightly better than
+   m=100's 96.9%). Clustering overhead is ~5ms/tick — acceptable.
