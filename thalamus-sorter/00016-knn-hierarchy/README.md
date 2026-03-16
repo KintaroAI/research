@@ -128,6 +128,10 @@ Standard gray_80x80_saccades preset, 50k ticks. Produces converged embeddings
 Batch k-means on converged embeddings with k-means++ init (5 restarts).
 Frequency-based knn2 selection with k2=10.
 
+| m=25 | m=100 | m=400 | m=1600 |
+|------|-------|-------|--------|
+| ![m=25](img/002_offline_m25.png) | ![m=100](img/002_offline_m100.png) | ![m=400](img/002_offline_m400.png) | ![m=1600](img/002_offline_m1600.png) |
+
 | m | n/m | empty | size_std | diam_mean | contiguity | knn2_agr |
 |---|-----|-------|----------|-----------|------------|----------|
 | 25 | 256 | 0 | 28.7 | 25.2 | 1.000 | 1.000 |
@@ -189,6 +193,18 @@ Random centroid init on converged embeddings, then iterative streaming updates
 Embeddings interpolate linearly from random to converged over 20 phases (α=0.05
 → 1.0). Clusters start random and stream-update alongside the evolving embeddings.
 50 iterations per phase × 256 batch = 256,000 total anchor touches.
+
+**m=100:** random init → converged (3 clusters die)
+
+| Phase 0 (random) | Final |
+|-------------------|-------|
+| ![m=100 phase 0](img/004_v1_m100_phase000.png) | ![m=100 final](img/004_v1_m100_final.png) |
+
+**m=1600:** random init → 75% cluster death
+
+| Phase 0 (random) | Final (75% dead) |
+|-------------------|-------------------|
+| ![m=1600 phase 0](img/004_v1_m1600_phase000.png) | ![m=1600 final](img/004_v1_m1600_final.png) |
 
 | m | Final empty | Final contiguity | knn2_agr | Baseline agree | Notes |
 |---|------------|------------------|----------|----------------|-------|
@@ -351,6 +367,12 @@ Only one split per N iterations keeps cost bounded.
 Same setup as Run 004 (20 phases, α=0.05→1.0, 50 iters/phase × 256 batch) but
 using knn2-guided reassignment instead of threshold-based, plus periodic dead
 cluster recovery via splitting the largest cluster every 10 iterations.
+
+**m=1600:** knn2-guided + splits (22% dead, down from 75%)
+
+| Phase 0 (random) | Final (22% dead) |
+|-------------------|-------------------|
+| ![v2 m=1600 phase 0](img/005_v2_m1600_phase000.png) | ![v2 m=1600 final](img/005_v2_m1600_final.png) |
 
 | m | v1 dead | v2 dead | v1 contiguity | v2 contiguity | v2 splits |
 |---|---------|---------|---------------|---------------|-----------|
@@ -596,6 +618,10 @@ iterations (5× longer). Saves cluster map images every 5 phases.
 
 Output: `exp_00016/008_v3_min0_m1600_long/`
 
+| Phase 0 (random) | Phase 15 (emerging) | Final (converged) | Baseline (offline) |
+|-------------------|---------------------|--------------------|--------------------|
+| ![phase 0](img/009_v3_m1600_phase000.png) | ![phase 15](img/009_v3_m1600_phase015.png) | ![final](img/009_v3_m1600_final.png) | ![baseline](img/009_v3_m1600_baseline.png) |
+
 **Trajectory (end of each reported phase):**
 
 | Phase | α | empty | contiguity | diameter | size_std | reassign/iter |
@@ -681,6 +707,8 @@ Ported core functions to PyTorch GPU in `cluster_experiments.py`:
 
 ### Run 010: 320×320 m=1600 batch_size=256 (insufficient coverage)
 
+*(No images — system barely converges, visually identical to random init)*
+
 ```
 n=102400, m=1600, batch_size=256 (0.25%), 20 interp + 10 converge phases × 50 iters
 GPU: RTX 4090, runtime: ~5 min
@@ -703,6 +731,10 @@ n=102400, m=1600, batch_size=4096 (4%), 20 interp + 80 converge phases × 50 ite
 GPU: RTX 4090, runtime: ~35 min
 Output: ~/data/research/thalamus-sorter/exp_00016/011_v3_320x320_m1600_b4096/
 ```
+
+| Phase 0 (random) | Phase 15 (forming) | Final (converged) | Baseline (offline) |
+|-------------------|--------------------|--------------------|---------------------|
+| ![phase 0](img/011_320x320_phase000.png) | ![phase 15](img/011_320x320_phase015.png) | ![final](img/011_320x320_final.png) | ![baseline](img/011_320x320_baseline.png) |
 
 | Phase | Empty | Contiguity | Diameter | Size std | Agreement | Reassign |
 |-------|-------|------------|----------|----------|-----------|----------|
