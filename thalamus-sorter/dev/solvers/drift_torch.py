@@ -311,6 +311,7 @@ class DriftSolver:
         # processed sequentially in chunks of batch_size
         total_anchors = min(anchor_sample, n)
         perm = torch.randperm(n, device=self.device)[:total_anchors]
+        self._last_anchors = perm
         all_anchors = list(perm.split(batch_size))
 
         total_pairs = 0

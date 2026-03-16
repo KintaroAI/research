@@ -153,8 +153,123 @@ def _save_run_info(output_dir, args, results=None, wlog=None):
         json.dump(info, f, indent=2, default=str)
 
 
+class _ClusterManager:
+    """Live streaming cluster maintenance during training."""
+
+    def __init__(self, n, m, w, h, k2, lr, split_every, output_dir):
+        import torch
+        from cluster_experiments import (
+            kmeans_cluster_gpu, _assign_clusters_gpu, frequency_knn_gpu,
+            streaming_update_v3_gpu, split_largest_cluster_gpu,
+            frequency_knn, visualize_clusters, eval_clusters,
+        )
+        self.n, self.m, self.w, self.h = n, m, w, h
+        self.k2, self.lr, self.split_every = k2, lr, split_every
+        self.output_dir = output_dir
+        self.initialized = False
+        # Store function refs
+        self._kmeans = kmeans_cluster_gpu
+        self._assign = _assign_clusters_gpu
+        self._freq_knn = frequency_knn
+        self._freq_knn_gpu = frequency_knn_gpu
+        self._stream_update = streaming_update_v3_gpu
+        self._split = split_largest_cluster_gpu
+        self._visualize = visualize_clusters
+        self._eval = eval_clusters
+        self.rng = np.random.RandomState(42)
+        self.total_reassigned = 0
+        self.total_splits = 0
+
+    def init_clusters(self, embeddings_t, knn_lists_np):
+        """Initialize clusters via GPU k-means on current embeddings."""
+        import torch
+        self.knn_lists = knn_lists_np
+        ids_np, centroids_np = self._kmeans(embeddings_t, self.m, seed=42)
+        self.cluster_ids = ids_np
+        self.centroids_t = torch.from_numpy(centroids_np).to(embeddings_t.device)
+        self.sizes = np.bincount(self.cluster_ids, minlength=self.m)
+        self.knn2, _ = self._freq_knn(knn_lists_np, self.cluster_ids, self.m, self.k2)
+        self.initialized = True
+        n_empty = (self.sizes == 0).sum()
+        print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
+              f"k2={self.k2}")
+
+    def tick(self, embeddings_t, anchors_np, global_tick):
+        """One streaming cluster maintenance step."""
+        if not self.initialized:
+            return
+
+        n_reassigned, affected, _, n_blocked = self._stream_update(
+            embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
+            anchors_np, lr=self.lr, sizes=self.sizes, min_size=0, rng=self.rng)
+        self.total_reassigned += n_reassigned
+
+        # Patch knn2 for affected clusters
+        if affected:
+            for c in affected:
+                if self.sizes[c] > 0:
+                    members_c = np.where(self.cluster_ids == c)[0]
+                    pooled = self.knn_lists[members_c].flatten()
+                    ids, counts = np.unique(pooled, return_counts=True)
+                    not_self = self.cluster_ids[ids] != c
+                    ids, counts = ids[not_self], counts[not_self]
+                    if len(ids) > 0:
+                        top = min(self.k2, len(ids))
+                        if top == len(ids):
+                            top_idx = np.argsort(-counts)[:top]
+                        else:
+                            top_idx = np.argpartition(-counts, top)[:top]
+                            top_idx = top_idx[np.argsort(-counts[top_idx])]
+                        self.knn2[c, :] = -1
+                        self.knn2[c, :top] = ids[top_idx]
+                    else:
+                        self.knn2[c, :] = -1
+
+        # Periodic split recovery
+        if (self.split_every > 0 and global_tick > 0 and
+                global_tick % self.split_every == 0):
+            n_empty = (self.sizes == 0).sum()
+            if n_empty > 0:
+                n_to_split = min(n_empty, max(1, n_empty // 5))
+                n_splits = self._split(
+                    embeddings_t, self.centroids_t, self.cluster_ids,
+                    self.sizes, self.m, n_splits=n_to_split,
+                    seed=self.rng.randint(1000000))
+                self.total_splits += n_splits
+                if n_splits > 0:
+                    self.knn2[:], _ = self._freq_knn(
+                        self.knn_lists, self.cluster_ids, self.m, self.k2)
+
+    def report(self, tick):
+        """Print cluster metrics and save visualization."""
+        if not self.initialized:
+            return
+        centroids_np = self.centroids_t.cpu().numpy()
+        metrics = self._eval(self.cluster_ids, centroids_np, self.knn2,
+                             self.w, self.h, self.knn_lists)
+        n_empty = metrics['n_empty']
+        print(f"  Clusters @ tick {tick}: {self.m - n_empty}/{self.m} alive, "
+              f"contiguity={metrics['contiguity_mean']:.3f}, "
+              f"diam={metrics['diameter_mean']:.1f}, "
+              f"reassigned={self.total_reassigned}, splits={self.total_splits}")
+        if self.output_dir:
+            path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
+            self._visualize(self.cluster_ids, self.w, self.h, path)
+
+    def save(self, output_dir):
+        """Save cluster state at end of run."""
+        if not self.initialized:
+            return
+        np.save(os.path.join(output_dir, "cluster_ids.npy"), self.cluster_ids)
+        np.save(os.path.join(output_dir, "centroids.npy"),
+                self.centroids_t.cpu().numpy())
+        np.save(os.path.join(output_dir, "knn2.npy"), self.knn2)
+        print(f"  cluster state saved to {output_dir}")
+
+
 def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
-                       on_save=None, on_display=None, can_break=None):
+                       on_save=None, on_display=None, can_break=None,
+                       cluster_mgr=None):
     """Shared training loop for async and sync render paths.
 
     Callbacks:
@@ -171,10 +286,29 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
     prev_pairs = 0
     knn_report_every = getattr(args, 'knn_report_every', 1000)
     log_every = getattr(args, 'log_every', 1000)
+    cluster_init_tick = getattr(args, 'cluster_init_tick', 1000)
+    cluster_report_every = getattr(args, 'cluster_report_every', 1000)
     t_log = t0
 
     for tick in range(1, max_frames + 1):
         total_pairs += do_tick()
+
+        # Live cluster maintenance
+        if cluster_mgr is not None:
+            if not cluster_mgr.initialized and tick >= cluster_init_tick:
+                if dsolver.knn_k > 0:
+                    knn_np = dsolver.get_knn_lists()
+                    cluster_mgr.init_clusters(dsolver.positions, knn_np)
+                else:
+                    print(f"  Warning: --cluster-m requires --knn-track, skipping")
+                    cluster_mgr = None
+            elif cluster_mgr.initialized:
+                anchors_np = dsolver._last_anchors.cpu().numpy()
+                cluster_mgr.tick(dsolver.positions, anchors_np, tick)
+                if tick % cluster_report_every == 0:
+                    # Re-grab KNN lists (they may have changed)
+                    cluster_mgr.knn_lists = dsolver.get_knn_lists()
+                    cluster_mgr.report(tick)
 
         # Tick progress logging
         if log_every > 0 and tick % log_every == 0:
@@ -505,6 +639,20 @@ def run_word2vec(args):
                 dsolver.tick_sentence(window=args.window)
                 return 0
 
+        # --- Live clustering ---
+        cluster_mgr = None
+        cluster_m = getattr(args, 'cluster_m', 0)
+        if cluster_m > 0:
+            cluster_k2 = getattr(args, 'cluster_k2', None) or dsolver.knn_k
+            cluster_mgr = _ClusterManager(
+                n, cluster_m, w, h, k2=cluster_k2,
+                lr=getattr(args, 'cluster_lr', 0.01),
+                split_every=getattr(args, 'cluster_split_every', 10),
+                output_dir=output_dir)
+            print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
+                  f"init@tick={getattr(args, 'cluster_init_tick', 1000)}, "
+                  f"report_every={getattr(args, 'cluster_report_every', 1000)}")
+
         # --- Training + rendering ---
         if worker is not None:
             write_slot = [1]
@@ -520,7 +668,7 @@ def run_word2vec(args):
 
             t0, total_pairs = _run_training_loop(
                 do_tick, dsolver, args, n, w, sig_channels, wlog,
-                on_save=on_save_async)
+                on_save=on_save_async, cluster_mgr=cluster_mgr)
 
             # Final snapshot
             emb = dsolver.get_positions()
@@ -584,7 +732,7 @@ def run_word2vec(args):
                 do_tick, dsolver, args, n, w, sig_channels, wlog,
                 on_save=on_save_sync if output_dir else None,
                 on_display=on_display_sync if not output_dir else None,
-                can_break=poll_quit)
+                can_break=poll_quit, cluster_mgr=cluster_mgr)
 
             elapsed = time.time() - t0
             s = dsolver.stats()
@@ -601,6 +749,11 @@ def run_word2vec(args):
                     path = os.path.join(output_dir, f"frame_{saved[0]:06d}.png")
                     cv2.imwrite(path, normalized)
                     print(f"  final frame saved: {path}")
+
+        if cluster_mgr is not None and cluster_mgr.initialized:
+            cluster_mgr.report(args.frames)
+            if output_dir:
+                cluster_mgr.save(output_dir)
 
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
                                t0, args.frames, total_pairs=total_pairs,
@@ -796,6 +949,19 @@ def main():
     p_w2v.add_argument("--matmul-corr", action=argparse.BooleanOptionalAction, default=True,
                        help="Use matmul for correlation (default: on). "
                             "--no-matmul-corr uses gather path (less memory, better on CPU)")
+    # live clustering
+    p_w2v.add_argument("--cluster-m", type=int, default=0,
+                       help="Number of clusters (0=disabled). Requires --knn-track.")
+    p_w2v.add_argument("--cluster-k2", type=int, default=None,
+                       help="Cluster-level KNN size (default: same as knn-track)")
+    p_w2v.add_argument("--cluster-lr", type=float, default=0.01,
+                       help="Centroid nudge learning rate (default: 0.01)")
+    p_w2v.add_argument("--cluster-init-tick", type=int, default=1000,
+                       help="Initialize clusters at this tick (default: 1000)")
+    p_w2v.add_argument("--cluster-report-every", type=int, default=1000,
+                       help="Save cluster visualization every N ticks (default: 1000)")
+    p_w2v.add_argument("--cluster-split-every", type=int, default=10,
+                       help="Attempt dead cluster recovery every N ticks (default: 10)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")
