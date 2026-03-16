@@ -149,6 +149,30 @@ class SoftWTACell:
 
         return winner, match_quality
 
+    def extend_inputs(self, n_new=1):
+        """Add new input channels, initialized to zero influence.
+
+        Existing categorization is preserved exactly — new channels have
+        zero weight so they don't affect similarity until the cell learns
+        to use them via Hebbian updates.
+        """
+        zeros = torch.zeros(self.n_outputs, n_new)
+        self.prototypes = torch.cat([self.prototypes, zeros], dim=1)
+        self.n_inputs += n_new
+
+    def remove_inputs(self, indices):
+        """Remove input channels and re-normalize prototypes.
+
+        Args:
+            indices: channel indices to remove (int or list of ints)
+        """
+        if isinstance(indices, int):
+            indices = [indices]
+        keep = [i for i in range(self.n_inputs) if i not in indices]
+        self.prototypes = self.prototypes[:, keep]
+        self.prototypes = F.normalize(self.prototypes, dim=1)
+        self.n_inputs = len(keep)
+
     def state_dict(self):
         return {
             'prototypes': self.prototypes.clone(),

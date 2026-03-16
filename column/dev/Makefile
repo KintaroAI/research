@@ -203,6 +203,33 @@ test:
 	assert drift_z.max().item() < 0.01, \
 	    f'prototypes drifted {drift_z.max():.4f} after 5k zero frames'; \
 	\
+	# Test 20: extend_inputs — zero disruption \
+	cell_ext = SoftWTACell(8, 4, temperature=0.3, lr=0.05); \
+	rng_ext = np.random.default_rng(20); \
+	cx = [torch.tensor(c, dtype=torch.float32) for c in \
+	    rng_ext.standard_normal((4, 8)).tolist()]; \
+	cx = [c / c.norm() for c in cx]; \
+	for _ in range(2000): \
+	    ci = rng_ext.integers(4); \
+	    cell_ext.update(cx[ci] + torch.randn(8) * 0.1); \
+	x_test = cx[0] + torch.randn(8) * 0.1; \
+	w_before_ext = cell_ext.forward(x_test).argmax().item(); \
+	protos_old = cell_ext.prototypes.clone(); \
+	cell_ext.extend_inputs(2); \
+	assert cell_ext.n_inputs == 10, 'extend_inputs wrong n_inputs'; \
+	assert cell_ext.prototypes.shape == (4, 10), 'extend_inputs wrong shape'; \
+	x_test_ext = torch.cat([x_test, torch.zeros(2)]); \
+	w_after_ext = cell_ext.forward(x_test_ext).argmax().item(); \
+	assert w_before_ext == w_after_ext, 'extend_inputs changed winner'; \
+	\
+	# Test 21: remove_inputs — preserves n_inputs and re-normalizes \
+	cell_rm = SoftWTACell(8, 4, temperature=0.3, lr=0.05); \
+	cell_rm.remove_inputs([6, 7]); \
+	assert cell_rm.n_inputs == 6, 'remove_inputs wrong n_inputs'; \
+	assert cell_rm.prototypes.shape == (4, 6), 'remove_inputs wrong shape'; \
+	norms_rm = cell_rm.prototypes.norm(dim=1); \
+	assert (norms_rm - 1.0).abs().max() < 1e-5, 'remove_inputs not normalized'; \
+	\
 	print('All tests passed.')"
 
 clean:
