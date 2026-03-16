@@ -232,3 +232,66 @@ Embeddings interpolate linearly from random to converged over 20 phases (α=0.05
 5. **Balance enforcement is required for high m.** The min_size / split-merge
    logic from KNN_HIERARCHY.md would prevent this — block moves that would empty a
    cluster, and periodically split oversized clusters to backfill dead ones.
+
+### Reassignment Design Notes
+
+**Current approach (centroid-distance):**
+
+1. Sample 256 random anchors per iteration
+2. For each anchor, compute distance to its own centroid — O(1)
+3. If distance > threshold (hardcoded 0.5): anchor is "drifted", wants to leave
+4. For drifted anchors only: compute distance to ALL m centroids, pick nearest — O(m)
+5. Move neuron to new cluster, nudge centroids
+
+**Problems with current approach:**
+
+- **Threshold is arbitrary.** Fixed at 0.5 with no connection to embedding scale,
+  dimensionality, or cluster density. Too tight early → mass exodus → cluster death.
+  Too loose late → frozen clusters that can't adapt. The "right" threshold depends on
+  factors that change during training.
+
+- **Centroid distance ≠ correlation structure.** A neuron should join the cluster where
+  its correlated neighbors live, not the geometrically closest centroid. Centroid
+  distance can be misleading when clusters are non-spherical or when the embedding
+  metric doesn't perfectly capture correlation.
+
+- **O(m) search for every drifted neuron.** Works at m=1600 but doesn't scale.
+  Most of the m centroids are irrelevant — the right cluster is almost certainly
+  one that the neuron's KNN neighbors already belong to.
+
+**Proposed: KNN vote-based reassignment:**
+
+For each anchor neuron, look at its KNN list. Count which cluster each neighbor
+belongs to. If the majority cluster is not the neuron's current cluster, move it.
+
+```
+neighbor_clusters = cluster_ids[knn_lists[anchor]]  # (k,)
+votes = bincount(neighbor_clusters)
+best_cluster = votes.argmax()
+if best_cluster != cluster_ids[anchor]:
+    move anchor to best_cluster
+```
+
+Advantages:
+- **No threshold needed.** The decision is "where do my neighbors live?" not
+  "how far am I from my centroid?" The KNN list IS the signal.
+- **O(k) per anchor** instead of O(m). k=10 vs m=1600 = 160× cheaper.
+- **Correlation-grounded.** Neurons join the cluster where their correlated
+  neighbors already are, which is the actual goal of clustering.
+- **Self-stabilizing.** If all of a neuron's neighbors are in its current cluster,
+  it never moves. Stable KNN → stable clusters automatically.
+
+Open question: during early training when KNN lists are random garbage, vote-based
+reassignment would produce random cluster assignments. But that's fine — the clusters
+will be garbage anyway until embeddings have structure. As KNN lists converge
+(ts-00015 showed this happens around tick 5k–10k), clusters will automatically
+follow.
+
+**Dead cluster recovery** still needs a separate mechanism — no neuron will vote
+for an empty cluster. Options:
+- Periodic: find empty clusters, reinitialize centroid to the farthest neuron
+  from its own centroid (most "unhappy" neuron), reassign its neighborhood
+- Split: find largest cluster, split via k-means(2), assign one half to the
+  dead cluster
+- Lazy: just reduce m. If a cluster dies, it wasn't needed. Let m adapt to
+  the natural structure density.
