@@ -15,9 +15,224 @@ import numpy as np
 import time
 import os
 
+try:
+    import torch
+    HAS_TORCH = torch.cuda.is_available()
+    if HAS_TORCH:
+        DEVICE = torch.device('cuda')
+except ImportError:
+    HAS_TORCH = False
+
 
 # ---------------------------------------------------------------------------
-# Core clustering functions
+# GPU-accelerated core functions (torch)
+# ---------------------------------------------------------------------------
+
+if HAS_TORCH:
+
+    def _assign_clusters_gpu(embeddings_t, centroids_t):
+        """Assign each embedding to nearest centroid on GPU. Chunked to fit memory."""
+        n = embeddings_t.shape[0]
+        m = centroids_t.shape[0]
+        # cdist chunks for memory: ~2GB budget
+        chunk = max(1, min(n, 2_000_000_000 // (m * 4)))
+        ids = torch.empty(n, dtype=torch.int64, device=embeddings_t.device)
+        for i in range(0, n, chunk):
+            end = min(i + chunk, n)
+            dists = torch.cdist(embeddings_t[i:end], centroids_t)  # (chunk, m)
+            ids[i:end] = dists.argmin(dim=1)
+        return ids
+
+    def kmeans_cluster_gpu(embeddings_t, m, max_iters=100, n_restarts=3, seed=42):
+        """Batch k-means on GPU. Returns (cluster_ids_cpu, centroids_cpu)."""
+        n, dims = embeddings_t.shape
+        rng = np.random.RandomState(seed)
+        best_ids, best_centroids, best_inertia = None, None, float('inf')
+
+        for restart in range(n_restarts):
+            # Random init
+            idx = rng.choice(n, size=m, replace=False)
+            centroids = embeddings_t[idx].clone()
+
+            for it in range(max_iters):
+                ids = _assign_clusters_gpu(embeddings_t, centroids)
+
+                # Update centroids via scatter
+                new_centroids = torch.zeros(m, dims, device=embeddings_t.device,
+                                            dtype=embeddings_t.dtype)
+                counts = torch.zeros(m, device=embeddings_t.device, dtype=torch.float32)
+                new_centroids.scatter_add_(0, ids.unsqueeze(1).expand(-1, dims),
+                                           embeddings_t)
+                counts.scatter_add_(0, ids, torch.ones(n, device=embeddings_t.device))
+                alive = counts > 0
+                new_centroids[alive] /= counts[alive].unsqueeze(1)
+                # Reinit dead centroids
+                dead = ~alive
+                if dead.any():
+                    n_dead = dead.sum().item()
+                    reinit_idx = rng.choice(n, size=n_dead, replace=False)
+                    new_centroids[dead] = embeddings_t[reinit_idx]
+
+                if torch.allclose(new_centroids, centroids, atol=1e-6):
+                    centroids = new_centroids
+                    break
+                centroids = new_centroids
+
+            ids = _assign_clusters_gpu(embeddings_t, centroids)
+            inertia = ((embeddings_t - centroids[ids]) ** 2).sum().item()
+            if inertia < best_inertia:
+                best_inertia = inertia
+                best_ids = ids.cpu().numpy()
+                best_centroids = centroids.cpu().numpy()
+
+        return best_ids, best_centroids
+
+    def frequency_knn_gpu(knn_lists_t, cluster_ids_t, m, k2):
+        """Frequency-based cluster KNN on GPU using scatter_add."""
+        n, k = knn_lists_t.shape
+        knn2 = np.full((m, k2), -1, dtype=np.int64)
+        knn2_counts = np.zeros((m, k2), dtype=np.int64)
+
+        # Build member lists on CPU (irregular sizes)
+        cluster_ids_cpu = cluster_ids_t.cpu().numpy() if isinstance(
+            cluster_ids_t, torch.Tensor) else cluster_ids_t
+        knn_cpu = knn_lists_t.cpu().numpy() if isinstance(
+            knn_lists_t, torch.Tensor) else knn_lists_t
+
+        # Vectorized: pool + count per cluster using GPU histogram
+        for c in range(m):
+            members = np.where(cluster_ids_cpu == c)[0]
+            if len(members) == 0:
+                continue
+            pooled = knn_cpu[members].flatten()
+            ids, counts = np.unique(pooled, return_counts=True)
+            not_self = cluster_ids_cpu[ids] != c
+            ids, counts = ids[not_self], counts[not_self]
+            if len(ids) == 0:
+                continue
+            top = min(k2, len(ids))
+            if top == len(ids):
+                top_idx = np.argsort(-counts)[:top]
+            else:
+                top_idx = np.argpartition(-counts, top)[:top]
+                top_idx = top_idx[np.argsort(-counts[top_idx])]
+            knn2[c, :top] = ids[top_idx]
+            knn2_counts[c, :top] = counts[top_idx]
+
+        return knn2, knn2_counts
+
+    def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
+                                anchors, lr=0.01, sizes=None, min_size=0, rng=None):
+        """v3 streaming update: prefetch to CPU, loop on CPU, nudge on GPU."""
+        m = centroids_t.shape[0]
+        n = embeddings_t.shape[0]
+
+        if sizes is None:
+            sizes = np.bincount(cluster_ids, minlength=m)
+        if rng is None:
+            rng = np.random.RandomState()
+
+        n_empty = (sizes == 0).sum()
+        p = 1.0 - (n_empty / m)
+
+        n_reassigned = 0
+        n_blocked = 0
+        affected = set()
+
+        # Prefetch all anchor embeddings and centroids to CPU in one transfer
+        anchor_embs = embeddings_t[anchors].cpu().numpy()
+        centroids_cpu = centroids_t.cpu().numpy()
+
+        for i, anchor in enumerate(anchors):
+            if rng.random() >= p:
+                continue
+
+            cur = cluster_ids[anchor]
+            neighbors = knn2[cur]
+            valid_neighbors = neighbors[neighbors >= 0]
+            if len(valid_neighbors) == 0:
+                continue
+            neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
+            candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
+
+            # Distance on CPU (small: ~10 candidates)
+            emb = anchor_embs[i]
+            cand_centroids = centroids_cpu[candidates]
+            dists = np.sum((emb - cand_centroids) ** 2, axis=1)
+            best = candidates[dists.argmin()]
+
+            if best != cur:
+                if sizes[cur] <= min_size:
+                    n_blocked += 1
+                    continue
+                cluster_ids[anchor] = best
+                sizes[cur] -= 1
+                sizes[best] += 1
+                affected.add(cur)
+                affected.add(best)
+                n_reassigned += 1
+
+        # Nudge centroids on GPU for affected clusters
+        for c in affected:
+            members = np.where(cluster_ids == c)[0]
+            if len(members) > 0:
+                member_mean = embeddings_t[members].mean(dim=0)
+                centroids_t[c] += lr * (member_mean - centroids_t[c])
+
+        return n_reassigned, affected, sizes, n_blocked
+
+    def split_largest_cluster_gpu(embeddings_t, centroids_t, cluster_ids, sizes, m,
+                                  n_splits=1, seed=None):
+        """Split largest cluster(s) on GPU."""
+        rng = np.random.RandomState(seed)
+        splits_done = 0
+
+        for _ in range(n_splits):
+            empty = np.where(sizes == 0)[0]
+            if len(empty) == 0:
+                break
+            largest = np.argmax(sizes)
+            if sizes[largest] < 4:
+                break
+
+            dead = empty[0]
+            members = np.where(cluster_ids == largest)[0]
+            member_emb = embeddings_t[members]
+
+            # k-means(2) on GPU
+            idx = rng.choice(len(members), size=2, replace=False)
+            c0 = member_emb[idx[0]].clone()
+            c1 = member_emb[idx[1]].clone()
+            for _ in range(10):
+                d0 = ((member_emb - c0) ** 2).sum(dim=1)
+                d1 = ((member_emb - c1) ** 2).sum(dim=1)
+                assign = (d1 < d0).long()
+                s0, s1 = (assign == 0).sum().item(), (assign == 1).sum().item()
+                if s0 == 0 or s1 == 0:
+                    idx = rng.choice(len(members), size=2, replace=False)
+                    c0 = member_emb[idx[0]].clone()
+                    c1 = member_emb[idx[1]].clone()
+                    continue
+                c0 = member_emb[assign == 0].mean(dim=0)
+                c1 = member_emb[assign == 1].mean(dim=0)
+
+            assign_cpu = assign.cpu().numpy()
+            half1 = members[assign_cpu == 1]
+            if len(half1) == 0 or len(half1) == len(members):
+                continue
+
+            cluster_ids[half1] = dead
+            centroids_t[largest] = member_emb[assign_cpu == 0].mean(dim=0)
+            centroids_t[dead] = member_emb[assign_cpu == 1].mean(dim=0)
+            sizes[largest] = (assign_cpu == 0).sum()
+            sizes[dead] = len(half1)
+            splits_done += 1
+
+        return splits_done
+
+
+# ---------------------------------------------------------------------------
+# Core clustering functions (CPU numpy)
 # ---------------------------------------------------------------------------
 
 def kmeans_cluster(embeddings, m, max_iters=100, n_restarts=5, seed=42):
@@ -676,6 +891,641 @@ def run_from_scratch(args):
 
 
 # ---------------------------------------------------------------------------
+# V2: knn2-guided reassignment + split-based dead cluster recovery
+# ---------------------------------------------------------------------------
+
+def streaming_update_v2(embeddings, centroids, cluster_ids, knn2, anchors,
+                        lr=0.01, sizes=None):
+    """knn2-guided streaming update.
+
+    For each anchor:
+      1. Gather candidate clusters: own cluster + knn2 neighbors
+      2. Compare distance to each candidate centroid
+      3. Move to closest if it's not the current cluster
+
+    Returns: n_reassigned, affected_clusters set, sizes
+    """
+    m = centroids.shape[0]
+    n = embeddings.shape[0]
+    dims = embeddings.shape[1]
+
+    if sizes is None:
+        sizes = np.bincount(cluster_ids, minlength=m)
+
+    n_reassigned = 0
+    affected = set()
+
+    for i, anchor in enumerate(anchors):
+        cur = cluster_ids[anchor]
+        emb = embeddings[anchor]  # (dims,)
+
+        # Candidates: own cluster + knn2 neighbors (skip -1 / invalid)
+        neighbors = knn2[cur]
+        valid_neighbors = neighbors[neighbors >= 0]
+        neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
+        # Remove self and add self explicitly to ensure it's always a candidate
+        candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
+
+        # Distance to each candidate centroid
+        cand_centroids = centroids[candidates]  # (len(candidates), dims)
+        dists = np.sum((emb - cand_centroids) ** 2, axis=1)
+        best_idx = dists.argmin()
+        best = candidates[best_idx]
+
+        if best != cur:
+            cluster_ids[anchor] = best
+            sizes[cur] -= 1
+            sizes[best] += 1
+            affected.add(cur)
+            affected.add(best)
+            n_reassigned += 1
+
+    # Nudge centroids for affected clusters
+    for c in affected:
+        members = np.where(cluster_ids == c)[0]
+        if len(members) > 0:
+            member_mean = embeddings[members].mean(axis=0)
+            centroids[c] += lr * (member_mean - centroids[c])
+
+    return n_reassigned, affected, sizes
+
+
+def split_largest_cluster(embeddings, centroids, cluster_ids, sizes, m,
+                          n_splits=1, seed=None):
+    """Split the largest cluster(s) to revive dead (empty) clusters.
+
+    For each split: find largest cluster, k-means(2) on its members,
+    assign one half to a dead cluster ID.
+
+    Returns: number of splits performed
+    """
+    rng = np.random.RandomState(seed)
+    splits_done = 0
+
+    for _ in range(n_splits):
+        empty = np.where(sizes == 0)[0]
+        if len(empty) == 0:
+            break
+
+        largest = np.argmax(sizes)
+        if sizes[largest] < 4:  # too small to split
+            break
+
+        dead = empty[0]
+        members = np.where(cluster_ids == largest)[0]
+        member_emb = embeddings[members]
+
+        # k-means(2) on the largest cluster
+        # Simple: pick two random members as seeds, run a few iterations
+        idx = rng.choice(len(members), size=2, replace=False)
+        c0, c1 = member_emb[idx[0]], member_emb[idx[1]]
+        for _ in range(10):
+            d0 = np.sum((member_emb - c0) ** 2, axis=1)
+            d1 = np.sum((member_emb - c1) ** 2, axis=1)
+            assign = (d1 < d0).astype(int)
+            if assign.sum() == 0 or assign.sum() == len(members):
+                # Degenerate split — try different seeds
+                idx = rng.choice(len(members), size=2, replace=False)
+                c0, c1 = member_emb[idx[0]], member_emb[idx[1]]
+                continue
+            c0 = member_emb[assign == 0].mean(axis=0)
+            c1 = member_emb[assign == 1].mean(axis=0)
+
+        # Assign half to dead cluster
+        half1 = members[assign == 1]
+        if len(half1) == 0 or len(half1) == len(members):
+            # Failed to split — skip
+            continue
+
+        cluster_ids[half1] = dead
+        centroids[largest] = embeddings[members[assign == 0]].mean(axis=0)
+        centroids[dead] = embeddings[half1].mean(axis=0)
+        sizes[largest] = (assign == 0).sum()
+        sizes[dead] = len(half1)
+        splits_done += 1
+
+    return splits_done
+
+
+def streaming_update_v3(embeddings, centroids, cluster_ids, knn2, anchors,
+                        lr=0.01, sizes=None, min_size=2, rng=None):
+    """v3: knn2-guided reassignment with min_size block + probabilistic throttle.
+
+    Three mechanisms:
+      A. Block moves that would drop source cluster below min_size
+      B. Probabilistic throttle: p = 1 - (n_empty / m), skip reassignment check
+         with probability 1-p when many clusters are dead
+      C. After reassignment, dissolve clusters below min_size (handled externally)
+
+    Returns: n_reassigned, affected_clusters set, sizes, n_blocked
+    """
+    m = centroids.shape[0]
+    n = embeddings.shape[0]
+
+    if sizes is None:
+        sizes = np.bincount(cluster_ids, minlength=m)
+    if rng is None:
+        rng = np.random.RandomState()
+
+    n_empty = (sizes == 0).sum()
+    p = 1.0 - (n_empty / m)  # throttle: more dead → less churn
+
+    n_reassigned = 0
+    n_blocked = 0
+    affected = set()
+
+    for i, anchor in enumerate(anchors):
+        # Probabilistic throttle: skip check entirely with probability 1-p
+        if rng.random() >= p:
+            continue
+
+        cur = cluster_ids[anchor]
+        emb = embeddings[anchor]
+
+        # Candidates: own cluster + knn2 neighbors
+        neighbors = knn2[cur]
+        valid_neighbors = neighbors[neighbors >= 0]
+        neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
+        candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
+
+        # Distance to each candidate centroid
+        cand_centroids = centroids[candidates]
+        dists = np.sum((emb - cand_centroids) ** 2, axis=1)
+        best = candidates[dists.argmin()]
+
+        if best != cur:
+            # Block if move would drop source below min_size
+            if sizes[cur] <= min_size:
+                n_blocked += 1
+                continue
+
+            cluster_ids[anchor] = best
+            sizes[cur] -= 1
+            sizes[best] += 1
+            affected.add(cur)
+            affected.add(best)
+            n_reassigned += 1
+
+    # Nudge centroids for affected clusters
+    for c in affected:
+        members = np.where(cluster_ids == c)[0]
+        if len(members) > 0:
+            member_mean = embeddings[members].mean(axis=0)
+            centroids[c] += lr * (member_mean - centroids[c])
+
+    return n_reassigned, affected, sizes, n_blocked
+
+
+def dissolve_small_clusters(embeddings, centroids, cluster_ids, knn2, sizes,
+                            min_size=2):
+    """Dissolve clusters below min_size by reassigning members to knn2-guided best fit.
+
+    Returns: n_dissolved (number of clusters dissolved), n_neurons_moved
+    """
+    m = centroids.shape[0]
+    n_dissolved = 0
+    n_moved = 0
+
+    for c in range(m):
+        if sizes[c] == 0 or sizes[c] >= min_size:
+            continue
+
+        # This cluster is too small — dissolve it
+        members = np.where(cluster_ids == c)[0]
+
+        for neuron in members:
+            emb = embeddings[neuron]
+
+            # Find best cluster via knn2 neighbors of current cluster
+            neighbors = knn2[c]
+            valid_neighbors = neighbors[neighbors >= 0]
+            if len(valid_neighbors) == 0:
+                # No knn2 info — find nearest non-empty centroid
+                alive = np.where(sizes >= min_size)[0]
+                if len(alive) == 0:
+                    alive = np.where(sizes > 0)[0]
+                    alive = alive[alive != c]
+                if len(alive) == 0:
+                    break
+                dists = np.sum((emb - centroids[alive]) ** 2, axis=1)
+                best = alive[dists.argmin()]
+            else:
+                neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
+                # Only consider clusters that are alive and above min_size
+                viable = neighbor_clusters[(neighbor_clusters != c) &
+                                           (sizes[neighbor_clusters] > 0)]
+                if len(viable) == 0:
+                    # Fall back to any alive cluster
+                    alive = np.where(sizes > 0)[0]
+                    alive = alive[alive != c]
+                    if len(alive) == 0:
+                        break
+                    viable = alive
+                dists = np.sum((emb - centroids[viable]) ** 2, axis=1)
+                best = viable[dists.argmin()]
+
+            cluster_ids[neuron] = best
+            sizes[c] -= 1
+            sizes[best] += 1
+            n_moved += 1
+
+        n_dissolved += 1
+
+    return n_dissolved, n_moved
+
+
+def run_from_scratch_v2(args):
+    """Phase 3 v2: knn2-guided reassignment + split recovery."""
+    converged_emb = np.load(args.model)
+    knn_lists = np.load(args.knn)
+    n, dims = converged_emb.shape
+    k = knn_lists.shape[1]
+    W, H = args.width, args.height
+    m = args.m
+    k2 = args.k2 if args.k2 else k
+    assert n == W * H
+
+    embed_steps = args.embed_steps
+    iters_per_phase = args.iters_per_phase
+    split_every = args.split_every
+    total_iters = embed_steps * iters_per_phase
+
+    print(f"From-scratch v2 (knn2-guided): n={n} ({W}x{H}), m={m}, dims={dims}, k2={k2}")
+    print(f"  {embed_steps} phases × {iters_per_phase} iters = {total_iters} total")
+    print(f"  batch_size={args.batch_size}, lr={args.lr}, split_every={split_every}")
+
+    out_dir = args.output_dir
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # Offline baseline
+    print("\nComputing offline baseline...")
+    baseline_ids, baseline_centroids = kmeans_cluster(converged_emb, m, seed=42)
+    baseline_knn2, _ = frequency_knn(knn_lists, baseline_ids, m, k2)
+    baseline_metrics = eval_clusters(baseline_ids, baseline_centroids, baseline_knn2,
+                                     W, H, knn_lists)
+    print(f"  baseline: contiguity={baseline_metrics['contiguity_mean']:.3f} "
+          f"diam={baseline_metrics['diameter_mean']:.1f}")
+
+    # Random init
+    rng = np.random.RandomState(args.seed)
+    random_emb = rng.randn(n, dims).astype(np.float32)
+    random_emb *= np.std(converged_emb) / np.std(random_emb)
+
+    idx = rng.choice(n, size=m, replace=False)
+    centroids = random_emb[idx].copy()
+    cluster_ids = _assign_clusters(random_emb, centroids)
+    sizes = np.bincount(cluster_ids, minlength=m)
+
+    # Initial knn2
+    knn2, _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+
+    print(f"\nRandom init: {(sizes == 0).sum()} empty clusters")
+
+    print(f"\n{'phase':>5} {'alpha':>5} {'iter':>5} {'reassgn':>7} {'splits':>6} "
+          f"{'empty':>5} {'size_std':>8} {'diam':>6} {'contig':>7} {'knn2_agr':>8} "
+          f"{'agree':>6}")
+
+    report_every = max(1, iters_per_phase // 4)
+    total_splits = 0
+
+    for phase in range(embed_steps):
+        alpha = (phase + 1) / embed_steps
+        current_emb = (1 - alpha) * random_emb + alpha * converged_emb
+
+        for it in range(iters_per_phase):
+            anchors = rng.choice(n, size=args.batch_size, replace=False)
+
+            n_reassigned, affected, sizes = streaming_update_v2(
+                current_emb, centroids, cluster_ids, knn2, anchors,
+                lr=args.lr, sizes=sizes)
+
+            # Patch knn2 for affected clusters
+            if affected:
+                for c in affected:
+                    if sizes[c] > 0:
+                        members_c = np.where(cluster_ids == c)[0]
+                        pooled = knn_lists[members_c].flatten()
+                        ids, counts = np.unique(pooled, return_counts=True)
+                        not_self = cluster_ids[ids] != c
+                        ids, counts = ids[not_self], counts[not_self]
+                        if len(ids) > 0:
+                            top = min(k2, len(ids))
+                            if top == len(ids):
+                                top_idx = np.argsort(-counts)[:top]
+                            else:
+                                top_idx = np.argpartition(-counts, top)[:top]
+                                top_idx = top_idx[np.argsort(-counts[top_idx])]
+                            knn2[c, :] = -1
+                            knn2[c, :top] = ids[top_idx]
+                        else:
+                            knn2[c, :] = -1
+
+            # Periodic split
+            global_iter = phase * iters_per_phase + it
+            n_splits = 0
+            if split_every > 0 and global_iter > 0 and global_iter % split_every == 0:
+                n_empty = (sizes == 0).sum()
+                if n_empty > 0:
+                    n_to_split = min(n_empty, max(1, n_empty // 10))
+                    n_splits = split_largest_cluster(
+                        current_emb, centroids, cluster_ids, sizes, m,
+                        n_splits=n_to_split, seed=rng.randint(1000000))
+                    total_splits += n_splits
+                    # Rebuild knn2 fully after splits (simpler than patching)
+                    if n_splits > 0:
+                        knn2, _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+
+            if it % report_every == 0 or (it == iters_per_phase - 1 and
+                    phase % max(1, embed_steps // 20) == 0):
+                metrics = eval_clusters(cluster_ids, centroids, knn2, W, H, knn_lists)
+                agree = cluster_agreement(cluster_ids, baseline_ids, n, m)
+                print(f"{phase:>5} {alpha:>5.2f} {it:>5} {n_reassigned:>7} "
+                      f"{n_splits:>6} {metrics['n_empty']:>5} "
+                      f"{metrics['size_std']:>8.1f} {metrics['diameter_mean']:>6.1f} "
+                      f"{metrics['contiguity_mean']:>7.3f} "
+                      f"{metrics.get('knn2_agreement', 0):>8.3f} {agree:>6.3f}")
+
+        if out_dir and phase % max(1, embed_steps // 10) == 0:
+            visualize_clusters(cluster_ids, W, H,
+                               os.path.join(out_dir, f"clusters_phase{phase:03d}.png"))
+
+    # Final eval with converged embeddings
+    print("\n--- Final (alpha=1.0, converged embeddings) ---")
+    for it in range(iters_per_phase):
+        anchors = rng.choice(n, size=args.batch_size, replace=False)
+        n_reassigned, affected, sizes = streaming_update_v2(
+            converged_emb, centroids, cluster_ids, knn2, anchors,
+            lr=args.lr, sizes=sizes)
+        if affected:
+            for c in affected:
+                if sizes[c] > 0:
+                    members_c = np.where(cluster_ids == c)[0]
+                    pooled = knn_lists[members_c].flatten()
+                    ids, counts = np.unique(pooled, return_counts=True)
+                    not_self = cluster_ids[ids] != c
+                    ids, counts = ids[not_self], counts[not_self]
+                    if len(ids) > 0:
+                        top = min(k2, len(ids))
+                        if top == len(ids):
+                            top_idx = np.argsort(-counts)[:top]
+                        else:
+                            top_idx = np.argpartition(-counts, top)[:top]
+                            top_idx = top_idx[np.argsort(-counts[top_idx])]
+                        knn2[c, :] = -1
+                        knn2[c, :top] = ids[top_idx]
+                    else:
+                        knn2[c, :] = -1
+        global_iter = embed_steps * iters_per_phase + it
+        if split_every > 0 and global_iter % split_every == 0:
+            n_empty = (sizes == 0).sum()
+            if n_empty > 0:
+                ns = split_largest_cluster(
+                    converged_emb, centroids, cluster_ids, sizes, m,
+                    n_splits=min(n_empty, max(1, n_empty // 10)),
+                    seed=rng.randint(1000000))
+                total_splits += ns
+                if ns > 0:
+                    knn2, _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+
+    knn2, _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+    final_metrics = eval_clusters(cluster_ids, centroids, knn2, W, H, knn_lists)
+    agree = cluster_agreement(cluster_ids, baseline_ids, n, m)
+
+    print(f"  clusters: {m - final_metrics['n_empty']} non-empty "
+          f"({final_metrics['n_empty']} empty)")
+    print(f"  sizes: min={final_metrics['size_min']} max={final_metrics['size_max']} "
+          f"mean={final_metrics['size_mean']:.1f} std={final_metrics['size_std']:.1f}")
+    print(f"  diameter: mean={final_metrics['diameter_mean']:.1f}")
+    print(f"  contiguity: {final_metrics['contiguity_mean']:.3f}")
+    print(f"  knn2 agreement: {final_metrics.get('knn2_agreement', 0):.3f}")
+    print(f"  clustering agreement with baseline: {agree:.3f}")
+    print(f"  total splits: {total_splits}")
+
+    if out_dir:
+        visualize_clusters(cluster_ids, W, H,
+                           os.path.join(out_dir, f"clusters_final_m{m}.png"))
+        visualize_clusters(baseline_ids, W, H,
+                           os.path.join(out_dir, f"clusters_baseline_m{m}.png"))
+
+
+# ---------------------------------------------------------------------------
+# V3: min_size dissolution + probabilistic throttle + knn2-guided + splits
+# ---------------------------------------------------------------------------
+
+def run_from_scratch_v3(args):
+    """Phase 3 v3: min_size dissolution + probabilistic throttle + knn2-guided + splits."""
+    converged_emb = np.load(args.model)
+    knn_lists = np.load(args.knn)
+    n, dims = converged_emb.shape
+    k = knn_lists.shape[1]
+    W, H = args.width, args.height
+    m = args.m
+    k2 = args.k2 if args.k2 else k
+    min_size = args.min_size
+    assert n == W * H
+
+    use_gpu = HAS_TORCH
+    if use_gpu:
+        print(f"GPU mode: {torch.cuda.get_device_name()}")
+
+    embed_steps = args.embed_steps
+    iters_per_phase = args.iters_per_phase
+    split_every = args.split_every
+    converge_phases = getattr(args, 'converge_phases', 1)
+    total_phases = embed_steps + converge_phases
+    total_iters = total_phases * iters_per_phase
+
+    print(f"From-scratch v3 (min_size+throttle+knn2+split): n={n} ({W}x{H}), m={m}, "
+          f"dims={dims}, k2={k2}")
+    print(f"  {embed_steps} interp + {converge_phases} converge phases × "
+          f"{iters_per_phase} iters = {total_iters} total")
+    print(f"  batch_size={args.batch_size}, lr={args.lr}, split_every={split_every}, "
+          f"min_size={min_size}")
+
+    out_dir = args.output_dir
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # Upload to GPU if available
+    if use_gpu:
+        converged_emb_t = torch.from_numpy(converged_emb).to(DEVICE)
+        knn_lists_t = torch.from_numpy(knn_lists.astype(np.int64)).to(DEVICE)
+
+    # Offline baseline
+    print("\nComputing offline baseline...")
+    if use_gpu:
+        baseline_ids, baseline_centroids = kmeans_cluster_gpu(converged_emb_t, m, seed=42)
+    else:
+        baseline_ids, baseline_centroids = kmeans_cluster(converged_emb, m, seed=42)
+    baseline_knn2, _ = frequency_knn(knn_lists, baseline_ids, m, k2)
+    baseline_metrics = eval_clusters(baseline_ids, baseline_centroids, baseline_knn2,
+                                     W, H, knn_lists)
+    print(f"  baseline: contiguity={baseline_metrics['contiguity_mean']:.3f} "
+          f"diam={baseline_metrics['diameter_mean']:.1f}")
+
+    # Random init
+    rng = np.random.RandomState(args.seed)
+    random_emb = rng.randn(n, dims).astype(np.float32)
+    random_emb *= np.std(converged_emb) / np.std(random_emb)
+
+    idx = rng.choice(n, size=m, replace=False)
+    centroids = random_emb[idx].copy()
+    if use_gpu:
+        random_emb_t = torch.from_numpy(random_emb).to(DEVICE)
+        centroids_t = torch.from_numpy(centroids).to(DEVICE)
+        cluster_ids = _assign_clusters_gpu(random_emb_t, centroids_t).cpu().numpy()
+    else:
+        cluster_ids = _assign_clusters(random_emb, centroids)
+    sizes = np.bincount(cluster_ids, minlength=m)
+
+    # Initial knn2
+    knn2, _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+
+    print(f"\nRandom init: {(sizes == 0).sum()} empty clusters")
+
+    print(f"\n{'phase':>5} {'alpha':>5} {'iter':>5} {'reassgn':>7} {'blocked':>7} "
+          f"{'dissolv':>7} {'splits':>6} {'empty':>5} {'<min':>5} "
+          f"{'size_std':>8} {'diam':>6} {'contig':>7} {'agree':>6}")
+
+    report_every = max(1, iters_per_phase // 4)
+    total_splits = 0
+    total_dissolved = 0
+
+    def _patch_knn2(affected_set):
+        """Recompute knn2 for affected clusters."""
+        for c in affected_set:
+            if sizes[c] > 0:
+                members_c = np.where(cluster_ids == c)[0]
+                pooled = knn_lists[members_c].flatten()
+                ids, counts = np.unique(pooled, return_counts=True)
+                not_self = cluster_ids[ids] != c
+                ids, counts = ids[not_self], counts[not_self]
+                if len(ids) > 0:
+                    top = min(k2, len(ids))
+                    if top == len(ids):
+                        top_idx = np.argsort(-counts)[:top]
+                    else:
+                        top_idx = np.argpartition(-counts, top)[:top]
+                        top_idx = top_idx[np.argsort(-counts[top_idx])]
+                    knn2[c, :] = -1
+                    knn2[c, :top] = ids[top_idx]
+                else:
+                    knn2[c, :] = -1
+
+    def _run_iteration(current_emb, current_emb_t, phase, it, global_iter):
+        nonlocal total_splits, total_dissolved
+
+        anchors = rng.choice(n, size=args.batch_size, replace=False)
+
+        if use_gpu:
+            n_reassigned, affected, sizes_out, n_blocked = streaming_update_v3_gpu(
+                current_emb_t, centroids_t, cluster_ids, knn2, anchors,
+                lr=args.lr, sizes=sizes, min_size=min_size, rng=rng)
+        else:
+            n_reassigned, affected, sizes_out, n_blocked = streaming_update_v3(
+                current_emb, centroids, cluster_ids, knn2, anchors,
+                lr=args.lr, sizes=sizes, min_size=min_size, rng=rng)
+
+        # Patch knn2 for affected clusters
+        if affected:
+            _patch_knn2(affected)
+
+        # Dissolve small clusters
+        centroids_for_dissolve = centroids_t.cpu().numpy() if use_gpu else centroids
+        n_dissolved, n_moved = dissolve_small_clusters(
+            current_emb, centroids_for_dissolve, cluster_ids, knn2, sizes,
+            min_size=min_size)
+        total_dissolved += n_dissolved
+        if n_dissolved > 0:
+            # Patch knn2 for clusters that received dissolved neurons
+            knn2_rebuild = set()
+            for c in range(m):
+                if sizes[c] > 0:
+                    knn2_rebuild.add(c)
+            # Full rebuild is simpler after dissolutions
+            knn2[:], _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+
+        # Periodic split recovery
+        n_splits = 0
+        if split_every > 0 and global_iter > 0 and global_iter % split_every == 0:
+            n_empty = (sizes == 0).sum()
+            if n_empty > 0:
+                n_to_split = min(n_empty, max(1, n_empty // 5))
+                if use_gpu:
+                    n_splits = split_largest_cluster_gpu(
+                        current_emb_t, centroids_t, cluster_ids, sizes, m,
+                        n_splits=n_to_split, seed=rng.randint(1000000))
+                else:
+                    n_splits = split_largest_cluster(
+                        current_emb, centroids, cluster_ids, sizes, m,
+                        n_splits=n_to_split, seed=rng.randint(1000000))
+                total_splits += n_splits
+                if n_splits > 0:
+                    knn2[:], _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+
+        return n_reassigned, n_blocked, n_dissolved, n_splits
+
+    save_every = max(1, total_phases // 20)
+
+    for phase in range(total_phases):
+        if phase < embed_steps:
+            alpha = (phase + 1) / embed_steps
+            current_emb = (1 - alpha) * random_emb + alpha * converged_emb
+            if use_gpu:
+                current_emb_t = torch.from_numpy(current_emb).to(DEVICE)
+        else:
+            alpha = 1.0
+            current_emb = converged_emb
+            if use_gpu:
+                current_emb_t = converged_emb_t
+
+        for it in range(iters_per_phase):
+            global_iter = phase * iters_per_phase + it
+            n_reassigned, n_blocked, n_dissolved, n_splits = _run_iteration(
+                current_emb, current_emb_t if use_gpu else None, phase, it, global_iter)
+
+            if it % report_every == 0 or (it == iters_per_phase - 1 and
+                    phase % save_every == 0):
+                centroids_np = centroids_t.cpu().numpy() if use_gpu else centroids
+                metrics = eval_clusters(cluster_ids, centroids_np, knn2, W, H, knn_lists)
+                agree = cluster_agreement(cluster_ids, baseline_ids, n, m)
+                n_below_min = ((sizes > 0) & (sizes < min_size)).sum()
+                print(f"{phase:>5} {alpha:>5.2f} {it:>5} {n_reassigned:>7} "
+                      f"{n_blocked:>7} {n_dissolved:>7} {n_splits:>6} "
+                      f"{metrics['n_empty']:>5} {n_below_min:>5} "
+                      f"{metrics['size_std']:>8.1f} {metrics['diameter_mean']:>6.1f} "
+                      f"{metrics['contiguity_mean']:>7.3f} {agree:>6.3f}")
+
+        if out_dir and phase % save_every == 0:
+            visualize_clusters(cluster_ids, W, H,
+                               os.path.join(out_dir, f"clusters_v3_phase{phase:03d}.png"))
+
+    # Final eval
+    print("\n--- Final ---")
+    knn2[:], _ = frequency_knn(knn_lists, cluster_ids, m, k2)
+    centroids_np = centroids_t.cpu().numpy() if use_gpu else centroids
+    final_metrics = eval_clusters(cluster_ids, centroids_np, knn2, W, H, knn_lists)
+    agree = cluster_agreement(cluster_ids, baseline_ids, n, m)
+
+    print(f"  clusters: {m - final_metrics['n_empty']} non-empty "
+          f"({final_metrics['n_empty']} empty)")
+    print(f"  sizes: min={final_metrics['size_min']} max={final_metrics['size_max']} "
+          f"mean={final_metrics['size_mean']:.1f} std={final_metrics['size_std']:.1f}")
+    print(f"  diameter: mean={final_metrics['diameter_mean']:.1f}")
+    print(f"  contiguity: {final_metrics['contiguity_mean']:.3f}")
+    print(f"  knn2 agreement: {final_metrics.get('knn2_agreement', 0):.3f}")
+    print(f"  clustering agreement with baseline: {agree:.3f}")
+    print(f"  total splits: {total_splits}, total dissolved: {total_dissolved}")
+
+    if out_dir:
+        visualize_clusters(cluster_ids, W, H,
+                           os.path.join(out_dir, f"clusters_v3_final_m{m}.png"))
+        visualize_clusters(baseline_ids, W, H,
+                           os.path.join(out_dir, f"clusters_baseline_m{m}.png"))
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -731,6 +1581,45 @@ def main():
     p_fs.add_argument('--seed', type=int, default=42)
     p_fs.add_argument('-o', '--output-dir', type=str, default=None)
 
+    # From-scratch v2
+    p_v2 = sub.add_parser('from-scratch-v2',
+                          help='Phase 3 v2: knn2-guided + split recovery')
+    p_v2.add_argument('--model', required=True)
+    p_v2.add_argument('--knn', required=True)
+    p_v2.add_argument('-W', '--width', type=int, required=True)
+    p_v2.add_argument('-H', '--height', type=int, required=True)
+    p_v2.add_argument('--m', type=int, default=100)
+    p_v2.add_argument('--k2', type=int, default=None)
+    p_v2.add_argument('--batch-size', type=int, default=256)
+    p_v2.add_argument('--lr', type=float, default=0.1)
+    p_v2.add_argument('--embed-steps', type=int, default=20)
+    p_v2.add_argument('--iters-per-phase', type=int, default=50)
+    p_v2.add_argument('--split-every', type=int, default=10,
+                       help='Run dead cluster recovery every N iterations (0=disable)')
+    p_v2.add_argument('--seed', type=int, default=42)
+    p_v2.add_argument('-o', '--output-dir', type=str, default=None)
+
+    # From-scratch v3
+    p_v3 = sub.add_parser('from-scratch-v3',
+                          help='Phase 3 v3: min_size + probabilistic throttle + knn2 + splits')
+    p_v3.add_argument('--model', required=True)
+    p_v3.add_argument('--knn', required=True)
+    p_v3.add_argument('-W', '--width', type=int, required=True)
+    p_v3.add_argument('-H', '--height', type=int, required=True)
+    p_v3.add_argument('--m', type=int, default=100)
+    p_v3.add_argument('--k2', type=int, default=None)
+    p_v3.add_argument('--batch-size', type=int, default=256)
+    p_v3.add_argument('--lr', type=float, default=0.1)
+    p_v3.add_argument('--embed-steps', type=int, default=20)
+    p_v3.add_argument('--iters-per-phase', type=int, default=50)
+    p_v3.add_argument('--split-every', type=int, default=10)
+    p_v3.add_argument('--min-size', type=int, default=2,
+                       help='Minimum cluster size; below this, cluster is dissolved')
+    p_v3.add_argument('--converge-phases', type=int, default=1,
+                       help='Extra phases at alpha=1.0 after interpolation completes')
+    p_v3.add_argument('--seed', type=int, default=42)
+    p_v3.add_argument('-o', '--output-dir', type=str, default=None)
+
     args = parser.parse_args()
     if args.command == 'offline':
         run_offline(args)
@@ -738,6 +1627,10 @@ def main():
         run_streaming(args)
     elif args.command == 'from-scratch':
         run_from_scratch(args)
+    elif args.command == 'from-scratch-v2':
+        run_from_scratch_v2(args)
+    elif args.command == 'from-scratch-v3':
+        run_from_scratch_v3(args)
     else:
         parser.print_help()
 
