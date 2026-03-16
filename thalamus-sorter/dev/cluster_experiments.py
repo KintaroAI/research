@@ -124,7 +124,7 @@ if HAS_TORCH:
     def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
                                 anchors, lr=0.01, sizes=None, min_size=0, rng=None,
                                 hysteresis=0.0):
-        """v3 streaming update: prefetch to CPU, loop on CPU, nudge on GPU.
+        """v3 streaming update: prefetch to CPU, loop on CPU, incremental centroid update.
         hysteresis: relative margin — neuron only jumps if dist_new < dist_cur * (1 - hysteresis)."""
         m = centroids_t.shape[0]
         n = embeddings_t.shape[0]
@@ -173,6 +173,15 @@ if HAS_TORCH:
                 if sizes[cur] <= min_size:
                     n_blocked += 1
                     continue
+                # Incremental centroid update — O(d) per reassignment
+                # Remove neuron from old cluster centroid
+                old_size = sizes[cur]
+                if old_size > 1:
+                    centroids_cpu[cur] = (centroids_cpu[cur] * old_size - emb) / (old_size - 1)
+                # Add neuron to new cluster centroid
+                new_size = sizes[best]
+                centroids_cpu[best] = (centroids_cpu[best] * new_size + emb) / (new_size + 1)
+
                 cluster_ids[anchor] = best
                 sizes[cur] -= 1
                 sizes[best] += 1
@@ -180,12 +189,11 @@ if HAS_TORCH:
                 affected.add(best)
                 n_reassigned += 1
 
-        # Nudge centroids on GPU for affected clusters
-        for c in affected:
-            members = np.where(cluster_ids == c)[0]
-            if len(members) > 0:
-                member_mean = embeddings_t[members].mean(dim=0)
-                centroids_t[c] += lr * (member_mean - centroids_t[c])
+        # Write updated centroids back to GPU
+        if affected:
+            affected_list = list(affected)
+            centroids_t[affected_list] = torch.from_numpy(
+                centroids_cpu[affected_list]).to(centroids_t.device)
 
         return n_reassigned, affected, sizes, n_blocked
 

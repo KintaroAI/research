@@ -160,9 +160,9 @@ class _ClusterManager:
                  hysteresis=0.0):
         import torch
         from cluster_experiments import (
-            kmeans_cluster_gpu, _assign_clusters_gpu, frequency_knn_gpu,
-            streaming_update_v3_gpu, split_largest_cluster_gpu,
-            frequency_knn, visualize_clusters, eval_clusters,
+            kmeans_cluster_gpu, _assign_clusters_gpu,
+            frequency_knn, streaming_update_v3_gpu, split_largest_cluster_gpu,
+            visualize_clusters, eval_clusters,
         )
         self.n, self.m, self.w, self.h = n, m, w, h
         self.k2, self.lr, self.split_every = k2, lr, split_every
@@ -170,9 +170,8 @@ class _ClusterManager:
         self.initialized = False
         # Store function refs
         self._kmeans = kmeans_cluster_gpu
-        self._assign = _assign_clusters_gpu
         self._freq_knn = frequency_knn
-        self._freq_knn_gpu = frequency_knn_gpu
+        self._assign = _assign_clusters_gpu
         self._stream_update = streaming_update_v3_gpu
         self._split = split_largest_cluster_gpu
         self._visualize = visualize_clusters

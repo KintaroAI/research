@@ -212,3 +212,37 @@ Runtime: 768s (~15 ms/tick)
 at m=640. Cluster quality identical, embedding quality slightly better (98.0% vs
 97.5%). More total splits (10.6k vs 8.3k) because fewer incoming jumps let some
 small clusters die faster, but split recovery handles it.
+
+### Run 006: Hysteresis h=0.3, m=640, 50k ticks (wandb)
+
+Aggressive hysteresis — neuron must be 30% closer to new centroid to jump.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=10, lr_cluster=0.01, hysteresis=0.3
+Output: ~/data/research/thalamus-sorter/exp_00017/008_007_m640_h03_50k/
+Runtime: 676s (~13.5 ms/tick)
+```
+
+| Metric | h=0.0 (Run 003) | h=0.1 (Run 005) | h=0.3 (Run 006) |
+|--------|-----------------|-----------------|-----------------|
+| Contiguity @ 50k | 0.998 | 0.998 | 0.996 |
+| Diameter @ 50k | 4.3 | 4.2 | 4.4 |
+| Jumps/tick steady-state | 8-10 | 4-7 | 2-4 |
+| Total splits | 8,349 | 10,640 | 6,603 |
+| Alive @ 50k | 633/640 | 633/640 | **640/640** |
+| Runtime | 775s | 768s | **676s** |
+| K10 <3px | 97.5% | 98.0% | **98.2%** |
+
+**Key findings:**
+
+1. **h=0.3 is best across all metrics.** Fewer jumps (2-4/tick), fewer splits
+   (6.6k), all 640 clusters alive at end, fastest runtime, best embedding quality.
+
+2. **Hysteresis stabilizes cluster boundaries.** With h=0.3, boundary neurons
+   don't ping-pong — they only move when genuinely closer to the new centroid.
+   This means fewer cluster deaths and less split recovery needed.
+
+3. **Early phase still works.** At tick 1000, jumps/tick=0.9 (vs 34 at h=0.0) —
+   hysteresis suppresses the chaotic early churn. But contiguity still reaches
+   0.955 by tick 5000 via the same convergence pathway.
