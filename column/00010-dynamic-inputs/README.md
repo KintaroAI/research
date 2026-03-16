@@ -1,6 +1,7 @@
 # 00010 — Dynamic Input Channels
 
 **Status:** Complete
+**Source:** `exp/00010` (`833524a`)
 
 ## Goal
 
