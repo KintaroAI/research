@@ -281,17 +281,67 @@ Advantages:
 - **Self-stabilizing.** If all of a neuron's neighbors are in its current cluster,
   it never moves. Stable KNN → stable clusters automatically.
 
-Open question: during early training when KNN lists are random garbage, vote-based
-reassignment would produce random cluster assignments. But that's fine — the clusters
-will be garbage anyway until embeddings have structure. As KNN lists converge
-(ts-00015 showed this happens around tick 5k–10k), clusters will automatically
-follow.
+Risk: during early training when KNN lists are random, vote-based reassignment
+produces constant jumps between clusters. Not harmful (clusters are garbage anyway
+until embeddings converge) but noisy and possibly slow to settle.
 
-**Dead cluster recovery** still needs a separate mechanism — no neuron will vote
-for an empty cluster. Options:
-- Periodic: find empty clusters, reinitialize centroid to the farthest neuron
-  from its own centroid (most "unhappy" neuron), reassign its neighborhood
-- Split: find largest cluster, split via k-means(2), assign one half to the
-  dead cluster
-- Lazy: just reduce m. If a cluster dies, it wasn't needed. Let m adapt to
-  the natural structure density.
+**Proposed: knn2-guided reassignment (hybrid approach):**
+
+Instead of checking all m centroids OR voting from individual neuron KNN,
+use **knn2** (cluster-level KNN) as the search space. Each anchor compares
+itself to its own centroid + the centroids of its cluster's knn2 neighbors.
+
+```
+my_cluster = cluster_ids[anchor]
+candidates = [my_cluster] + knn2[my_cluster]   # own cluster + neighbor clusters
+candidate_centroids = centroids[candidates]     # (1 + k', dims)
+dists = distance(embedding[anchor], candidate_centroids)
+best = candidates[dists.argmin()]
+if best != my_cluster:
+    move anchor to best
+```
+
+Advantages:
+- **O(k') per anchor** — search space is cluster neighbors, not all m.
+  k'=10 vs m=1600 = 160× cheaper.
+- **No absolute threshold.** Decision is relative: "am I closer to a neighbor
+  cluster's centroid than my own?" If yes, move. If no, stay.
+- **Topologically meaningful.** knn2 is the consensus neighbor structure from
+  frequency selection — stable, not noisy like individual KNN votes.
+- **Fewer spurious jumps** than pure voting. A neuron only considers clusters
+  that are actually adjacent in the topology, not random clusters that happen
+  to contain one KNN neighbor.
+- **knn2 maintained incrementally.** When a cluster gains/loses members,
+  recompute frequency selection only for that cluster + its knn2 neighbors.
+  Most ticks: zero knn2 changes.
+
+The centroid comparison gives a geometric decision grounded in the cluster
+topology. knn2 provides the search space, centroids provide the decision rule.
+
+**Dead cluster recovery: periodic split of largest cluster.**
+
+Lazy (let dead clusters stay dead) causes "Alzheimer" — permanent loss of
+resolution in parts of the embedding space. For a system that runs indefinitely,
+dead clusters must be recoverable.
+
+Approach: periodically (every N iterations or when empty count exceeds threshold),
+find the largest cluster and split it via k-means(2). One half keeps the original
+cluster ID, the other half gets assigned to a dead cluster's ID. The dead cluster's
+centroid is reinitialized to the new half's mean.
+
+```
+Every N iterations:
+  if n_empty > 0:
+    largest = argmax(sizes)
+    members = where(cluster_ids == largest)
+    sub_ids, sub_centroids = kmeans(embeddings[members], 2)
+    # Half stays as 'largest', half becomes 'dead_cluster'
+    dead = first empty cluster ID
+    cluster_ids[members[sub_ids == 1]] = dead
+    centroids[dead] = sub_centroids[1]
+    centroids[largest] = sub_centroids[0]
+    recompute knn2 for largest, dead, and their neighbors
+```
+
+O(largest_cluster × dims) per split. Amortized O(1) if splits are rare.
+Only one split per N iterations keeps cost bounded.
