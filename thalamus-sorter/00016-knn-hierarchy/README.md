@@ -109,4 +109,77 @@ Core functions needed:
 
 ## Results
 
-TBD
+### Run 001: Baseline model (gray saccades 80×80, 50k ticks)
+
+Standard gray_80x80_saccades preset, 50k ticks. Produces converged embeddings
+(n=6400, dims=8) and KNN lists (k=10) as input for clustering experiments.
+
+| Metric | Value |
+|--------|-------|
+| Elapsed | 146s |
+| PCA disparity | 0.601 |
+| K10 <3px | 96.9% |
+| K10 <5px | 100% |
+| KNN spatial | 0.997 |
+| KNN overlap | 0.710 |
+
+### Run 002: Offline k-means (Phase 1)
+
+Batch k-means on converged embeddings with k-means++ init (5 restarts).
+Frequency-based knn2 selection with k2=10.
+
+| m | n/m | empty | size_std | diam_mean | contiguity | knn2_agr |
+|---|-----|-------|----------|-----------|------------|----------|
+| 25 | 256 | 0 | 28.7 | 25.2 | 1.000 | 1.000 |
+| 100 | 64 | 0 | 10.5 | 12.4 | 1.000 | 1.000 |
+| 400 | 16 | 0 | 4.0 | 5.8 | 1.000 | 1.000 |
+| 1600 | 4 | 0 | 1.8 | 2.2 | 0.997 | 1.000 |
+| 6400 | 1 | 0 | 0.0 | 0.0 | 1.000 | 1.000 |
+
+**Findings:**
+
+1. **100% knn2 agreement** across all m — frequency selection perfectly captures
+   the original KNN structure at every granularity.
+2. **100% contiguity** (0.997 at m=1600) — clusters are spatially contiguous blobs,
+   confirming embeddings encode spatial proximity faithfully.
+3. **Diameters scale as sqrt(n/m)** — m=25 has ~25px diameter, m=400 has ~6px.
+4. **No empty clusters** at any level.
+5. **n=m degenerate case** works: each neuron is its own cluster, knn2 reproduces
+   original KNN exactly.
+
+### Run 003: Streaming from converged (Phase 2)
+
+Random centroid init on converged embeddings, then iterative streaming updates
+(batch_size=256 anchors/iter, threshold=0.5, lr=0.1, 200 iterations).
+
+| m | n/m | Converged by | Reassign rate (early) | Final contiguity | knn2_agr | Baseline agree |
+|---|-----|-------------|----------------------|------------------|----------|----------------|
+| 25 | 256 | ~160 iters | 5–25/iter | 1.000 | 1.000 | 0.961 |
+| 100 | 64 | ~160 iters | 10–25/iter | 1.000 | 1.000 | 0.989 |
+| 400 | 16 | ~50 iters | 0–2/iter | 0.995 | 1.000 | 0.997 |
+| 1600 | 4 | instant | 0 | 0.991 | 1.000 | 1.000 |
+
+**m=100 trajectory (representative):**
+
+| iter | reassigned | empty | size_std | diam | contiguity | knn2_agr | agree |
+|------|-----------|-------|----------|------|------------|----------|-------|
+| 0 | 0 | 0 | 39.8 | 14.1 | 0.991 | 1.000 | 0.986 |
+| 50 | 18 | 0 | 32.0 | 14.1 | 0.996 | 1.000 | 0.988 |
+| 100 | 8 | 0 | 27.5 | 13.3 | 0.999 | 1.000 | 0.989 |
+| 160 | 3 | 0 | 24.8 | 12.8 | 1.000 | 1.000 | 0.989 |
+| 199 | 9 | 0 | 23.5 | 12.6 | 1.000 | 1.000 | 0.989 |
+
+**Findings:**
+
+1. **Streaming matches offline quality.** All m values reach contiguity ≥0.991 and
+   knn2_agreement=1.000 — identical to offline baseline.
+2. **Larger clusters need more iterations.** m=1600 (4/cluster) converges instantly
+   with 0 reassignments — random init already places nearby embeddings in the same
+   Voronoi cell. m=25 (256/cluster) still has reassignments at iter 199.
+3. **200 iterations × 256 batch = 51,200 anchor touches (~8× coverage) is sufficient**
+   for all m values tested.
+4. **Size balance is worse than offline** (std=23.5 vs 10.5 at m=100) — streaming
+   doesn't have Lloyd's balancing pressure. Structure quality (contiguity, knn2)
+   is unaffected.
+5. **Baseline agreement is lower for small m** (0.961 at m=25 vs 1.000 at m=1600) —
+   more valid ways to partition into few large clusters than many small ones.
