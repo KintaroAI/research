@@ -64,13 +64,13 @@ Step-by-step workflow for running a reproducible experiment.
 
 14. **Tag the final state.** This captures all code changes made during the experiment:
     ```bash
-    git tag exp/NNNNN
-    git push origin exp/NNNNN
+    git tag c/NNNNN
+    git push origin c/NNNNN
     ```
 
 15. **Update the README header** with the tag and commit hash:
     ```
-    **Source:** `exp/NNNNN` (`<commit-hash>`)
+    **Source:** `c/NNNNN` (`<commit-hash>`)
     ```
 
 16. **Commit and push:**
@@ -92,7 +92,7 @@ Step-by-step workflow for running a reproducible experiment.
 [ ] Tests pass
 [ ] README updated with results, analysis, conclusions
 [ ] Makefile verified
-[ ] git tag exp/NNNNN && git push origin exp/NNNNN
+[ ] git tag c/NNNNN && git push origin c/NNNNN
 [ ] README updated with source tag + commit hash, status = Complete
 [ ] Final commit + push
 ```

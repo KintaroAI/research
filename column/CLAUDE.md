@@ -36,6 +36,6 @@ python main.py -o $(python output_name.py 1 baseline_16x8)
 
 ## Important Files
 
-- `REQUIREMENTS.md` — Detailed functional requirements (15 requirements across I/O, learning, competition, stability)
+- `REQUIREMENTS.md` — Detailed functional requirements (16 requirements across I/O, learning, competition, stability, noise tolerance)
 - `PLANNING.md` — Design analysis, literature mapping, proposed prototype architecture
 - `dev/output_name.py` — Auto-generate experiment output directory paths
