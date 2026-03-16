@@ -156,7 +156,8 @@ def _save_run_info(output_dir, args, results=None, wlog=None):
 class _ClusterManager:
     """Live streaming cluster maintenance during training."""
 
-    def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None):
+    def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
+                 hysteresis=0.0):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu, frequency_knn_gpu,
@@ -177,6 +178,7 @@ class _ClusterManager:
         self._visualize = visualize_clusters
         self._eval = eval_clusters
         self.wlog = wlog
+        self.hysteresis = hysteresis
         self.rng = np.random.RandomState(42)
         self.total_reassigned = 0
         self.total_splits = 0
@@ -204,7 +206,8 @@ class _ClusterManager:
 
         n_reassigned, affected, _, n_blocked = self._stream_update(
             embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
-            anchors_np, lr=self.lr, sizes=self.sizes, min_size=0, rng=self.rng)
+            anchors_np, lr=self.lr, sizes=self.sizes, min_size=0, rng=self.rng,
+            hysteresis=self.hysteresis)
         self.total_reassigned += n_reassigned
 
         # Patch knn2 for affected clusters
@@ -658,12 +661,15 @@ def run_word2vec(args):
         cluster_m = getattr(args, 'cluster_m', 0)
         if cluster_m > 0:
             cluster_k2 = getattr(args, 'cluster_k2', None) or dsolver.knn_k
+            cluster_hyst = getattr(args, 'cluster_hysteresis', 0.0)
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
                 lr=getattr(args, 'cluster_lr', 0.01),
                 split_every=getattr(args, 'cluster_split_every', 10),
-                output_dir=output_dir, wlog=wlog)
+                output_dir=output_dir, wlog=wlog,
+                hysteresis=cluster_hyst)
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
+                  f"hysteresis={cluster_hyst}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
 
         # --- Training + rendering ---
@@ -973,6 +979,8 @@ def main():
                        help="Save cluster visualization every N ticks (default: 1000)")
     p_w2v.add_argument("--cluster-split-every", type=int, default=10,
                        help="Attempt dead cluster recovery every N ticks (default: 10)")
+    p_w2v.add_argument("--cluster-hysteresis", type=float, default=0.0,
+                       help="Reassignment resistance: neuron must be (1-h)*dist closer to jump (default: 0.0)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")

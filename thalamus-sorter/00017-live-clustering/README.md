@@ -159,3 +159,29 @@ Runtime: 775s (~15 ms/tick)
 
 4. **No embedding quality impact.** K10 <3px=97.5% (slightly better than
    m=100's 96.9%). Clustering overhead is ~5ms/tick — acceptable.
+
+### Run 004: Hysteresis test (h=0.1, m=100, 10k ticks)
+
+Added `--cluster-hysteresis H` parameter: neuron only jumps from cluster A→B if
+`dist_to_B < dist_to_A * (1 - H)`. Prevents boundary ping-ponging.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=100, dims=8, k2=10, lr_cluster=0.01, hysteresis=0.1
+Output: ~/data/research/thalamus-sorter/exp_00017/005_005_hysteresis_01_10k/
+```
+
+| Metric | h=0.0 (Run 001) | h=0.1 (Run 004) |
+|--------|-----------------|-----------------|
+| Contiguity @ 10k | 1.000 | 0.999 |
+| Diameter @ 10k | 12.7 | 12.3 |
+| Jumps/tick @ 10k | 1.8 | 1.8 |
+| Total splits | 304 | 290 |
+| Alive | 100/100 | 100/100 |
+| K10 <3px | 96.9% | 96.4% |
+
+**Finding:** Hysteresis works as intended — same convergence, same steady-state
+jump rate, no quality degradation. The margin filters marginal reassignments
+without blocking genuine ones. Default stays at 0.0 (no resistance) since the
+system is already stable, but the knob is available for higher-m configs where
+boundary churn is more pronounced.

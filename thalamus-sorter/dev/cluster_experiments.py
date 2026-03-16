@@ -122,8 +122,10 @@ if HAS_TORCH:
         return knn2, knn2_counts
 
     def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
-                                anchors, lr=0.01, sizes=None, min_size=0, rng=None):
-        """v3 streaming update: prefetch to CPU, loop on CPU, nudge on GPU."""
+                                anchors, lr=0.01, sizes=None, min_size=0, rng=None,
+                                hysteresis=0.0):
+        """v3 streaming update: prefetch to CPU, loop on CPU, nudge on GPU.
+        hysteresis: relative margin — neuron only jumps if dist_new < dist_cur * (1 - hysteresis)."""
         m = centroids_t.shape[0]
         n = embeddings_t.shape[0]
 
@@ -159,9 +161,15 @@ if HAS_TORCH:
             emb = anchor_embs[i]
             cand_centroids = centroids_cpu[candidates]
             dists = np.sum((emb - cand_centroids) ** 2, axis=1)
-            best = candidates[dists.argmin()]
+            best_idx = dists.argmin()
+            best = candidates[best_idx]
 
             if best != cur:
+                # Hysteresis: only jump if new centroid is meaningfully closer
+                if hysteresis > 0.0:
+                    cur_idx = np.where(candidates == cur)[0][0]
+                    if dists[best_idx] >= dists[cur_idx] * (1.0 - hysteresis):
+                        continue
                 if sizes[cur] <= min_size:
                     n_blocked += 1
                     continue
