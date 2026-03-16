@@ -1,7 +1,7 @@
 # ts-00015: KNN Stability Over Training
 
 **Date:** 2026-03-14
-**Status:** In progress
+**Status:** Complete
 **Source:** `exp/ts-00015`
 
 ## Goal
