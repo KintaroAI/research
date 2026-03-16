@@ -1,7 +1,7 @@
 # ts-00016: KNN Hierarchy — Clustering and Multi-Layer Processing
 
 **Date:** 2026-03-15
-**Status:** In progress
+**Status:** Complete
 **Source:** `exp/ts-00016`
 **Design:** `dev/KNN_HIERARCHY.md`
 
