@@ -84,6 +84,7 @@ Cell 1 extracts direction per segment; Cell 2 categorizes the transition matrix
 | 00009 | Noise robustness | 2 noisy channels (12%) drops NMI 1.0→0.14; low-amplitude noise (0.3) at 50% channels OK |
 | 00010 | Dynamic inputs | Add/remove channels live — zero disruption, useful channels learned, noise ignored |
 | 00011 | Performance | ~5k steps/s instant, ~4k corr (n≤16), 272B–256KB memory, pure CPU |
+| 00012 | Streaming mode | O(mn) temporal via EMA projection variance — 9x faster than correlation at n=64 |
 
 ## Repository structure
 

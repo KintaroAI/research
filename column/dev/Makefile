@@ -230,6 +230,49 @@ test:
 	norms_rm = cell_rm.prototypes.norm(dim=1); \
 	assert (norms_rm - 1.0).abs().max() < 1e-5, 'remove_inputs not normalized'; \
 	\
+	# Test 22: streaming — forward produces valid probs \
+	cell_s = SoftWTACell(16, 4, temporal_mode='streaming'); \
+	xs = torch.randn(16); \
+	ps = cell_s.forward(xs); \
+	assert ps.shape == (4,), f'streaming bad shape: {ps.shape}'; \
+	assert abs(ps.sum().item() - 1.0) < 1e-5, 'streaming probs bad sum'; \
+	assert (ps >= 0).all(), 'streaming negative probs'; \
+	\
+	# Test 23: streaming — update returns valid winner \
+	ws, mqs = cell_s.update(xs); \
+	assert 0 <= ws < 4, f'streaming bad winner: {ws}'; \
+	assert 0.0 <= mqs <= 1.0, f'streaming bad match quality: {mqs}'; \
+	\
+	# Test 24: streaming — separates co-variation clusters \
+	rng_s = np.random.default_rng(42); \
+	dirs_s = rng_s.standard_normal((4, 16)); \
+	dirs_s = dirs_s / np.linalg.norm(dirs_s, axis=1, keepdims=True); \
+	cell_sc = SoftWTACell(16, 4, temperature=0.5, lr=0.05, \
+	    match_threshold=0.1, temporal_mode='streaming', streaming_decay=0.9); \
+	cluster_ws = {i: [] for i in range(4)}; \
+	for _ in range(5000): \
+	    ci = rng_s.integers(4); \
+	    sig = rng_s.standard_normal(); \
+	    x_s = torch.tensor(dirs_s[ci] * sig + rng_s.standard_normal(16) * 0.3, \
+	        dtype=torch.float32); \
+	    w_s, _ = cell_sc.update(x_s); \
+	    cluster_ws[ci].append(w_s); \
+	modes_s = set(); \
+	for ci in range(4): \
+	    last = cluster_ws[ci][-300:]; \
+	    mode = max(set(last), key=last.count); \
+	    modes_s.add(mode); \
+	assert len(modes_s) >= 3, \
+	    f'streaming poor separation: only {len(modes_s)} distinct modes'; \
+	\
+	# Test 25: streaming — state roundtrip \
+	sd_s = cell_sc.state_dict(); \
+	cell_sc2 = SoftWTACell.from_state_dict(sd_s); \
+	assert cell_sc2.temporal_mode == 'streaming'; \
+	assert torch.allclose(cell_sc.prototypes, cell_sc2.prototypes); \
+	assert torch.allclose(cell_sc.proj_mean, cell_sc2.proj_mean); \
+	assert torch.allclose(cell_sc.proj_var, cell_sc2.proj_var); \
+	\
 	print('All tests passed.')"
 
 clean:
