@@ -279,6 +279,12 @@ class DriftSolver:
         # signals and compute correlations element-wise. O(batch * k_sample * T)
         # — less total work but slower due to random memory access. Better on
         # CPU or when k_sample << n and memory is tight.
+        # TODO: incremental sig_normed update. Currently rebuilds the full
+        # (n, T-1) normalized signal matrix every tick. Only one column of
+        # `signals` changes per tick (the new saccade frame), which affects
+        # exactly two derivative entries (col and col-1). Could patch those
+        # two columns and incrementally update mean/norm instead of recomputing
+        # from scratch. Negligible at 80x80 but ~100M elements at 320x320.
         if matmul_corr:
             if use_deriv_corr:
                 sig = signals.to(compute_dtype)

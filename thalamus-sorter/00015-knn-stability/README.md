@@ -660,6 +660,72 @@ Final: pairs=4.52B, elapsed=794s (15.9 ms/tick), PCA=0.901, <3px=99.2%, <5px=100
 
 **4× anchors fully restores convergence at 320×320.** Spatial accuracy reaches 0.993 (vs 0.427 with default anchors), <3px jumps from 58.2% to 99.2%, and overlap is monotonically increasing (0.872 vs unstable 0.553). The convergence trajectory closely matches 160×160 run 025.
 
+### Runs 070–071: 320×320 saccades, anchor_batches=16, 50k (4096 anchors/tick, 4% coverage)
+
+Two identical runs to test reproducibility. Uses KNN_STABLE_INSERT (replace-worst-slot instead of topk re-sort). Input image corrected: K_320_g.png resized from K_crop_g.png (1024×1024) via INTER_AREA.
+
+| Tick | Run 070 Overlap | Run 070 Spatial | Run 071 Overlap | Run 071 Spatial |
+|------|-----------------|-----------------|-----------------|-----------------|
+| 5000 | 0.000 | 0.739 | 0.000 | 0.774 |
+| 10000 | 0.318 | 0.981 | 0.353 | 0.976 |
+| 15000 | 0.663 | 0.993 | 0.662 | 0.989 |
+| 20000 | 0.783 | 0.996 | 0.785 | 0.993 |
+| 30000 | 0.831 | 0.998 | 0.818 | 0.998 |
+| 40000 | 0.828 | 0.999 | 0.855 | 0.999 |
+| 50000 | 0.831 | 1.000 | 0.845 | 1.000 |
+
+Both: elapsed=~3331s (66.6 ms/tick), <3px=99.0–99.5%, <5px=100%, spatial=1.000
+
+**16× anchors reach spatial=1.000** (perfect KNN spatial accuracy), up from 0.993 with ab4. But 66.6 ms/tick is 4.2× slower than ab4 (15.9 ms/tick) — the correlation matmul runs 16 times instead of 4. Diminishing returns: ab4 reaches 0.993, ab16 reaches 1.000 at 4× the wall time.
+
+### Run 072: 320×320 saccades, anchor_batches=8, 50k (2048 anchors/tick, 2% coverage)
+
+Testing the middle ground between ab4 (1024 anchors) and ab16 (4096 anchors).
+
+| Tick | Overlap | Spatial |
+|------|---------|---------|
+| 5000 | 0.000 | 0.091 |
+| 10000 | 0.074 | 0.872 |
+| 15000 | 0.470 | 0.979 |
+| 20000 | 0.688 | 0.989 |
+| 25000 | 0.751 | 0.993 |
+| 30000 | 0.809 | 0.995 |
+| 35000 | 0.816 | 0.996 |
+| 40000 | 0.822 | 0.997 |
+| 45000 | 0.831 | 0.998 |
+| 50000 | 0.857 | 0.998 |
+
+Final: elapsed=1830s (36.6 ms/tick), PCA=0.881, <3px=99.2%, <5px=100%, spatial=0.998
+
+### Run 073: 320×320 saccades, batch_size=512, anchor_batches=4, 50k (2048 anchors/tick, 2% coverage)
+
+Same anchors/tick as run 072 (2048), but fewer larger batches instead of more smaller ones. Tests whether bigger matmul per batch (512×102400 vs 256×102400) improves throughput.
+
+| Tick | Overlap | Spatial |
+|------|---------|---------|
+| 5000 | 0.000 | 0.088 |
+| 10000 | 0.176 | 0.723 |
+| 15000 | 0.389 | 0.972 |
+| 20000 | 0.663 | 0.988 |
+| 25000 | 0.765 | 0.993 |
+| 30000 | 0.795 | 0.995 |
+| 35000 | 0.828 | 0.997 |
+| 40000 | 0.835 | 0.998 |
+| 45000 | 0.846 | 0.998 |
+| 50000 | 0.872 | 0.999 |
+
+Final: elapsed=2142s (42.8 ms/tick), PCA=0.979, <3px=99.5%, <5px=100%, spatial=0.999
+
+### 320×320 Anchor Scaling Summary
+
+| Config | Anchors/tick | Coverage | ms/tick | Spatial | <3px | Overlap |
+|--------|-------------|----------|---------|---------|------|---------|
+| b256×ab1 (run 068) | 256 | 0.25% | 6.7 | 0.427 | 58.2% | 0.553 |
+| b256×ab4 (run 069) | 1024 | 1% | 15.9 | 0.993 | 99.2% | 0.872 |
+| b256×ab8 (run 072) | 2048 | 2% | 36.6 | 0.998 | 99.2% | 0.857 |
+| b512×ab4 (run 073) | 2048 | 2% | 42.8 | 0.999 | 99.5% | 0.872 |
+| b256×ab16 (runs 070–071) | 4096 | 4% | 66.6 | 1.000 | 99.0–99.5% | 0.831–0.845 |
+
 **Grid size comparison at 50k ticks:**
 
 | Grid | n | k_sample | Anchors/tick | Coverage | Pairs | Overlap | Spatial | <3px | top50 | top90 |
@@ -669,6 +735,8 @@ Final: pairs=4.52B, elapsed=794s (15.9 ms/tick), PCA=0.901, <3px=99.2%, <5px=100
 | 160×160 | 25,600 | 800 | 256 | 1% | 1.11B | 0.82 | 0.990 | 98.9% | 0.3 | 1.4 |
 | 320×320 | 102,400 | 3,200 | 256 | 0.25% | 1.12B | 0.55 | 0.427 | 58.2% | 2.8 | 4.1 |
 | 320×320 | 102,400 | 3,200 | 1024 | 1% | 4.52B | 0.87 | 0.993 | 99.2% | 0.1 | 0.9 |
+| 320×320 | 102,400 | 3,200 | 2048 | 2% | 8.9B | 0.86 | 0.998 | 99.2% | — | — |
+| 320×320 | 102,400 | 3,200 | 4096 | 4% | 17.9B | 0.84 | 1.000 | 99.5% | — | — |
 
 **Findings:**
 
@@ -679,6 +747,10 @@ Final: pairs=4.52B, elapsed=794s (15.9 ms/tick), PCA=0.901, <3px=99.2%, <5px=100
 3. **Overlap instability is a coverage problem, not a scale problem.** Run 068's non-monotonic overlap (peaking then dropping) disappears entirely with 4× anchors. The embedding space needs enough updates per tick to make coherent progress rather than random walks.
 
 4. **Tail fraction at 320×320 with sufficient anchors** (top50=0.1, top90=0.9) is actually *better* than smaller grids, suggesting the larger embedding space has more room for stable neighbor assignments.
+
+5. **Diminishing returns above 1% coverage.** ab4 (1%) → ab8 (2%) → ab16 (4%) improves spatial from 0.993 → 0.998 → 1.000, but wall time scales linearly (15.9 → 36.6 → 66.6 ms/tick). The sweet spot is ab4 or ab8 — ab16 pays 4× wall time for +0.007 spatial.
+
+6. **Batch size 512 is slower than 256 at same anchor count.** b512×ab4 (42.8 ms/tick) vs b256×ab8 (36.6 ms/tick) — both produce 2048 anchors/tick but b512 is 17% slower. The larger matmul per iteration doesn't compensate for the overhead. b256 is the better batch size for 320×320.
 
 ### K Value and Ring Completion
 

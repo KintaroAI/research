@@ -309,6 +309,18 @@ Benefits:
 
 Caution: must not permanently starve low-variance neurons — they still need occasional probing to discover their (few) real neighbors. A floor weight (e.g., minimum 10% of max weight) would prevent complete starvation.
 
+## KNN hierarchy
+
+Merge n per-neuron KNN lists into m cluster-level KNN lists via embedding
+k-means + frequency-based neighbor selection. Enables hierarchical processing
+and feedback loops without combinatorial explosion. Supports streaming
+maintenance and multi-layer stacking.
+
+See **[KNN_HIERARCHY.md](KNN_HIERARCHY.md)** for full design: clustering
+algorithm, frequency-based knn2 selection, streaming cluster maintenance,
+balance control, and two approaches for hierarchical stacking (derived vs
+full layer 2 training).
+
 ## Open questions
 
 - Can we force cross-channel spatial structure (e.g., shared spatial dimensions + channel-specific dimensions)?
