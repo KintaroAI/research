@@ -57,14 +57,23 @@ class SoftWTACell:
             return sim
 
         if self.temporal_mode == 'streaming':
-            # Project input onto each prototype: (m,)
+            if x.dim() == 2:
+                # (n, T) trace: project first, then variance — O(mnT)
+                proj = self.prototypes @ x  # (m, T)
+                proj_c = proj - proj.mean(dim=1, keepdim=True)
+                sim = (proj_c ** 2).mean(dim=1)  # (m,)
+                # Also update EMA from the trace mean
+                proj_mean_batch = proj.mean(dim=1)
+                d = self.streaming_decay
+                self.proj_mean = d * self.proj_mean + (1 - d) * proj_mean_batch
+                self.proj_var = d * self.proj_var + (1 - d) * sim
+                return sim
+            # (n,) single sample: EMA-based
             proj = self.prototypes @ x
-            # Update running mean and variance
             d = self.streaming_decay
             self.proj_mean = d * self.proj_mean + (1 - d) * proj
             diff = proj - self.proj_mean
             self.proj_var = d * self.proj_var + (1 - d) * diff * diff
-            # Similarity = variance of projection (high = active direction)
             return self.proj_var
 
         # correlation mode: x is (n, T)
@@ -144,7 +153,7 @@ class SoftWTACell:
         return winner, match_quality
 
     def _update_streaming(self, x, probs):
-        """Update for streaming temporal input (n,) using Oja's rule."""
+        """Update for streaming input — (n,) or (n, T)."""
         winner = probs.argmax().item()
 
         # Match quality: fraction of total variance from this prototype
@@ -159,12 +168,25 @@ class SoftWTACell:
                 winner = dormant
                 effective_lr = self.lr
 
-        # Oja's rule: proto += lr * (x·proto) * (x - (x·proto) * proto)
-        proj = (self.prototypes[winner] * x).sum()
-        if proj.abs() > 1e-8:
-            oja_delta = proj * (x - proj * self.prototypes[winner])
-            self.prototypes[winner] += effective_lr * oja_delta
-            self.prototypes[winner] = F.normalize(self.prototypes[winner], dim=0)
+        if x.dim() == 2:
+            # (n, T) trace: efficient power iteration without full C
+            # C @ proto = x_c @ (x_c.T @ proto) / (T-1)  — O(nT) not O(n²)
+            x_c = x - x.mean(dim=1, keepdim=True)
+            T = x.shape[1]
+            inner = x_c.T @ self.prototypes[winner]  # (T,)
+            target = x_c @ inner / max(T - 1, 1)     # (n,)
+            target_norm = target.norm()
+            if target_norm > 1e-8:
+                target = target / target_norm
+                self.prototypes[winner] += effective_lr * (target - self.prototypes[winner])
+                self.prototypes[winner] = F.normalize(self.prototypes[winner], dim=0)
+        else:
+            # (n,) single sample: Oja's rule
+            proj = (self.prototypes[winner] * x).sum()
+            if proj.abs() > 1e-8:
+                oja_delta = proj * (x - proj * self.prototypes[winner])
+                self.prototypes[winner] += effective_lr * oja_delta
+                self.prototypes[winner] = F.normalize(self.prototypes[winner], dim=0)
 
         return winner, match_quality
 

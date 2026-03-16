@@ -79,10 +79,26 @@ the adversarial case.
 an effective window of ~2 samples (1/(1-0.5)), which captures the current
 cluster's variance without mixing in old clusters.
 
+### Streaming with (n, T) traces vs correlation
+
+Streaming also accepts (n, T) traces — projects first, then computes variance.
+O(mnT) instead of O(n²T + mn²).
+
+| Config | Correlation | Streaming | Speedup |
+|---|---|---|---|
+| 16×4 T=10 speed | 246 us | 260 us | 1.0x |
+| 64×16 T=10 speed | 1,077 us | 560 us | **1.9x** |
+| 16×4 T=10 NMI | 0.844 | 0.843 | same |
+| 64×16 T=10 NMI | 0.607 | **0.826** | **better** |
+
+At n=64, streaming is both faster AND higher quality. Correlation's covariance
+matrix (64×64 from 10 samples) is rank-deficient, hurting separation. Streaming's
+projection-based approach avoids this — it never builds the full covariance.
+
 **When to use which mode:**
 - Instantaneous: no temporal structure needed
-- Correlation: offline or batched temporal analysis, n ≤ ~30
-- Streaming: online real-time temporal analysis at any n
+- Streaming: temporal analysis at any n — handles both (n,) and (n, T)
+- Correlation: kept for comparison, superseded by streaming for most cases
 
 ## Commands
 

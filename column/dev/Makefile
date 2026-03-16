@@ -265,13 +265,44 @@ test:
 	assert len(modes_s) >= 3, \
 	    f'streaming poor separation: only {len(modes_s)} distinct modes'; \
 	\
-	# Test 25: streaming — state roundtrip \
-	sd_s = cell_sc.state_dict(); \
-	cell_sc2 = SoftWTACell.from_state_dict(sd_s); \
-	assert cell_sc2.temporal_mode == 'streaming'; \
-	assert torch.allclose(cell_sc.prototypes, cell_sc2.prototypes); \
-	assert torch.allclose(cell_sc.proj_mean, cell_sc2.proj_mean); \
-	assert torch.allclose(cell_sc.proj_var, cell_sc2.proj_var); \
+	# Test 25: streaming — accepts (n, T) trace \
+	cell_st = SoftWTACell(16, 4, temporal_mode='streaming'); \
+	xt_s = torch.randn(16, 10); \
+	pt_s = cell_st.forward(xt_s); \
+	assert pt_s.shape == (4,), f'streaming (n,T) bad shape: {pt_s.shape}'; \
+	assert abs(pt_s.sum().item() - 1.0) < 1e-5, 'streaming (n,T) bad sum'; \
+	wt_s, mqt_s = cell_st.update(xt_s, pt_s); \
+	assert 0 <= wt_s < 4; \
+	\
+	# Test 26: streaming (n,T) separates co-variation clusters \
+	rng_st = np.random.default_rng(99); \
+	dirs_st = rng_st.standard_normal((4, 16)); \
+	dirs_st = dirs_st / np.linalg.norm(dirs_st, axis=1, keepdims=True); \
+	cell_st2 = SoftWTACell(16, 4, temperature=0.5, lr=0.05, \
+	    match_threshold=0.1, temporal_mode='streaming'); \
+	cw_st = {i: [] for i in range(4)}; \
+	for _ in range(5000): \
+	    ci = rng_st.integers(4); \
+	    sig = rng_st.standard_normal(10); \
+	    trace = np.outer(dirs_st[ci], sig) + rng_st.standard_normal((16, 10)) * 0.3; \
+	    xt_s2 = torch.tensor(trace, dtype=torch.float32); \
+	    w_st2, _ = cell_st2.update(xt_s2); \
+	    cw_st[ci].append(w_st2); \
+	modes_st = set(); \
+	for ci in range(4): \
+	    last = cw_st[ci][-300:]; \
+	    mode = max(set(last), key=last.count); \
+	    modes_st.add(mode); \
+	assert len(modes_st) >= 3, \
+	    f'streaming (n,T) poor separation: only {len(modes_st)} modes'; \
+	\
+	# Test 27: streaming — state roundtrip \
+	sd_s = cell_st2.state_dict(); \
+	cell_st3 = SoftWTACell.from_state_dict(sd_s); \
+	assert cell_st3.temporal_mode == 'streaming'; \
+	assert torch.allclose(cell_st2.prototypes, cell_st3.prototypes); \
+	assert torch.allclose(cell_st2.proj_mean, cell_st3.proj_mean); \
+	assert torch.allclose(cell_st2.proj_var, cell_st3.proj_var); \
 	\
 	print('All tests passed.')"
 
