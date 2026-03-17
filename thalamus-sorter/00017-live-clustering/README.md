@@ -350,3 +350,32 @@ Runtime: 583s (~10.6 ms/tick steady state)
 5. **Three-phase convergence preserved.** Same pattern as earlier runs: chaotic
    (tick 1-3k), rapid convergence (3-10k), steady state (10k+). The incremental
    knn2 fills in fast enough to guide reassignment during the convergence phase.
+
+### Cluster Stability: Neuron Retention Between Reports
+
+Cluster visualizations showed drastically different layouts between reports — not
+gradual movement but near-total reshuffling. Added a stability metric:
+`(cluster_ids == prev_cluster_ids).mean()` — fraction of neurons that stay in the
+same cluster between consecutive reports.
+
+**Run 009: m=100, h=0.3, 5k ticks, report_every=1000**
+
+| Tick | Stability | Contiguity | Diameter | Jumps/tick |
+|------|-----------|------------|----------|-----------|
+| 1000 | — (first) | 0.038 | 105.4 | 0.6 |
+| 2000 | 0.006 | 0.114 | 92.2 | 88.8 |
+| 3000 | 0.010 | 0.519 | 74.3 | 29.5 |
+| 4000 | 0.015 | 0.813 | 41.1 | 42.2 |
+| 5000 | 0.019 | 0.982 | 16.6 | 21.7 |
+
+**Finding:** Only ~2% of neurons stay in the same cluster over 1000 ticks, even as
+contiguity reaches 0.98. This confirms that spatial cluster quality converges (the
+*geometry* is correct) but individual neuron-to-cluster *assignments* churn almost
+completely. The clusters are spatially stable in shape and position, but which
+specific neuron IDs belong to which cluster is highly volatile.
+
+This is expected with streaming k-means on continuously-evolving embeddings —
+centroids drift, boundary neurons ping-pong, and splits create entirely new cluster
+IDs. The hysteresis parameter (h=0.3) reduces jump rate but doesn't prevent the
+cumulative effect over 1000 ticks. Future work could explore higher hysteresis,
+momentum-based centroid updates, or assignment smoothing to improve retention.
