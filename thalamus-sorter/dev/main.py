@@ -182,6 +182,7 @@ class _ClusterManager:
         self.total_splits = 0
         self._prev_reassigned = 0
         self._prev_report_tick = 0
+        self._prev_cluster_ids = None
 
     def init_clusters(self, embeddings_t):
         """Initialize clusters via GPU k-means on current embeddings."""
@@ -334,16 +335,24 @@ class _ClusterManager:
         self._prev_reassigned = self.total_reassigned
         self._prev_report_tick = tick
         n_alive = self.m - n_empty
+        # Neuron stability: fraction that stayed in same cluster since last report
+        if self._prev_cluster_ids is not None:
+            stability = (self.cluster_ids == self._prev_cluster_ids).mean()
+        else:
+            stability = 0.0
+        self._prev_cluster_ids = self.cluster_ids.copy()
         print(f"  Clusters @ tick {tick}: {n_alive}/{self.m} alive, "
               f"contiguity={metrics['contiguity_mean']:.3f}, "
               f"diam={metrics['diameter_mean']:.1f}, "
+              f"stability={stability:.3f}, "
               f"jumps/tick={jumps_per_tick:.1f}, "
               f"total_jumps={self.total_reassigned}, splits={self.total_splits}")
         if self.wlog:
             self.wlog.log_clusters(
                 tick, n_alive, self.m, metrics['contiguity_mean'],
                 metrics['diameter_mean'], jumps_per_tick,
-                self.total_reassigned, self.total_splits)
+                self.total_reassigned, self.total_splits,
+                stability=stability)
         if self.output_dir:
             path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
             self._visualize(self.cluster_ids, self.w, self.h, path)

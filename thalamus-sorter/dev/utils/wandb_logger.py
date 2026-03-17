@@ -117,11 +117,11 @@ class WandbLogger:
         })
 
     def log_clusters(self, tick, n_alive, m, contiguity, diameter,
-                     jumps_per_tick, total_jumps, splits):
+                     jumps_per_tick, total_jumps, splits, stability=None):
         if not self.enabled:
             return
         self._ensure_init()
-        wandb.log({
+        metrics = {
             'cluster/alive': n_alive,
             'cluster/alive_pct': n_alive / m,
             'cluster/contiguity': contiguity,
@@ -129,7 +129,10 @@ class WandbLogger:
             'cluster/jumps_per_tick': jumps_per_tick,
             'cluster/total_jumps': total_jumps,
             'cluster/splits': splits,
-        }, step=tick)
+        }
+        if stability is not None:
+            metrics['cluster/stability'] = stability
+        wandb.log(metrics, step=tick)
 
     def log_eval(self, pca_disp, k10_mean, within_3, within_5):
         if not self.enabled:
