@@ -1,6 +1,7 @@
 # 00013 — Residual Stacking
 
 **Status:** Complete
+**Source:** `c/00013` (`7aebbe3`)
 
 ## Goal
 
