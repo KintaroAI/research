@@ -1,6 +1,7 @@
 # 00015 — Recurrent Ring (Negative Result)
 
 **Status:** Complete
+**Source:** `c/00015` (`df2b42c`)
 
 ## Goal
 
