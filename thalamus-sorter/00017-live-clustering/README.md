@@ -488,3 +488,342 @@ Runtime: 701s (~14 ms/tick)
 revert bug — experiment archiving commits had clobbered dev/ files, causing those
 runs to execute old pre-incremental-knn2 code. They have been replaced by the
 correctly-executed Runs 023–024 above.
+
+### Run 025: Nudge 300k long run (wandb)
+
+Long-duration test to verify nudge stability doesn't degrade over time.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.0
+centroid_mode=nudge, knn2_mode=incremental
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/71hmna1s
+Output: ~/data/research/thalamus-sorter/exp_00017/025_nudge_300k_m640_wandb/
+Runtime: 3376s (~11 ms/tick)
+```
+
+| Tick | Stability | Contiguity | Diam | Jumps/t | Alive | Splits |
+|------|-----------|------------|------|---------|-------|--------|
+| 10k | 0.561 | 0.998 | 4.3 | 7.2 | 640 | 4,915 |
+| 50k | 0.637 | 0.998 | 4.5 | 8.0 | 640 | 7,057 |
+| 100k | 0.653 | 0.995 | 4.5 | 7.2 | 640 | 10,984 |
+| 150k | 0.104 | 0.996 | 4.6 | 14.2 | 634 | 16,288 |
+| 200k | 0.515 | 0.998 | 4.1 | 8.8 | 639 | 18,452 |
+| 250k | 0.545 | 0.999 | 4.2 | 8.8 | 640 | 23,216 |
+| 300k | 0.677 | 0.999 | 4.1 | 6.9 | 640 | 29,170 |
+
+**Eval:** PCA=0.542, K10 <3px=98.6%, K10 <5px=100%
+
+**Finding:** No degradation over 300k ticks. Stability oscillates 10–68% with
+occasional dips but no downward trend. Contiguity stays 0.995+ and 640/640 alive
+most of the time. Nudge centroids are stable long-term.
+
+### Runs 026–027: Hysteresis sweep with nudge centroids (20k)
+
+Tested h=0.05 and h=0.1 with nudge centroids. (h=0.3 was previously tested with
+nudge in Run 023's predecessor and found to freeze clusters entirely.)
+
+**Run 026: h=0.1, nudge, m=640, 20k**
+```
+Output: ~/data/research/thalamus-sorter/exp_00017/026_nudge_h01_20k_m640/
+```
+
+**Run 027: h=0.05, nudge, m=640, 20k**
+```
+Output: ~/data/research/thalamus-sorter/exp_00017/027_nudge_h005_20k_m640/
+```
+
+Comparison at steady state (ticks 10k–20k):
+
+| Metric | h=0 (Run 025) | h=0.05 (Run 027) | h=0.1 (Run 026) |
+|--------|---------------|-------------------|-------------------|
+| Stability | 22–64% | 41–77% | 22–66% |
+| Jumps/tick | 7–12 | 3–7 | 3–8 |
+| Alive @ 20k | 640 | 640 | 640 |
+| Contiguity | 0.998–0.999 | 0.994–0.999 | 0.993–0.999 |
+| Splits @ 20k | ~5.1k | 5,060 | 5,153 |
+| K10 <3px | 98.6% | 98.7% | 95.9% |
+
+**Run 028: h=0.2, nudge, m=640, 20k**
+```
+Output: ~/data/research/thalamus-sorter/exp_00017/028_nudge_h02_20k_m640/
+```
+
+| Metric | h=0 (Run 025) | h=0.05 (Run 027) | h=0.1 (Run 026) | h=0.2 (Run 028) |
+|--------|---------------|-------------------|-------------------|-------------------|
+| Stability (10-20k) | 22–64% | 41–77% | 22–66% | 67–90% |
+| Contiguity | 0.998 | 0.996 | 0.995 | **0.665** |
+| Diameter | 4.2 | 4.2 | 4.7 | **22.1** |
+| Jumps/tick | 7–12 | 3–7 | 3–8 | 0.7–2.5 |
+| Splits @ 20k | ~5.1k | 5,060 | 5,153 | 2,561 |
+| K10 <3px | 98.6% | 98.7% | 95.9% | 98.5% |
+
+**Finding:** Hysteresis with nudge centroids doesn't help reduce cluster splits —
+it prevents neurons from leaving bad clusters, trapping them and making things
+worse. At h=0.2, contiguity stalls at 0.665 (diameter 22) because neurons can't
+escape to their correct spatial cluster. The cliff is between h=0.1 (works) and
+h=0.2 (frozen). The right lever for controlling churn is the centroid learning
+rate, not hysteresis — slowing centroid movement reduces the *reason* neurons
+want to jump, rather than preventing them from jumping when they should.
+
+### Run 029: Decaying centroid lr (0.01→0.001 over 300k)
+
+Hypothesis: decaying the centroid nudge lr should reduce churn as clusters mature —
+early on, centroids need to move fast to track converging embeddings; later, small
+adjustments should suffice.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, hysteresis=0.0
+centroid_mode=nudge, lr=0.01 linear decay to 0.001 at tick 300k
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/64byd0wn
+Output: ~/data/research/thalamus-sorter/exp_00017/029_nudge_lrdecay_300k_m640_wandb/
+Runtime: ~3400s
+```
+
+| Tick | lr | Stability | Contiguity | Jumps/t | Alive | Splits |
+|------|-----|-----------|------------|---------|-------|--------|
+| 10k | 0.0097 | 0.420 | 0.997 | 8.9 | 638 | 4,943 |
+| 50k | 0.0085 | 0.539 | 0.997 | 8.8 | 640 | 6,819 |
+| 100k | 0.0070 | 0.642 | 1.000 | 9.3 | 640 | 9,993 |
+| 200k | 0.0040 | 0.429 | 0.997 | 12.0 | 628 | 17,683 |
+| 300k | 0.0010 | 0.429 | 0.999 | 8.0 | 638 | 33,362 |
+
+**Eval:** K10 <3px=98.7%
+
+| Metric | Constant lr=0.01 (Run 025) | Decaying lr (Run 029) |
+|--------|---------------------------|------------------------|
+| Stability @ 300k | **0.677** | 0.429 |
+| Total splits | **29,170** | 33,362 |
+| Contiguity | 0.999 | 0.999 |
+| K10 <3px | 98.6% | 98.7% |
+
+**Finding:** Decaying lr didn't help — stability is worse and splits increased.
+Lower lr means centroids track drifting embeddings less accurately, so neurons
+end up farther from their centroid and jump more.
+
+### Run 030: Increasing centroid lr (0.01→0.1 over 300k)
+
+Opposite hypothesis: as embeddings mature, centroids should track them more
+tightly — higher lr means centroids snap closer to true member mean, so neurons
+are always near their centroid and don't need to jump.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, hysteresis=0.0
+centroid_mode=nudge, lr=0.01 linear ramp to 0.1 at tick 300k
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/4dx4srj7
+Output: ~/data/research/thalamus-sorter/exp_00017/030_nudge_lrinc_300k_m640_wandb/
+```
+
+| Tick | lr | Stability | Contiguity | Jumps/t | Alive | Splits |
+|------|-----|-----------|------------|---------|-------|--------|
+| 10k | 0.013 | 0.486 | 0.997 | 7.8 | 636 | 4,701 |
+| 50k | 0.025 | 0.674 | 1.000 | 5.7 | 640 | 5,510 |
+| 100k | 0.040 | 0.588 | 1.000 | 7.5 | 640 | 6,012 |
+| 200k | 0.070 | 0.679 | 1.000 | 6.4 | 640 | 7,925 |
+| 300k | 0.100 | **0.747** | **1.000** | **3.9** | **640** | 8,982 |
+
+**Eval:** K10 <3px=98.9%
+
+**Centroid lr comparison (all nudge, h=0, 300k):**
+
+| Metric | Decay 0.01→0.001 | Const 0.01 | **Ramp 0.01→0.1** |
+|--------|-----------------|------------|---------------------|
+| Stability @ 300k | 0.429 | 0.677 | **0.747** |
+| Contiguity | 0.999 | 0.999 | **1.000** |
+| Diameter | 4.2 | 4.1 | **4.0** |
+| Total splits | 33,362 | 29,170 | **8,982** |
+| Jumps/tick @ 300k | 8.0 | 6.9 | **3.9** |
+| K10 <3px | 98.7% | 98.6% | **98.9%** |
+
+### Run 031: Increasing centroid lr (0.01→1.0 over 300k)
+
+Even more aggressive ramp — 100x increase over 300k ticks.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, hysteresis=0.0
+centroid_mode=nudge, lr=0.01 linear ramp to 1.0 at tick 300k
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/xegl1mda
+Output: ~/data/research/thalamus-sorter/exp_00017/031_nudge_lrinc100x_300k_m640_wandb/
+```
+
+| Tick | lr | Stability | Contiguity | Jumps/t | Alive | Splits |
+|------|-----|-----------|------------|---------|-------|--------|
+| 10k | 0.04 | 0.575 | 0.998 | 7.1 | 640 | 4,052 |
+| 50k | 0.17 | 0.639 | 0.998 | 5.9 | 640 | 4,328 |
+| 100k | 0.34 | 0.579 | 0.999 | 6.7 | 640 | 4,381 |
+| 150k | 0.50 | 0.640 | 1.000 | 4.5 | 640 | 4,403 |
+| 200k | 0.67 | 0.735 | 1.000 | 3.5 | 640 | 4,403 |
+| 300k | 1.00 | **0.794** | **1.000** | **2.3** | **640** | **4,403** |
+
+**Eval:** K10 <3px=98.7%
+
+**Full centroid lr comparison (all nudge, h=0, 300k):**
+
+| Metric | Decay →0.001 | Const 0.01 | Ramp →0.1 | **Ramp →1.0** |
+|--------|-------------|------------|-----------|----------------|
+| Stability @ 300k | 0.429 | 0.677 | 0.747 | **0.794** |
+| Contiguity | 0.999 | 0.999 | 1.000 | **1.000** |
+| Total splits | 33,362 | 29,170 | 8,982 | **4,403** |
+| Jumps/tick @ 300k | 8.0 | 6.9 | 3.9 | **2.3** |
+| K10 <3px | 98.7% | 98.6% | 98.9% | 98.7% |
+
+### Run 032: Constant lr=1.0 (nudge = snap to mean), 300k
+
+At lr=1.0, `centroid += 1.0 * (mean - centroid)` is equivalent to
+`centroid = member_mean`. This is like exact mode but applied *after* all
+reassignments in a tick rather than during the loop — avoiding cascades.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, hysteresis=0.0
+centroid_mode=nudge, lr=1.0 constant
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/t7sh28nw
+Output: ~/data/research/thalamus-sorter/exp_00017/032_nudge_lr1_300k_m640_wandb/
+```
+
+| Tick | Stability | Contiguity | Jumps/t | Alive | Splits |
+|------|-----------|------------|---------|-------|--------|
+| 10k | 0.671 | 1.000 | 4.2 | 640 | 486 |
+| 50k | 0.739 | 1.000 | 3.0 | 640 | 487 |
+| 100k | 0.692 | 1.000 | 3.9 | 640 | 488 |
+| 200k | 0.783 | 1.000 | 2.4 | 640 | 489 |
+| 300k | 0.645 | 1.000 | 5.2 | 640 | 489 |
+
+**Eval:** K10 <3px=97.8%
+
+**Full centroid lr comparison (all nudge, h=0, 300k):**
+
+| Metric | Decay →0.001 | Const 0.01 | Ramp →0.1 | Ramp →1.0 | **Const 1.0** |
+|--------|-------------|------------|-----------|-----------|----------------|
+| Stability @ 300k | 0.429 | 0.677 | 0.747 | 0.794 | 0.645 |
+| Stability range | — | 10–68% | 49–75% | 58–79% | 65–78% |
+| Contiguity | 0.999 | 0.999 | 1.000 | 1.000 | **1.000** |
+| Total splits | 33,362 | 29,170 | 8,982 | 4,403 | **489** |
+| Jumps/tick @ 300k | 8.0 | 6.9 | 3.9 | 2.3 | 5.2 |
+| K10 <3px | 98.7% | 98.6% | 98.9% | 98.7% | 97.8% |
+
+**Key insights:**
+
+1. **Higher centroid lr = more stable clusters.** When centroids closely track
+   their members, neurons stay near their centroid and don't need to jump.
+   Low lr creates a lag between centroid position and actual member distribution,
+   which causes unnecessary reassignments.
+
+2. **Constant lr=1.0 achieves near-zero cluster deaths (489 splits, almost all
+   in first 10k).** This is because centroids always equal the true member mean,
+   so the only reason to jump is genuine embedding drift, not centroid lag.
+
+3. **Nudge lr=1.0 ≠ exact mode.** Both compute the true mean, but nudge applies
+   it *after* all reassignments in a tick (batch update), while exact updates
+   *during* the loop (sequential). This single difference eliminates cascades —
+   no reassignment can influence another within the same tick.
+
+4. **Ramp →1.0 has the best peak stability (0.794)** because low lr in early
+   ticks prevents churn during the chaotic embedding convergence phase. Constant
+   lr=1.0 is slightly less stable early on but has the fewest splits overall.
+
+5. **Recommended: lr=1.0 constant or ramp →1.0** depending on whether you
+   prioritize stability (ramp) or minimal splits (constant).
+
+### Runs 033–035: Hysteresis sweep with lr=1.0 (300k)
+
+With lr=1.0, centroids always equal the true member mean. This changes hysteresis
+behavior fundamentally — the 30% margin is now relative to an accurate centroid,
+not a lagging one. h=0.3 which froze clusters at lr=0.01 now works perfectly.
+
+**Run 033: lr=1.0, h=0.1, 300k**
+```
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/3gt0r0m4
+Output: ~/data/research/thalamus-sorter/exp_00017/033_nudge_lr1_h01_300k_m640_wandb/
+```
+
+**Run 034: lr=1.0, h=0.2, 300k**
+```
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/ryabiz2z
+Output: ~/data/research/thalamus-sorter/exp_00017/034_nudge_lr1_h02_300k_m640_wandb/
+```
+
+**Run 035: lr=1.0, h=0.3, 300k**
+```
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/nzk8lcd1
+Output: ~/data/research/thalamus-sorter/exp_00017/035_nudge_lr1_h03_300k_m640_wandb/
+```
+
+| Metric | h=0 (032) | h=0.1 (033) | h=0.2 (034) | **h=0.3 (035)** |
+|--------|-----------|-------------|-------------|-----------------|
+| Stability @ 300k | 0.645 | 0.782 | 0.803 | **0.849** |
+| Contiguity | 1.000 | 1.000 | 1.000 | **1.000** |
+| Diameter | 4.0 | 4.1 | 4.3 | **3.9** |
+| Jumps/t @ 300k | 5.2 | 2.3 | 1.9 | **1.2** |
+| Total splits | 489 | 543 | 537 | **507** |
+| K10 <3px | 97.8% | 98.5% | 97.8% | **99.1%** |
+
+**Key findings:**
+
+1. **lr=1.0 + h=0.3 is the best config.** 85% stability, 1.2 jumps/tick, perfect
+   contiguity, 99.1% K10. All 640 clusters alive with only 507 splits total.
+
+2. **Hysteresis works correctly at lr=1.0.** The margin is relative to the true
+   member mean, so it filters genuine boundary noise without trapping neurons in
+   wrong clusters. At lr=0.01 the same h=0.3 froze clusters (contiguity 0.665)
+   because centroids lagged and the margin was applied to inaccurate positions.
+
+3. **Monotonic improvement with h.** Each step from h=0→0.1→0.2→0.3 improves
+   stability and reduces jumps. No cliff — the failure mode at lr=0.01 is gone.
+
+4. **Recommended defaults: lr=1.0, h=0.3.** This combination maximizes stability
+   while maintaining perfect spatial quality.
+
+### Design idea: LRU cluster history to prevent ping-ponging
+
+A boundary neuron between clusters A and B may jump A→B→A→B across ticks as
+embeddings drift. Each jump is "correct" in the moment but the net effect is
+pointless churn.
+
+**Proposal:** Each neuron maintains a small LRU cache (size 2–3) of recently
+visited cluster IDs. When considering a reassignment to cluster C, check: if C
+is in the neuron's LRU, suppress the jump (the neuron was recently in C and
+left — going back is likely a ping-pong). Only allow the jump if C is a *new*
+cluster the neuron hasn't recently belonged to, or if the distance improvement
+exceeds a higher threshold for LRU-cached clusters.
+
+This is different from hysteresis (which slows *all* jumps) — it specifically
+targets the A→B→A oscillation pattern while allowing genuine first-time jumps.
+The LRU naturally ages out, so after enough ticks a neuron can return to a
+previously visited cluster if the embedding truly drifted there.
+
+**Implementation:** `lru_clusters` array of shape `(n, lru_size)` storing recent
+cluster IDs per neuron. On each reassignment, push old cluster into LRU, pop
+oldest. In the candidate evaluation loop, penalize or skip candidates found in
+the neuron's LRU.
+
+### Design idea (variant): LRU soft multi-membership
+
+Instead of using LRU to *suppress* jumps, use it to define *simultaneous
+membership*: a neuron belongs to all clusters in its LRU at once. Removal
+from a cluster only happens when that cluster ages out of the LRU.
+
+**How it changes the algorithm:**
+
+- **Centroids include recent members, not just current.** Losing a boundary
+  neuron from cluster A doesn't shift A's centroid — the neuron is still
+  contributing via its LRU entry. Centroid only changes when the LRU entry
+  for A expires (after lru_size jumps).
+- **Cluster sizes overlap.** A boundary neuron between A and B counts toward
+  both. Sizes become 10-13 instead of exactly 10. Contiguity becomes fuzzy.
+- **Splits nearly eliminated.** Clusters don't die because boundary neurons
+  stick around via LRU even after their primary assignment changes.
+- **Biological analogue: receptive field overlap.** A photoreceptor contributes
+  to multiple overlapping ganglion cell fields, not just one.
+
+**Critical constraint: LRU size must be small (2-3 max).** Larger LRU means
+every cluster absorbs distant neurons and centroids blur into averages of
+large overlapping regions, destroying spatial specificity.
+
+**Possible refinement:** Weight contributions by recency — primary cluster
+gets weight 1.0, LRU-1 gets 0.5, LRU-2 gets 0.25. This preserves centroid
+accuracy while still dampening boundary oscillations. Centroids become
+exponentially-weighted moving averages of recent membership.

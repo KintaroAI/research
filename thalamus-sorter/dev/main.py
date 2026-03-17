@@ -236,11 +236,13 @@ class _ClusterManager:
         if not self.initialized:
             return
 
+        effective_lr = self.lr
+
         if self.knn2_mode == 'knn':
             # knn mode: knn2 is neuron-index based (numpy)
             n_reassigned, affected, _, n_blocked = self._stream_update(
                 embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
-                anchors_np, lr=self.lr, sizes=self.sizes, min_size=0,
+                anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
                 knn2_is_neurons=True, centroid_mode=self.centroid_mode)
             self.total_reassigned += n_reassigned
@@ -269,7 +271,7 @@ class _ClusterManager:
             knn2_np = self.knn2_t.cpu().numpy()
             n_reassigned, affected, _, n_blocked = self._stream_update(
                 embeddings_t, self.centroids_t, self.cluster_ids, knn2_np,
-                anchors_np, lr=self.lr, sizes=self.sizes, min_size=0,
+                anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
                 centroid_mode=self.centroid_mode)
             self.total_reassigned += n_reassigned
@@ -1124,8 +1126,8 @@ def main():
                        help="Number of clusters (0=disabled)")
     p_w2v.add_argument("--cluster-k2", type=int, default=16,
                        help="Cluster-level KNN size (default: 16)")
-    p_w2v.add_argument("--cluster-lr", type=float, default=0.01,
-                       help="Centroid nudge learning rate (default: 0.01)")
+    p_w2v.add_argument("--cluster-lr", type=float, default=1.0,
+                       help="Centroid nudge learning rate (default: 1.0)")
     p_w2v.add_argument("--cluster-report-every", type=int, default=1000,
                        help="Save cluster visualization every N ticks (default: 1000)")
     p_w2v.add_argument("--cluster-split-every", type=int, default=10,
