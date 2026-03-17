@@ -161,7 +161,7 @@ class _ClusterManager:
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
-            frequency_knn, streaming_update_v3_gpu, split_largest_cluster_gpu,
+            streaming_update_v3_gpu, split_largest_cluster_gpu,
             visualize_clusters, eval_clusters,
         )
         self.n, self.m, self.w, self.h = n, m, w, h
@@ -170,7 +170,6 @@ class _ClusterManager:
         self.initialized = False
         # Store function refs
         self._kmeans = kmeans_cluster_gpu
-        self._freq_knn = frequency_knn
         self._assign = _assign_clusters_gpu
         self._stream_update = streaming_update_v3_gpu
         self._split = split_largest_cluster_gpu
@@ -184,21 +183,35 @@ class _ClusterManager:
         self._prev_reassigned = 0
         self._prev_report_tick = 0
 
-    def init_clusters(self, embeddings_t, knn_lists_np):
+    def init_clusters(self, embeddings_t):
         """Initialize clusters via GPU k-means on current embeddings."""
         import torch
-        self.knn_lists = knn_lists_np
         ids_np, centroids_np = self._kmeans(embeddings_t, self.m, seed=42)
         self.cluster_ids = ids_np
         self.centroids_t = torch.from_numpy(centroids_np).to(embeddings_t.device)
         self.sizes = np.bincount(self.cluster_ids, minlength=self.m)
-        self.knn2, _ = self._freq_knn(knn_lists_np, self.cluster_ids, self.m, self.k2)
+        # Init knn2 with random cluster indices + infinity distances
+        self.knn2 = np.full((self.m, self.k2), -1, dtype=np.int64)
+        self.knn2_dists = np.full((self.m, self.k2), np.inf)
+        for c in range(self.m):
+            if self.sizes[c] == 0:
+                continue
+            others = [i for i in range(self.m) if i != c and self.sizes[i] > 0]
+            if len(others) == 0:
+                continue
+            k = min(self.k2, len(others))
+            chosen = self.rng.choice(others, size=k, replace=False)
+            self.knn2[c, :k] = chosen
+            # Compute initial distances
+            for j in range(k):
+                diff = centroids_np[c] - centroids_np[chosen[j]]
+                self.knn2_dists[c, j] = np.dot(diff, diff)
         self.initialized = True
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
               f"k2={self.k2}")
 
-    def tick(self, embeddings_t, anchors_np, global_tick):
+    def tick(self, embeddings_t, anchors_np, pairs, global_tick):
         """One streaming cluster maintenance step."""
         if not self.initialized:
             return
@@ -209,26 +222,39 @@ class _ClusterManager:
             hysteresis=self.hysteresis)
         self.total_reassigned += n_reassigned
 
-        # Patch knn2 for affected clusters
+        # Recompute knn2_dists for clusters whose centroids changed
         if affected:
+            centroids_cpu = self.centroids_t.cpu().numpy()
             for c in affected:
-                if self.sizes[c] > 0:
-                    members_c = np.where(self.cluster_ids == c)[0]
-                    pooled = self.knn_lists[members_c].flatten()
-                    ids, counts = np.unique(pooled, return_counts=True)
-                    not_self = self.cluster_ids[ids] != c
-                    ids, counts = ids[not_self], counts[not_self]
-                    if len(ids) > 0:
-                        top = min(self.k2, len(ids))
-                        if top == len(ids):
-                            top_idx = np.argsort(-counts)[:top]
-                        else:
-                            top_idx = np.argpartition(-counts, top)[:top]
-                            top_idx = top_idx[np.argsort(-counts[top_idx])]
-                        self.knn2[c, :] = -1
-                        self.knn2[c, :top] = ids[top_idx]
-                    else:
-                        self.knn2[c, :] = -1
+                valid = self.knn2[c] >= 0
+                for j in np.where(valid)[0]:
+                    tc = self.knn2[c, j]
+                    diff = centroids_cpu[c] - centroids_cpu[tc]
+                    self.knn2_dists[c, j] = np.dot(diff, diff)
+
+        # Update knn2 from skip-gram pairs (incremental centroid-distance based)
+        if pairs is not None:
+            center_np, ctx_np = pairs[0].numpy(), pairs[1].numpy()
+            # Deduplicate: for each anchor cluster, collect unique neighbor clusters
+            pair_clusters = {}
+            for a, n_idx in zip(center_np, ctx_np):
+                c_a = self.cluster_ids[a]
+                c_n = self.cluster_ids[n_idx]
+                if c_a != c_n:
+                    pair_clusters.setdefault(c_a, set()).add(c_n)
+            if pair_clusters:
+                centroids_cpu = self.centroids_t.cpu().numpy()
+                for c_a, neighbor_set in pair_clusters.items():
+                    for c_n in neighbor_set:
+                        # Skip if already in knn2
+                        if c_n in self.knn2[c_a]:
+                            continue
+                        diff = centroids_cpu[c_a] - centroids_cpu[c_n]
+                        dist = np.dot(diff, diff)
+                        worst_idx = self.knn2_dists[c_a].argmax()
+                        if dist < self.knn2_dists[c_a][worst_idx]:
+                            self.knn2[c_a][worst_idx] = c_n
+                            self.knn2_dists[c_a][worst_idx] = dist
 
         # Periodic split recovery
         if (self.split_every > 0 and global_tick > 0 and
@@ -242,8 +268,14 @@ class _ClusterManager:
                     seed=self.rng.randint(1000000))
                 self.total_splits += n_splits
                 if n_splits > 0:
-                    self.knn2[:], _ = self._freq_knn(
-                        self.knn_lists, self.cluster_ids, self.m, self.k2)
+                    # Recompute knn2_dists (centroids changed from splits)
+                    centroids_cpu = self.centroids_t.cpu().numpy()
+                    for c in range(self.m):
+                        valid = self.knn2[c] >= 0
+                        for j in np.where(valid)[0]:
+                            tc = self.knn2[c, j]
+                            diff = centroids_cpu[c] - centroids_cpu[tc]
+                            self.knn2_dists[c, j] = np.dot(diff, diff)
 
     def report(self, tick):
         """Print cluster metrics and save visualization."""
@@ -251,7 +283,7 @@ class _ClusterManager:
             return
         centroids_np = self.centroids_t.cpu().numpy()
         metrics = self._eval(self.cluster_ids, centroids_np, self.knn2,
-                             self.w, self.h, self.knn_lists)
+                             self.w, self.h)
         n_empty = metrics['n_empty']
         interval_reassigned = self.total_reassigned - self._prev_reassigned
         interval_ticks = max(1, tick - self._prev_report_tick)
@@ -312,18 +344,12 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
         # Live cluster maintenance
         if cluster_mgr is not None:
             if not cluster_mgr.initialized:
-                if dsolver.knn_k > 0:
-                    knn_np = dsolver.get_knn_lists()
-                    cluster_mgr.init_clusters(dsolver.positions, knn_np)
-                else:
-                    print(f"  Warning: --cluster-m requires --knn-track, skipping")
-                    cluster_mgr = None
-            if cluster_mgr is not None and cluster_mgr.initialized:
+                cluster_mgr.init_clusters(dsolver.positions)
+            if cluster_mgr.initialized:
                 anchors_np = dsolver._last_anchors.cpu().numpy()
-                cluster_mgr.tick(dsolver.positions, anchors_np, tick)
+                pairs = getattr(dsolver, '_last_pairs', None)
+                cluster_mgr.tick(dsolver.positions, anchors_np, pairs, tick)
                 if tick % cluster_report_every == 0:
-                    # Re-grab KNN lists (they may have changed)
-                    cluster_mgr.knn_lists = dsolver.get_knn_lists()
                     cluster_mgr.report(tick)
 
         # Tick progress logging
@@ -659,7 +685,7 @@ def run_word2vec(args):
         cluster_mgr = None
         cluster_m = getattr(args, 'cluster_m', 0)
         if cluster_m > 0:
-            cluster_k2 = getattr(args, 'cluster_k2', None) or dsolver.knn_k
+            cluster_k2 = getattr(args, 'cluster_k2', 16)
             cluster_hyst = getattr(args, 'cluster_hysteresis', 0.0)
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
@@ -969,9 +995,9 @@ def main():
                             "--no-matmul-corr uses gather path (less memory, better on CPU)")
     # live clustering
     p_w2v.add_argument("--cluster-m", type=int, default=0,
-                       help="Number of clusters (0=disabled). Requires --knn-track.")
-    p_w2v.add_argument("--cluster-k2", type=int, default=None,
-                       help="Cluster-level KNN size (default: same as knn-track)")
+                       help="Number of clusters (0=disabled)")
+    p_w2v.add_argument("--cluster-k2", type=int, default=16,
+                       help="Cluster-level KNN size (default: 16)")
     p_w2v.add_argument("--cluster-lr", type=float, default=0.01,
                        help="Centroid nudge learning rate (default: 0.01)")
     p_w2v.add_argument("--cluster-report-every", type=int, default=1000,

@@ -315,6 +315,8 @@ class DriftSolver:
         all_anchors = list(perm.split(batch_size))
 
         total_pairs = 0
+        all_centers = []
+        all_contexts = []
         for anchors in all_anchors:
             batch = anchors.shape[0]
 
@@ -477,7 +479,14 @@ class DriftSolver:
             self.contexts.scatter_add_(
                 0, j_neg_flat.unsqueeze(1).expand_as(push_c_flat), -push_c_flat)
 
+            all_centers.append(center_flat)
+            all_contexts.append(ctx_flat)
             total_pairs += B
+
+        # Expose pairs for external consumers (e.g. cluster knn2 update)
+        if total_pairs > 0:
+            self._last_pairs = (torch.cat(all_centers).cpu(),
+                                torch.cat(all_contexts).cpu())
 
         self._maybe_normalize()
         return total_pairs

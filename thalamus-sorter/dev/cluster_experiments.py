@@ -151,11 +151,9 @@ if HAS_TORCH:
 
             cur = cluster_ids[anchor]
             neighbors = knn2[cur]
-            valid_neighbors = neighbors[neighbors >= 0]
-            if len(valid_neighbors) == 0:
+            candidates = np.unique(np.concatenate([[cur], neighbors[neighbors >= 0]]))
+            if len(candidates) <= 1:
                 continue
-            neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
-            candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
 
             # Distance on CPU (small: ~10 candidates)
             emb = anchor_embs[i]
@@ -465,39 +463,19 @@ def eval_clusters(cluster_ids, centroids, knn2, width, height, knn_lists=None):
     results['contiguity_mean'] = float(np.mean(contiguity)) if contiguity else 0
 
     # knn2 spatial: grid distance between cluster centers via knn2
+    # knn2 stores cluster indices directly (not neuron indices)
     if knn2 is not None:
         knn2_dists = []
         for c in range(m):
             valid = knn2[c] >= 0
             if not valid.any():
                 continue
-            target_clusters = cluster_ids[knn2[c, valid]]
-            unique_targets = np.unique(target_clusters)
-            for tc in unique_targets:
+            for tc in knn2[c, valid]:
                 if tc != c and sizes[tc] > 0:
                     d = np.sqrt(((cluster_centers[c] - cluster_centers[tc]) ** 2).sum())
                     knn2_dists.append(d)
         results['knn2_center_dist_mean'] = float(np.mean(knn2_dists)) if knn2_dists else 0
         results['knn2_center_dist_max'] = float(np.max(knn2_dists)) if knn2_dists else 0
-
-    # knn2 agreement with original KNN
-    if knn_lists is not None and knn2 is not None:
-        hits = 0
-        total = 0
-        for c in range(m):
-            members = np.where(cluster_ids == c)[0]
-            if len(members) == 0:
-                continue
-            valid = knn2[c] >= 0
-            knn2_set = set(knn2[c, valid].tolist())
-            if not knn2_set:
-                continue
-            # Check: what fraction of knn2 entries appear in any member's KNN?
-            member_knn_set = set(knn_lists[members].flatten().tolist())
-            overlap = len(knn2_set & member_knn_set)
-            hits += overlap
-            total += len(knn2_set)
-        results['knn2_agreement'] = hits / total if total > 0 else 0
 
     return results
 
