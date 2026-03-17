@@ -1,6 +1,7 @@
 # 00014 — Multi-Scale Temporal
 
 **Status:** Complete
+**Source:** `c/00014` (`945ffde`)
 
 ## Goal
 
