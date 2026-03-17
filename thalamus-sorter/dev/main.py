@@ -157,7 +157,7 @@ class _ClusterManager:
     """Live streaming cluster maintenance during training."""
 
     def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
-                 hysteresis=0.0, knn2_mode='incremental', centroid_mode='exact'):
+                 hysteresis=0.0, knn2_mode='incremental', centroid_mode='nudge'):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -810,7 +810,7 @@ def run_word2vec(args):
             cluster_k2 = getattr(args, 'cluster_k2', 16)
             cluster_hyst = getattr(args, 'cluster_hysteresis', 0.0)
             knn2_mode = getattr(args, 'cluster_knn2_mode', 'incremental')
-            centroid_mode = getattr(args, 'cluster_centroid_mode', 'exact')
+            centroid_mode = getattr(args, 'cluster_centroid_mode', 'nudge')
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
                 lr=getattr(args, 'cluster_lr', 0.01),
@@ -1136,10 +1136,10 @@ def main():
                        choices=['incremental', 'knn'],
                        help="knn2 update strategy: 'incremental' (from pairs, no --knn-track needed) "
                             "or 'knn' (from neuron-level KNN lists, requires --knn-track)")
-    p_w2v.add_argument("--cluster-centroid-mode", type=str, default='exact',
+    p_w2v.add_argument("--cluster-centroid-mode", type=str, default='nudge',
                        choices=['exact', 'nudge'],
-                       help="Centroid update: 'exact' (incremental arithmetic, immediate) "
-                            "or 'nudge' (lr-based drift toward member mean)")
+                       help="Centroid update: 'nudge' (lr-based drift toward member mean, default) "
+                            "or 'exact' (incremental arithmetic, immediate — causes churn)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")

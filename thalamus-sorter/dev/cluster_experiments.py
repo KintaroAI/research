@@ -124,7 +124,7 @@ if HAS_TORCH:
     def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
                                 anchors, lr=0.01, sizes=None, min_size=0, rng=None,
                                 hysteresis=0.0, knn2_is_neurons=False,
-                                centroid_mode='exact'):
+                                centroid_mode='nudge'):
         """v3 streaming update: prefetch to CPU, loop on CPU.
         centroid_mode: 'exact' = incremental arithmetic (centroid snaps to true mean),
                        'nudge' = post-loop lr nudge (centroid drifts slowly).

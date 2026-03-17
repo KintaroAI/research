@@ -384,102 +384,107 @@ init, clusters converge in ~500 ticks to contiguity 0.995+ and then lock in with
 perfect stability (1.000) and zero jumps. The churn is entirely caused by embedding
 drift during training, not by clustering algorithm instability.
 
-### Run 010: Incremental knn2, m=640, h=0.3, 100k (stability tracking)
+### Centroid Update Strategy: Nudge vs Exact
+
+The centroid update strategy turned out to be the critical variable for cluster
+stability — more important than knn2 mode, hysteresis, or any other parameter.
+
+**Two modes** (`--cluster-centroid-mode`):
+- **`nudge`** (default): After all reassignments in a tick, nudge centroids toward
+  true member mean: `centroid += lr * (member_mean - centroid)`. Conservative —
+  centroids drift slowly, dampening cascade effects.
+- **`exact`**: Incremental arithmetic on each reassignment:
+  `(centroid * size - emb) / (size - 1)` on removal,
+  `(centroid * size + emb) / (size + 1)` on addition. Centroid snaps to true mean
+  instantly, which can trigger chain reactions where one reassignment shifts a
+  centroid enough to cause further reassignments.
+
+### Run 023: Nudge centroids, h=0, m=640, 50k
 
 ```
 preset: gray_80x80_saccades
-n=6400, m=640, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.3
-knn2_mode=incremental (no --knn-track)
-Output: ~/data/research/thalamus-sorter/exp_00017/017_m640_h03_100k_stability/
-Runtime: 1245s (~11-12 ms/tick)
+n=6400, m=640, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.0
+centroid_mode=nudge, knn2_mode=incremental
+Output: ~/data/research/thalamus-sorter/exp_00017/023_nudge_h0_50k_m640/
+Runtime: 632s (~11 ms/tick)
 ```
 
 | Tick | Stability | Contiguity | Diameter | Jumps/tick | Alive | Splits |
 |------|-----------|------------|----------|-----------|-------|--------|
-| 5k | 0.000 | 0.977 | 5.6 | 45.2 | 582 | 6,469 |
-| 10k | 0.000 | 0.996 | 4.9 | 16.6 | 622 | 10,077 |
-| 25k | 0.001 | 0.988 | 5.2 | 13.5 | 610 | 17,413 |
-| 50k | 0.000 | 0.998 | 4.7 | 17.2 | 620 | 29,585 |
-| 75k | 0.001 | 0.997 | 4.5 | 14.3 | 607 | 43,316 |
-| 100k | 0.000 | 0.999 | 4.4 | 12.8 | 625 | 57,422 |
+| 5k | 0.001 | 0.975 | 5.3 | 32.0 | 604 | 3,718 |
+| 8k | 0.370 | 0.997 | 4.5 | 10.3 | 632 | 4,790 |
+| 10k | **0.481** | 0.997 | 4.3 | 9.2 | **640** | 4,997 |
+| 15k | **0.736** | 0.996 | 4.1 | 4.6 | **640** | 5,108 |
+| 20k | 0.514 | 0.999 | 4.2 | 9.7 | **640** | 5,134 |
+| 25k | 0.707 | 0.999 | 4.3 | 6.3 | **640** | 5,153 |
+| 30k | 0.676 | 0.999 | 4.3 | 7.0 | **640** | 5,172 |
+| 40k | 0.582 | 1.000 | 4.2 | 7.1 | **640** | 5,465 |
+| 50k | 0.643 | 0.998 | 4.6 | 9.4 | **640** | 5,534 |
 
-**Eval:** PCA=0.594, K10 <3px=98.9%, K10 <5px=100%
+**Eval:** PCA=0.638, K10 <3px=95.8%, K10 <5px=100%
 
-### Run 011: KNN-track mode, m=640, h=0.3, 100k (stability comparison)
-
-Added `--cluster-knn2-mode` flag to switch between incremental (pair-based) and knn
-(neuron-level KNN) strategies for maintaining knn2.
+### Run 024: Exact centroids, h=0.3, m=640, 50k
 
 ```
 preset: gray_80x80_saccades
 n=6400, m=640, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.3
-knn2_mode=knn, --knn-track 10
-Output: ~/data/research/thalamus-sorter/exp_00017/018_m640_h03_100k_knn_mode/
-Runtime: 1539s (~15 ms/tick)
+centroid_mode=exact, knn2_mode=incremental
+Output: ~/data/research/thalamus-sorter/exp_00017/024_exact_50k_m640/
+Runtime: 701s (~14 ms/tick)
 ```
 
 | Tick | Stability | Contiguity | Diameter | Jumps/tick | Alive | Splits |
 |------|-----------|------------|----------|-----------|-------|--------|
-| 5k | 0.000 | 0.455 | 26.6 | 18.6 | 626 | 3,592 |
-| 10k | 0.001 | 0.997 | 4.6 | 12.9 | 616 | 6,698 |
-| 25k | 0.003 | 0.999 | 4.6 | 10.7 | 625 | 13,949 |
-| 50k | 0.013 | 0.995 | 4.6 | 14.1 | 588 | 25,331 |
-| 75k | 0.004 | 1.000 | 4.2 | 13.2 | 630 | 36,120 |
-| 100k | 0.007 | 0.999 | 4.4 | 9.4 | 616 | 48,186 |
+| 5k | 0.004 | 0.977 | 5.4 | 24.8 | 606 | 6,306 |
+| 8k | 0.045 | 0.993 | 5.0 | 14.2 | 619 | 8,252 |
+| 10k | 0.138 | 0.995 | 5.0 | 8.6 | 622 | 9,106 |
+| 15k | 0.099 | 0.994 | 4.8 | 13.6 | 607 | 10,701 |
+| 20k | 0.242 | 0.998 | 4.5 | 7.8 | 630 | 12,119 |
+| 25k | 0.035 | 0.996 | 5.0 | 14.0 | 628 | 14,154 |
+| 30k | 0.121 | 0.997 | 4.7 | 11.1 | 620 | 15,942 |
+| 40k | 0.138 | 1.000 | 4.3 | 9.8 | 623 | 20,967 |
+| 50k | 0.011 | 0.999 | 4.5 | 20.0 | 619 | 25,805 |
 
-**Eval:** PCA=0.551, K10 <3px=98.6%, K10 <5px=100%
+**Eval:** PCA=0.551, K10 <3px=96.6%, K10 <5px=100%
 
-**Comparison:**
+### Centroid mode comparison
 
-| Metric | Incremental | KNN-track |
-|--------|-------------|-----------|
-| Runtime (100k) | 1245s | 1539s (+24%) |
-| Stability range | 0.000–0.003 | 0.001–0.013 |
-| Jumps/tick @ 100k | 12.8 | 9.4 |
-| Total splits | 57,422 | 48,186 |
-| K10 <3px | 98.9% | 98.6% |
+| Metric | Nudge (h=0) | Exact (h=0.3) |
+|--------|-------------|---------------|
+| **Stability (10-20k)** | **48–74%** | 2–24% |
+| **Stability (30-50k)** | **51–74%** | 1–24% |
+| Jumps/tick (steady) | **5–10** | 8–20 |
+| **Alive @ 50k** | **640/640** | 619/640 |
+| Contiguity @ 50k | 0.998 | 0.999 |
+| Diameter @ 50k | 4.6 | 4.5 |
+| **Total splits** | **5,534** | 25,805 |
+| K10 <3px | 95.8% | 96.6% |
+| Runtime | **632s** | 701s |
 
-**Finding:** Both modes show near-zero stability over 5000-tick intervals. KNN-track
-has marginally fewer jumps and splits, but stability remains <2% in both cases.
-The 24% slower runtime of KNN-track mode does not justify the negligible stability
-improvement. The root cause is embedding drift, not knn2 quality — confirmed by the
-frozen-embedding control showing perfect stability on static embeddings.
+**Key findings:**
 
-### Runs 012–013: Head-to-head 50k, report_every=1000 (visual comparison)
+1. **Nudge centroids are dramatically more stable.** 50–74% of neurons stay in the
+   same cluster across 1000-tick intervals (vs 1–24% with exact). This is the
+   difference between visually coherent clusters and total reshuffling.
 
-Re-ran both modes with `report_every=1000` to produce 50 cluster screenshots each
-for visual comparison of cluster churn frame-by-frame.
+2. **Nudge keeps all clusters alive.** 640/640 alive throughout (vs 619/640 with
+   exact). Only 5.5k total splits vs 25.8k — the conservative centroid movement
+   prevents the cascade failures that kill clusters.
 
-**Run 012: Incremental, m=640, h=0.3, 50k**
-```
-Output: ~/data/research/thalamus-sorter/exp_00017/019_m640_h03_50k_incr_rpt1k/
-Runtime: 567s
-```
+3. **Exact centroids cause positive feedback loops.** One reassignment shifts the
+   centroid immediately, making more neurons closer to/farther from it, triggering
+   more reassignments. Even h=0.3 hysteresis can't prevent this — the cascades
+   overwhelm the margin.
 
-**Run 013: KNN-track, m=640, h=0.3, 50k**
-```
-Output: ~/data/research/thalamus-sorter/exp_00017/020_m640_h03_50k_knn_rpt1k/
-Runtime: 804s (+42%)
-```
+4. **Nudge doesn't need hysteresis.** h=0 with nudge outperforms h=0.3 with exact
+   on every stability metric. The lr=0.01 dampening provides natural hysteresis —
+   centroids only move 1% toward the true mean each tick.
 
-| Tick | Incr. stab | KNN stab | Incr. jumps/t | KNN jumps/t |
-|------|-----------|----------|---------------|-------------|
-| 5k | 0.006 | 0.003 | 23.4 | 26.8 |
-| 10k | 0.144 | 0.055 | 9.1 | 12.5 |
-| 20k | 0.062 | 0.093 | 15.8 | 11.3 |
-| 30k | 0.130 | 0.113 | 11.0 | 10.3 |
-| 40k | 0.082 | 0.098 | 11.1 | 12.4 |
-| 50k | 0.261 | 0.175 | 7.5 | 8.8 |
+5. **Nudge is now the default.** `--cluster-centroid-mode nudge` (no hysteresis
+   needed). Use `--cluster-centroid-mode exact --cluster-hysteresis 0.3` for the
+   previous behavior.
 
-| Metric | Incremental | KNN-track |
-|--------|-------------|-----------|
-| Runtime | 567s | 804s (+42%) |
-| K10 <3px | 98.2% | 97.9% |
-| Splits | 26,789 | 29,722 |
-| Stability @ 1k intervals | 6–26% | 1–18% |
-
-**Finding:** With 1000-tick report intervals, stability is 5–26% (vs ~0% at 5000-tick
-intervals). Both modes are visually indistinguishable — same churn pattern, same
-convergence timeline. KNN-track provides no benefit over incremental for 42% more
-runtime. The `--cluster-knn2-mode` flag remains available for experimentation, but
-incremental is the recommended default.
+**Note:** Runs 010–013 (previously documented here) were invalidated due to a code
+revert bug — experiment archiving commits had clobbered dev/ files, causing those
+runs to execute old pre-incremental-knn2 code. They have been replaced by the
+correctly-executed Runs 023–024 above.
