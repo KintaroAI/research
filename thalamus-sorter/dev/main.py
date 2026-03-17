@@ -815,7 +815,7 @@ def run_word2vec(args):
             centroid_mode = getattr(args, 'cluster_centroid_mode', 'nudge')
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
-                lr=getattr(args, 'cluster_lr', 0.01),
+                lr=getattr(args, 'cluster_lr', 1.0),
                 split_every=getattr(args, 'cluster_split_every', 10),
                 output_dir=output_dir, wlog=wlog,
                 hysteresis=cluster_hyst, knn2_mode=knn2_mode,
