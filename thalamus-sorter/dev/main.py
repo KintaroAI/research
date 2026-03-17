@@ -157,7 +157,8 @@ class _ClusterManager:
     """Live streaming cluster maintenance during training."""
 
     def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
-                 hysteresis=0.0, knn2_mode='incremental', centroid_mode='nudge'):
+                 hysteresis=0.0, knn2_mode='incremental', centroid_mode='nudge',
+                 max_k=1):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -170,6 +171,7 @@ class _ClusterManager:
         self.initialized = False
         self.knn2_mode = knn2_mode  # 'incremental' or 'knn'
         self.centroid_mode = centroid_mode  # 'exact' or 'nudge'
+        self.max_k = max_k  # ring buffer size (1 = single assignment)
         # Store function refs
         self._kmeans = kmeans_cluster_gpu
         self._assign = _assign_clusters_gpu
@@ -194,10 +196,16 @@ class _ClusterManager:
         import torch
         self.device = embeddings_t.device
         ids_np, centroids_np = self._kmeans(embeddings_t, self.m, seed=42)
-        self.cluster_ids = ids_np
+        if self.max_k > 1:
+            self.cluster_ids = np.full((self.n, self.max_k), -1, dtype=np.int64)
+            self.cluster_ids[:, 0] = ids_np
+            self.pointers = np.zeros(self.n, dtype=np.int64)
+        else:
+            self.cluster_ids = ids_np
+            self.pointers = None
         self.cluster_ids_t = torch.from_numpy(ids_np.astype(np.int64)).to(self.device)
         self.centroids_t = torch.from_numpy(centroids_np).to(self.device)
-        self.sizes = np.bincount(self.cluster_ids, minlength=self.m)
+        self.sizes = np.bincount(ids_np, minlength=self.m)
 
         if self.knn2_mode == 'knn':
             # Build knn2 from neuron-level KNN lists
@@ -227,7 +235,13 @@ class _ClusterManager:
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
               f"k2={self.k2}, knn2_mode={self.knn2_mode}, "
-              f"centroid_mode={self.centroid_mode}")
+              f"centroid_mode={self.centroid_mode}, max_k={self.max_k}")
+
+    def _primary_ids(self):
+        """Return primary cluster ID per neuron (1D array)."""
+        if self.pointers is not None:
+            return self.cluster_ids[np.arange(self.n), self.pointers]
+        return self.cluster_ids
 
     def tick(self, embeddings_t, anchors_np, pairs, global_tick,
              knn_lists_np=None):
@@ -244,7 +258,8 @@ class _ClusterManager:
                 embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
                 anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
-                knn2_is_neurons=True, centroid_mode=self.centroid_mode)
+                knn2_is_neurons=True, centroid_mode=self.centroid_mode,
+                pointers=self.pointers)
             self.total_reassigned += n_reassigned
             # Patch knn2 for affected clusters from neuron-level KNN
             if affected and self.knn_lists is not None:
@@ -273,11 +288,12 @@ class _ClusterManager:
                 embeddings_t, self.centroids_t, self.cluster_ids, knn2_np,
                 anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
-                centroid_mode=self.centroid_mode)
+                centroid_mode=self.centroid_mode,
+                pointers=self.pointers)
             self.total_reassigned += n_reassigned
             if affected:
                 self.cluster_ids_t = torch.from_numpy(
-                    self.cluster_ids.astype(np.int64)).to(self.device)
+                    self._primary_ids().astype(np.int64)).to(self.device)
                 self._recompute_knn2_dists(list(affected))
             if pairs is not None:
                 self._update_knn2_gpu(pairs)
@@ -288,18 +304,33 @@ class _ClusterManager:
             n_empty = (self.sizes == 0).sum()
             if n_empty > 0:
                 n_to_split = min(n_empty, max(1, n_empty // 5))
+                # Split uses primary cluster IDs
+                primary = self._primary_ids()
                 n_splits = self._split(
-                    embeddings_t, self.centroids_t, self.cluster_ids,
+                    embeddings_t, self.centroids_t, primary,
                     self.sizes, self.m, n_splits=n_to_split,
                     seed=self.rng.randint(1000000))
                 self.total_splits += n_splits
                 if n_splits > 0:
+                    # Write split results back into ring buffer
+                    if self.pointers is not None:
+                        changed = primary != self.cluster_ids[np.arange(self.n), self.pointers]
+                        for idx in np.where(changed)[0]:
+                            self.pointers[idx] = (self.pointers[idx] + 1) % self.max_k
+                            evicted = self.cluster_ids[idx, self.pointers[idx]]
+                            self.cluster_ids[idx, self.pointers[idx]] = primary[idx]
+                            # sizes already updated by _split; just handle eviction
+                            if evicted >= 0 and evicted != primary[idx]:
+                                self.sizes[evicted] -= 1
+                                self.sizes[primary[idx]] += 1
+                    else:
+                        self.cluster_ids = primary
                     if self.knn2_mode == 'knn' and self.knn_lists is not None:
                         self.knn2[:], _ = self._freq_knn(
-                            self.knn_lists, self.cluster_ids, self.m, self.k2)
+                            self.knn_lists, self._primary_ids(), self.m, self.k2)
                     else:
                         self.cluster_ids_t = torch.from_numpy(
-                            self.cluster_ids.astype(np.int64)).to(self.device)
+                            self._primary_ids().astype(np.int64)).to(self.device)
                         self._recompute_knn2_dists()
 
     def _update_knn2_gpu(self, pairs):
@@ -373,16 +404,17 @@ class _ClusterManager:
         if not self.initialized:
             return
         centroids_np = self.centroids_t.cpu().numpy()
+        primary = self._primary_ids()
         if self.knn2_mode == 'knn':
             # Convert neuron-index knn2 to cluster-index for eval
             knn2_np = self.knn2.copy()
             valid = knn2_np >= 0
-            knn2_np[valid] = self.cluster_ids[knn2_np[valid]]
-            metrics = self._eval(self.cluster_ids, centroids_np, knn2_np,
+            knn2_np[valid] = primary[knn2_np[valid]]
+            metrics = self._eval(primary, centroids_np, knn2_np,
                                  self.w, self.h, self.knn_lists)
         else:
             knn2_np = self.knn2_t.cpu().numpy()
-            metrics = self._eval(self.cluster_ids, centroids_np, knn2_np,
+            metrics = self._eval(primary, centroids_np, knn2_np,
                                  self.w, self.h)
         n_empty = metrics['n_empty']
         interval_reassigned = self.total_reassigned - self._prev_reassigned
@@ -392,11 +424,12 @@ class _ClusterManager:
         self._prev_report_tick = tick
         n_alive = self.m - n_empty
         # Neuron stability: fraction that stayed in same cluster since last report
+        primary = self._primary_ids()
         if self._prev_cluster_ids is not None:
-            stability = (self.cluster_ids == self._prev_cluster_ids).mean()
+            stability = (primary == self._prev_cluster_ids).mean()
         else:
             stability = 0.0
-        self._prev_cluster_ids = self.cluster_ids.copy()
+        self._prev_cluster_ids = primary.copy()
         print(f"  Clusters @ tick {tick}: {n_alive}/{self.m} alive, "
               f"contiguity={metrics['contiguity_mean']:.3f}, "
               f"diam={metrics['diameter_mean']:.1f}, "
@@ -411,7 +444,7 @@ class _ClusterManager:
                 stability=stability)
         if self.output_dir:
             path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
-            self._visualize(self.cluster_ids, self.w, self.h, path)
+            self._visualize(primary, self.w, self.h, path)
 
     def save(self, output_dir):
         """Save cluster state at end of run."""
@@ -813,16 +846,17 @@ def run_word2vec(args):
             cluster_hyst = getattr(args, 'cluster_hysteresis', 0.0)
             knn2_mode = getattr(args, 'cluster_knn2_mode', 'incremental')
             centroid_mode = getattr(args, 'cluster_centroid_mode', 'nudge')
+            max_k = getattr(args, 'cluster_max_k', 1)
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
-                lr=getattr(args, 'cluster_lr', 0.01),
+                lr=getattr(args, 'cluster_lr', 1.0),
                 split_every=getattr(args, 'cluster_split_every', 10),
                 output_dir=output_dir, wlog=wlog,
                 hysteresis=cluster_hyst, knn2_mode=knn2_mode,
-                centroid_mode=centroid_mode)
+                centroid_mode=centroid_mode, max_k=max_k)
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"hysteresis={cluster_hyst}, knn2={knn2_mode}, "
-                  f"centroid={centroid_mode}, "
+                  f"centroid={centroid_mode}, max_k={max_k}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
 
         # --- Training + rendering ---
@@ -1142,6 +1176,9 @@ def main():
                        choices=['exact', 'nudge'],
                        help="Centroid update: 'nudge' (lr-based drift toward member mean, default) "
                             "or 'exact' (incremental arithmetic, immediate — causes churn)")
+    p_w2v.add_argument("--cluster-max-k", type=int, default=1,
+                       help="Multi-cluster ring buffer size per neuron (1=single assignment, "
+                            "2+=neuron belongs to last K clusters simultaneously)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")
