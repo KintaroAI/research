@@ -87,6 +87,7 @@ Cell 1 extracts direction per segment; Cell 2 categorizes the transition matrix
 | 00012 | Streaming mode | O(mn) temporal via EMA projection variance — 9x faster than correlation at n=64 |
 | 00013 | Residual stacking | 2×4 residual beats single m=4 by 16%, but single m=16 still wins if capacity available |
 | 00014 | Multi-scale temporal | Two decay rates (0.3 + 0.98) give 2.4x NMI over best single scale |
+| 00015 | Recurrent ring | Negative result: feedback loop amplifies errors, single cell wins |
 
 ## Repository structure
 

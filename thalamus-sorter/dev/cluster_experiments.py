@@ -122,12 +122,8 @@ if HAS_TORCH:
         return knn2, knn2_counts
 
     def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
-                                anchors, lr=0.01, sizes=None, min_size=0, rng=None,
-                                hysteresis=0.0, knn2_is_neurons=False):
-        """v3 streaming update: prefetch to CPU, loop on CPU, incremental centroid update.
-        hysteresis: relative margin — neuron only jumps if dist_new < dist_cur * (1 - hysteresis).
-        knn2_is_neurons: if True, knn2 entries are neuron indices (map to cluster IDs);
-                         if False, knn2 entries are cluster indices directly."""
+                                anchors, lr=0.01, sizes=None, min_size=0, rng=None):
+        """v3 streaming update: prefetch to CPU, loop on CPU, nudge on GPU."""
         m = centroids_t.shape[0]
         n = embeddings_t.shape[0]
 
@@ -154,39 +150,21 @@ if HAS_TORCH:
             cur = cluster_ids[anchor]
             neighbors = knn2[cur]
             valid_neighbors = neighbors[neighbors >= 0]
-            if knn2_is_neurons:
-                neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
-            else:
-                neighbor_clusters = valid_neighbors
-            candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
-            if len(candidates) <= 1:
+            if len(valid_neighbors) == 0:
                 continue
+            neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
+            candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
 
             # Distance on CPU (small: ~10 candidates)
             emb = anchor_embs[i]
             cand_centroids = centroids_cpu[candidates]
             dists = np.sum((emb - cand_centroids) ** 2, axis=1)
-            best_idx = dists.argmin()
-            best = candidates[best_idx]
+            best = candidates[dists.argmin()]
 
             if best != cur:
-                # Hysteresis: only jump if new centroid is meaningfully closer
-                if hysteresis > 0.0:
-                    cur_idx = np.where(candidates == cur)[0][0]
-                    if dists[best_idx] >= dists[cur_idx] * (1.0 - hysteresis):
-                        continue
                 if sizes[cur] <= min_size:
                     n_blocked += 1
                     continue
-                # Incremental centroid update — O(d) per reassignment
-                # Remove neuron from old cluster centroid
-                old_size = sizes[cur]
-                if old_size > 1:
-                    centroids_cpu[cur] = (centroids_cpu[cur] * old_size - emb) / (old_size - 1)
-                # Add neuron to new cluster centroid
-                new_size = sizes[best]
-                centroids_cpu[best] = (centroids_cpu[best] * new_size + emb) / (new_size + 1)
-
                 cluster_ids[anchor] = best
                 sizes[cur] -= 1
                 sizes[best] += 1
@@ -194,11 +172,12 @@ if HAS_TORCH:
                 affected.add(best)
                 n_reassigned += 1
 
-        # Write updated centroids back to GPU
-        if affected:
-            affected_list = list(affected)
-            centroids_t[affected_list] = torch.from_numpy(
-                centroids_cpu[affected_list]).to(centroids_t.device)
+        # Nudge centroids on GPU for affected clusters
+        for c in affected:
+            members = np.where(cluster_ids == c)[0]
+            if len(members) > 0:
+                member_mean = embeddings_t[members].mean(dim=0)
+                centroids_t[c] += lr * (member_mean - centroids_t[c])
 
         return n_reassigned, affected, sizes, n_blocked
 
@@ -470,19 +449,39 @@ def eval_clusters(cluster_ids, centroids, knn2, width, height, knn_lists=None):
     results['contiguity_mean'] = float(np.mean(contiguity)) if contiguity else 0
 
     # knn2 spatial: grid distance between cluster centers via knn2
-    # knn2 stores cluster indices directly (not neuron indices)
     if knn2 is not None:
         knn2_dists = []
         for c in range(m):
             valid = knn2[c] >= 0
             if not valid.any():
                 continue
-            for tc in knn2[c, valid]:
+            target_clusters = cluster_ids[knn2[c, valid]]
+            unique_targets = np.unique(target_clusters)
+            for tc in unique_targets:
                 if tc != c and sizes[tc] > 0:
                     d = np.sqrt(((cluster_centers[c] - cluster_centers[tc]) ** 2).sum())
                     knn2_dists.append(d)
         results['knn2_center_dist_mean'] = float(np.mean(knn2_dists)) if knn2_dists else 0
         results['knn2_center_dist_max'] = float(np.max(knn2_dists)) if knn2_dists else 0
+
+    # knn2 agreement with original KNN
+    if knn_lists is not None and knn2 is not None:
+        hits = 0
+        total = 0
+        for c in range(m):
+            members = np.where(cluster_ids == c)[0]
+            if len(members) == 0:
+                continue
+            valid = knn2[c] >= 0
+            knn2_set = set(knn2[c, valid].tolist())
+            if not knn2_set:
+                continue
+            # Check: what fraction of knn2 entries appear in any member's KNN?
+            member_knn_set = set(knn_lists[members].flatten().tolist())
+            overlap = len(knn2_set & member_knn_set)
+            hits += overlap
+            total += len(knn2_set)
+        results['knn2_agreement'] = hits / total if total > 0 else 0
 
     return results
 
