@@ -157,7 +157,7 @@ class _ClusterManager:
     """Live streaming cluster maintenance during training."""
 
     def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
-                 hysteresis=0.0, knn2_mode='incremental'):
+                 hysteresis=0.0, knn2_mode='incremental', centroid_mode='exact'):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -169,6 +169,7 @@ class _ClusterManager:
         self.output_dir = output_dir
         self.initialized = False
         self.knn2_mode = knn2_mode  # 'incremental' or 'knn'
+        self.centroid_mode = centroid_mode  # 'exact' or 'nudge'
         # Store function refs
         self._kmeans = kmeans_cluster_gpu
         self._assign = _assign_clusters_gpu
@@ -225,7 +226,8 @@ class _ClusterManager:
         self.initialized = True
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
-              f"k2={self.k2}, knn2_mode={self.knn2_mode}")
+              f"k2={self.k2}, knn2_mode={self.knn2_mode}, "
+              f"centroid_mode={self.centroid_mode}")
 
     def tick(self, embeddings_t, anchors_np, pairs, global_tick,
              knn_lists_np=None):
@@ -240,7 +242,7 @@ class _ClusterManager:
                 embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
                 anchors_np, lr=self.lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
-                knn2_is_neurons=True)
+                knn2_is_neurons=True, centroid_mode=self.centroid_mode)
             self.total_reassigned += n_reassigned
             # Patch knn2 for affected clusters from neuron-level KNN
             if affected and self.knn_lists is not None:
@@ -268,7 +270,8 @@ class _ClusterManager:
             n_reassigned, affected, _, n_blocked = self._stream_update(
                 embeddings_t, self.centroids_t, self.cluster_ids, knn2_np,
                 anchors_np, lr=self.lr, sizes=self.sizes, min_size=0,
-                rng=self.rng, hysteresis=self.hysteresis)
+                rng=self.rng, hysteresis=self.hysteresis,
+                centroid_mode=self.centroid_mode)
             self.total_reassigned += n_reassigned
             if affected:
                 self.cluster_ids_t = torch.from_numpy(
@@ -807,14 +810,17 @@ def run_word2vec(args):
             cluster_k2 = getattr(args, 'cluster_k2', 16)
             cluster_hyst = getattr(args, 'cluster_hysteresis', 0.0)
             knn2_mode = getattr(args, 'cluster_knn2_mode', 'incremental')
+            centroid_mode = getattr(args, 'cluster_centroid_mode', 'exact')
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
                 lr=getattr(args, 'cluster_lr', 0.01),
                 split_every=getattr(args, 'cluster_split_every', 10),
                 output_dir=output_dir, wlog=wlog,
-                hysteresis=cluster_hyst, knn2_mode=knn2_mode)
+                hysteresis=cluster_hyst, knn2_mode=knn2_mode,
+                centroid_mode=centroid_mode)
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"hysteresis={cluster_hyst}, knn2={knn2_mode}, "
+                  f"centroid={centroid_mode}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
 
         # --- Training + rendering ---
@@ -1130,6 +1136,10 @@ def main():
                        choices=['incremental', 'knn'],
                        help="knn2 update strategy: 'incremental' (from pairs, no --knn-track needed) "
                             "or 'knn' (from neuron-level KNN lists, requires --knn-track)")
+    p_w2v.add_argument("--cluster-centroid-mode", type=str, default='exact',
+                       choices=['exact', 'nudge'],
+                       help="Centroid update: 'exact' (incremental arithmetic, immediate) "
+                            "or 'nudge' (lr-based drift toward member mean)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")

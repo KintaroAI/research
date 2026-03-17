@@ -123,8 +123,11 @@ if HAS_TORCH:
 
     def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
                                 anchors, lr=0.01, sizes=None, min_size=0, rng=None,
-                                hysteresis=0.0, knn2_is_neurons=False):
-        """v3 streaming update: prefetch to CPU, loop on CPU, incremental centroid update.
+                                hysteresis=0.0, knn2_is_neurons=False,
+                                centroid_mode='exact'):
+        """v3 streaming update: prefetch to CPU, loop on CPU.
+        centroid_mode: 'exact' = incremental arithmetic (centroid snaps to true mean),
+                       'nudge' = post-loop lr nudge (centroid drifts slowly).
         hysteresis: relative margin — neuron only jumps if dist_new < dist_cur * (1 - hysteresis).
         knn2_is_neurons: if True, knn2 entries are neuron indices (map to cluster IDs);
                          if False, knn2 entries are cluster indices directly."""
@@ -178,14 +181,13 @@ if HAS_TORCH:
                 if sizes[cur] <= min_size:
                     n_blocked += 1
                     continue
-                # Incremental centroid update — O(d) per reassignment
-                # Remove neuron from old cluster centroid
-                old_size = sizes[cur]
-                if old_size > 1:
-                    centroids_cpu[cur] = (centroids_cpu[cur] * old_size - emb) / (old_size - 1)
-                # Add neuron to new cluster centroid
-                new_size = sizes[best]
-                centroids_cpu[best] = (centroids_cpu[best] * new_size + emb) / (new_size + 1)
+                if centroid_mode == 'exact':
+                    # Incremental centroid update — O(d) per reassignment
+                    old_size = sizes[cur]
+                    if old_size > 1:
+                        centroids_cpu[cur] = (centroids_cpu[cur] * old_size - emb) / (old_size - 1)
+                    new_size = sizes[best]
+                    centroids_cpu[best] = (centroids_cpu[best] * new_size + emb) / (new_size + 1)
 
                 cluster_ids[anchor] = best
                 sizes[cur] -= 1
@@ -194,8 +196,15 @@ if HAS_TORCH:
                 affected.add(best)
                 n_reassigned += 1
 
-        # Write updated centroids back to GPU
+        # Update centroids for affected clusters
         if affected:
+            if centroid_mode == 'nudge':
+                # Post-loop nudge: centroid drifts toward true member mean
+                for c in affected:
+                    members = np.where(cluster_ids == c)[0]
+                    if len(members) > 0:
+                        member_mean = embeddings_t[members].mean(dim=0).cpu().numpy()
+                        centroids_cpu[c] += lr * (member_mean - centroids_cpu[c])
             affected_list = list(affected)
             centroids_t[affected_list] = torch.from_numpy(
                 centroids_cpu[affected_list]).to(centroids_t.device)
