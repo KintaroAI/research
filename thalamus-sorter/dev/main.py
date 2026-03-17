@@ -156,77 +156,126 @@ def _save_run_info(output_dir, args, results=None, wlog=None):
 class _ClusterManager:
     """Live streaming cluster maintenance during training."""
 
-    def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None):
+    def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
+                 hysteresis=0.0, knn2_mode='incremental'):
         import torch
         from cluster_experiments import (
-            kmeans_cluster_gpu, _assign_clusters_gpu, frequency_knn_gpu,
+            kmeans_cluster_gpu, _assign_clusters_gpu,
             streaming_update_v3_gpu, split_largest_cluster_gpu,
-            frequency_knn, visualize_clusters, eval_clusters,
+            visualize_clusters, eval_clusters,
         )
         self.n, self.m, self.w, self.h = n, m, w, h
         self.k2, self.lr, self.split_every = k2, lr, split_every
         self.output_dir = output_dir
         self.initialized = False
+        self.knn2_mode = knn2_mode  # 'incremental' or 'knn'
         # Store function refs
         self._kmeans = kmeans_cluster_gpu
         self._assign = _assign_clusters_gpu
-        self._freq_knn = frequency_knn
-        self._freq_knn_gpu = frequency_knn_gpu
         self._stream_update = streaming_update_v3_gpu
         self._split = split_largest_cluster_gpu
         self._visualize = visualize_clusters
         self._eval = eval_clusters
+        if knn2_mode == 'knn':
+            from cluster_experiments import frequency_knn
+            self._freq_knn = frequency_knn
         self.wlog = wlog
+        self.hysteresis = hysteresis
         self.rng = np.random.RandomState(42)
         self.total_reassigned = 0
         self.total_splits = 0
         self._prev_reassigned = 0
         self._prev_report_tick = 0
+        self._prev_cluster_ids = None
 
-    def init_clusters(self, embeddings_t, knn_lists_np):
+    def init_clusters(self, embeddings_t, knn_lists_np=None):
         """Initialize clusters via GPU k-means on current embeddings."""
         import torch
-        self.knn_lists = knn_lists_np
+        self.device = embeddings_t.device
         ids_np, centroids_np = self._kmeans(embeddings_t, self.m, seed=42)
         self.cluster_ids = ids_np
-        self.centroids_t = torch.from_numpy(centroids_np).to(embeddings_t.device)
+        self.cluster_ids_t = torch.from_numpy(ids_np.astype(np.int64)).to(self.device)
+        self.centroids_t = torch.from_numpy(centroids_np).to(self.device)
         self.sizes = np.bincount(self.cluster_ids, minlength=self.m)
-        self.knn2, _ = self._freq_knn(knn_lists_np, self.cluster_ids, self.m, self.k2)
+
+        if self.knn2_mode == 'knn':
+            # Build knn2 from neuron-level KNN lists
+            self.knn_lists = knn_lists_np
+            self.knn2, _ = self._freq_knn(knn_lists_np, self.cluster_ids,
+                                          self.m, self.k2)
+        else:
+            # Init knn2 with random cluster indices + infinity distances (GPU)
+            knn2_np = np.full((self.m, self.k2), -1, dtype=np.int64)
+            knn2_dists_np = np.full((self.m, self.k2), np.inf, dtype=np.float32)
+            for c in range(self.m):
+                if self.sizes[c] == 0:
+                    continue
+                others = [i for i in range(self.m) if i != c and self.sizes[i] > 0]
+                if len(others) == 0:
+                    continue
+                k = min(self.k2, len(others))
+                chosen = self.rng.choice(others, size=k, replace=False)
+                knn2_np[c, :k] = chosen
+                for j in range(k):
+                    diff = centroids_np[c] - centroids_np[chosen[j]]
+                    knn2_dists_np[c, j] = np.dot(diff, diff)
+            self.knn2_t = torch.from_numpy(knn2_np).to(self.device)
+            self.knn2_dists_t = torch.from_numpy(knn2_dists_np).to(self.device)
+
         self.initialized = True
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
-              f"k2={self.k2}")
+              f"k2={self.k2}, knn2_mode={self.knn2_mode}")
 
-    def tick(self, embeddings_t, anchors_np, global_tick):
+    def tick(self, embeddings_t, anchors_np, pairs, global_tick,
+             knn_lists_np=None):
         """One streaming cluster maintenance step."""
+        import torch
         if not self.initialized:
             return
 
-        n_reassigned, affected, _, n_blocked = self._stream_update(
-            embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
-            anchors_np, lr=self.lr, sizes=self.sizes, min_size=0, rng=self.rng)
-        self.total_reassigned += n_reassigned
-
-        # Patch knn2 for affected clusters
-        if affected:
-            for c in affected:
-                if self.sizes[c] > 0:
-                    members_c = np.where(self.cluster_ids == c)[0]
-                    pooled = self.knn_lists[members_c].flatten()
-                    ids, counts = np.unique(pooled, return_counts=True)
-                    not_self = self.cluster_ids[ids] != c
-                    ids, counts = ids[not_self], counts[not_self]
-                    if len(ids) > 0:
-                        top = min(self.k2, len(ids))
-                        if top == len(ids):
-                            top_idx = np.argsort(-counts)[:top]
+        if self.knn2_mode == 'knn':
+            # knn mode: knn2 is neuron-index based (numpy)
+            n_reassigned, affected, _, n_blocked = self._stream_update(
+                embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
+                anchors_np, lr=self.lr, sizes=self.sizes, min_size=0,
+                rng=self.rng, hysteresis=self.hysteresis,
+                knn2_is_neurons=True)
+            self.total_reassigned += n_reassigned
+            # Patch knn2 for affected clusters from neuron-level KNN
+            if affected and self.knn_lists is not None:
+                for c in affected:
+                    if self.sizes[c] > 0:
+                        members_c = np.where(self.cluster_ids == c)[0]
+                        pooled = self.knn_lists[members_c].flatten()
+                        ids, counts = np.unique(pooled, return_counts=True)
+                        not_self = self.cluster_ids[ids] != c
+                        ids, counts = ids[not_self], counts[not_self]
+                        if len(ids) > 0:
+                            top = min(self.k2, len(ids))
+                            if top == len(ids):
+                                top_idx = np.argsort(-counts)[:top]
+                            else:
+                                top_idx = np.argpartition(-counts, top)[:top]
+                                top_idx = top_idx[np.argsort(-counts[top_idx])]
+                            self.knn2[c, :] = -1
+                            self.knn2[c, :top] = ids[top_idx]
                         else:
-                            top_idx = np.argpartition(-counts, top)[:top]
-                            top_idx = top_idx[np.argsort(-counts[top_idx])]
-                        self.knn2[c, :] = -1
-                        self.knn2[c, :top] = ids[top_idx]
-                    else:
-                        self.knn2[c, :] = -1
+                            self.knn2[c, :] = -1
+        else:
+            # incremental mode: knn2 is cluster-index based (GPU tensors)
+            knn2_np = self.knn2_t.cpu().numpy()
+            n_reassigned, affected, _, n_blocked = self._stream_update(
+                embeddings_t, self.centroids_t, self.cluster_ids, knn2_np,
+                anchors_np, lr=self.lr, sizes=self.sizes, min_size=0,
+                rng=self.rng, hysteresis=self.hysteresis)
+            self.total_reassigned += n_reassigned
+            if affected:
+                self.cluster_ids_t = torch.from_numpy(
+                    self.cluster_ids.astype(np.int64)).to(self.device)
+                self._recompute_knn2_dists(list(affected))
+            if pairs is not None:
+                self._update_knn2_gpu(pairs)
 
         # Periodic split recovery
         if (self.split_every > 0 and global_tick > 0 and
@@ -240,16 +289,96 @@ class _ClusterManager:
                     seed=self.rng.randint(1000000))
                 self.total_splits += n_splits
                 if n_splits > 0:
-                    self.knn2[:], _ = self._freq_knn(
-                        self.knn_lists, self.cluster_ids, self.m, self.k2)
+                    if self.knn2_mode == 'knn' and self.knn_lists is not None:
+                        self.knn2[:], _ = self._freq_knn(
+                            self.knn_lists, self.cluster_ids, self.m, self.k2)
+                    else:
+                        self.cluster_ids_t = torch.from_numpy(
+                            self.cluster_ids.astype(np.int64)).to(self.device)
+                        self._recompute_knn2_dists()
+
+    def _update_knn2_gpu(self, pairs):
+        """Update knn2 from skip-gram pairs — fully vectorized on GPU."""
+        import torch
+        center_t = pairs[0].to(self.device)
+        ctx_t = pairs[1].to(self.device)
+        ca = self.cluster_ids_t[center_t]
+        cn = self.cluster_ids_t[ctx_t]
+        cross = ca != cn
+        if not cross.any():
+            return
+        ca_x, cn_x = ca[cross], cn[cross]
+        unique_packed = torch.unique(ca_x * self.m + cn_x)
+        u_ca = unique_packed // self.m
+        u_cn = unique_packed % self.m
+
+        # Batch centroid distances
+        diffs = self.centroids_t[u_ca] - self.centroids_t[u_cn]
+        dists = (diffs * diffs).sum(dim=1)
+
+        # Mask out already-in-knn2
+        already_in = (u_cn.unsqueeze(1) == self.knn2_t[u_ca]).any(dim=1)
+        dists = torch.where(already_in, torch.tensor(float('inf'),
+                            device=self.device), dists)
+
+        # Per-c_a best new candidate via scatter_reduce
+        best_dist = torch.full((self.m,), float('inf'), device=self.device)
+        best_dist.scatter_reduce_(0, u_ca, dists, reduce='amin',
+                                  include_self=True)
+
+        worst_knn2_dist, worst_knn2_slot = self.knn2_dists_t.max(dim=1)
+        improved = best_dist < worst_knn2_dist
+        if not improved.any():
+            return
+
+        # Find which unique entry achieved best_dist for each improved c_a
+        is_best = (dists == best_dist[u_ca]) & improved[u_ca]
+        bi = is_best.nonzero(as_tuple=True)[0]
+        bi_ca = u_ca[bi]
+        # First match per c_a
+        first_per_ca = torch.full((self.m,), bi.shape[0],
+                                  dtype=torch.long, device=self.device)
+        first_per_ca.scatter_reduce_(
+            0, bi_ca, torch.arange(bi.shape[0], device=self.device),
+            reduce='amin', include_self=True)
+
+        imp_ca = torch.where(improved & (first_per_ca < bi.shape[0]))[0]
+        imp_ui = bi[first_per_ca[imp_ca]]
+        self.knn2_t[imp_ca, worst_knn2_slot[imp_ca]] = u_cn[imp_ui]
+        self.knn2_dists_t[imp_ca, worst_knn2_slot[imp_ca]] = dists[imp_ui]
+
+    def _recompute_knn2_dists(self, rows=None):
+        """Recompute knn2 distances on GPU. rows=None → all rows."""
+        import torch
+        if rows is None:
+            rows_t = torch.arange(self.m, device=self.device)
+        else:
+            rows_t = torch.tensor(rows, dtype=torch.long, device=self.device)
+        targets = self.knn2_t[rows_t]  # (len, k2)
+        valid = targets >= 0
+        # Clamp for gather (invalid entries get dummy centroid, overwritten with inf)
+        safe_targets = targets.clamp(min=0)
+        diffs = self.centroids_t[rows_t].unsqueeze(1) - self.centroids_t[safe_targets]
+        d = (diffs * diffs).sum(dim=2)
+        d[~valid] = float('inf')
+        self.knn2_dists_t[rows_t] = d
 
     def report(self, tick):
         """Print cluster metrics and save visualization."""
         if not self.initialized:
             return
         centroids_np = self.centroids_t.cpu().numpy()
-        metrics = self._eval(self.cluster_ids, centroids_np, self.knn2,
-                             self.w, self.h, self.knn_lists)
+        if self.knn2_mode == 'knn':
+            # Convert neuron-index knn2 to cluster-index for eval
+            knn2_np = self.knn2.copy()
+            valid = knn2_np >= 0
+            knn2_np[valid] = self.cluster_ids[knn2_np[valid]]
+            metrics = self._eval(self.cluster_ids, centroids_np, knn2_np,
+                                 self.w, self.h, self.knn_lists)
+        else:
+            knn2_np = self.knn2_t.cpu().numpy()
+            metrics = self._eval(self.cluster_ids, centroids_np, knn2_np,
+                                 self.w, self.h)
         n_empty = metrics['n_empty']
         interval_reassigned = self.total_reassigned - self._prev_reassigned
         interval_ticks = max(1, tick - self._prev_report_tick)
@@ -257,16 +386,24 @@ class _ClusterManager:
         self._prev_reassigned = self.total_reassigned
         self._prev_report_tick = tick
         n_alive = self.m - n_empty
+        # Neuron stability: fraction that stayed in same cluster since last report
+        if self._prev_cluster_ids is not None:
+            stability = (self.cluster_ids == self._prev_cluster_ids).mean()
+        else:
+            stability = 0.0
+        self._prev_cluster_ids = self.cluster_ids.copy()
         print(f"  Clusters @ tick {tick}: {n_alive}/{self.m} alive, "
               f"contiguity={metrics['contiguity_mean']:.3f}, "
               f"diam={metrics['diameter_mean']:.1f}, "
+              f"stability={stability:.3f}, "
               f"jumps/tick={jumps_per_tick:.1f}, "
               f"total_jumps={self.total_reassigned}, splits={self.total_splits}")
         if self.wlog:
             self.wlog.log_clusters(
                 tick, n_alive, self.m, metrics['contiguity_mean'],
                 metrics['diameter_mean'], jumps_per_tick,
-                self.total_reassigned, self.total_splits)
+                self.total_reassigned, self.total_splits,
+                stability=stability)
         if self.output_dir:
             path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
             self._visualize(self.cluster_ids, self.w, self.h, path)
@@ -278,7 +415,10 @@ class _ClusterManager:
         np.save(os.path.join(output_dir, "cluster_ids.npy"), self.cluster_ids)
         np.save(os.path.join(output_dir, "centroids.npy"),
                 self.centroids_t.cpu().numpy())
-        np.save(os.path.join(output_dir, "knn2.npy"), self.knn2)
+        if self.knn2_mode == 'knn':
+            np.save(os.path.join(output_dir, "knn2.npy"), self.knn2)
+        else:
+            np.save(os.path.join(output_dir, "knn2.npy"), self.knn2_t.cpu().numpy())
         print(f"  cluster state saved to {output_dir}")
 
 
@@ -310,18 +450,25 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
         # Live cluster maintenance
         if cluster_mgr is not None:
             if not cluster_mgr.initialized:
-                if dsolver.knn_k > 0:
-                    knn_np = dsolver.get_knn_lists()
-                    cluster_mgr.init_clusters(dsolver.positions, knn_np)
+                if cluster_mgr.knn2_mode == 'knn':
+                    if dsolver.knn_k > 0:
+                        knn_np = dsolver.get_knn_lists()
+                        cluster_mgr.init_clusters(dsolver.positions, knn_np)
+                    else:
+                        print("  Warning: knn2_mode='knn' requires --knn-track, "
+                              "falling back to incremental")
+                        cluster_mgr.knn2_mode = 'incremental'
+                        cluster_mgr.init_clusters(dsolver.positions)
                 else:
-                    print(f"  Warning: --cluster-m requires --knn-track, skipping")
-                    cluster_mgr = None
-            if cluster_mgr is not None and cluster_mgr.initialized:
+                    cluster_mgr.init_clusters(dsolver.positions)
+            if cluster_mgr.initialized:
                 anchors_np = dsolver._last_anchors.cpu().numpy()
-                cluster_mgr.tick(dsolver.positions, anchors_np, tick)
+                pairs = getattr(dsolver, '_last_pairs', None)
+                cluster_mgr.tick(dsolver.positions, anchors_np, pairs, tick)
                 if tick % cluster_report_every == 0:
-                    # Re-grab KNN lists (they may have changed)
-                    cluster_mgr.knn_lists = dsolver.get_knn_lists()
+                    # Refresh knn_lists for knn mode
+                    if cluster_mgr.knn2_mode == 'knn' and dsolver.knn_k > 0:
+                        cluster_mgr.knn_lists = dsolver.get_knn_lists()
                     cluster_mgr.report(tick)
 
         # Tick progress logging
@@ -657,13 +804,17 @@ def run_word2vec(args):
         cluster_mgr = None
         cluster_m = getattr(args, 'cluster_m', 0)
         if cluster_m > 0:
-            cluster_k2 = getattr(args, 'cluster_k2', None) or dsolver.knn_k
+            cluster_k2 = getattr(args, 'cluster_k2', 16)
+            cluster_hyst = getattr(args, 'cluster_hysteresis', 0.0)
+            knn2_mode = getattr(args, 'cluster_knn2_mode', 'incremental')
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
                 lr=getattr(args, 'cluster_lr', 0.01),
                 split_every=getattr(args, 'cluster_split_every', 10),
-                output_dir=output_dir, wlog=wlog)
+                output_dir=output_dir, wlog=wlog,
+                hysteresis=cluster_hyst, knn2_mode=knn2_mode)
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
+                  f"hysteresis={cluster_hyst}, knn2={knn2_mode}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
 
         # --- Training + rendering ---
@@ -810,7 +961,7 @@ def main():
                           help="Number of frames to run (0 = unlimited)")
     p_greedy.add_argument("--output-dir", "-o", type=str, default=None,
                           help="Directory to save output frames as PNGs")
-    p_greedy.add_argument("--save-every", type=int, default=1,
+    p_greedy.add_argument("--save-every", type=int, default=1000,
                           help="Save every Nth frame (default: 1)")
     p_greedy.add_argument("--gpu", action="store_true",
                           help="Use GPU acceleration via CuPy")
@@ -834,7 +985,7 @@ def main():
                         help="Number of frames to run (0 = unlimited)")
     p_cont.add_argument("--output-dir", "-o", type=str, default=None,
                         help="Directory to save output frames as PNGs")
-    p_cont.add_argument("--save-every", type=int, default=1,
+    p_cont.add_argument("--save-every", type=int, default=1000,
                         help="Save every Nth frame (default: 1)")
     p_cont.add_argument("--gpu", action="store_true",
                         help="Use GPU acceleration via CuPy")
@@ -951,8 +1102,8 @@ def main():
                        help="Number of frames to run (0 = unlimited)")
     p_w2v.add_argument("--output-dir", "-o", type=str, default=None,
                        help="Directory to save output frames as PNGs")
-    p_w2v.add_argument("--save-every", type=int, default=1,
-                       help="Save every Nth frame (default: 1)")
+    p_w2v.add_argument("--save-every", type=int, default=1000,
+                       help="Save every Nth frame (default: 1000)")
     p_w2v.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=True,
                        help="Use GPU for solver (--no-gpu for CPU)")
     p_w2v.add_argument("--render-gpu", action=argparse.BooleanOptionalAction, default=True,
@@ -964,15 +1115,21 @@ def main():
                             "--no-matmul-corr uses gather path (less memory, better on CPU)")
     # live clustering
     p_w2v.add_argument("--cluster-m", type=int, default=0,
-                       help="Number of clusters (0=disabled). Requires --knn-track.")
-    p_w2v.add_argument("--cluster-k2", type=int, default=None,
-                       help="Cluster-level KNN size (default: same as knn-track)")
+                       help="Number of clusters (0=disabled)")
+    p_w2v.add_argument("--cluster-k2", type=int, default=16,
+                       help="Cluster-level KNN size (default: 16)")
     p_w2v.add_argument("--cluster-lr", type=float, default=0.01,
                        help="Centroid nudge learning rate (default: 0.01)")
     p_w2v.add_argument("--cluster-report-every", type=int, default=1000,
                        help="Save cluster visualization every N ticks (default: 1000)")
     p_w2v.add_argument("--cluster-split-every", type=int, default=10,
                        help="Attempt dead cluster recovery every N ticks (default: 10)")
+    p_w2v.add_argument("--cluster-hysteresis", type=float, default=0.0,
+                       help="Reassignment resistance: neuron must be (1-h)*dist closer to jump (default: 0.0)")
+    p_w2v.add_argument("--cluster-knn2-mode", type=str, default='incremental',
+                       choices=['incremental', 'knn'],
+                       help="knn2 update strategy: 'incremental' (from pairs, no --knn-track needed) "
+                            "or 'knn' (from neuron-level KNN lists, requires --knn-track)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")
@@ -1022,7 +1179,7 @@ def main():
                         help="Number of frames to run (0 = unlimited)")
     p_temp.add_argument("--output-dir", "-o", type=str, default=None,
                         help="Directory to save output frames as PNGs")
-    p_temp.add_argument("--save-every", type=int, default=1,
+    p_temp.add_argument("--save-every", type=int, default=1000,
                         help="Save every Nth frame (default: 1)")
     p_temp.add_argument("--gpu", action="store_true",
                         help="Use GPU acceleration via CuPy")
