@@ -12,8 +12,8 @@ training loop. Clusters form simultaneously with embeddings — no post-hoc step
 ## Approach
 
 Added `_ClusterManager` to `main.py` with CLI args:
-- `--cluster-m N` — number of clusters (0=disabled, requires `--knn-track`)
-- `--cluster-init-tick N` — initialize clusters via GPU k-means at this tick
+- `--cluster-m N` — number of clusters (0=disabled)
+- `--cluster-k2 N` — cluster-level KNN size (default: 16)
 - `--cluster-report-every N` — save cluster visualization + print metrics
 - `--cluster-split-every N` — attempt dead cluster recovery
 - `--cluster-lr` — centroid nudge learning rate
@@ -246,3 +246,107 @@ Runtime: 676s (~13.5 ms/tick)
 3. **Early phase still works.** At tick 1000, jumps/tick=0.9 (vs 34 at h=0.0) —
    hysteresis suppresses the chaotic early churn. But contiguity still reaches
    0.955 by tick 5000 via the same convergence pathway.
+
+### Incremental knn2: Decoupling Clusters from Neuron-Level KNN
+
+Runs 001-006 required `--knn-track` because `knn2` (cluster-level neighbor graph)
+was built by pooling neuron-level KNN lists via `frequency_knn`. This created an
+unnecessary dependency — clustering needed O(n×K) KNN tracking even though the
+skip-gram pairs already contain all the neighbor information.
+
+**New approach:** `knn2` stores cluster indices + centroid distances directly,
+updated incrementally from the same skip-gram pairs that drive training. Each tick:
+1. Map (anchor, neighbor) pairs to (cluster_a, cluster_b)
+2. Deduplicate cross-cluster pairs
+3. For each new (c_a, c_n) not already in knn2, compute centroid distance
+4. Replace worst (farthest) knn2 entry if new distance is closer
+
+Init: knn2 filled with random cluster indices, distances = infinity.
+Fills in naturally over the first few hundred ticks.
+
+All dedup, distance computation, and insertion is GPU-vectorized via
+`torch.unique`, `scatter_reduce`, and batch ops — 0.96ms per call with
+25k pairs and m=640 (vs 158ms for the original Python loop).
+
+### Run 007: Incremental knn2, m=100, h=0.3, 10k ticks (no --knn-track)
+
+First test of decoupled clustering. Found and fixed a dedup bug where the same
+c_n could fill all k2 slots for a given c_a.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=100, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.3
+No --knn-track
+Output: ~/data/research/thalamus-sorter/exp_00017/008_incremental_knn2_dedup_10k/
+```
+
+| Tick | Alive | Contiguity | Diameter | Jumps/tick | Splits |
+|------|-------|------------|----------|-----------|--------|
+| 2000 | 100/100 | 0.201 | 95.1 | 44.4 | 231 |
+| 4000 | 92/100 | 0.979 | 17.1 | 44.7 | 585 |
+| 6000 | 100/100 | 0.997 | 13.7 | 14.0 | 767 |
+| 8000 | 100/100 | 0.998 | 13.9 | 8.2 | 859 |
+| 10000 | 100/100 | **1.000** | 13.6 | 4.9 | 911 |
+
+**Eval:** PCA=0.972, K10 <3px=95.5%, K10 <5px=99.9%
+
+knn2 fully populated: 16 unique cluster neighbors per row.
+
+### Run 008: Incremental knn2, m=640, h=0.3, 50k ticks (wandb, no --knn-track)
+
+Full-scale validation with GPU-vectorized knn2 update.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.3
+No --knn-track
+wandb: https://wandb.ai/kintaroai-dot-com/thalamus-sorter/runs/vkapugx8
+Output: ~/data/research/thalamus-sorter/exp_00017/016_009_m640_h03_no_knn_50k/
+Runtime: 583s (~10.6 ms/tick steady state)
+```
+
+| Tick | Alive | Contiguity | Diameter | Jumps/tick | Splits |
+|------|-------|------------|----------|-----------|--------|
+| 1000 | 534/640 | 0.140 | 74.3 | 44.4 | 898 |
+| 3000 | 560/640 | 0.616 | 16.6 | 53.9 | 3694 |
+| 5000 | 604/640 | 0.984 | 5.2 | 18.6 | 6395 |
+| 10000 | 608/640 | 0.997 | 4.5 | 16.0 | 9754 |
+| 12000 | 626/640 | **1.000** | 4.3 | 12.0 | 10655 |
+| 25000 | 624/640 | 0.999 | 4.6 | 6.7 | 16246 |
+| 50000 | 623/640 | 0.995 | 4.9 | 11.6 | 25327 |
+
+**Eval:** PCA=0.669, K10 <3px=95.1%, K10 <5px=100%
+
+**Comparison with knn-track baseline (Run 006):**
+
+| Metric | Run 006 (knn-track=10) | Run 008 (no knn) |
+|--------|------------------------|------------------|
+| Runtime | 676s (13.5 ms/tick) | **583s (10.6 ms/tick)** |
+| Contiguity @ 50k | 0.996 | 0.995 |
+| Diameter @ 50k | 4.4 | 4.9 |
+| Alive @ 50k | 640/640 | 623/640 |
+| K10 <3px | 98.2% | 95.1% |
+| K10 <5px | 100% | 100% |
+| Total splits | 6,603 | 25,327 |
+| Requires --knn-track | Yes | **No** |
+
+**Key findings:**
+
+1. **Clustering fully decoupled from neuron-level KNN.** No `--knn-track` needed.
+   knn2 populates from skip-gram pairs with zero additional data collection.
+
+2. **14% faster.** 583s vs 676s — removing KNN tracking saves ~3ms/tick. The GPU
+   knn2 update adds <1ms.
+
+3. **Cluster quality comparable but not identical.** Contiguity matches (0.995 vs
+   0.996), but more cluster deaths (623 vs 640 alive) and more splits (25k vs 6.6k).
+   The frequency_knn approach had richer neighbor information from pooling all K
+   neighbors; the pair-based approach sees only correlated pairs per tick.
+
+4. **Embedding quality slightly lower.** K10 <3px drops from 98.2% to 95.1%.
+   This may be because the knn-track run benefits from neighbor-of-neighbor
+   sampling that the no-knn run lacks — not a clustering effect.
+
+5. **Three-phase convergence preserved.** Same pattern as earlier runs: chaotic
+   (tick 1-3k), rapid convergence (3-10k), steady state (10k+). The incremental
+   knn2 fills in fast enough to guide reassignment during the convergence phase.
