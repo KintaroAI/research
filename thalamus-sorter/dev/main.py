@@ -186,13 +186,15 @@ class _ClusterManager:
     def init_clusters(self, embeddings_t):
         """Initialize clusters via GPU k-means on current embeddings."""
         import torch
+        self.device = embeddings_t.device
         ids_np, centroids_np = self._kmeans(embeddings_t, self.m, seed=42)
         self.cluster_ids = ids_np
-        self.centroids_t = torch.from_numpy(centroids_np).to(embeddings_t.device)
+        self.cluster_ids_t = torch.from_numpy(ids_np.astype(np.int64)).to(self.device)
+        self.centroids_t = torch.from_numpy(centroids_np).to(self.device)
         self.sizes = np.bincount(self.cluster_ids, minlength=self.m)
-        # Init knn2 with random cluster indices + infinity distances
-        self.knn2 = np.full((self.m, self.k2), -1, dtype=np.int64)
-        self.knn2_dists = np.full((self.m, self.k2), np.inf)
+        # Init knn2 with random cluster indices + infinity distances (GPU)
+        knn2_np = np.full((self.m, self.k2), -1, dtype=np.int64)
+        knn2_dists_np = np.full((self.m, self.k2), np.inf, dtype=np.float32)
         for c in range(self.m):
             if self.sizes[c] == 0:
                 continue
@@ -201,11 +203,12 @@ class _ClusterManager:
                 continue
             k = min(self.k2, len(others))
             chosen = self.rng.choice(others, size=k, replace=False)
-            self.knn2[c, :k] = chosen
-            # Compute initial distances
+            knn2_np[c, :k] = chosen
             for j in range(k):
                 diff = centroids_np[c] - centroids_np[chosen[j]]
-                self.knn2_dists[c, j] = np.dot(diff, diff)
+                knn2_dists_np[c, j] = np.dot(diff, diff)
+        self.knn2_t = torch.from_numpy(knn2_np).to(self.device)
+        self.knn2_dists_t = torch.from_numpy(knn2_dists_np).to(self.device)
         self.initialized = True
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
@@ -213,48 +216,26 @@ class _ClusterManager:
 
     def tick(self, embeddings_t, anchors_np, pairs, global_tick):
         """One streaming cluster maintenance step."""
+        import torch
         if not self.initialized:
             return
 
+        knn2_np = self.knn2_t.cpu().numpy()
         n_reassigned, affected, _, n_blocked = self._stream_update(
-            embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
+            embeddings_t, self.centroids_t, self.cluster_ids, knn2_np,
             anchors_np, lr=self.lr, sizes=self.sizes, min_size=0, rng=self.rng,
             hysteresis=self.hysteresis)
         self.total_reassigned += n_reassigned
 
-        # Recompute knn2_dists for clusters whose centroids changed
+        # Sync cluster_ids to GPU after reassignments
         if affected:
-            centroids_cpu = self.centroids_t.cpu().numpy()
-            for c in affected:
-                valid = self.knn2[c] >= 0
-                for j in np.where(valid)[0]:
-                    tc = self.knn2[c, j]
-                    diff = centroids_cpu[c] - centroids_cpu[tc]
-                    self.knn2_dists[c, j] = np.dot(diff, diff)
+            self.cluster_ids_t = torch.from_numpy(
+                self.cluster_ids.astype(np.int64)).to(self.device)
+            self._recompute_knn2_dists(list(affected))
 
-        # Update knn2 from skip-gram pairs (incremental centroid-distance based)
+        # Update knn2 from skip-gram pairs (GPU vectorized)
         if pairs is not None:
-            center_np, ctx_np = pairs[0].numpy(), pairs[1].numpy()
-            # Deduplicate: for each anchor cluster, collect unique neighbor clusters
-            pair_clusters = {}
-            for a, n_idx in zip(center_np, ctx_np):
-                c_a = self.cluster_ids[a]
-                c_n = self.cluster_ids[n_idx]
-                if c_a != c_n:
-                    pair_clusters.setdefault(c_a, set()).add(c_n)
-            if pair_clusters:
-                centroids_cpu = self.centroids_t.cpu().numpy()
-                for c_a, neighbor_set in pair_clusters.items():
-                    for c_n in neighbor_set:
-                        # Skip if already in knn2
-                        if c_n in self.knn2[c_a]:
-                            continue
-                        diff = centroids_cpu[c_a] - centroids_cpu[c_n]
-                        dist = np.dot(diff, diff)
-                        worst_idx = self.knn2_dists[c_a].argmax()
-                        if dist < self.knn2_dists[c_a][worst_idx]:
-                            self.knn2[c_a][worst_idx] = c_n
-                            self.knn2_dists[c_a][worst_idx] = dist
+            self._update_knn2_gpu(pairs)
 
         # Periodic split recovery
         if (self.split_every > 0 and global_tick > 0 and
@@ -268,21 +249,83 @@ class _ClusterManager:
                     seed=self.rng.randint(1000000))
                 self.total_splits += n_splits
                 if n_splits > 0:
-                    # Recompute knn2_dists (centroids changed from splits)
-                    centroids_cpu = self.centroids_t.cpu().numpy()
-                    for c in range(self.m):
-                        valid = self.knn2[c] >= 0
-                        for j in np.where(valid)[0]:
-                            tc = self.knn2[c, j]
-                            diff = centroids_cpu[c] - centroids_cpu[tc]
-                            self.knn2_dists[c, j] = np.dot(diff, diff)
+                    self.cluster_ids_t = torch.from_numpy(
+                        self.cluster_ids.astype(np.int64)).to(self.device)
+                    self._recompute_knn2_dists()
+
+    def _update_knn2_gpu(self, pairs):
+        """Update knn2 from skip-gram pairs — fully vectorized on GPU."""
+        import torch
+        center_t = pairs[0].to(self.device)
+        ctx_t = pairs[1].to(self.device)
+        ca = self.cluster_ids_t[center_t]
+        cn = self.cluster_ids_t[ctx_t]
+        cross = ca != cn
+        if not cross.any():
+            return
+        ca_x, cn_x = ca[cross], cn[cross]
+        unique_packed = torch.unique(ca_x * self.m + cn_x)
+        u_ca = unique_packed // self.m
+        u_cn = unique_packed % self.m
+
+        # Batch centroid distances
+        diffs = self.centroids_t[u_ca] - self.centroids_t[u_cn]
+        dists = (diffs * diffs).sum(dim=1)
+
+        # Mask out already-in-knn2
+        already_in = (u_cn.unsqueeze(1) == self.knn2_t[u_ca]).any(dim=1)
+        dists = torch.where(already_in, torch.tensor(float('inf'),
+                            device=self.device), dists)
+
+        # Per-c_a best new candidate via scatter_reduce
+        best_dist = torch.full((self.m,), float('inf'), device=self.device)
+        best_dist.scatter_reduce_(0, u_ca, dists, reduce='amin',
+                                  include_self=True)
+
+        worst_knn2_dist, worst_knn2_slot = self.knn2_dists_t.max(dim=1)
+        improved = best_dist < worst_knn2_dist
+        if not improved.any():
+            return
+
+        # Find which unique entry achieved best_dist for each improved c_a
+        is_best = (dists == best_dist[u_ca]) & improved[u_ca]
+        bi = is_best.nonzero(as_tuple=True)[0]
+        bi_ca = u_ca[bi]
+        # First match per c_a
+        first_per_ca = torch.full((self.m,), bi.shape[0],
+                                  dtype=torch.long, device=self.device)
+        first_per_ca.scatter_reduce_(
+            0, bi_ca, torch.arange(bi.shape[0], device=self.device),
+            reduce='amin', include_self=True)
+
+        imp_ca = torch.where(improved & (first_per_ca < bi.shape[0]))[0]
+        imp_ui = bi[first_per_ca[imp_ca]]
+        self.knn2_t[imp_ca, worst_knn2_slot[imp_ca]] = u_cn[imp_ui]
+        self.knn2_dists_t[imp_ca, worst_knn2_slot[imp_ca]] = dists[imp_ui]
+
+    def _recompute_knn2_dists(self, rows=None):
+        """Recompute knn2 distances on GPU. rows=None → all rows."""
+        import torch
+        if rows is None:
+            rows_t = torch.arange(self.m, device=self.device)
+        else:
+            rows_t = torch.tensor(rows, dtype=torch.long, device=self.device)
+        targets = self.knn2_t[rows_t]  # (len, k2)
+        valid = targets >= 0
+        # Clamp for gather (invalid entries get dummy centroid, overwritten with inf)
+        safe_targets = targets.clamp(min=0)
+        diffs = self.centroids_t[rows_t].unsqueeze(1) - self.centroids_t[safe_targets]
+        d = (diffs * diffs).sum(dim=2)
+        d[~valid] = float('inf')
+        self.knn2_dists_t[rows_t] = d
 
     def report(self, tick):
         """Print cluster metrics and save visualization."""
         if not self.initialized:
             return
         centroids_np = self.centroids_t.cpu().numpy()
-        metrics = self._eval(self.cluster_ids, centroids_np, self.knn2,
+        knn2_np = self.knn2_t.cpu().numpy()
+        metrics = self._eval(self.cluster_ids, centroids_np, knn2_np,
                              self.w, self.h)
         n_empty = metrics['n_empty']
         interval_reassigned = self.total_reassigned - self._prev_reassigned
@@ -312,7 +355,7 @@ class _ClusterManager:
         np.save(os.path.join(output_dir, "cluster_ids.npy"), self.cluster_ids)
         np.save(os.path.join(output_dir, "centroids.npy"),
                 self.centroids_t.cpu().numpy())
-        np.save(os.path.join(output_dir, "knn2.npy"), self.knn2)
+        np.save(os.path.join(output_dir, "knn2.npy"), self.knn2_t.cpu().numpy())
         print(f"  cluster state saved to {output_dir}")
 
 
