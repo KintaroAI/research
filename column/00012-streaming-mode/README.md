@@ -100,6 +100,27 @@ projection-based approach avoids this — it never builds the full covariance.
 - Streaming: temporal analysis at any n — handles both (n,) and (n, T)
 - Correlation: kept for comparison, superseded by streaming for most cases
 
+### Full benchmark suite — all modes compared
+
+| Benchmark | Instantaneous | Correlation | Streaming (n,T) |
+|---|---|---|---|
+| Standard 8-cluster (16D) | 0.957 | — | — |
+| Temporal 4-cluster (16D, T=10) | — | 0.989 | 0.848 |
+| Temporal 4-cluster (64D, T=10) | — | 0.579 | **0.804** |
+| 3D cardinal (6 dirs) | — | 0.758 | 0.649 |
+| 3D diagonal (8 dirs) | — | 0.724 | 0.710 |
+| Adaptation (A→B switch) | 0.855 | — | — |
+
+| Config (n,T) | Instant | Correlation | Streaming |
+|---|---|---|---|
+| 16×4 T=10 | 190 us | 258 us | 271 us |
+| 64×16 T=10 | 191 us | 829 us | **561 us** |
+| 256×32 T=10 | — | — | 784 us |
+
+**Crossover at n ≈ T.** When n > T, streaming is better on both quality and speed.
+Correlation's covariance matrix becomes rank-deficient (64×64 from 10 samples),
+while streaming's projection-based approach avoids this entirely.
+
 ## Commands
 
 ```bash
