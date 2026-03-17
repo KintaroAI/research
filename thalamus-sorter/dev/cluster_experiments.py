@@ -123,9 +123,11 @@ if HAS_TORCH:
 
     def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
                                 anchors, lr=0.01, sizes=None, min_size=0, rng=None,
-                                hysteresis=0.0):
+                                hysteresis=0.0, knn2_is_neurons=False):
         """v3 streaming update: prefetch to CPU, loop on CPU, incremental centroid update.
-        hysteresis: relative margin — neuron only jumps if dist_new < dist_cur * (1 - hysteresis)."""
+        hysteresis: relative margin — neuron only jumps if dist_new < dist_cur * (1 - hysteresis).
+        knn2_is_neurons: if True, knn2 entries are neuron indices (map to cluster IDs);
+                         if False, knn2 entries are cluster indices directly."""
         m = centroids_t.shape[0]
         n = embeddings_t.shape[0]
 
@@ -151,7 +153,12 @@ if HAS_TORCH:
 
             cur = cluster_ids[anchor]
             neighbors = knn2[cur]
-            candidates = np.unique(np.concatenate([[cur], neighbors[neighbors >= 0]]))
+            valid_neighbors = neighbors[neighbors >= 0]
+            if knn2_is_neurons:
+                neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
+            else:
+                neighbor_clusters = valid_neighbors
+            candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
             if len(candidates) <= 1:
                 continue
 

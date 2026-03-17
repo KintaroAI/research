@@ -377,5 +377,109 @@ specific neuron IDs belong to which cluster is highly volatile.
 This is expected with streaming k-means on continuously-evolving embeddings —
 centroids drift, boundary neurons ping-pong, and splits create entirely new cluster
 IDs. The hysteresis parameter (h=0.3) reduces jump rate but doesn't prevent the
-cumulative effect over 1000 ticks. Future work could explore higher hysteresis,
-momentum-based centroid updates, or assignment smoothing to improve retention.
+cumulative effect over 1000 ticks.
+
+**Frozen-embedding control:** On pre-trained (static) embeddings with random cluster
+init, clusters converge in ~500 ticks to contiguity 0.995+ and then lock in with
+perfect stability (1.000) and zero jumps. The churn is entirely caused by embedding
+drift during training, not by clustering algorithm instability.
+
+### Run 010: Incremental knn2, m=640, h=0.3, 100k (stability tracking)
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.3
+knn2_mode=incremental (no --knn-track)
+Output: ~/data/research/thalamus-sorter/exp_00017/017_m640_h03_100k_stability/
+Runtime: 1245s (~11-12 ms/tick)
+```
+
+| Tick | Stability | Contiguity | Diameter | Jumps/tick | Alive | Splits |
+|------|-----------|------------|----------|-----------|-------|--------|
+| 5k | 0.000 | 0.977 | 5.6 | 45.2 | 582 | 6,469 |
+| 10k | 0.000 | 0.996 | 4.9 | 16.6 | 622 | 10,077 |
+| 25k | 0.001 | 0.988 | 5.2 | 13.5 | 610 | 17,413 |
+| 50k | 0.000 | 0.998 | 4.7 | 17.2 | 620 | 29,585 |
+| 75k | 0.001 | 0.997 | 4.5 | 14.3 | 607 | 43,316 |
+| 100k | 0.000 | 0.999 | 4.4 | 12.8 | 625 | 57,422 |
+
+**Eval:** PCA=0.594, K10 <3px=98.9%, K10 <5px=100%
+
+### Run 011: KNN-track mode, m=640, h=0.3, 100k (stability comparison)
+
+Added `--cluster-knn2-mode` flag to switch between incremental (pair-based) and knn
+(neuron-level KNN) strategies for maintaining knn2.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, lr_cluster=0.01, hysteresis=0.3
+knn2_mode=knn, --knn-track 10
+Output: ~/data/research/thalamus-sorter/exp_00017/018_m640_h03_100k_knn_mode/
+Runtime: 1539s (~15 ms/tick)
+```
+
+| Tick | Stability | Contiguity | Diameter | Jumps/tick | Alive | Splits |
+|------|-----------|------------|----------|-----------|-------|--------|
+| 5k | 0.000 | 0.455 | 26.6 | 18.6 | 626 | 3,592 |
+| 10k | 0.001 | 0.997 | 4.6 | 12.9 | 616 | 6,698 |
+| 25k | 0.003 | 0.999 | 4.6 | 10.7 | 625 | 13,949 |
+| 50k | 0.013 | 0.995 | 4.6 | 14.1 | 588 | 25,331 |
+| 75k | 0.004 | 1.000 | 4.2 | 13.2 | 630 | 36,120 |
+| 100k | 0.007 | 0.999 | 4.4 | 9.4 | 616 | 48,186 |
+
+**Eval:** PCA=0.551, K10 <3px=98.6%, K10 <5px=100%
+
+**Comparison:**
+
+| Metric | Incremental | KNN-track |
+|--------|-------------|-----------|
+| Runtime (100k) | 1245s | 1539s (+24%) |
+| Stability range | 0.000–0.003 | 0.001–0.013 |
+| Jumps/tick @ 100k | 12.8 | 9.4 |
+| Total splits | 57,422 | 48,186 |
+| K10 <3px | 98.9% | 98.6% |
+
+**Finding:** Both modes show near-zero stability over 5000-tick intervals. KNN-track
+has marginally fewer jumps and splits, but stability remains <2% in both cases.
+The 24% slower runtime of KNN-track mode does not justify the negligible stability
+improvement. The root cause is embedding drift, not knn2 quality — confirmed by the
+frozen-embedding control showing perfect stability on static embeddings.
+
+### Runs 012–013: Head-to-head 50k, report_every=1000 (visual comparison)
+
+Re-ran both modes with `report_every=1000` to produce 50 cluster screenshots each
+for visual comparison of cluster churn frame-by-frame.
+
+**Run 012: Incremental, m=640, h=0.3, 50k**
+```
+Output: ~/data/research/thalamus-sorter/exp_00017/019_m640_h03_50k_incr_rpt1k/
+Runtime: 567s
+```
+
+**Run 013: KNN-track, m=640, h=0.3, 50k**
+```
+Output: ~/data/research/thalamus-sorter/exp_00017/020_m640_h03_50k_knn_rpt1k/
+Runtime: 804s (+42%)
+```
+
+| Tick | Incr. stab | KNN stab | Incr. jumps/t | KNN jumps/t |
+|------|-----------|----------|---------------|-------------|
+| 5k | 0.006 | 0.003 | 23.4 | 26.8 |
+| 10k | 0.144 | 0.055 | 9.1 | 12.5 |
+| 20k | 0.062 | 0.093 | 15.8 | 11.3 |
+| 30k | 0.130 | 0.113 | 11.0 | 10.3 |
+| 40k | 0.082 | 0.098 | 11.1 | 12.4 |
+| 50k | 0.261 | 0.175 | 7.5 | 8.8 |
+
+| Metric | Incremental | KNN-track |
+|--------|-------------|-----------|
+| Runtime | 567s | 804s (+42%) |
+| K10 <3px | 98.2% | 97.9% |
+| Splits | 26,789 | 29,722 |
+| Stability @ 1k intervals | 6–26% | 1–18% |
+
+**Finding:** With 1000-tick report intervals, stability is 5–26% (vs ~0% at 5000-tick
+intervals). Both modes are visually indistinguishable — same churn pattern, same
+convergence timeline. KNN-track provides no benefit over incremental for 42% more
+runtime. The `--cluster-knn2-mode` flag remains available for experimentation, but
+incremental is the recommended default.
