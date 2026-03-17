@@ -257,10 +257,13 @@ if HAS_TORCH:
         return n_reassigned, affected, sizes, n_blocked
 
     def split_largest_cluster_gpu(embeddings_t, centroids_t, cluster_ids, sizes, m,
-                                  n_splits=1, seed=None):
-        """Split largest cluster(s) on GPU."""
+                                  n_splits=1, seed=None, pointers=None):
+        """Split largest cluster(s) on GPU.
+        Handles both 1D cluster_ids (single assignment) and 2D (ring buffer).
+        When 2D, pointers must be provided for ring buffer writes."""
         rng = np.random.RandomState(seed)
         splits_done = 0
+        multi = cluster_ids.ndim == 2
 
         for _ in range(n_splits):
             empty = np.where(sizes == 0)[0]
@@ -271,7 +274,12 @@ if HAS_TORCH:
                 break
 
             dead = empty[0]
-            members = np.where(cluster_ids == largest)[0]
+            if multi:
+                members = np.where(np.any(cluster_ids == largest, axis=1))[0]
+            else:
+                members = np.where(cluster_ids == largest)[0]
+            if len(members) < 2:
+                break
             member_emb = embeddings_t[members]
 
             # k-means(2) on GPU
@@ -296,11 +304,22 @@ if HAS_TORCH:
             if len(half1) == 0 or len(half1) == len(members):
                 continue
 
-            cluster_ids[half1] = dead
+            if multi:
+                # Ring buffer: advance pointer, evict oldest, write dead
+                max_k = cluster_ids.shape[1]
+                for neuron in half1:
+                    pointers[neuron] = (pointers[neuron] + 1) % max_k
+                    evicted = cluster_ids[neuron, pointers[neuron]]
+                    cluster_ids[neuron, pointers[neuron]] = dead
+                    if evicted >= 0:
+                        sizes[evicted] -= 1
+                    sizes[dead] += 1
+            else:
+                cluster_ids[half1] = dead
+                sizes[largest] = (assign_cpu == 0).sum()
+                sizes[dead] = len(half1)
             centroids_t[largest] = member_emb[assign_cpu == 0].mean(dim=0)
             centroids_t[dead] = member_emb[assign_cpu == 1].mean(dim=0)
-            sizes[largest] = (assign_cpu == 0).sum()
-            sizes[dead] = len(half1)
             splits_done += 1
 
         return splits_done

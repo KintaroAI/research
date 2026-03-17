@@ -237,10 +237,10 @@ class _ClusterManager:
               f"k2={self.k2}, knn2_mode={self.knn2_mode}, "
               f"centroid_mode={self.centroid_mode}, max_k={self.max_k}")
 
-    def _primary_ids(self):
-        """Return primary cluster ID per neuron (1D array)."""
+    def _display_ids(self):
+        """Return 1D cluster IDs for rendering/eval (index 0 of ring)."""
         if self.pointers is not None:
-            return self.cluster_ids[np.arange(self.n), self.pointers]
+            return self.cluster_ids[:, 0]
         return self.cluster_ids
 
     def tick(self, embeddings_t, anchors_np, pairs, global_tick,
@@ -293,7 +293,7 @@ class _ClusterManager:
             self.total_reassigned += n_reassigned
             if affected:
                 self.cluster_ids_t = torch.from_numpy(
-                    self._primary_ids().astype(np.int64)).to(self.device)
+                    self._display_ids().astype(np.int64)).to(self.device)
                 self._recompute_knn2_dists(list(affected))
             if pairs is not None:
                 self._update_knn2_gpu(pairs)
@@ -304,33 +304,19 @@ class _ClusterManager:
             n_empty = (self.sizes == 0).sum()
             if n_empty > 0:
                 n_to_split = min(n_empty, max(1, n_empty // 5))
-                # Split uses primary cluster IDs
-                primary = self._primary_ids()
                 n_splits = self._split(
-                    embeddings_t, self.centroids_t, primary,
+                    embeddings_t, self.centroids_t, self.cluster_ids,
                     self.sizes, self.m, n_splits=n_to_split,
-                    seed=self.rng.randint(1000000))
+                    seed=self.rng.randint(1000000),
+                    pointers=self.pointers)
                 self.total_splits += n_splits
                 if n_splits > 0:
-                    # Write split results back into ring buffer
-                    if self.pointers is not None:
-                        changed = primary != self.cluster_ids[np.arange(self.n), self.pointers]
-                        for idx in np.where(changed)[0]:
-                            self.pointers[idx] = (self.pointers[idx] + 1) % self.max_k
-                            evicted = self.cluster_ids[idx, self.pointers[idx]]
-                            self.cluster_ids[idx, self.pointers[idx]] = primary[idx]
-                            # sizes already updated by _split; just handle eviction
-                            if evicted >= 0 and evicted != primary[idx]:
-                                self.sizes[evicted] -= 1
-                                self.sizes[primary[idx]] += 1
-                    else:
-                        self.cluster_ids = primary
                     if self.knn2_mode == 'knn' and self.knn_lists is not None:
                         self.knn2[:], _ = self._freq_knn(
-                            self.knn_lists, self._primary_ids(), self.m, self.k2)
+                            self.knn_lists, self._display_ids(), self.m, self.k2)
                     else:
                         self.cluster_ids_t = torch.from_numpy(
-                            self._primary_ids().astype(np.int64)).to(self.device)
+                            self._display_ids().astype(np.int64)).to(self.device)
                         self._recompute_knn2_dists()
 
     def _update_knn2_gpu(self, pairs):
@@ -404,17 +390,17 @@ class _ClusterManager:
         if not self.initialized:
             return
         centroids_np = self.centroids_t.cpu().numpy()
-        primary = self._primary_ids()
+        display = self._display_ids()
         if self.knn2_mode == 'knn':
             # Convert neuron-index knn2 to cluster-index for eval
             knn2_np = self.knn2.copy()
             valid = knn2_np >= 0
-            knn2_np[valid] = primary[knn2_np[valid]]
-            metrics = self._eval(primary, centroids_np, knn2_np,
+            knn2_np[valid] = display[knn2_np[valid]]
+            metrics = self._eval(display, centroids_np, knn2_np,
                                  self.w, self.h, self.knn_lists)
         else:
             knn2_np = self.knn2_t.cpu().numpy()
-            metrics = self._eval(primary, centroids_np, knn2_np,
+            metrics = self._eval(display, centroids_np, knn2_np,
                                  self.w, self.h)
         n_empty = metrics['n_empty']
         interval_reassigned = self.total_reassigned - self._prev_reassigned
@@ -424,12 +410,12 @@ class _ClusterManager:
         self._prev_report_tick = tick
         n_alive = self.m - n_empty
         # Neuron stability: fraction that stayed in same cluster since last report
-        primary = self._primary_ids()
+        display = self._display_ids()
         if self._prev_cluster_ids is not None:
-            stability = (primary == self._prev_cluster_ids).mean()
+            stability = (display == self._prev_cluster_ids).mean()
         else:
             stability = 0.0
-        self._prev_cluster_ids = primary.copy()
+        self._prev_cluster_ids = display.copy()
         print(f"  Clusters @ tick {tick}: {n_alive}/{self.m} alive, "
               f"contiguity={metrics['contiguity_mean']:.3f}, "
               f"diam={metrics['diameter_mean']:.1f}, "
@@ -444,7 +430,7 @@ class _ClusterManager:
                 stability=stability)
         if self.output_dir:
             path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
-            self._visualize(primary, self.w, self.h, path)
+            self._visualize(display, self.w, self.h, path)
 
     def save(self, output_dir):
         """Save cluster state at end of run."""
