@@ -124,27 +124,18 @@ if HAS_TORCH:
     def streaming_update_v3_gpu(embeddings_t, centroids_t, cluster_ids, knn2,
                                 anchors, lr=0.01, sizes=None, min_size=0, rng=None,
                                 hysteresis=0.0, knn2_is_neurons=False,
-                                centroid_mode='nudge', pointers=None):
+                                centroid_mode='nudge'):
         """v3 streaming update: prefetch to CPU, loop on CPU.
         centroid_mode: 'exact' = incremental arithmetic (centroid snaps to true mean),
                        'nudge' = post-loop lr nudge (centroid drifts slowly).
         hysteresis: relative margin — neuron only jumps if dist_new < dist_cur * (1 - hysteresis).
         knn2_is_neurons: if True, knn2 entries are neuron indices (map to cluster IDs);
-                         if False, knn2 entries are cluster indices directly.
-        pointers: if not None, cluster_ids is (n, max_k) ring buffer with pointers (n,).
-                  Neurons belong to all clusters in their ring simultaneously."""
+                         if False, knn2 entries are cluster indices directly."""
         m = centroids_t.shape[0]
         n = embeddings_t.shape[0]
-        multi = pointers is not None
 
         if sizes is None:
-            if multi:
-                sizes = np.zeros(m, dtype=int)
-                for col in range(cluster_ids.shape[1]):
-                    valid = cluster_ids[:, col] >= 0
-                    np.add.at(sizes, cluster_ids[valid, col], 1)
-            else:
-                sizes = np.bincount(cluster_ids, minlength=m)
+            sizes = np.bincount(cluster_ids, minlength=m)
         if rng is None:
             rng = np.random.RandomState()
 
@@ -163,33 +154,14 @@ if HAS_TORCH:
             if rng.random() >= p:
                 continue
 
-            if multi:
-                cur = cluster_ids[anchor, pointers[anchor]]
-                # Gather knn2 neighbors from all clusters in ring
-                my_clusters = cluster_ids[anchor]
-                my_valid = my_clusters[my_clusters >= 0]
-                all_neighbors = []
-                for mc in my_valid:
-                    nb = knn2[mc]
-                    valid_nb = nb[nb >= 0]
-                    if len(valid_nb) > 0:
-                        all_neighbors.append(valid_nb)
-                if not all_neighbors:
-                    continue
-                neighbor_clusters = np.unique(np.concatenate(all_neighbors))
-                # Filter out clusters neuron is already in
-                neighbor_clusters = neighbor_clusters[~np.isin(neighbor_clusters, my_valid)]
-                candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
+            cur = cluster_ids[anchor]
+            neighbors = knn2[cur]
+            valid_neighbors = neighbors[neighbors >= 0]
+            if knn2_is_neurons:
+                neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
             else:
-                cur = cluster_ids[anchor]
-                neighbors = knn2[cur]
-                valid_neighbors = neighbors[neighbors >= 0]
-                if knn2_is_neurons:
-                    neighbor_clusters = np.unique(cluster_ids[valid_neighbors])
-                else:
-                    neighbor_clusters = valid_neighbors
-                candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
-
+                neighbor_clusters = valid_neighbors
+            candidates = np.unique(np.concatenate([[cur], neighbor_clusters]))
             if len(candidates) <= 1:
                 continue
 
@@ -217,25 +189,11 @@ if HAS_TORCH:
                     new_size = sizes[best]
                     centroids_cpu[best] = (centroids_cpu[best] * new_size + emb) / (new_size + 1)
 
-                if multi:
-                    # Ring buffer: advance pointer, evict oldest, write new
-                    max_k = cluster_ids.shape[1]
-                    pointers[anchor] = (pointers[anchor] + 1) % max_k
-                    evicted = cluster_ids[anchor, pointers[anchor]]
-                    cluster_ids[anchor, pointers[anchor]] = best
-                    # Evicted cluster loses this neuron
-                    if evicted >= 0:
-                        sizes[evicted] -= 1
-                        affected.add(evicted)
-                    # New cluster gains this neuron (cur stays in ring)
-                    sizes[best] += 1
-                    affected.add(best)
-                else:
-                    cluster_ids[anchor] = best
-                    sizes[cur] -= 1
-                    sizes[best] += 1
-                    affected.add(cur)
-                    affected.add(best)
+                cluster_ids[anchor] = best
+                sizes[cur] -= 1
+                sizes[best] += 1
+                affected.add(cur)
+                affected.add(best)
                 n_reassigned += 1
 
         # Update centroids for affected clusters
@@ -243,10 +201,7 @@ if HAS_TORCH:
             if centroid_mode == 'nudge':
                 # Post-loop nudge: centroid drifts toward true member mean
                 for c in affected:
-                    if multi:
-                        members = np.where(np.any(cluster_ids == c, axis=1))[0]
-                    else:
-                        members = np.where(cluster_ids == c)[0]
+                    members = np.where(cluster_ids == c)[0]
                     if len(members) > 0:
                         member_mean = embeddings_t[members].mean(dim=0).cpu().numpy()
                         centroids_cpu[c] += lr * (member_mean - centroids_cpu[c])
@@ -257,13 +212,10 @@ if HAS_TORCH:
         return n_reassigned, affected, sizes, n_blocked
 
     def split_largest_cluster_gpu(embeddings_t, centroids_t, cluster_ids, sizes, m,
-                                  n_splits=1, seed=None, pointers=None):
-        """Split largest cluster(s) on GPU.
-        Handles both 1D cluster_ids (single assignment) and 2D (ring buffer).
-        When 2D, pointers must be provided for ring buffer writes."""
+                                  n_splits=1, seed=None):
+        """Split largest cluster(s) on GPU."""
         rng = np.random.RandomState(seed)
         splits_done = 0
-        multi = cluster_ids.ndim == 2
 
         for _ in range(n_splits):
             empty = np.where(sizes == 0)[0]
@@ -274,12 +226,7 @@ if HAS_TORCH:
                 break
 
             dead = empty[0]
-            if multi:
-                members = np.where(np.any(cluster_ids == largest, axis=1))[0]
-            else:
-                members = np.where(cluster_ids == largest)[0]
-            if len(members) < 2:
-                break
+            members = np.where(cluster_ids == largest)[0]
             member_emb = embeddings_t[members]
 
             # k-means(2) on GPU
@@ -304,22 +251,11 @@ if HAS_TORCH:
             if len(half1) == 0 or len(half1) == len(members):
                 continue
 
-            if multi:
-                # Ring buffer: advance pointer, evict oldest, write dead
-                max_k = cluster_ids.shape[1]
-                for neuron in half1:
-                    pointers[neuron] = (pointers[neuron] + 1) % max_k
-                    evicted = cluster_ids[neuron, pointers[neuron]]
-                    cluster_ids[neuron, pointers[neuron]] = dead
-                    if evicted >= 0:
-                        sizes[evicted] -= 1
-                    sizes[dead] += 1
-            else:
-                cluster_ids[half1] = dead
-                sizes[largest] = (assign_cpu == 0).sum()
-                sizes[dead] = len(half1)
+            cluster_ids[half1] = dead
             centroids_t[largest] = member_emb[assign_cpu == 0].mean(dim=0)
             centroids_t[dead] = member_emb[assign_cpu == 1].mean(dim=0)
+            sizes[largest] = (assign_cpu == 0).sum()
+            sizes[dead] = len(half1)
             splits_done += 1
 
         return splits_done
