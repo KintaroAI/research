@@ -1,6 +1,7 @@
 # 00016 — Receptive Field Tiling
 
 **Status:** Complete
+**Source:** `c/00016` (`a9d2c7e`)
 
 ## Goal
 
