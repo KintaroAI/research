@@ -69,6 +69,22 @@ that neither cell can learn alone?
 Cell 1 extracts direction per segment; Cell 2 categorizes the transition matrix
 (how direction changes over time). Neither cell alone can distinguish patterns.
 
+### Stacking architectures compared (experiments 00013–00016)
+
+| Architecture | Best NMI | vs Single cell | When useful |
+|---|---|---|---|
+| **Multi-scale temporal** | **0.276** | **+2.4x** (0.115) | Multi-timescale patterns |
+| **Receptive fields** | **0.993** | **+2.0x** (0.500) | High-dim input with local structure |
+| Residual stacking | 0.822 | +16% (0.711) | Capacity-constrained (m too small) |
+| Recurrent ring | 0.800 | -16% (0.950) | Negative result — amplifies errors |
+
+Key findings:
+- The **wiring operation** between cells determines what's solvable (exp 00005–00007)
+- **Multi-scale** exploits streaming mode's decay parameter — different cells, different time constants
+- **Receptive fields** decompose high-dim input into local subspaces — 32D becomes 8×4D
+- **Residual** stacking helps at margins but single cell with enough outputs wins
+- **Recurrent** feedback creates self-reinforcing loops, not error correction
+
 ## Experiments
 
 | # | Name | Key result |
