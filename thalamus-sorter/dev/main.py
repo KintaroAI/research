@@ -463,6 +463,39 @@ class _ClusterManager:
                 path = os.path.join(self.output_dir, f"clusters_sig_{tick:06d}.png")
                 self._visualize_signal(most_recent, signal, self.w, self.h,
                                        self._sig_channels, path)
+                # Save raw signal frame for comparison
+                self._save_signal_frame(signal, tick)
+
+    def _save_signal_frame(self, signal, tick):
+        """Save the raw signal frame as an image for comparison."""
+        try:
+            import cv2
+        except ImportError:
+            return
+        if self._sig_channels == 1:
+            vmin, vmax = signal.min(), signal.max()
+            if vmax > vmin:
+                img = ((signal - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+            else:
+                img = np.full_like(signal, 128, dtype=np.uint8)
+            img = img.reshape(self.h, self.w)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        else:
+            n_pixels = self.h * self.w
+            rgb = signal.reshape(n_pixels, self._sig_channels)
+            vmin, vmax = rgb.min(), rgb.max()
+            if vmax > vmin:
+                rgb = ((rgb - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+            else:
+                rgb = np.full_like(rgb, 128, dtype=np.uint8)
+            img = rgb.reshape(self.h, self.w, self._sig_channels)
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        scale = max(1, 512 // max(self.w, self.h))
+        if scale > 1:
+            img = cv2.resize(img, (self.w * scale, self.h * scale),
+                             interpolation=cv2.INTER_NEAREST)
+        path = os.path.join(self.output_dir, f"signal_{tick:06d}.png")
+        cv2.imwrite(path, img)
 
     def save(self, output_dir):
         """Save cluster state at end of run."""
