@@ -158,7 +158,7 @@ class _ClusterManager:
 
     def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
                  hysteresis=0.0, knn2_mode='incremental', centroid_mode='nudge',
-                 max_k=1):
+                 max_k=1, track_history=False):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -186,10 +186,14 @@ class _ClusterManager:
         self.hysteresis = hysteresis
         self.rng = np.random.RandomState(42)
         self.total_reassigned = 0
+        self.total_switches = 0
         self.total_splits = 0
         self._prev_reassigned = 0
+        self._prev_switches = 0
         self._prev_report_tick = 0
         self._prev_cluster_ids = None
+        self.track_history = track_history
+        self._history = [] if track_history else None
 
     def init_clusters(self, embeddings_t, knn_lists_np=None):
         """Initialize clusters via GPU k-means on current embeddings."""
@@ -199,6 +203,7 @@ class _ClusterManager:
         self.cluster_ids = np.full((self.n, self.max_k), -1, dtype=np.int64)
         self.cluster_ids[:, 0] = ids_np
         self.pointers = np.zeros(self.n, dtype=np.int64)
+        self.last_used = np.zeros((self.n, self.max_k), dtype=np.int64)
         self.cluster_ids_t = torch.from_numpy(ids_np.astype(np.int64)).to(self.device)
         self.centroids_t = torch.from_numpy(centroids_np).to(self.device)
         self.sizes = np.bincount(ids_np, minlength=self.m)
@@ -244,21 +249,24 @@ class _ClusterManager:
 
         if self.knn2_mode == 'knn':
             # knn mode: knn2 is neuron-index based (numpy)
-            n_reassigned, affected, _, n_blocked = self._stream_update(
+            n_reassigned, affected, _, n_blocked, n_switches = self._stream_update(
                 embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
                 anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
                 knn2_is_neurons=True, centroid_mode=self.centroid_mode,
-                pointers=self.pointers)
+                pointers=self.pointers, last_used=self.last_used,
+                tick=global_tick)
             self.total_reassigned += n_reassigned
+            self.total_switches += n_switches
             # Patch knn2 for affected clusters from neuron-level KNN
             if affected and self.knn_lists is not None:
+                most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
                 for c in affected:
                     if self.sizes[c] > 0:
-                        members_c = np.where(np.any(self.cluster_ids == c, axis=1))[0]
+                        members_c = np.where(most_recent == c)[0]
                         pooled = self.knn_lists[members_c].flatten()
                         ids, counts = np.unique(pooled, return_counts=True)
-                        not_self = ~np.any(self.cluster_ids[ids] == c, axis=1)
+                        not_self = most_recent[ids] != c
                         ids, counts = ids[not_self], counts[not_self]
                         if len(ids) > 0:
                             top = min(self.k2, len(ids))
@@ -274,13 +282,15 @@ class _ClusterManager:
         else:
             # incremental mode: knn2 is cluster-index based (GPU tensors)
             knn2_np = self.knn2_t.cpu().numpy()
-            n_reassigned, affected, _, n_blocked = self._stream_update(
+            n_reassigned, affected, _, n_blocked, n_switches = self._stream_update(
                 embeddings_t, self.centroids_t, self.cluster_ids, knn2_np,
                 anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
                 centroid_mode=self.centroid_mode,
-                pointers=self.pointers)
+                pointers=self.pointers, last_used=self.last_used,
+                tick=global_tick)
             self.total_reassigned += n_reassigned
+            self.total_switches += n_switches
             if affected:
                 most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
                 self.cluster_ids_t = torch.from_numpy(
@@ -299,7 +309,8 @@ class _ClusterManager:
                     embeddings_t, self.centroids_t, self.cluster_ids,
                     self.sizes, self.m, n_splits=n_to_split,
                     seed=self.rng.randint(1000000),
-                    pointers=self.pointers)
+                    pointers=self.pointers, last_used=self.last_used,
+                    tick=global_tick)
                 self.total_splits += n_splits
                 if n_splits > 0:
                     most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
@@ -407,18 +418,27 @@ class _ClusterManager:
         else:
             stability = 0.0
         self._prev_cluster_ids = most_recent.copy()
+        if self._history is not None:
+            self._history.append((tick, most_recent.copy()))
+        interval_switches = self.total_switches - self._prev_switches
+        switches_per_tick = interval_switches / interval_ticks
+        self._prev_switches = self.total_switches
         print(f"  Clusters @ tick {tick}: {n_alive}/{self.m} alive, "
               f"contiguity={metrics['contiguity_mean']:.3f}, "
               f"diam={metrics['diameter_mean']:.1f}, "
               f"stability={stability:.3f}, "
               f"jumps/tick={jumps_per_tick:.1f}, "
-              f"total_jumps={self.total_reassigned}, splits={self.total_splits}")
+              f"switches/tick={switches_per_tick:.1f}, "
+              f"total_jumps={self.total_reassigned}, "
+              f"total_switches={self.total_switches}, splits={self.total_splits}")
         if self.wlog:
             self.wlog.log_clusters(
                 tick, n_alive, self.m, metrics['contiguity_mean'],
                 metrics['diameter_mean'], jumps_per_tick,
                 self.total_reassigned, self.total_splits,
-                stability=stability)
+                stability=stability,
+                switches_per_tick=switches_per_tick,
+                total_switches=self.total_switches)
         if self.output_dir:
             path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
             self._visualize(most_recent, self.w, self.h, path)
@@ -429,12 +449,19 @@ class _ClusterManager:
             return
         np.save(os.path.join(output_dir, "cluster_ids.npy"), self.cluster_ids)
         np.save(os.path.join(output_dir, "pointers.npy"), self.pointers)
+        np.save(os.path.join(output_dir, "last_used.npy"), self.last_used)
         np.save(os.path.join(output_dir, "centroids.npy"),
                 self.centroids_t.cpu().numpy())
         if self.knn2_mode == 'knn':
             np.save(os.path.join(output_dir, "knn2.npy"), self.knn2)
         else:
             np.save(os.path.join(output_dir, "knn2.npy"), self.knn2_t.cpu().numpy())
+        if self._history:
+            ticks = np.array([t for t, _ in self._history], dtype=np.int64)
+            ids = np.stack([h for _, h in self._history])
+            np.save(os.path.join(output_dir, "history_ticks.npy"), ticks)
+            np.save(os.path.join(output_dir, "history_ids.npy"), ids)
+            print(f"  cluster history saved: {len(self._history)} snapshots")
         print(f"  cluster state saved to {output_dir}")
 
 
@@ -832,7 +859,8 @@ def run_word2vec(args):
                 output_dir=output_dir, wlog=wlog,
                 hysteresis=cluster_hyst, knn2_mode=knn2_mode,
                 centroid_mode=centroid_mode,
-                max_k=cluster_max_k)
+                max_k=cluster_max_k,
+                track_history=getattr(args, 'cluster_track_history', False))
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "
                   f"hysteresis={cluster_hyst}, knn2={knn2_mode}, "
@@ -1158,6 +1186,8 @@ def main():
                             "or 'exact' (incremental arithmetic, immediate — causes churn)")
     p_w2v.add_argument("--cluster-max-k", type=int, default=1,
                        help="Ring buffer depth for multi-cluster membership (default: 1)")
+    p_w2v.add_argument("--cluster-track-history", action="store_true",
+                       help="Save per-neuron cluster ID at each report interval")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")
