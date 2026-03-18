@@ -125,7 +125,8 @@ if HAS_TORCH:
                                 anchors, lr=0.01, sizes=None, min_size=0, rng=None,
                                 hysteresis=0.0, knn2_is_neurons=False,
                                 centroid_mode='nudge', pointers=None,
-                                last_used=None, tick=0):
+                                last_used=None, tick=0,
+                                jump_counts=None):
         """v3 streaming update: prefetch to CPU, loop on CPU.
         centroid_mode: 'exact' = incremental arithmetic (centroid snaps to true mean),
                        'nudge' = post-loop lr nudge (centroid drifts slowly).
@@ -247,6 +248,8 @@ if HAS_TORCH:
                 n_switches += 1
             else:
                 n_reassigned += 1
+                if jump_counts is not None:
+                    jump_counts[anchor] += 1
 
         # Update centroids for affected clusters
         if affected:

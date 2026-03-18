@@ -194,6 +194,7 @@ class _ClusterManager:
         self._prev_cluster_ids = None
         self.track_history = track_history
         self._history = [] if track_history else None
+        self._jump_counts = None  # per-neuron new-cluster jump counter
 
     def init_clusters(self, embeddings_t, knn_lists_np=None):
         """Initialize clusters via GPU k-means on current embeddings."""
@@ -232,6 +233,8 @@ class _ClusterManager:
             self.knn2_t = torch.from_numpy(knn2_np).to(self.device)
             self.knn2_dists_t = torch.from_numpy(knn2_dists_np).to(self.device)
 
+        if self.track_history:
+            self._jump_counts = np.zeros(self.n, dtype=np.int64)
         self.initialized = True
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
@@ -255,7 +258,7 @@ class _ClusterManager:
                 rng=self.rng, hysteresis=self.hysteresis,
                 knn2_is_neurons=True, centroid_mode=self.centroid_mode,
                 pointers=self.pointers, last_used=self.last_used,
-                tick=global_tick)
+                tick=global_tick, jump_counts=self._jump_counts)
             self.total_reassigned += n_reassigned
             self.total_switches += n_switches
             # Patch knn2 for affected clusters from neuron-level KNN
@@ -288,7 +291,7 @@ class _ClusterManager:
                 rng=self.rng, hysteresis=self.hysteresis,
                 centroid_mode=self.centroid_mode,
                 pointers=self.pointers, last_used=self.last_used,
-                tick=global_tick)
+                tick=global_tick, jump_counts=self._jump_counts)
             self.total_reassigned += n_reassigned
             self.total_switches += n_switches
             if affected:
@@ -419,7 +422,7 @@ class _ClusterManager:
             stability = 0.0
         self._prev_cluster_ids = most_recent.copy()
         if self._history is not None:
-            self._history.append((tick, most_recent.copy()))
+            self._history.append((tick, most_recent.copy(), self._jump_counts.copy()))
         interval_switches = self.total_switches - self._prev_switches
         switches_per_tick = interval_switches / interval_ticks
         self._prev_switches = self.total_switches
@@ -457,10 +460,12 @@ class _ClusterManager:
         else:
             np.save(os.path.join(output_dir, "knn2.npy"), self.knn2_t.cpu().numpy())
         if self._history:
-            ticks = np.array([t for t, _ in self._history], dtype=np.int64)
-            ids = np.stack([h for _, h in self._history])
+            ticks = np.array([t for t, _, _ in self._history], dtype=np.int64)
+            ids = np.stack([h for _, h, _ in self._history])
+            jumps = np.stack([j for _, _, j in self._history])
             np.save(os.path.join(output_dir, "history_ticks.npy"), ticks)
             np.save(os.path.join(output_dir, "history_ids.npy"), ids)
+            np.save(os.path.join(output_dir, "history_jumps.npy"), jumps)
             print(f"  cluster history saved: {len(self._history)} snapshots")
         print(f"  cluster state saved to {output_dir}")
 

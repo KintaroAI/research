@@ -252,3 +252,63 @@ wandb: mk1_300k (hjgnt0gh), mk2_300k (j6hjm05i)
    changes are equal, stability is equal — the ring's benefit is invisible to
    this metric. Need to track new-cluster jumps separately for meaningful
    stability comparison.
+
+### Per-neuron tenure analysis (Runs 016–017, 20k)
+
+How long does a neuron stay in the same cluster before switching primary?
+Analyzed from history snapshots (every 500 ticks), skipping first 1000 ticks.
+
+| Tenure | mk=1 | mk=2 |
+|---|---|---|
+| 1 snapshot (500 ticks) | 20.2% | 21.8% |
+| 2 snapshots (1000 ticks) | 17.8% | 17.2% |
+| 3-4 snapshots (1.5-2k ticks) | 21.0% | 21.1% |
+| 5-9 snapshots (2.5-4.5k ticks) | 23.5% | 23.3% |
+| 10-19 snapshots (5-9.5k ticks) | 13.2% | 12.2% |
+| 20+ snapshots (10k+ ticks) | 4.3% | 4.4% |
+
+Mean tenure ~2800 ticks for both. Distributions are nearly identical because
+history tracks primary changes (including in-ring switches for mk=2).
+
+### Runs 020–023: Jump-only tenure analysis (mk=1,2,3,4, 20k)
+
+Added per-neuron `jump_counts` array that increments only on new-cluster ring
+writes (not in-ring switches). Saved in `history_jumps.npy` — cumulative jump
+count per neuron at each snapshot. This separates genuine cluster exploration
+from harmless boundary oscillation.
+
+```
+warm-start from Run 001, 20k ticks, m=640, lr=1.0, h=0.0, report_every=500
+Analysis window: tick 2500-20000 (skip initial settling)
+```
+
+#### New-cluster jumps per neuron
+
+| Metric | mk=1 | mk=2 | mk=3 | mk=4 |
+|---|---|---|---|---|
+| Mean jumps/neuron | 6.9 | **3.8** | 2.9 | 2.6 |
+| Median jumps/neuron | 7 | 3 | 3 | 3 |
+| Jump tenure (mean ticks) | 4,174 | **6,716** | 7,801 | 8,394 |
+| Never jumped | 3.7% | 3.5% | 4.2% | 4.3% |
+| 6+ jumps (heavy oscillators) | 61.7% | 20.2% | 5.1% | **1.4%** |
+| 11+ jumps | 17.6% | 0.7% | 0.0% | 0.0% |
+
+#### Jump distribution (new-cluster only)
+
+| Jumps | mk=1 | mk=2 | mk=3 | mk=4 |
+|---|---|---|---|---|
+| 0 | 3.7% | 3.5% | 4.2% | 4.3% |
+| 1-2 | 9.6% | 28.4% | 37.4% | 43.7% |
+| 3-5 | 25.0% | 48.0% | 53.2% | 50.7% |
+| 6-10 | 44.1% | 19.5% | 5.1% | 1.4% |
+| 11+ | 17.6% | 0.7% | 0.0% | 0.0% |
+
+**Key finding:** The ring buffer doubles cluster tenure. Neurons stay in their
+cluster 4.2k ticks (mk=1) vs 6.7k (mk=2) vs 7.8k (mk=3) before entering a
+genuinely new cluster. Heavy oscillators (6+ jumps) drop from 62% → 20% → 5%.
+Primary tenure is similar (~4.5k ticks for all) because in-ring switches fill
+the gap — total boundary movement is unchanged, but the ring keeps neurons in
+familiar territory.
+
+mk=2 captures most of the benefit: jump tenure +61% (4.2k→6.7k), heavy
+oscillators -68% (62%→20%). mk=3/4 add diminishing returns.
