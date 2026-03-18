@@ -609,6 +609,83 @@ def visualize_clusters(cluster_ids, width, height, path=None):
     return img
 
 
+def visualize_clusters_signal(cluster_ids, signal, width, height,
+                               sig_channels=1, path=None):
+    """Render clusters using mean signal of member neurons.
+
+    For grayscale (sig_channels=1): each cluster gets brightness = mean signal.
+    For RGB (sig_channels=3): each pixel's channels are averaged per-cluster.
+
+    Args:
+        cluster_ids: (n,) int64, primary cluster per neuron
+        signal: (n,) float32, current signal frame (one value per neuron)
+        width, height: grid dimensions
+        sig_channels: 1 (grayscale) or 3 (RGB)
+        path: output image path
+    """
+    try:
+        import cv2
+    except ImportError:
+        return
+
+    m = cluster_ids.max() + 1
+    n = len(cluster_ids)
+
+    if sig_channels == 1:
+        # Mean signal per cluster
+        cluster_means = np.zeros(m, dtype=np.float32)
+        counts = np.bincount(cluster_ids, minlength=m).astype(np.float32)
+        np.add.at(cluster_means, cluster_ids, signal)
+        valid = counts > 0
+        cluster_means[valid] /= counts[valid]
+        # Map neurons to cluster mean
+        pixel_vals = cluster_means[cluster_ids]
+        # Normalize to 0-255
+        vmin, vmax = pixel_vals.min(), pixel_vals.max()
+        if vmax > vmin:
+            pixel_vals = (pixel_vals - vmin) / (vmax - vmin) * 255
+        else:
+            pixel_vals = np.full_like(pixel_vals, 128)
+        img = pixel_vals.reshape(height, width).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    else:
+        # RGB: n = h * w * sig_channels, group by pixel
+        n_pixels = height * width
+        # Reshape signal to (n_pixels, sig_channels)
+        sig_rgb = signal.reshape(n_pixels, sig_channels)
+        # Use cluster of first channel for each pixel (all channels share cluster)
+        pixel_cids = cluster_ids[:n_pixels * sig_channels:sig_channels]
+        # Mean RGB per cluster
+        cluster_rgb = np.zeros((m, sig_channels), dtype=np.float32)
+        counts = np.bincount(pixel_cids, minlength=m).astype(np.float32)
+        for ch in range(sig_channels):
+            np.add.at(cluster_rgb[:, ch], pixel_cids, sig_rgb[:, ch])
+        valid = counts > 0
+        for ch in range(sig_channels):
+            cluster_rgb[valid, ch] /= counts[valid]
+        # Map pixels to cluster mean RGB
+        pixel_rgb = cluster_rgb[pixel_cids]
+        # Normalize to 0-255
+        vmin, vmax = pixel_rgb.min(), pixel_rgb.max()
+        if vmax > vmin:
+            pixel_rgb = (pixel_rgb - vmin) / (vmax - vmin) * 255
+        else:
+            pixel_rgb = np.full_like(pixel_rgb, 128)
+        img = pixel_rgb.reshape(height, width, sig_channels).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+    # Scale up for visibility
+    scale = max(1, 512 // max(width, height))
+    if scale > 1:
+        img = cv2.resize(img, (width * scale, height * scale),
+                         interpolation=cv2.INTER_NEAREST)
+
+    if path:
+        cv2.imwrite(path, img)
+        print(f"  cluster signal map saved: {path}")
+    return img
+
+
 # ---------------------------------------------------------------------------
 # Phase 1: Offline k-means
 # ---------------------------------------------------------------------------

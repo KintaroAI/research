@@ -158,12 +158,12 @@ class _ClusterManager:
 
     def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
                  hysteresis=0.0, knn2_mode='incremental', centroid_mode='nudge',
-                 max_k=1, track_history=False):
+                 max_k=1, track_history=False, render_mode='color'):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
             streaming_update_v3_gpu, split_largest_cluster_gpu,
-            visualize_clusters, eval_clusters,
+            visualize_clusters, visualize_clusters_signal, eval_clusters,
         )
         self.n, self.m, self.w, self.h = n, m, w, h
         self.k2, self.lr, self.split_every = k2, lr, split_every
@@ -178,7 +178,12 @@ class _ClusterManager:
         self._stream_update = streaming_update_v3_gpu
         self._split = split_largest_cluster_gpu
         self._visualize = visualize_clusters
+        self._visualize_signal = visualize_clusters_signal
         self._eval = eval_clusters
+        self.render_mode = render_mode  # 'color', 'signal', 'both'
+        self._signals = None
+        self._signal_T = 0
+        self._sig_channels = 1
         if knn2_mode == 'knn':
             from cluster_experiments import frequency_knn
             self._freq_knn = frequency_knn
@@ -195,6 +200,12 @@ class _ClusterManager:
         self.track_history = track_history
         self._history = [] if track_history else None
         self._jump_counts = None  # per-neuron new-cluster jump counter
+
+    def set_signals(self, signals_t, sig_channels, T):
+        """Store signal tensor reference for signal-based rendering."""
+        self._signals = signals_t
+        self._sig_channels = sig_channels
+        self._signal_T = T
 
     def init_clusters(self, embeddings_t, knn_lists_np=None):
         """Initialize clusters via GPU k-means on current embeddings."""
@@ -443,8 +454,15 @@ class _ClusterManager:
                 switches_per_tick=switches_per_tick,
                 total_switches=self.total_switches)
         if self.output_dir:
-            path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
-            self._visualize(most_recent, self.w, self.h, path)
+            if self.render_mode in ('color', 'both'):
+                path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
+                self._visualize(most_recent, self.w, self.h, path)
+            if self.render_mode in ('signal', 'both') and self._signals is not None:
+                t = tick % self._signal_T
+                signal = self._signals[:, t].cpu().numpy()
+                path = os.path.join(self.output_dir, f"clusters_sig_{tick:06d}.png")
+                self._visualize_signal(most_recent, signal, self.w, self.h,
+                                       self._sig_channels, path)
 
     def save(self, output_dir):
         """Save cluster state at end of run."""
@@ -865,11 +883,15 @@ def run_word2vec(args):
                 hysteresis=cluster_hyst, knn2_mode=knn2_mode,
                 centroid_mode=centroid_mode,
                 max_k=cluster_max_k,
-                track_history=getattr(args, 'cluster_track_history', False))
+                track_history=getattr(args, 'cluster_track_history', False),
+                render_mode=getattr(args, 'cluster_render_mode', 'color'))
+            render_mode = getattr(args, 'cluster_render_mode', 'color')
+            if render_mode in ('signal', 'both'):
+                cluster_mgr.set_signals(signals, sig_channels, T)
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "
                   f"hysteresis={cluster_hyst}, knn2={knn2_mode}, "
-                  f"centroid={centroid_mode}, "
+                  f"centroid={centroid_mode}, render={render_mode}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
 
         # --- Training + rendering ---
@@ -1193,6 +1215,9 @@ def main():
                        help="Ring buffer depth for multi-cluster membership (default: 1)")
     p_w2v.add_argument("--cluster-track-history", action="store_true",
                        help="Save per-neuron cluster ID at each report interval")
+    p_w2v.add_argument("--cluster-render-mode", type=str, default='color',
+                       choices=['color', 'signal', 'both'],
+                       help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")
