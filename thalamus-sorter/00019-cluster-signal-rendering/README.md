@@ -51,4 +51,38 @@ Multi-channel neurons need careful handling since pixel `(x,y)` maps to
 
 ## Results
 
-*(pending)*
+### Run 002: Signal rendering (warm-start, mk=2, 20k)
+
+```
+warm-start from ts-00018 Run 001, 20k ticks, m=640, mk=2, lr=1.0, h=0.0
+report_every=1000, --cluster-render-mode signal
+Output: ~/data/research/thalamus-sorter/exp_00019/002_signal_compare_mk2_20k/
+```
+
+640/640 alive, contiguity=1.000 throughout. Each report saves both the raw
+signal frame (`signal_NNNNNN.png`) and the cluster-averaged version
+(`clusters_sig_NNNNNN.png`).
+
+#### Tick 4000 (clusters converged)
+
+| Raw signal | Cluster signal |
+|---|---|
+| ![signal 4k](img/signal_004000.png) | ![cluster signal 4k](img/clusters_sig_004000.png) |
+
+#### Tick 12000
+
+| Raw signal | Cluster signal |
+|---|---|
+| ![signal 12k](img/signal_012000.png) | ![cluster signal 12k](img/clusters_sig_012000.png) |
+
+#### Tick 16000
+
+| Raw signal | Cluster signal |
+|---|---|
+| ![signal 16k](img/signal_016000.png) | ![cluster signal 16k](img/clusters_sig_016000.png) |
+
+Each saccade crop shows a different region of the source image. The cluster
+signal is a faithful low-resolution reconstruction — edges, gradients, and
+spatial structure preserved. Each of the 640 clusters averages ~10 pixels,
+producing an adaptive superpixel quantization that follows the learned
+topographic map.
