@@ -116,3 +116,54 @@ The color-coded cluster maps show contiguous spatial patches (contiguity=1.000).
 Each patch in the cluster map corresponds to a uniform-brightness region in the
 cluster signal view — demonstrating that the topographic organization groups
 spatially correlated neurons together.
+
+### Run 005: 160×160 from scratch (mk=2, 10k, anchor-batches=4)
+
+Larger grid to test signal rendering at higher resolution. 25,600 neurons,
+2,560 clusters (~10 neurons each). Trained from scratch (no warm-start) with
+`--anchor-batches 4` (3,200 pairs/tick) for faster convergence.
+
+```
+preset: gray_160x160, n=25600, m=2560, mk=2, lr=1.0, h=0.0
+anchor-batches=4, report_every=100, 10k ticks
+Runtime: 403s, contiguity=1.000 by tick 5000
+Output: ~/data/research/thalamus-sorter/exp_00019/005_gray160_mk2_10k_ab4/
+```
+
+#### Tick 100 (random clusters)
+
+| Raw signal | Cluster signal | Cluster map |
+|---|---|---|
+| ![signal 100](img/160_signal_000100.png) | ![csig 100](img/160_clusters_sig_000100.png) | ![clusters 100](img/160_clusters_000100.png) |
+
+#### Tick 2000 (emerging structure)
+
+| Raw signal | Cluster signal | Cluster map |
+|---|---|---|
+| ![signal 2k](img/160_signal_002000.png) | ![csig 2k](img/160_clusters_sig_002000.png) | ![clusters 2k](img/160_clusters_002000.png) |
+
+#### Tick 3000 (nearly converged)
+
+| Raw signal | Cluster signal | Cluster map |
+|---|---|---|
+| ![signal 3k](img/160_signal_003000.png) | ![csig 3k](img/160_clusters_sig_003000.png) | ![clusters 3k](img/160_clusters_003000.png) |
+
+#### Tick 6700 (fully converged)
+
+| Raw signal | Cluster signal | Cluster map |
+|---|---|---|
+| ![signal 6.7k](img/160_signal_006700.png) | ![csig 6.7k](img/160_clusters_sig_006700.png) | ![clusters 6.7k](img/160_clusters_006700.png) |
+
+**Convergence timeline visible through signal rendering:**
+
+- **Tick 100:** Cluster signal is pure noise — random cluster assignments average
+  unrelated pixels.
+- **Tick 2000:** Large-scale structure emerges, still very grainy. Clusters
+  beginning to form spatial patches.
+- **Tick 3000:** Image clearly recognizable. Clusters mostly contiguous, smooth
+  superpixel boundaries forming.
+- **Tick 6700:** Crisp reconstruction. 2,560 adaptive superpixels faithfully
+  reproduce the source image. Contiguity=1.000, K10 <3px=98.2%.
+
+The signal rendering doubles as a real-time convergence indicator — when the
+image becomes clear, the topographic map has formed.
