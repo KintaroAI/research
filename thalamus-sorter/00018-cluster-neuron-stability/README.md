@@ -312,3 +312,20 @@ familiar territory.
 
 mk=2 captures most of the benefit: jump tenure +61% (4.2k→6.7k), heavy
 oscillators -68% (62%→20%). mk=3/4 add diminishing returns.
+
+## Known bugs / edge cases
+
+1. **Last neuron can leave via in-ring switch.** When `sizes[primary] == 1` and
+   best is already in the ring, the min_size=0 guard allows the switch.
+   `sizes[primary]` drops to 0 — cluster dies. The neuron didn't enter a new
+   cluster, just flipped primary within its ring. Rare in practice (zero splits
+   in 300k warm-start runs), but structurally possible.
+
+2. **Stale ring entries after split reuses dead cluster ID.** When a cluster
+   dies and split reuses its ID (`dead = empty[0]`), the new cluster gets a
+   fresh centroid and members. But neurons that previously visited the old
+   cluster may still have its ID in their ring slots. If they later do an
+   in-ring switch to that ID, they switch primary to what is now a completely
+   different cluster (different centroid, different location). The LRU
+   timestamp on the stale slot predates the cluster's death, which could be
+   used to detect and invalidate stale entries.
