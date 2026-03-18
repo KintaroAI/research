@@ -81,8 +81,38 @@ signal frame (`signal_NNNNNN.png`) and the cluster-averaged version
 |---|---|
 | ![signal 16k](img/signal_016000.png) | ![cluster signal 16k](img/clusters_sig_016000.png) |
 
+### Run 003: All three views (warm-start, mk=2, 20k, render=both)
+
+Same config as Run 002 but with `--cluster-render-mode both` to save color-coded
+cluster maps alongside signal renders.
+
+#### Tick 10000
+
+| Raw signal | Cluster signal | Cluster map |
+|---|---|---|
+| ![signal 10k](img/signal_010000.png) | ![cluster signal 10k](img/clusters_sig_010000.png) | ![clusters 10k](img/clusters_010000.png) |
+
+#### Tick 15000
+
+| Raw signal | Cluster signal | Cluster map |
+|---|---|---|
+| ![signal 15k](img/signal_015000.png) | ![cluster signal 15k](img/clusters_sig_015000.png) | ![clusters 15k](img/clusters_015000.png) |
+
+#### Tick 19000
+
+| Raw signal | Cluster signal | Cluster map |
+|---|---|---|
+| ![signal 19k](img/signal_019000.png) | ![cluster signal 19k](img/clusters_sig_019000.png) | ![clusters 19k](img/clusters_019000.png) |
+
+**Observations:**
+
 Each saccade crop shows a different region of the source image. The cluster
 signal is a faithful low-resolution reconstruction — edges, gradients, and
 spatial structure preserved. Each of the 640 clusters averages ~10 pixels,
 producing an adaptive superpixel quantization that follows the learned
 topographic map.
+
+The color-coded cluster maps show contiguous spatial patches (contiguity=1.000).
+Each patch in the cluster map corresponds to a uniform-brightness region in the
+cluster signal view — demonstrating that the topographic organization groups
+spatially correlated neurons together.
