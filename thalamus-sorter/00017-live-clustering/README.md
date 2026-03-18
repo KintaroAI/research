@@ -827,3 +827,97 @@ large overlapping regions, destroying spatial specificity.
 gets weight 1.0, LRU-1 gets 0.5, LRU-2 gets 0.25. This preserves centroid
 accuracy while still dampening boundary oscillations. Centroids become
 exponentially-weighted moving averages of recent membership.
+
+### Run 039: Multi-cluster ring buffer (max_k=1,2,3)
+
+Implemented the LRU soft multi-membership variant as a ring buffer per neuron.
+`cluster_ids` is always `(n, max_k)` with `-1` padding. `pointers[i]` tracks
+the write position. On reassignment, the pointer advances and the evicted
+cluster loses a member. No primary concept — every ring entry is equal
+membership. Visualization uses the most-recent entry.
+
+One code path for all max_k values. No `if multi/else` branches.
+
+```
+preset: gray_80x80_saccades
+n=6400, m=640, dims=8, k2=16, lr=1.0, h=0.0, split_every=10
+report_every=1000, 20k ticks
+```
+
+**Comparison with Run 038 (old code, max_k=1):** 148k vs 156k total jumps (~5%
+variance, within RNG tolerance). New ring buffer with 1 slot is functionally
+equivalent to the old 1D code path.
+
+| Metric | max_k=1 | max_k=2 | max_k=3 | old max_k=1 (038) |
+|---|---|---|---|---|
+| Time | 222s (11.0 ms/tick) | 237s (11.4 ms/tick) | 241s (12.0 ms/tick) | ~220s (11.0 ms/tick) |
+| Alive | 640/640 | 637/640 | 590/640 | 640/640 |
+| Contiguity | 0.999 | 0.997 | 0.985 | 1.000 |
+| Diameter | 4.3 | 5.0 | 5.8 | 4.0 |
+| Stability | 0.607 | **0.826** | 0.719 | 0.596 |
+| Jumps/tick (final) | 4.8 | 1.4 | 2.0 | 6.2 |
+| Total jumps | 147,867 | 113,760 | 99,874 | 156,021 |
+| Splits | 466 | 538 | 491 | 488 |
+| K10 mean | 1.89 | **1.81** | 1.86 | — |
+| K10 <3px | 96.3% | **98.4%** | 96.9% | — |
+
+**Findings:**
+
+1. **max_k=2 is the sweet spot.** Highest stability (0.826 vs 0.607), lowest
+   jumps/tick (1.4), best eval metrics (K10 <3px=98.4%). The ring buffer
+   absorbs A→B→A oscillations — a neuron that jumps to B still belongs to A,
+   so the "jump back" never fires.
+
+2. **max_k=3 degrades.** More dead clusters (50 vs 3), lower contiguity (0.985),
+   larger diameter (5.8). With 3 slots, neurons accumulate stale memberships
+   that prevent eviction. Clusters die because split can't reclaim neurons
+   fast enough — evicted neurons still count via older ring slots.
+
+3. **Fewer total jumps with higher max_k** (148k → 114k → 100k). Multi-membership
+   naturally reduces churn: a neuron near a cluster boundary already has both
+   clusters in its ring, so neither direction triggers a "new" reassignment.
+
+4. **Performance overhead is minimal.** 11.0 → 12.0 ms/tick from max_k=1 to
+   max_k=3 (9% overhead). Scatter_add batched centroid nudge keeps the GPU
+   path fast regardless of how many clusters are affected.
+
+5. **Contiguity degrades gracefully.** max_k=2 drops from 0.999 to 0.997
+   (negligible). max_k=3 drops to 0.985 — still good but the fuzzy membership
+   starts blurring boundaries.
+
+### Run 040–042: Split fix for ring buffer
+
+Run 039's split had a bug: it used ring advance to assign neurons to the dead
+cluster, but this left the old cluster in other ring slots. With max_k=2, it
+took 2 splits to fully remove a neuron from the donor cluster. With max_k=3,
+3 splits. This caused persistent dead clusters.
+
+**Fix:** On split, replace `largest` with `dead` in-place in the slot where
+`largest` was found. Clear any duplicate `largest` entries in other slots.
+Set pointer to the `dead` slot (its centroid is fitted to the neurons).
+No pointer advance — other ring entries are preserved.
+
+| Metric | max_k=1 | max_k=2 | max_k=3 |
+|---|---|---|---|
+| Time | 225s (11.3 ms/tick) | 233s (11.6 ms/tick) | 243s (12.2 ms/tick) |
+| Alive | 640/640 | 636/640 | 607/640 |
+| Contiguity | 0.999 | 0.991 | 0.981 |
+| Diameter | 4.3 | 5.2 | 5.8 |
+| Stability | 0.763 | 0.800 | **0.804** |
+| Jumps/tick (final) | 3.2 | 1.7 | **1.4** |
+| Total jumps | 152,726 | 119,649 | 107,259 |
+| Splits | 502 | 539 | 528 |
+| K10 mean | 1.86 | **1.83** | 1.84 |
+| K10 <3px | 97.3% | **98.0%** | 97.8% |
+
+**Changes vs Run 039:**
+
+- **max_k=3 alive improved:** 607 vs 590 (+17 clusters). Split fix lets
+  clusters actually reclaim neurons instead of churning.
+- **max_k=3 stability improved:** 0.804 vs 0.719. Now the best of all three —
+  deeper ring buffers genuinely dampen oscillations once splits work correctly.
+- **max_k=3 jumps/tick lowest:** 1.4 vs 2.0. Fewer false reassignments.
+- **max_k=2 similar:** 636 vs 637 alive, 0.800 vs 0.826 stability. The split
+  fix matters less for max_k=2 since only 1 extra split was needed to evict.
+- **max_k=1 unchanged:** 153k vs 148k jumps — within RNG variance, confirming
+  the fix is a no-op for single-slot rings.
