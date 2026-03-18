@@ -207,3 +207,48 @@ within their ring, which is cheap and expected).
 Total primary changes (jumps+switches) are similar: mk=1 has 57k, mk=2 has 58k.
 The ring doesn't reduce total movement — it reclassifies half of it as harmless
 in-ring switching.
+
+### Runs 018–019: 300k warm-start (mk=1 vs mk=2)
+
+Long runs to see if the jump rate settles or keeps growing. Wandb logging for
+continuous graphs.
+
+```
+warm-start from Run 001, 300k ticks, m=640, lr=1.0, h=0.0, report_every=5000
+wandb: mk1_300k (hjgnt0gh), mk2_300k (j6hjm05i)
+```
+
+| Metric | mk=1 | mk=2 |
+|---|---|---|
+| New-cluster jumps | 929,877 | **369,082** |
+| In-ring switches | 0 | 536,360 |
+| Jumps/tick (steady) | ~3.1 | **~1.2** |
+| Switches/tick (steady) | 0 | ~1.9 |
+| Total primary changes | 929,877 | 905,442 |
+| Splits | 1 | **0** |
+| Stability (5k window) | ~0.50 | ~0.51 |
+| K10 <3px | 98.2% | 98.0% |
+
+**Key findings:**
+
+1. **mk=2 cuts new-cluster jumps by 60% at 300k** (930k→369k). The benefit
+   grows over time: 46% at 20k → 60% at 300k. The ring accumulates more
+   registrations, absorbing more would-be jumps as switches.
+
+2. **Jump rate never settles for mk=1** — steady ~3.1 jumps/tick from tick 10k
+   through 300k. Boundary neurons keep discovering new clusters. mk=2 holds at
+   ~1.2 jumps/tick — still nonzero, but 60% lower.
+
+3. **Total primary changes are equal** (930k vs 905k). The ring doesn't reduce
+   boundary movement — it reclassifies 60% of jumps as in-ring switches. The
+   neuron still oscillates, but without entering new territory each time.
+
+4. **Zero splits for mk=2.** No cluster ever died in 300k ticks. mk=1 had 1
+   split (likely during initial settling). The primary-switch design keeps all
+   clusters healthy indefinitely.
+
+5. **Stability metric plateaus at ~0.50 for both.** This measures primary
+   changes (jumps + switches) between 5k-tick windows. Since total primary
+   changes are equal, stability is equal — the ring's benefit is invisible to
+   this metric. Need to track new-cluster jumps separately for meaningful
+   stability comparison.
