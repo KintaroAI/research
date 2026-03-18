@@ -92,11 +92,11 @@ cluster maps alongside signal renders.
 |---|---|---|
 | ![signal 10k](img/signal_010000.png) | ![cluster signal 10k](img/clusters_sig_010000.png) | ![clusters 10k](img/clusters_010000.png) |
 
-#### Tick 15000
+#### Tick 2000 (early convergence)
 
 | Raw signal | Cluster signal | Cluster map |
 |---|---|---|
-| ![signal 15k](img/signal_015000.png) | ![cluster signal 15k](img/clusters_sig_015000.png) | ![clusters 15k](img/clusters_015000.png) |
+| ![signal 2k](img/signal_002000.png) | ![cluster signal 2k](img/clusters_sig_002000.png) | ![clusters 2k](img/clusters_002000.png) |
 
 #### Tick 19000
 
