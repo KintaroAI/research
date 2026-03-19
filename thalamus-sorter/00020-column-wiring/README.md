@@ -3,6 +3,7 @@
 **Date:** 2026-03-18
 **Status:** In progress
 **Source:** `exp/ts-00020`
+**Commit:** `27c4b50`
 
 ## Goal
 
