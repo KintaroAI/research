@@ -185,3 +185,27 @@ Warm-start rerun (same config as above):
 
 Columns are now essentially free — tick time dominated by embedding training.
 Consistency assert passed, winner distribution and cluster metrics match.
+
+### 160x160 warm-start: 10k ticks, m=2560, ~10 neurons/cluster
+
+```
+python main.py word2vec --preset gray_160x160 -f 10000 \
+    --cluster-m 2560 --cluster-max-k 2 --cluster-report-every 1000 \
+    --column-outputs 4 --column-window 4 \
+    --warm-start exp_00019/006_gray160_mk2_10k_lr01x_warmstart/model.npy
+```
+
+- 25,600 neurons, 2,560 clusters, contiguity=1.000, diam=3.9
+- 25,587 initial wirings — nearly all neurons wired (max_inputs=20 >> 10 avg)
+- ~44 ms/tick, 441s total — columns add negligible overhead at 2560 clusters
+- Consistency assert passed all 10 intervals
+- Winner distribution very stable but flat:
+  ```
+  tick  1000: 656/628/632/644
+  tick  5000: 658/625/632/645
+  tick 10000: 654/615/647/644
+  ```
+- ~25% per output across 2560 columns — columns not differentiating
+- With only ~10 neurons per cluster, local brightness variance is too uniform
+  for 4 prototypes to specialize. Need lower temperature, more outputs,
+  or multi-channel signal to break symmetry
