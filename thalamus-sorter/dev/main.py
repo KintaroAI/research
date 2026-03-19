@@ -159,8 +159,9 @@ class _ClusterManager:
     def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
                  hysteresis=0.0, knn2_mode='incremental', centroid_mode='nudge',
                  max_k=1, track_history=False, render_mode='color',
-                 column_outputs=0, column_max_inputs=20,
-                 column_lr=0.05, column_temperature=0.5):
+                 column_outputs=0, column_max_inputs=20, column_window=4,
+                 column_lr=0.05, column_temperature=0.5,
+                 column_match_threshold=0.1, column_streaming_decay=0.5):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -208,7 +209,9 @@ class _ClusterManager:
             from column_manager import ColumnManager
             self.column_mgr = ColumnManager(
                 m, n_outputs=column_outputs, max_inputs=column_max_inputs,
-                temperature=column_temperature, lr=column_lr)
+                window=column_window, temperature=column_temperature,
+                lr=column_lr, match_threshold=column_match_threshold,
+                streaming_decay=column_streaming_decay)
 
     def set_signals(self, signals_t, sig_channels, T):
         """Store signal tensor reference for signal-based rendering."""
@@ -256,6 +259,15 @@ class _ClusterManager:
         if self.track_history:
             self._jump_counts = np.zeros(self.n, dtype=np.int64)
         self.initialized = True
+        # Wire all neurons to their initial cluster columns
+        if self.column_mgr:
+            for neuron in range(self.n):
+                for s in range(self.max_k):
+                    c = self.cluster_ids[neuron, s]
+                    if c >= 0:
+                        self.column_mgr.wire(c, neuron)
+            n_wired = (self.column_mgr.slot_map >= 0).sum()
+            print(f"  Columns: {n_wired} initial wirings across {self.m} columns")
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
               f"k2={self.k2}, knn2_mode={self.knn2_mode}, "
@@ -358,9 +370,11 @@ class _ClusterManager:
                         self.column_mgr.unwire(old_c, neuron)
                     self.column_mgr.wire(new_c, neuron)
             if self._signals is not None and self._signal_T > 0:
-                t = global_tick % self._signal_T
-                signal = self._signals[:, t].cpu().numpy()
-                self.column_mgr.tick(signal)
+                # Sliding window from circular buffer: col 0 = most recent
+                w = self.column_mgr.window
+                indices = [(global_tick - i) % self._signal_T for i in range(w)]
+                signal_window = self._signals[:, indices].cpu().numpy()  # (n, w)
+                self.column_mgr.tick(signal_window)
 
     def _update_knn2_gpu(self, pairs):
         """Update knn2 from skip-gram pairs — fully vectorized on GPU."""
@@ -962,8 +976,11 @@ def run_word2vec(args):
                 render_mode=getattr(args, 'cluster_render_mode', 'color'),
                 column_outputs=column_outputs,
                 column_max_inputs=getattr(args, 'column_max_inputs', 20),
+                column_window=getattr(args, 'column_window', 4),
                 column_lr=getattr(args, 'column_lr', 0.05),
-                column_temperature=getattr(args, 'column_temperature', 0.5))
+                column_temperature=getattr(args, 'column_temperature', 0.5),
+                column_match_threshold=getattr(args, 'column_match_threshold', 0.1),
+                column_streaming_decay=getattr(args, 'column_streaming_decay', 0.5))
             render_mode = getattr(args, 'cluster_render_mode', 'color')
             if render_mode in ('signal', 'both') or column_outputs > 0:
                 cluster_mgr.set_signals(signals, sig_channels, T)
@@ -1303,10 +1320,16 @@ def main():
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
                        help="Pre-allocated input slots per column (default: 20)")
+    p_w2v.add_argument("--column-window", type=int, default=4,
+                       help="Sliding window size for streaming columns (default: 4)")
     p_w2v.add_argument("--column-lr", type=float, default=0.05,
                        help="Column learning rate (default: 0.05)")
     p_w2v.add_argument("--column-temperature", type=float, default=0.5,
                        help="Column softmax temperature (default: 0.5)")
+    p_w2v.add_argument("--column-match-threshold", type=float, default=0.1,
+                       help="Column match threshold for dormant reassignment (default: 0.1)")
+    p_w2v.add_argument("--column-streaming-decay", type=float, default=0.5,
+                       help="Column streaming EMA decay (default: 0.5, rule of thumb: 1-2/window)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")
