@@ -486,9 +486,22 @@ class _ClusterManager:
               f"total_jumps={self.total_reassigned}, "
               f"total_switches={self.total_switches}, splits={self.total_splits}")
         if self.column_mgr:
+            # Consistency check: every slot_map wiring must have a matching ring entry
+            # (reverse is not required — columns can be full, not all neurons wired)
+            slot_map = self.column_mgr.slot_map
+            n_stale = 0
+            for c in range(self.m):
+                for s in range(self.column_mgr.max_inputs):
+                    neuron = int(slot_map[c, s])
+                    if neuron >= 0:
+                        if c not in self.cluster_ids[neuron]:
+                            n_stale += 1
+            assert n_stale == 0, (
+                f"Column wiring inconsistency: {n_stale} stale slot_map entries "
+                f"(neuron wired to column but not in cluster ring) at tick {tick}")
             outputs = self.column_mgr.get_outputs()
             # Count wired neurons per column
-            wired = (self.column_mgr.slot_map >= 0).sum(axis=1)
+            wired = (slot_map >= 0).sum(axis=1)
             n_wired_cols = (wired > 0).sum()
             # Winner distribution across all active columns
             if n_wired_cols > 0:
