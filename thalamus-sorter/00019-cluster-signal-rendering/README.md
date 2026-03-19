@@ -167,3 +167,35 @@ Output: ~/data/research/thalamus-sorter/exp_00019/005_gray160_mk2_10k_ab4/
 
 The signal rendering doubles as a real-time convergence indicator — when the
 image becomes clear, the topographic map has formed.
+
+### Run 006: Low-lr warm-start stability (160×160, mk=2, lr=0.0001)
+
+Warm-start from Run 005's converged model with 10x lower embedding lr
+(0.0001 vs 0.001). Tests cluster stability when embeddings barely move.
+
+```
+warm-start from Run 005, 10k ticks, m=2560, mk=2, lr=0.0001
+anchor-batches=4, --cluster-track-history
+Output: ~/data/research/thalamus-sorter/exp_00019/006_gray160_mk2_10k_lr01x_warmstart/
+```
+
+| Metric | Value |
+|---|---|
+| Contiguity | 0.999 |
+| Stability | 0.940 |
+| Total new-cluster jumps | 14,280 |
+| Total in-ring switches | 4,796 |
+| K10 <3px | 99.6% |
+
+Per-neuron jump statistics (tick 1500–10000):
+
+| Jumps | Neurons | % |
+|---|---|---|
+| 0 (never jumped) | 17,182 | 67.1% |
+| 1 | 4,635 | 18.1% |
+| 2–3 | 3,758 | 14.7% |
+| 4+ | 25 | 0.1% |
+
+**67% of neurons never change cluster** over 10k ticks. Mean 0.49 jumps/neuron,
+jump tenure 7,857 ticks. With low lr the embeddings barely drift, so clusters
+are nearly frozen — only boundary neurons occasionally shift.
