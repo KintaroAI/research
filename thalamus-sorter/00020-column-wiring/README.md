@@ -116,4 +116,52 @@ Each tick, for each cluster:
 
 ## Results
 
-*(pending)*
+### Smoke run: 1k ticks, 80x80, m=100, max_k=2, 4 outputs, window=4
+
+```
+python main.py word2vec --preset gray_80x80_saccades -f 1000 \
+    --cluster-m 100 --cluster-max-k 2 --cluster-report-every 200 \
+    --column-outputs 4 --column-window 4
+```
+
+**Commits:** `27c4b50` (initial impl), `54510f7` (streaming+window), `20322f7` (assert fix)
+
+- ~95 ms/tick — acceptable for 6400 neurons + 100 columns
+- 100/100 columns wired, 2000 total wirings (20 per column, capped at max_inputs)
+- Consistency assert (no stale slot_map entries) passed every 200 ticks
+- Winner distribution stays balanced, no collapse:
+  ```
+  tick  200: 25/22/26/27
+  tick  400: 26/28/22/24
+  tick  600: 24/23/29/24
+  tick  800: 21/28/30/21
+  tick 1000: 24/21/32/23
+  ```
+- Columns use streaming variance mode (temporal_mode='streaming', decay=0.5, window=4)
+- max_inputs=20 caps wiring at ~30% of neurons per cluster (64 avg members)
+
+### Warm-start: 10k ticks, 80x80, m=100, max_k=2, 4 outputs, window=4
+
+```
+python main.py word2vec --preset gray_80x80_saccades -f 10000 \
+    --cluster-m 100 --cluster-max-k 2 --cluster-report-every 1000 \
+    --column-outputs 4 --column-window 4 \
+    --warm-start exp_00019/001_signal_mk2_20k/model.npy
+```
+
+- Warm-start from 20k-tick pre-trained model (contiguity=1.000 from tick 1)
+- ~76 ms/tick (faster than cold-start — fewer reassignments with settled clusters)
+- Consistency assert passed all 10 report intervals — no stale wirings
+- Clusters stable: contiguity=1.000, diam=11.4, stability=0.86-0.92
+- Winner distribution over time:
+  ```
+  tick  1000: 19/24/29/28
+  tick  3000: 20/23/29/28
+  tick  5000: 21/24/28/27
+  tick  7000: 21/27/26/26
+  tick 10000: 19/22/31/28
+  ```
+- Distribution balanced but not sharply discriminating — output 2 consistently
+  wins slightly more. Columns may need more outputs, lower temperature, or
+  more diverse input to develop sharp categories
+- eval: K10 mean=1.75, <3px=99.3% — embedding quality excellent
