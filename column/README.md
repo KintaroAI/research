@@ -93,6 +93,23 @@ winner, mq = cell.update(trace)
 | n ≤ T, best quality needed | Correlation |
 | n > T, or real-time, or large n | Streaming |
 
+**Recommended settings** (tested for 20 inputs, 4 outputs — scales to similar configs):
+
+| Parameter | Instantaneous | Streaming (T=10) | Streaming (T=20) |
+|---|---|---|---|
+| temperature | 0.3 | 0.5 | 0.3 |
+| lr | 0.05 | 0.05 | 0.05 |
+| match_threshold | 0.5 | 0.1 | 0.1 |
+| usage_decay | 0.99 | 0.99 | 0.99 |
+| streaming_decay | — | 0.5 | 0.8 |
+
+Rule of thumb: `streaming_decay ≈ 1 - 2/T` (effective window ≈ T/2).
+
+**Sparse inputs are fine.** If you allocate 20 inputs but only 4 carry signal (rest
+are zero), performance is identical to a 4-input cell. The dead channels contribute
+nothing to the dot product. However, high-amplitude noise on unused channels will
+hurt — keep them at zero or very low noise.
+
 ### Dynamic inputs — add/remove channels live
 
 ```python
