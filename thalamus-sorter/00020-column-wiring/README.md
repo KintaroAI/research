@@ -1,7 +1,7 @@
 # ts-00020: Column Wiring — Thalamus-to-Cortex Connection
 
 **Date:** 2026-03-18
-**Status:** In progress
+**Status:** Complete
 **Source:** `exp/ts-00020`
 **Commit:** `27c4b50`
 
@@ -205,7 +205,43 @@ python main.py word2vec --preset gray_160x160 -f 10000 \
   tick  5000: 658/625/632/645
   tick 10000: 654/615/647/644
   ```
-- ~25% per output across 2560 columns — columns not differentiating
-- With only ~10 neurons per cluster, local brightness variance is too uniform
-  for 4 prototypes to specialize. Need lower temperature, more outputs,
-  or multi-channel signal to break symmetry
+- Winner distribution across columns is balanced (each output wins ~25% of
+  columns) — this is good, different columns pick different winners
+- But per-column confidence is weak — mean winner probability 37% (vs 25%
+  uniform), most columns in 30-40% range:
+  ```
+  winner prob  count
+  25-30%:       527   (near uniform — no differentiation)
+  30-40%:      1251   (mild preference)
+  40-50%:       611   (moderate)
+  50-60%:       154
+  60-70%:        14
+  70-80%:         3
+  >80%:           0
+  ```
+- Only 10/2560 columns have confidence gap > 0.5
+- With ~10 neurons per cluster and grayscale signal, streaming variance across
+  a 4-frame window of ~10 pixel values doesn't vary enough between prototype
+  directions for sharp specialization
+
+## Conclusions
+
+**What works:**
+- Column wiring mechanics are correct — wire/unwire/split events maintain
+  consistency (forward assert: no stale slot_map entries)
+- Vectorized ColumnManager scales to 2560 columns with negligible overhead
+  (1.4ms per tick via batched bmm)
+- All 4 outputs get used across columns (no collapse)
+
+**What doesn't work yet:**
+- Per-column differentiation is weak — most columns have 30-40% winner
+  probability, far from the sharp 90%+ seen in column benchmarks
+- Grayscale signal with ~10 neurons per cluster and window=4 doesn't provide
+  enough input diversity for streaming variance prototypes to specialize
+
+**Next steps to explore:**
+- Multi-channel signal (RGB) — more dimensions per neuron
+- Larger window — more temporal variation for streaming variance to detect
+- Lower temperature — sharpen softmax competition
+- More outputs (8-16) — finer categorization may emerge easier than coarse
+- Feed cluster-level aggregated signal instead of per-neuron raw signal
