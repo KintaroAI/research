@@ -158,7 +158,9 @@ class _ClusterManager:
 
     def __init__(self, n, m, w, h, k2, lr, split_every, output_dir, wlog=None,
                  hysteresis=0.0, knn2_mode='incremental', centroid_mode='nudge',
-                 max_k=1, track_history=False, render_mode='color'):
+                 max_k=1, track_history=False, render_mode='color',
+                 column_outputs=0, column_max_inputs=20,
+                 column_lr=0.05, column_temperature=0.5):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -200,6 +202,13 @@ class _ClusterManager:
         self.track_history = track_history
         self._history = [] if track_history else None
         self._jump_counts = None  # per-neuron new-cluster jump counter
+        # Column wiring
+        self.column_mgr = None
+        if column_outputs > 0:
+            from column_manager import ColumnManager
+            self.column_mgr = ColumnManager(
+                m, n_outputs=column_outputs, max_inputs=column_max_inputs,
+                temperature=column_temperature, lr=column_lr)
 
     def set_signals(self, signals_t, sig_channels, T):
         """Store signal tensor reference for signal-based rendering."""
@@ -263,7 +272,7 @@ class _ClusterManager:
 
         if self.knn2_mode == 'knn':
             # knn mode: knn2 is neuron-index based (numpy)
-            n_reassigned, affected, _, n_blocked, n_switches = self._stream_update(
+            n_reassigned, affected, _, n_blocked, n_switches, wiring_events = self._stream_update(
                 embeddings_t, self.centroids_t, self.cluster_ids, self.knn2,
                 anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
@@ -296,7 +305,7 @@ class _ClusterManager:
         else:
             # incremental mode: knn2 is cluster-index based (GPU tensors)
             knn2_np = self.knn2_t.cpu().numpy()
-            n_reassigned, affected, _, n_blocked, n_switches = self._stream_update(
+            n_reassigned, affected, _, n_blocked, n_switches, wiring_events = self._stream_update(
                 embeddings_t, self.centroids_t, self.cluster_ids, knn2_np,
                 anchors_np, lr=effective_lr, sizes=self.sizes, min_size=0,
                 rng=self.rng, hysteresis=self.hysteresis,
@@ -319,13 +328,18 @@ class _ClusterManager:
             n_empty = (self.sizes == 0).sum()
             if n_empty > 0:
                 n_to_split = min(n_empty, max(1, n_empty // 5))
-                n_splits = self._split(
+                n_splits, split_events = self._split(
                     embeddings_t, self.centroids_t, self.cluster_ids,
                     self.sizes, self.m, n_splits=n_to_split,
                     seed=self.rng.randint(1000000),
                     pointers=self.pointers, last_used=self.last_used,
                     tick=global_tick)
                 self.total_splits += n_splits
+                # Process split wiring events
+                if self.column_mgr and split_events:
+                    for neuron, old_c, new_c in split_events:
+                        self.column_mgr.unwire(old_c, neuron)
+                        self.column_mgr.wire(new_c, neuron)
                 if n_splits > 0:
                     most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
                     if self.knn2_mode == 'knn' and self.knn_lists is not None:
@@ -335,6 +349,18 @@ class _ClusterManager:
                         self.cluster_ids_t = torch.from_numpy(
                             most_recent.astype(np.int64)).to(self.device)
                         self._recompute_knn2_dists()
+
+        # Column wiring: process stream update events + tick columns
+        if self.column_mgr:
+            if wiring_events:
+                for neuron, old_c, new_c in wiring_events:
+                    if old_c >= 0:
+                        self.column_mgr.unwire(old_c, neuron)
+                    self.column_mgr.wire(new_c, neuron)
+            if self._signals is not None and self._signal_T > 0:
+                t = global_tick % self._signal_T
+                signal = self._signals[:, t].cpu().numpy()
+                self.column_mgr.tick(signal)
 
     def _update_knn2_gpu(self, pairs):
         """Update knn2 from skip-gram pairs — fully vectorized on GPU."""
@@ -445,6 +471,19 @@ class _ClusterManager:
               f"switches/tick={switches_per_tick:.1f}, "
               f"total_jumps={self.total_reassigned}, "
               f"total_switches={self.total_switches}, splits={self.total_splits}")
+        if self.column_mgr:
+            outputs = self.column_mgr.get_outputs()
+            # Count wired neurons per column
+            wired = (self.column_mgr.slot_map >= 0).sum(axis=1)
+            n_wired_cols = (wired > 0).sum()
+            # Winner distribution across all active columns
+            if n_wired_cols > 0:
+                active_out = outputs[wired > 0]
+                winners = active_out.argmax(axis=1)
+                winner_dist = np.bincount(winners, minlength=self.column_mgr.n_outputs)
+                dist_str = '/'.join(str(int(x)) for x in winner_dist)
+                print(f"  Columns @ tick {tick}: {n_wired_cols}/{self.m} wired, "
+                      f"winner_dist=[{dist_str}]")
         if self.wlog:
             self.wlog.log_clusters(
                 tick, n_alive, self.m, metrics['contiguity_mean'],
@@ -518,6 +557,8 @@ class _ClusterManager:
             np.save(os.path.join(output_dir, "history_ids.npy"), ids)
             np.save(os.path.join(output_dir, "history_jumps.npy"), jumps)
             print(f"  cluster history saved: {len(self._history)} snapshots")
+        if self.column_mgr:
+            self.column_mgr.save(output_dir)
         print(f"  cluster state saved to {output_dir}")
 
 
@@ -908,6 +949,7 @@ def run_word2vec(args):
             knn2_mode = getattr(args, 'cluster_knn2_mode', 'incremental')
             centroid_mode = getattr(args, 'cluster_centroid_mode', 'nudge')
             cluster_max_k = getattr(args, 'cluster_max_k', 1)
+            column_outputs = getattr(args, 'column_outputs', 0)
             cluster_mgr = _ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
                 lr=getattr(args, 'cluster_lr', 1.0),
@@ -917,14 +959,19 @@ def run_word2vec(args):
                 centroid_mode=centroid_mode,
                 max_k=cluster_max_k,
                 track_history=getattr(args, 'cluster_track_history', False),
-                render_mode=getattr(args, 'cluster_render_mode', 'color'))
+                render_mode=getattr(args, 'cluster_render_mode', 'color'),
+                column_outputs=column_outputs,
+                column_max_inputs=getattr(args, 'column_max_inputs', 20),
+                column_lr=getattr(args, 'column_lr', 0.05),
+                column_temperature=getattr(args, 'column_temperature', 0.5))
             render_mode = getattr(args, 'cluster_render_mode', 'color')
-            if render_mode in ('signal', 'both'):
+            if render_mode in ('signal', 'both') or column_outputs > 0:
                 cluster_mgr.set_signals(signals, sig_channels, T)
+            col_str = f", columns={column_outputs}out" if column_outputs > 0 else ""
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "
                   f"hysteresis={cluster_hyst}, knn2={knn2_mode}, "
-                  f"centroid={centroid_mode}, render={render_mode}, "
+                  f"centroid={centroid_mode}, render={render_mode}{col_str}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
 
         # --- Training + rendering ---
@@ -1251,6 +1298,15 @@ def main():
     p_w2v.add_argument("--cluster-render-mode", type=str, default='color',
                        choices=['color', 'signal', 'both'],
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
+    # column wiring (thalamus-to-cortex)
+    p_w2v.add_argument("--column-outputs", type=int, default=0,
+                       help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
+    p_w2v.add_argument("--column-max-inputs", type=int, default=20,
+                       help="Pre-allocated input slots per column (default: 20)")
+    p_w2v.add_argument("--column-lr", type=float, default=0.05,
+                       help="Column learning rate (default: 0.05)")
+    p_w2v.add_argument("--column-temperature", type=float, default=0.5,
+                       help="Column softmax temperature (default: 0.5)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")

@@ -160,6 +160,7 @@ if HAS_TORCH:
         n_switches = 0
         n_blocked = 0
         affected = set()
+        wiring_events = []  # list of (neuron, old_cluster, new_cluster)
 
         # Prefetch all anchor embeddings and centroids to CPU in one transfer
         anchor_embs = embeddings_t[anchors].cpu().numpy()
@@ -235,10 +236,12 @@ if HAS_TORCH:
 
                 # LRU eviction: replace least-recently-used slot
                 lru_slot = last_used[anchor].argmin()
+                evicted = int(cluster_ids[anchor, lru_slot])
                 cluster_ids[anchor, lru_slot] = best
                 anchor_cids[i, lru_slot] = best
                 last_used[anchor, lru_slot] = tick
                 pointers[anchor] = lru_slot
+                wiring_events.append((int(anchor), evicted, int(best)))
 
             sizes[primary] -= 1
             sizes[best] += 1
@@ -269,12 +272,12 @@ if HAS_TORCH:
                 centroids_t[affected_list] = torch.from_numpy(
                     centroids_cpu[affected_list]).to(centroids_t.device)
 
-        return n_reassigned, affected, sizes, n_blocked, n_switches
+        return n_reassigned, affected, sizes, n_blocked, n_switches, wiring_events
 
     def split_largest_cluster_gpu(embeddings_t, centroids_t, cluster_ids, sizes, m,
                                   n_splits=1, seed=None, pointers=None,
                                   last_used=None, tick=0):
-        """Split largest cluster(s) on GPU."""
+        """Split largest cluster(s) on GPU. Returns (splits_done, wiring_events)."""
         rng = np.random.RandomState(seed)
         max_k = cluster_ids.shape[1]
         if pointers is None:
@@ -282,6 +285,7 @@ if HAS_TORCH:
         if last_used is None:
             last_used = np.zeros((cluster_ids.shape[0], max_k), dtype=np.int64)
         splits_done = 0
+        wiring_events = []  # list of (neuron, old_cluster, new_cluster)
 
         for _ in range(n_splits):
             empty = np.where(sizes == 0)[0]
@@ -336,11 +340,12 @@ if HAS_TORCH:
                             last_used[neuron, s] = 0
                 sizes[largest] -= 1
                 sizes[dead] += 1
+                wiring_events.append((int(neuron), int(largest), int(dead)))
             centroids_t[largest] = member_emb[assign_cpu == 0].mean(dim=0)
             centroids_t[dead] = member_emb[assign_cpu == 1].mean(dim=0)
             splits_done += 1
 
-        return splits_done
+        return splits_done, wiring_events
 
 
 # ---------------------------------------------------------------------------
