@@ -165,3 +165,23 @@ python main.py word2vec --preset gray_80x80_saccades -f 10000 \
   wins slightly more. Columns may need more outputs, lower temperature, or
   more diverse input to develop sharp categories
 - eval: K10 mean=1.75, <3px=99.3% — embedding quality excellent
+
+### Vectorized ColumnManager: 56x column speedup (`b04576a`)
+
+Replaced per-column Python loop with batched tensor ops — all M columns
+stored as `(m, n_outputs, max_inputs)` tensors, processed in one `bmm` call.
+
+Microbenchmark (m=100, n_in=20, n_out=4, window=4):
+- Loop: 77.7 ms/tick → Batched: 1.38 ms/tick → **56x speedup**
+- Exact numerical match with loop version across 10 ticks
+
+Warm-start rerun (same config as above):
+
+| | Before (loop) | After (batched) |
+|---|---|---|
+| ms/tick | 76 ms | 17.5 ms |
+| Total 10k | 773s | 176s |
+| Column overhead | ~60 ms | ~1.4 ms |
+
+Columns are now essentially free — tick time dominated by embedding training.
+Consistency assert passed, winner distribution and cluster metrics match.
