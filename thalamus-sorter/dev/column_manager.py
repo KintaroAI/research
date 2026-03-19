@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 # ---------------------------------------------------------------------------
 # SoftWTACell — from column/dev/column.py, instantaneous + streaming modes
+# (kept for standalone use and benchmarks; ColumnManager uses batched ops)
 # ---------------------------------------------------------------------------
 
 class SoftWTACell:
@@ -230,11 +231,14 @@ class SoftWTACell:
 
 
 # ---------------------------------------------------------------------------
-# ColumnManager
+# ColumnManager — batched tensor ops, no per-column Python loop
 # ---------------------------------------------------------------------------
 
 class ColumnManager:
     """Manages M SoftWTACell columns, one per cluster.
+
+    All M columns are stored as batched tensors and processed in a single
+    forward+update pass (one bmm instead of M matmuls).
 
     Wiring map: slot_map[cluster_c, slot_s] = neuron_id (-1 = empty).
     Pre-allocates max_inputs per column (fixed size, no resizing).
@@ -250,14 +254,24 @@ class ColumnManager:
         self.n_outputs = n_outputs
         self.max_inputs = max_inputs
         self.window = window
-        self.columns = [SoftWTACell(max_inputs, n_outputs,
-                                    temperature=temperature, lr=lr,
-                                    match_threshold=match_threshold,
-                                    temporal_mode='streaming',
-                                    streaming_decay=streaming_decay)
-                        for _ in range(m)]
+        self.temperature = temperature
+        self.lr = lr
+        self.match_threshold = match_threshold
+        self.usage_decay = 0.99
+        self.streaming_decay = streaming_decay
+
+        # Batched state: (m, n_outputs, max_inputs) prototypes on unit sphere
+        self.prototypes = F.normalize(
+            torch.randn(m, n_outputs, max_inputs), dim=2)
+        # (m, n_outputs) usage counters
+        self.usage = torch.full((m, n_outputs), 1.0 / n_outputs)
+        # (m, n_outputs) streaming EMA state
+        self.proj_mean = torch.zeros(m, n_outputs)
+        self.proj_var = torch.zeros(m, n_outputs)
+
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
+        self._arange_m = torch.arange(m)
 
     def wire(self, cluster_id, neuron_id):
         """Wire a neuron to a cluster's column (lowest empty slot)."""
@@ -275,32 +289,98 @@ class ColumnManager:
             row[matches[0]] = -1
 
     def tick(self, signal_window):
-        """Forward + learn for all columns.
+        """Batched forward + learn for all M columns in one pass.
 
         Args:
             signal_window: (n, window) signal trace — column 0 is most recent.
         """
-        for c in range(self.m):
-            row = self.slot_map[c]
-            valid = row >= 0
-            if not valid.any():
-                self._outputs[c] = 0.0
-                continue
-            # Build (max_inputs, window) input matrix
-            inp = np.zeros((self.max_inputs, self.window), dtype=np.float32)
-            inp[valid] = signal_window[row[valid]]
-            x = torch.from_numpy(inp)
-            probs = self.columns[c].forward(x)
-            self.columns[c].update(x, probs)
-            self._outputs[c] = probs.detach().numpy()
+        m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
+        w = self.window
+        ar = self._arange_m
+
+        # --- Build batched input (m, max_inputs, window) via gather ---
+        sm = torch.from_numpy(self.slot_map)        # (m, max_inputs)
+        valid = sm >= 0                              # (m, max_inputs)
+        safe_sm = sm.clamp(min=0)                    # safe for indexing
+        sig = torch.from_numpy(signal_window)        # (n, window)
+        X = sig[safe_sm]                             # (m, max_inputs, window)
+        X[~valid] = 0.0
+
+        # --- Batched forward: streaming variance ---
+        # proj: (m, n_outputs, window) = prototypes @ X
+        proj = torch.bmm(self.prototypes, X)
+        proj_c = proj - proj.mean(dim=2, keepdim=True)
+        sim = (proj_c ** 2).mean(dim=2)              # (m, n_outputs)
+
+        # EMA update
+        d = self.streaming_decay
+        proj_mean_batch = proj.mean(dim=2)
+        self.proj_mean = d * self.proj_mean + (1 - d) * proj_mean_batch
+        self.proj_var = d * self.proj_var + (1 - d) * sim
+
+        # Softmax probabilities
+        probs = F.softmax(sim / self.temperature, dim=1)  # (m, n_outputs)
+
+        # --- Batched update ---
+        original_winners = probs.argmax(dim=1)       # (m,)
+
+        # Match quality: fraction of total variance from winner prototype
+        total_var = self.proj_var.sum(dim=1).clamp(min=1e-8)
+        match_q = self.proj_var[ar, original_winners] / total_var
+
+        # Dormant reassignment
+        dormant = self.usage.argmin(dim=1)
+        needs_reassign = (match_q < self.match_threshold) & (dormant != original_winners)
+        actual_winners = torch.where(needs_reassign, dormant, original_winners)
+
+        # Per-column learning rate
+        usage_at_orig = self.usage[ar, original_winners]
+        lr_normal = self.lr / (1.0 + n_out * usage_at_orig)
+        lr_eff = torch.where(needs_reassign, self.lr, lr_normal)  # (m,)
+
+        # Power iteration targets
+        X_c = X - X.mean(dim=2, keepdim=True)       # (m, n_in, w)
+        w_proto = self.prototypes[ar, actual_winners] # (m, n_in)
+        inner = torch.einsum('miw,mi->mw', X_c, w_proto)  # (m, w)
+        target = torch.einsum('miw,mw->mi', X_c, inner)   # (m, n_in)
+        target = target / max(w - 1, 1)
+        target_norm = target.norm(dim=1, keepdim=True)
+        target = target / target_norm.clamp(min=1e-8)
+
+        # Update winner prototypes where target is nonzero
+        do_update = (target_norm.squeeze(1) > 1e-8)
+        new_proto = w_proto + lr_eff.unsqueeze(1) * (target - w_proto)
+        new_proto = F.normalize(new_proto, dim=1)
+        idx = ar[do_update]
+        self.prototypes[idx, actual_winners[do_update]] = new_proto[do_update]
+
+        # Usage EMA
+        usage_target = torch.zeros(m, n_out)
+        usage_target[ar, actual_winners] = 1.0
+        self.usage = self.usage * self.usage_decay + usage_target * (1 - self.usage_decay)
+
+        # Store outputs
+        self._outputs = probs.detach().numpy()
 
     def get_outputs(self):
         """Return (m, n_outputs) array of all column outputs."""
         return self._outputs.copy()
 
     def save(self, output_dir):
-        """Save slot_map + all column state_dicts."""
+        """Save slot_map + batched column state."""
         np.save(os.path.join(output_dir, "column_slot_map.npy"), self.slot_map)
-        state_dicts = [col.state_dict() for col in self.columns]
-        torch.save(state_dicts, os.path.join(output_dir, "column_states.pt"))
+        torch.save({
+            'prototypes': self.prototypes,
+            'usage': self.usage,
+            'proj_mean': self.proj_mean,
+            'proj_var': self.proj_var,
+            'm': self.m,
+            'n_outputs': self.n_outputs,
+            'max_inputs': self.max_inputs,
+            'window': self.window,
+            'temperature': self.temperature,
+            'lr': self.lr,
+            'match_threshold': self.match_threshold,
+            'streaming_decay': self.streaming_decay,
+        }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")
