@@ -947,7 +947,22 @@ def run_word2vec(args):
             signals_np = np.random.rand(n, T).astype(np.float32) if K > 0 \
                 else np.zeros((n, T), dtype=np.float32)
 
-            if args.signal_source:
+            # Synthetic signal sources
+            xor_signal = None
+            xor_metadata = None
+            if args.signal_source == 'xor':
+                from synthetic_signals import make_xor_signal
+                xor_noise = getattr(args, 'xor_noise', 0.1)
+                xor_hold = getattr(args, 'xor_hold', 5)
+                xor_signal, xor_metadata = make_xor_signal(
+                    w, h, noise_std=xor_noise, hold_ticks=xor_hold)
+                # Pre-fill buffer
+                for t in range(T):
+                    signals_np[:n_sensory, t] = xor_signal(t)
+                print(f"  signal buffer: ({n}, {T}), XOR synthetic "
+                      f"(noise={xor_noise}, hold={xor_hold})")
+
+            elif args.signal_source:
                 if args.signal_source.endswith('.png') or args.signal_source.endswith('.jpg'):
                     img_bgr = cv2.imread(args.signal_source)
                     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -997,7 +1012,7 @@ def run_word2vec(args):
                       f"{args.signal_source} ({src_desc}), "
                       f"crop={crop_desc}, step={saccade_step}, {mean_sub}")
                 saccade_source = torch.from_numpy(source).to(dsolver.device)
-            else:
+            elif xor_signal is None:
                 from scipy.ndimage import gaussian_filter
                 for t in range(T):
                     noise = np.random.randn(h, w).astype(np.float32)
@@ -1016,7 +1031,12 @@ def run_word2vec(args):
         # --- Tick function ---
         if mode == "correlation":
             def do_tick():
-                if saccade_source is not None:
+                if xor_signal is not None:
+                    col = tick_counter[0] % T
+                    signals[:n_sensory, col] = torch.from_numpy(
+                        xor_signal(tick_counter[0] + T)).to(signals.device)
+                    tick_counter[0] += 1
+                elif saccade_source is not None:
                     nonlocal walk_dy, walk_dx
                     walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
                                       0, max_dy)
@@ -1210,6 +1230,37 @@ def run_word2vec(args):
             if output_dir:
                 cluster_mgr.save(output_dir)
 
+        # XOR analysis
+        if xor_metadata is not None and cluster_mgr is not None:
+            from synthetic_signals import analyze_xor_columns
+            # Collect current column outputs over a sample window
+            print("  XOR analysis: sampling 500 ticks...")
+            col_history = []
+            for t in range(500):
+                sig_t = xor_signal(args.frames + T + t)
+                col_t = tick_counter[0] % T
+                signals[:n_sensory, col_t] = torch.from_numpy(sig_t).to(signals.device)
+                tick_counter[0] += 1
+                if cluster_mgr.column_mgr and cluster_mgr._signals is not None:
+                    cw = cluster_mgr.column_mgr.window
+                    indices = [(tick_counter[0] - 1 - i) % T for i in range(cw)]
+                    sw = cluster_mgr._signals[:, indices].cpu().numpy()
+                    cluster_mgr.column_mgr.tick(sw)
+                    col_history.append((t, cluster_mgr.column_mgr.get_outputs()))
+            results = analyze_xor_columns(xor_metadata, col_history)
+            if 'best_per_feature' in results:
+                print(f"  XOR results ({results['n_ticks']} ticks):")
+                for fname, info in results['best_per_feature'].items():
+                    print(f"    {fname:3s}: max|r|={info['max_abs_corr']:.3f} "
+                          f"(col {info['best_column']}, out {info['best_output']}), "
+                          f"mean|r|={info['mean_abs_corr']:.3f}")
+            if output_dir:
+                import json
+                xor_path = os.path.join(output_dir, "xor_analysis.json")
+                with open(xor_path, 'w') as f:
+                    json.dump(results.get('best_per_feature', {}), f, indent=2)
+                print(f"  XOR analysis saved: {xor_path}")
+
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
                                t0, args.frames, total_pairs=total_pairs,
                                wlog=wlog, n_sensory=n_sensory if K > 0 else None)
@@ -1326,7 +1377,11 @@ def main():
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
                        help="Gaussian smoothing sigma for signal generation (correlation mode, default: 3.0)")
     p_w2v.add_argument("--signal-source", type=str, default=None,
-                       help="Path to signal source: .npy (grayscale) or .png/.jpg (auto RGB)")
+                       help="Path to signal source: .npy/.png/.jpg, or 'xor' for synthetic XOR benchmark")
+    p_w2v.add_argument("--xor-noise", type=float, default=0.1,
+                       help="Per-neuron noise std for XOR signal (default: 0.1)")
+    p_w2v.add_argument("--xor-hold", type=int, default=5,
+                       help="Ticks to hold each A,B state in XOR signal (default: 5)")
     p_w2v.add_argument("--signal-channels", type=int, default=1,
                        help="Channels per pixel from source: 1=gray, 3=RGB, 4=RGBG (default: 1). "
                             "n = W*H*channels. PNG auto-loads as RGB.")
