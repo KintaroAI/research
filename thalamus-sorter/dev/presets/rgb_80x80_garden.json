@@ -18,5 +18,9 @@
     "render": "umap",
     "eval": true,
     "save_model": true,
-    "gpu": true
+    "gpu": true,
+    "cluster_neurons_per": 10,
+    "column_outputs": 4,
+    "column_feedback": true,
+    "cluster_report_every": 1000
 }

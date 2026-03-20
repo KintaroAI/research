@@ -1441,16 +1441,16 @@ def main():
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
                        help="Pre-allocated input slots per column (default: 20)")
-    p_w2v.add_argument("--column-window", type=int, default=4,
-                       help="Sliding window size for streaming columns (default: 4)")
+    p_w2v.add_argument("--column-window", type=int, default=10,
+                       help="Sliding window size for streaming columns (default: 10)")
     p_w2v.add_argument("--column-lr", type=float, default=0.05,
                        help="Column learning rate (default: 0.05)")
     p_w2v.add_argument("--column-temperature", type=float, default=0.2,
                        help="Column softmax temperature (default: 0.2)")
     p_w2v.add_argument("--column-match-threshold", type=float, default=0.1,
                        help="Column match threshold for dormant reassignment (default: 0.1)")
-    p_w2v.add_argument("--column-streaming-decay", type=float, default=0.5,
-                       help="Column streaming EMA decay (default: 0.5, rule of thumb: 1-2/window)")
+    p_w2v.add_argument("--column-streaming-decay", type=float, default=0.8,
+                       help="Column streaming EMA decay (default: 0.8, rule of thumb: 1-2/window)")
     p_w2v.add_argument("--column-feedback", action="store_true",
                        help="Feed column outputs back as signal for feedback neurons")
     p_w2v.add_argument("--cluster-neurons-per", type=int, default=0,

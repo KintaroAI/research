@@ -108,4 +108,56 @@ dots (color = column hue). Useful for tracking feedback neuron organization.
 
 ## Results
 
-*(pending — running 100k with entropy-scaled lr and temperature=0.2)*
+### Run 008: 80×80, 10pp, 10k ticks (temp=0.5, no entropy lr)
+
+Config: `--cluster-neurons-per 10 --column-outputs 4 --column-feedback --lr 0.01`
+M=1066, K=4264, n_total=10664. 29ms/tick, 336s total.
+
+Clustering: 589/1066 alive, contiguity=0.387, diameter=26.3, stability=0.436.
+
+**Embedding separation:** Complete segregation — zero mixed clusters. 589
+pure-sensory, 474 pure-feedback. Feedback neurons form their own cloud in a
+separate region of embedding space (centroid distance 1.67).
+
+**Embedding statistics:**
+- Sensory intra-distances: mean=1.53, per-dim std≈0.40
+- Feedback intra-distances: mean=0.54, per-dim std≈0.13 (3× tighter)
+- Cross distances: mean=2.02 (larger than either intra)
+- Same-column output spread: 0.35 (tighter than random feedback pairs 0.54)
+- Output-to-input-centroid cosine: 0.22 (weak alignment)
+
+**Cluster composition:** Sensory clusters avg 10.9 neurons, feedback clusters
+avg 9.0 neurons. Both evenly distributed despite complete type segregation.
+
+**Column differentiation (temp=0.5):** Prototype directions well-separated
+(mean intra-column cosine ≈ 0), but softmax outputs near-uniform for 46% of
+columns. Max output probability: mean=0.387, 22% have clear winner (>0.50).
+Winner distribution skewed toward output 0: [619/163/145/136].
+
+### Run 009: 80×80, 10pp, 100k ticks (temp=0.5, no entropy lr)
+
+Config: same as 008 but 100k ticks.
+
+Clustering: 567/1066 alive, contiguity=0.496, diameter=19.4, stability=0.571.
+Winner dist [442/212/222/190] — still skewed toward output 0.
+
+Embedding separation persists at 100k — two distinct clouds on opposite
+corners of PCA projection. No mixing emerged with longer training.
+
+### Key Finding: Feedback Loop Does Not Close
+
+The derivative-correlation metric used for neighbor discovery produces
+fundamentally different signal profiles for sensory neurons (pixel crops in
+[0,1]) vs feedback neurons (softmax probabilities in [0,1]). The temporal
+derivatives have different variance structure, so the two populations never
+correlate with each other. Result: they form completely isolated embedding
+regions and never share clusters.
+
+The feedback neurons do self-organize — same-column outputs cluster together,
+column identity is captured in embedding directions — but this is an isolated
+system that doesn't interact with the sensory representation.
+
+### Run 010: 80×80, 10pp, 100k ticks (temp=0.2, entropy-scaled lr)
+
+*(running — lr=0.001 matching presets, testing whether peakier softmax and
+entropy-adaptive lr change the feedback signal enough to mix populations)*

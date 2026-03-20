@@ -50,6 +50,79 @@ Skip-gram updates and KNN tracking remain in float32.
 
 **Future: CUDA C kernel.** The matmul trick exists because PyTorch can't express a fused gather-correlate kernel. In CUDA C, a custom kernel could read each anchor signal once, loop over only its k_sample candidates, compute derivative + correlation inline, and write the score — no intermediate `sig_normed` buffer, no wasted O(n²) work. This would be genuinely O(batch × k_sample × T) with ~30x less computation than the current matmul at 320×320 (k_sample=3200 vs n=102400). The matmul is the right solution for PyTorch, but a fused CUDA kernel is the next step if correlation becomes the bottleneck again at larger scales.
 
+## Live clustering, columns & feedback
+
+Streaming k-means clusters neurons in embedding space. Each cluster gets a
+SoftWTACell column that learns to differentiate its members' signals. Column
+outputs can feed back as input to new "feedback neurons" — closing the loop.
+
+```bash
+# Basic clustering (no columns, no feedback)
+python main.py word2vec --preset gray_80x80_saccades -f 50000 --cluster-m 100
+
+# Full pipeline with feedback (recommended: use presets, they include these)
+python main.py word2vec --preset gray_80x80_saccades -f 50000
+```
+
+### Clustering flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--cluster-m` | 0 | Number of clusters (0=disabled) |
+| `--cluster-neurons-per` | 0 | Auto-compute M: `M = n_sensory / (N - column_outputs)` |
+| `--cluster-k2` | 16 | Cluster-level KNN size |
+| `--cluster-lr` | 1.0 | Centroid nudge learning rate |
+| `--cluster-split-every` | 10 | Dead cluster recovery interval (ticks) |
+| `--cluster-hysteresis` | 0.0 | Reassignment resistance (0=none) |
+| `--cluster-knn2-mode` | incremental | `incremental` (from pairs) or `knn` (requires --knn-track) |
+| `--cluster-centroid-mode` | nudge | `nudge` (lr-based drift) or `exact` (immediate) |
+| `--cluster-max-k` | 1 | Ring buffer depth for multi-cluster membership |
+| `--cluster-report-every` | 1000 | Save cluster viz + metrics every N ticks |
+| `--cluster-render-mode` | color | `color`, `signal`, or `both` |
+| `--cluster-track-history` | false | Save per-neuron cluster ID history |
+
+### Column wiring flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--column-outputs` | 0 | Outputs per column (0=disabled, 4=typical) |
+| `--column-max-inputs` | 20 | Pre-allocated input slots per column |
+| `--column-window` | 10 | Sliding window for streaming variance |
+| `--column-lr` | 0.05 | Column Hebbian learning rate |
+| `--column-temperature` | 0.2 | Softmax temperature (lower=peakier) |
+| `--column-match-threshold` | 0.1 | Dormant reassignment threshold |
+| `--column-streaming-decay` | 0.8 | EMA decay (rule of thumb: 1-2/window) |
+
+### Feedback loop flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--column-feedback` | false | Feed column outputs back as feedback neuron signals |
+| `--render-mode` | grid | `grid` (default) or `embed` (adds embed scatter plots) |
+
+When `--column-feedback` is enabled, K = M × column_outputs feedback neurons
+are added to the signal buffer. Their signals come from the previous tick's
+column outputs. Use `--cluster-neurons-per 10` with `--column-outputs 4` to
+get M = n_sensory/6 clusters with ~10 total neurons per cluster (6 sensory + 4
+feedback).
+
+`--render-mode embed` saves `embed_NNNNNN.png` at each `cluster_report_every`:
+PCA scatter of all neurons — sensory (gray dots) and feedback (colored by
+column hue). Does not affect normal frame rendering.
+
+### Column learning dynamics
+
+`ENTROPY_SCALED_LR = True` in `column_manager.py`: columns with uniform
+outputs (high entropy) learn at full rate; differentiated columns (low entropy)
+learn slowly. Prevents early lock-in while allowing gradual re-learning.
+
+### KNN tracking flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--knn-track` | 0 | Track per-neuron KNN list of this size (0=off) |
+| `--knn-report-every` | 1000 | Report KNN stability/spatial accuracy every N ticks |
+
 ## W&B logging
 
 Add `--wandb` to log KNN stability, training summary, and eval metrics to Weights & Biases in real-time:
