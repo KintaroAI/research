@@ -164,6 +164,7 @@ class _ClusterManager:
                  column_outputs=0, column_max_inputs=20, column_window=4,
                  column_lr=0.05, column_temperature=0.5,
                  column_match_threshold=0.1, column_streaming_decay=0.5,
+                 column_lateral=False,
                  n_sensory=None, embed_render=False, embed_method='pca',
                  column_n_outputs=0, renderer=None):
         import torch
@@ -222,7 +223,8 @@ class _ClusterManager:
                 m, n_outputs=column_outputs, max_inputs=column_max_inputs,
                 window=column_window, temperature=column_temperature,
                 lr=column_lr, match_threshold=column_match_threshold,
-                streaming_decay=column_streaming_decay)
+                streaming_decay=column_streaming_decay,
+                lateral=column_lateral)
 
     def set_signals(self, signals_t, sig_channels, T):
         """Store signal tensor reference for signal-based rendering."""
@@ -1083,6 +1085,7 @@ def run_word2vec(args):
                 column_temperature=getattr(args, 'column_temperature', 0.5),
                 column_match_threshold=getattr(args, 'column_match_threshold', 0.1),
                 column_streaming_decay=getattr(args, 'column_streaming_decay', 0.5),
+                column_lateral=getattr(args, 'column_lateral', False),
                 n_sensory=n_sensory,
                 embed_render=embed_render_mode,
                 embed_method=render_method,
@@ -1437,6 +1440,8 @@ def main():
                        help="Column streaming EMA decay (default: 0.8, rule of thumb: 1-2/window)")
     p_w2v.add_argument("--column-feedback", action="store_true",
                        help="Feed column outputs back as signal for feedback neurons")
+    p_w2v.add_argument("--column-lateral", action="store_true",
+                       help="Enable lateral connections between columns (full connectivity)")
     p_w2v.add_argument("--cluster-neurons-per", type=int, default=0,
                        help="Target neurons per cluster (auto-computes M from formula)")
     p_w2v.add_argument("--motor-column", type=int, default=-1,

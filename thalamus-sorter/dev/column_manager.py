@@ -253,7 +253,7 @@ class ColumnManager:
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
                  temperature=0.2, lr=0.05, match_threshold=0.1,
-                 streaming_decay=0.5):
+                 streaming_decay=0.5, lateral=False):
         self.m = m
         self.n_outputs = n_outputs
         self.max_inputs = max_inputs
@@ -263,6 +263,7 @@ class ColumnManager:
         self.match_threshold = match_threshold
         self.usage_decay = 0.99
         self.streaming_decay = streaming_decay
+        self.lateral = lateral
 
         # Batched state: (m, n_outputs, max_inputs) prototypes on unit sphere
         self.prototypes = F.normalize(
@@ -276,6 +277,13 @@ class ColumnManager:
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
         self._arange_m = torch.arange(m)
+
+        # Lateral connections: each column receives all other columns' outputs
+        if lateral:
+            lateral_dim = m * n_outputs
+            self.lateral_protos = F.normalize(
+                torch.randn(m, n_outputs, lateral_dim), dim=2)
+            self._prev_outputs = torch.zeros(m * n_outputs)
 
     def wire(self, cluster_id, neuron_id):
         """Wire a neuron to a cluster's column (lowest empty slot)."""
@@ -322,6 +330,14 @@ class ColumnManager:
         self.proj_mean = d * self.proj_mean + (1 - d) * proj_mean_batch
         self.proj_var = d * self.proj_var + (1 - d) * sim
 
+        # Lateral input: add similarity from other columns' previous outputs
+        if self.lateral:
+            lat_sim = torch.bmm(
+                self.lateral_protos,
+                self._prev_outputs.unsqueeze(0).expand(m, -1).unsqueeze(2)
+            ).squeeze(2)  # (m, n_outputs)
+            sim = sim + lat_sim
+
         # Softmax probabilities
         probs = F.softmax(sim / self.temperature, dim=1)  # (m, n_outputs)
 
@@ -364,6 +380,23 @@ class ColumnManager:
         idx = ar[do_update]
         self.prototypes[idx, actual_winners[do_update]] = new_proto[do_update]
 
+        # Lateral weight update
+        if self.lateral:
+            lat_w = self.lateral_protos[ar, actual_winners]  # (m, lat_dim)
+            lat_input = self._prev_outputs.unsqueeze(0).expand(m, -1)  # (m, lat_dim)
+            # Per-column target: scale lateral input by local match quality.
+            # Columns with strong local match reinforce the lateral pattern
+            # that co-occurred with their local activation. Columns with weak
+            # local match don't update lateral weights much.
+            local_strength = sim[ar, actual_winners]  # (m,) local variance sim
+            scale = local_strength / local_strength.mean().clamp(min=1e-8)
+            scaled_input = lat_input * scale.unsqueeze(1)
+            new_lat = lat_w + lr_eff.unsqueeze(1) * (scaled_input - lat_w)
+            new_lat = F.normalize(new_lat, dim=1)
+            self.lateral_protos[ar[do_update], actual_winners[do_update]] = new_lat[do_update]
+            # Store current outputs for next tick
+            self._prev_outputs = probs.detach().flatten()
+
         # Usage EMA
         usage_target = torch.zeros(m, n_out)
         usage_target[ar, actual_winners] = 1.0
@@ -392,5 +425,7 @@ class ColumnManager:
             'lr': self.lr,
             'match_threshold': self.match_threshold,
             'streaming_decay': self.streaming_decay,
+            'lateral': self.lateral,
+            'lateral_protos': self.lateral_protos if self.lateral else None,
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")
