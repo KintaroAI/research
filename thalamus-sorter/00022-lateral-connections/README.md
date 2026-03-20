@@ -86,6 +86,41 @@ This is tiny. Full connectivity:
 - Can sparsify later based on learned weight magnitudes
 - At M=1066 (80×80), lateral input is 4264 — still manageable
 
+### How lateral connections work
+
+Each column receives the previous tick's outputs from ALL other columns
+as additional input. A column in the XOR region doesn't just see its own
+neurons' signals — it also sees what the A-region column and B-region
+column outputted last tick. The column has two weight matrices: one for
+local neurons (existing), one for lateral inputs (new). Combined
+similarity determines output.
+
+### Contrastive learning rule
+
+When a column's output 2 wins (highest softmax probability):
+- **Pull** output 2's lateral weights toward the current lateral input
+  (reinforce the association)
+- **Push** outputs 0, 1, 3's lateral weights *away* from that same pattern
+  (force them to specialize on *different* lateral patterns)
+
+Without the push, all 4 outputs converge to the same lateral weights
+(verified in runs 001-002). With contrastive push, each output learns to
+respond to a different combination of other columns' states.
+
+### Signal hold time
+
+The XOR signal holds each A,B state for `hold` ticks before flipping.
+With hold=5 (default), columns barely produce a stable output before the
+input changes. The lateral weights learn from column *outputs*, so noisy
+transient outputs provide no learning signal. With hold=50, each state
+persists long enough for:
+1. Local columns to produce clean, stable outputs for A and B
+2. Those outputs to propagate as lateral input to the XOR column
+3. The XOR column's lateral weights to see a consistent pattern
+
+Hold=5 is like trying to learn from a strobe light. Hold=50 gives the
+system time to "think."
+
 ### XOR detection path
 
 With lateral connections, a column in the XOR region could learn:
