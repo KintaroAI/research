@@ -117,6 +117,38 @@ def _render_embed(job):
     cv2.imwrite(job['output_path'], frame)
 
 
+def _render_signal(job):
+    """Raw signal frame — normalize to grayscale/RGB image."""
+    import cv2
+    signal = job['signal']
+    w, h = job['width'], job['height']
+    sig_channels = job.get('sig_channels', 1)
+
+    if sig_channels == 1:
+        vmin, vmax = signal.min(), signal.max()
+        if vmax > vmin:
+            img = ((signal - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+        else:
+            img = np.full_like(signal, 128, dtype=np.uint8)
+        img = img.reshape(h, w)
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    else:
+        n_pixels = h * w
+        rgb = signal.reshape(n_pixels, sig_channels)
+        vmin, vmax = rgb.min(), rgb.max()
+        if vmax > vmin:
+            rgb = ((rgb - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+        else:
+            rgb = np.full_like(rgb, 128, dtype=np.uint8)
+        img = rgb.reshape(h, w, sig_channels)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    scale = max(1, 512 // max(w, h))
+    if scale > 1:
+        img = cv2.resize(img, (w * scale, h * scale),
+                         interpolation=cv2.INTER_NEAREST)
+    cv2.imwrite(job['output_path'], img)
+
+
 def _render_heatmap(job):
     """Motor position heatmap."""
     import cv2
@@ -139,6 +171,7 @@ HANDLERS = {
     'grid': _render_grid,
     'cluster': _render_cluster,
     'cluster_signal': _render_cluster_signal,
+    'signal': _render_signal,
     'embed': _render_embed,
     'heatmap': _render_heatmap,
 }
@@ -390,6 +423,85 @@ class RenderClient:
         except (ConnectionRefusedError, FileNotFoundError,
                 OSError, socket.timeout):
             return None
+
+
+# ---------------------------------------------------------------------------
+# Renderer — high-level API for main.py
+# ---------------------------------------------------------------------------
+
+class Renderer:
+    """High-level render API. Wraps RenderClient with typed methods.
+
+    Usage:
+        renderer = Renderer(output_dir, w, h)
+        renderer.grid(tick, embeddings, pixel_values, method='umap')
+        renderer.cluster(tick, cluster_ids)
+        renderer.embed(tick, embeddings, n_sensory, cluster_ids=..., ...)
+        renderer.signal(tick, signal_data)
+        renderer.heatmap(positions)
+
+    All methods are fire-and-forget via the render server.
+    If server is unavailable, calls are silently dropped.
+    """
+
+    def __init__(self, output_dir, w, h, sig_channels=1, n_workers=2):
+        self.output_dir = output_dir
+        self.w = w
+        self.h = h
+        self.sig_channels = sig_channels
+        self._client = None
+        self._n_workers = n_workers
+        if output_dir:
+            self._client = RenderClient.connect_or_spawn(n_workers=n_workers)
+
+    def _path(self, prefix, tick, ext='png'):
+        return os.path.join(self.output_dir, f"{prefix}_{tick:06d}.{ext}")
+
+    def _submit(self, render_type, output_path, **kwargs):
+        if self._client is None:
+            return
+        return self._client.submit(render_type, output_path, **kwargs)
+
+    def grid(self, tick, embeddings, pixel_values, method='pca',
+             align=False, gpu=False):
+        """Voronoi grid render of sensory embeddings."""
+        self._submit('grid', self._path('frame', tick),
+                     embeddings=embeddings, pixel_values=pixel_values,
+                     width=self.w, height=self.h,
+                     method=method, align=align, gpu=gpu)
+
+    def cluster(self, tick, cluster_ids):
+        """Color-coded cluster map."""
+        self._submit('cluster', self._path('clusters', tick),
+                     cluster_ids=cluster_ids,
+                     width=self.w, height=self.h)
+
+    def cluster_signal(self, tick, cluster_ids, signal):
+        """Cluster signal map — mean signal per cluster."""
+        self._submit('cluster_signal', self._path('clusters_sig', tick),
+                     cluster_ids=cluster_ids, signal=signal,
+                     width=self.w, height=self.h,
+                     sig_channels=self.sig_channels)
+
+    def signal(self, tick, signal_data):
+        """Raw signal frame."""
+        self._submit('signal', self._path('signal', tick),
+                     signal=signal_data,
+                     width=self.w, height=self.h,
+                     sig_channels=self.sig_channels)
+
+    def embed(self, tick, embeddings, n_sensory, pixel_values=None,
+              cluster_ids=None, n_outputs=4, method='pca'):
+        """Scatter plot of all neurons in embedding space."""
+        self._submit('embed', self._path('embed', tick),
+                     embeddings=embeddings, n_sensory=n_sensory,
+                     pixel_values=pixel_values, cluster_ids=cluster_ids,
+                     n_outputs=n_outputs, method=method)
+
+    def heatmap(self, positions, name='motor_heatmap'):
+        """Position heatmap (e.g., motor saccade positions)."""
+        path = os.path.join(self.output_dir, f"{name}.png")
+        self._submit('heatmap', path, positions=positions)
 
 
 if __name__ == '__main__':
