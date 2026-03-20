@@ -396,7 +396,25 @@ direction. The system develops consistent gaze trajectories, not random
 exploration. Whether these trajectories follow meaningful image features
 (edges, textures) or are just self-reinforcing drift remains open.
 
-### Run 023: Motor + proprio, 100k ticks
+### Run 023: Motor + proprio, 16×16, 100k ticks
 
-*(running — testing whether longer training develops stable gaze
-attractors or the trajectory evolves over time)*
+Config: `--preset gray_16x16_garden --saccade-step 5 --motor-column 0
+--motor-scale 10 -f 100000`, urgency_rate=0.005.
+
+Clustering: 25/42 alive, contiguity=**1.000**, diameter=**3.8**,
+stability=0.991. Eval: 97.2% within 3px.
+Winner dist `[12/9/9/12]` — fully balanced, all 4 outputs active.
+Motor magnitude=0.50, position uniformity=7.6.
+
+Embedding shows three distinct populations: sensory neurons form a
+clean diamond/square manifold (well-organized topographic map),
+feedback neurons split into two groups — a ring-like cluster and
+a smaller fragmented cluster.
+
+**Embedding at 100k ticks:**
+
+![embed_motor_100k](embed_motor_100k.png)
+
+**Motor heatmap (100k saccade positions):**
+
+![motor_heatmap_100k](motor_heatmap_100k.png)
