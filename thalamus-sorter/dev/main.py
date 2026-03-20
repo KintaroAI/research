@@ -1039,7 +1039,7 @@ def run_word2vec(args):
         if motor_proprio:
             proprio_idx = list(range(n_sensory - 6, n_sensory))
             urgency = np.zeros(4, dtype=np.float32)  # dx+, dx-, dy+, dy-
-            urgency_rate = 0.02  # ramp per tick when not moving
+            urgency_rate = 0.005  # ramp per tick when not moving (~200 ticks to 1.0)
             prev_walk = [walk_dx if saccade_source is not None else 0,
                          walk_dy if saccade_source is not None else 0]
             print(f"Motor proprioception: neurons {proprio_idx}, "
@@ -1342,14 +1342,15 @@ def run_word2vec(args):
                       f"mean|motor|={motor_mag.mean():.2f}, "
                       f"position uniformity={uniformity:.3f} "
                       f"(0=uniform, higher=concentrated)")
-                # Save histogram as image
-                hist_norm = hist2d / max(hist2d.max(), 1)
-                hist_img = (hist_norm * 255).astype(np.uint8)
-                scale = max(1, 512 // max(x_range, y_range))
-                if scale > 1:
-                    hist_img = cv2.resize(hist_img, (x_range * scale, y_range * scale),
-                                          interpolation=cv2.INTER_NEAREST)
-                hist_img = cv2.applyColorMap(hist_img, cv2.COLORMAP_HOT)
+                # Save heatmap: circles + blur for visibility
+                img_heat = np.zeros((y_range, x_range, 3), dtype=np.uint8)
+                for px, py in positions:
+                    cv2.circle(img_heat, (px, py), 3, (0, 0, 25), -1)
+                img_heat = cv2.GaussianBlur(img_heat, (15, 15), 0)
+                channel = img_heat[:, :, 2]
+                p90 = np.percentile(channel[channel > 0], 90) if (channel > 0).any() else 1
+                channel = np.clip(channel.astype(np.float32) / p90 * 255, 0, 255).astype(np.uint8)
+                hist_img = cv2.applyColorMap(channel, cv2.COLORMAP_HOT)
                 cv2.imwrite(os.path.join(output_dir, "motor_heatmap.png"), hist_img)
                 print(f"  motor heatmap saved: {output_dir}/motor_heatmap.png")
 

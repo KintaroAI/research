@@ -352,3 +352,51 @@ same image and check whether the motor column's outputs are stable
 (learned preference) or follow the random walk (just echoing movement).
 A truly useful motor signal would produce a non-uniform position
 histogram concentrated on image regions with specific features.
+
+### Motor Proprioception (runs 019-022)
+
+Added 6 override neurons (last 6 sensory neurons) carrying:
+- **Position** (2 neurons): normalized crop x,y position [0,1]
+- **Urgency** (4 neurons): one per direction (dx+, dx-, dy+, dy-).
+  Ramps at `urgency_rate` per tick when that direction hasn't moved,
+  resets to 0 on movement. Acts as a "hunger" signal for exploration.
+
+**Confidence-gated exploration:** When motor output is strong, random
+saccade walk is suppressed. `rand_step *= (1 - confidence)` where
+`confidence = min(1, motor_magnitude / motor_scale)`. System explores
+when uncertain, exploits when confident.
+
+**Run 019** (no random walk, urgency_rate=0.02):
+Saccade got stuck — winner collapsed to `[42/0/0/0]`. Without random
+walk to provide initial signal variety, all columns converge to the same
+output. Motor magnitude=0.06 (near zero). Urgency saturated at 1.0 in
+50 ticks but couldn't break the deadlock.
+
+**Run 020** (saccade_step=5, urgency_rate=0.02, scale=10):
+Working. Winner dist `[15/8/11/8]`, motor magnitude=1.01. Heatmap
+shows two hotspots — gaze concentrating in specific image regions.
+Contiguity=0.976, 91.2% within 3px. Small random walk provides
+enough exploration while motor bias steers toward preferred regions.
+
+**Run 021** (saccade_step=5, confidence-gated, urgency_rate=0.02):
+Clear diagonal trajectory across garden image. Motor magnitude=0.70,
+gaze confined to ~30% of image canvas along one path. Winner dist
+`[12/15/6/9]`. The gaze follows what appears to be an edge/feature
+boundary in the source image.
+
+**Run 022** (urgency_rate=0.005, ~200 ticks to saturate):
+Gaze hugs right edge of garden image with bright hotspot in top-right
+corner. Motor magnitude=0.46 (lower — less urgency pressure). Winner
+dist `[11/8/7/16]` — output 3 (dy-) dominant, matching the downward
+trajectory.
+
+**Key observation:** Motor column (cluster 0) is always pure sensory —
+a small pixel patch whose response to local texture drives the saccade
+direction. The system develops consistent gaze trajectories, not random
+exploration. Whether these trajectories follow meaningful image features
+(edges, textures) or are just self-reinforcing drift remains open.
+
+### Run 023: Motor + proprio, 100k ticks
+
+*(running — testing whether longer training develops stable gaze
+attractors or the trajectory evolves over time)*
