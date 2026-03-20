@@ -22,6 +22,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+# Entropy-scaled learning rate: columns with uniform outputs learn faster,
+# differentiated columns learn slower (stable but can re-learn gradually).
+# Set to False to use the original usage-only lr scaling.
+ENTROPY_SCALED_LR = True
 
 # ---------------------------------------------------------------------------
 # SoftWTACell — from column/dev/column.py, instantaneous + streaming modes
@@ -42,7 +46,7 @@ class SoftWTACell:
       - 'streaming': variance-based similarity, input (n,) or (n, T)
     """
 
-    def __init__(self, n_inputs, n_outputs, temperature=0.5, lr=0.05,
+    def __init__(self, n_inputs, n_outputs, temperature=0.2, lr=0.05,
                  match_threshold=0.1, usage_decay=0.99,
                  temporal_mode='streaming', streaming_decay=0.5):
         self.n_inputs = n_inputs
@@ -248,7 +252,7 @@ class ColumnManager:
     """
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
-                 temperature=0.5, lr=0.05, match_threshold=0.1,
+                 temperature=0.2, lr=0.05, match_threshold=0.1,
                  streaming_decay=0.5):
         self.m = m
         self.n_outputs = n_outputs
@@ -337,6 +341,12 @@ class ColumnManager:
         usage_at_orig = self.usage[ar, original_winners]
         lr_normal = self.lr / (1.0 + n_out * usage_at_orig)
         lr_eff = torch.where(needs_reassign, self.lr, lr_normal)  # (m,)
+
+        # Entropy-scaled lr: uniform columns learn fast, differentiated slow
+        if ENTROPY_SCALED_LR:
+            H = -(probs * torch.log(probs + 1e-10)).sum(dim=1)  # (m,)
+            H_max = np.log(n_out)
+            lr_eff = lr_eff * (H / H_max)
 
         # Power iteration targets
         X_c = X - X.mean(dim=2, keepdim=True)       # (m, n_in, w)

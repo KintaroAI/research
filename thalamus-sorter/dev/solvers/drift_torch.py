@@ -636,13 +636,14 @@ class DriftSolver:
         self._knn_prev = self.knn_lists.clone()
         return overlap, n_changed, top50_swaps, top90_swaps
 
-    def knn_spatial_accuracy(self, width, radius=3, channels=1):
+    def knn_spatial_accuracy(self, width, radius=3, channels=1, n_eval=None):
         """Fraction of KNN neighbors that are within `radius` pixels on the grid.
 
         Args:
             width: grid width (neurons laid out row-major within each channel)
             radius: spatial proximity threshold in pixels
             channels: number of signal channels (neurons 0..w*h-1 = ch0, etc.)
+            n_eval: only evaluate first n_eval neurons (sensory subset)
 
         Returns:
             accuracy: float in [0, 1], mean fraction of K neighbors within radius
@@ -650,17 +651,18 @@ class DriftSolver:
         if self.knn_k <= 0:
             return 0.0
 
-        hw = self.n // channels  # pixels per channel
+        ne = n_eval if n_eval is not None else self.n
+        hw = ne // channels  # pixels per channel
         # Grid coords for all neurons (channel-aware: neuron i → pixel i % hw)
         pixel_ids = torch.arange(self.n, device=self.device) % hw
         gy = pixel_ids // width
         gx = pixel_ids % width
         ch = torch.arange(self.n, device=self.device) // hw
 
-        # Coords of each neuron and its KNN neighbors
-        nx, ny, nc = gx, gy, ch
-        knn_flat = self.knn_lists  # (n, K)
-        kx = gx[knn_flat]  # (n, K)
+        # Coords of each neuron and its KNN neighbors (evaluate only first ne)
+        nx, ny, nc = gx[:ne], gy[:ne], ch[:ne]
+        knn_flat = self.knn_lists[:ne]  # (ne, K)
+        kx = gx[knn_flat]  # (ne, K)
         ky = gy[knn_flat]
         kc = ch[knn_flat]
 

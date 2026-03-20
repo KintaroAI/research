@@ -77,7 +77,7 @@ def _eval_embeddings(emb, w, h):
 
 
 def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
-                            total_pairs=None, wlog=None):
+                            total_pairs=None, wlog=None, n_sensory=None):
     """Common end-of-run: eval, info.json, model save."""
     import time
     if output_dir:
@@ -91,6 +91,8 @@ def _save_results_and_model(output_dir, args, dsolver, w, h, t0, max_frames,
             results["total_pairs"] = total_pairs
         if getattr(args, 'eval', False):
             emb = dsolver.get_positions()
+            if n_sensory is not None:
+                emb = emb[:n_sensory]
             results["eval"] = _eval_embeddings(emb, w, h)
             if wlog:
                 e = results["eval"]
@@ -161,7 +163,9 @@ class _ClusterManager:
                  max_k=1, track_history=False, render_mode='color',
                  column_outputs=0, column_max_inputs=20, column_window=4,
                  column_lr=0.05, column_temperature=0.5,
-                 column_match_threshold=0.1, column_streaming_decay=0.5):
+                 column_match_threshold=0.1, column_streaming_decay=0.5,
+                 n_sensory=None, embed_render=False, embed_method='pca',
+                 column_n_outputs=0):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -169,6 +173,12 @@ class _ClusterManager:
             visualize_clusters, visualize_clusters_signal, eval_clusters,
         )
         self.n, self.m, self.w, self.h = n, m, w, h
+        self.n_sensory = n_sensory if n_sensory is not None else n
+        self.embed_render = embed_render
+        self.embed_method = embed_method
+        self.column_n_outputs = column_n_outputs
+        self._dsolver = None  # set externally for embed rendering
+        self._pixel_values = None
         self.k2, self.lr, self.split_every = k2, lr, split_every
         self.max_k = max_k
         self.output_dir = output_dir
@@ -334,6 +344,13 @@ class _ClusterManager:
             if pairs is not None:
                 self._update_knn2_gpu(pairs)
 
+        # Column wiring: process stream update events before splits
+        if self.column_mgr and wiring_events:
+            for neuron, old_c, new_c in wiring_events:
+                if old_c >= 0:
+                    self.column_mgr.unwire(old_c, neuron)
+                self.column_mgr.wire(new_c, neuron)
+
         # Periodic split recovery
         if (self.split_every > 0 and global_tick > 0 and
                 global_tick % self.split_every == 0):
@@ -362,19 +379,21 @@ class _ClusterManager:
                             most_recent.astype(np.int64)).to(self.device)
                         self._recompute_knn2_dists()
 
-        # Column wiring: process stream update events + tick columns
+        # Column tick (after all wiring is settled)
         if self.column_mgr:
-            if wiring_events:
-                for neuron, old_c, new_c in wiring_events:
-                    if old_c >= 0:
-                        self.column_mgr.unwire(old_c, neuron)
-                    self.column_mgr.wire(new_c, neuron)
             if self._signals is not None and self._signal_T > 0:
                 # Sliding window from circular buffer: col 0 = most recent
                 w = self.column_mgr.window
                 indices = [(global_tick - i) % self._signal_T for i in range(w)]
                 signal_window = self._signals[:, indices].cpu().numpy()  # (n, w)
                 self.column_mgr.tick(signal_window)
+                # Write column outputs to feedback neuron rows for next tick
+                if self.n_sensory < self.n:
+                    outputs = self.column_mgr.get_outputs()  # (m, n_outputs)
+                    fb = torch.from_numpy(
+                        outputs.ravel().astype(np.float32)).to(self._signals.device)
+                    next_col = (global_tick + 1) % self._signal_T
+                    self._signals[self.n_sensory:, next_col] = fb
 
     def _update_knn2_gpu(self, pairs):
         """Update knn2 from skip-gram pairs — fully vectorized on GPU."""
@@ -448,16 +467,17 @@ class _ClusterManager:
             return
         most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
         centroids_np = self.centroids_t.cpu().numpy()
+        sensory_ids = most_recent[:self.n_sensory]
         if self.knn2_mode == 'knn':
             # Convert neuron-index knn2 to cluster-index for eval
             knn2_np = self.knn2.copy()
             valid = knn2_np >= 0
             knn2_np[valid] = most_recent[knn2_np[valid]]
-            metrics = self._eval(most_recent, centroids_np, knn2_np,
+            metrics = self._eval(sensory_ids, centroids_np, knn2_np,
                                  self.w, self.h, self.knn_lists)
         else:
             knn2_np = self.knn2_t.cpu().numpy()
-            metrics = self._eval(most_recent, centroids_np, knn2_np,
+            metrics = self._eval(sensory_ids, centroids_np, knn2_np,
                                  self.w, self.h)
         n_empty = metrics['n_empty']
         interval_reassigned = self.total_reassigned - self._prev_reassigned
@@ -520,17 +540,29 @@ class _ClusterManager:
                 switches_per_tick=switches_per_tick,
                 total_switches=self.total_switches)
         if self.output_dir:
+            ns = self.n_sensory
             if self.render_mode in ('color', 'both'):
                 path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
-                self._visualize(most_recent, self.w, self.h, path)
+                self._visualize(most_recent[:ns], self.w, self.h, path)
             if self.render_mode in ('signal', 'both') and self._signals is not None:
                 t = tick % self._signal_T
-                signal = self._signals[:, t].cpu().numpy()
+                signal = self._signals[:ns, t].cpu().numpy()
                 path = os.path.join(self.output_dir, f"clusters_sig_{tick:06d}.png")
-                self._visualize_signal(most_recent, signal, self.w, self.h,
+                self._visualize_signal(most_recent[:ns], signal, self.w, self.h,
                                        self._sig_channels, path)
                 # Save raw signal frame for comparison
                 self._save_signal_frame(signal, tick)
+            if self.embed_render and self._dsolver is not None:
+                from render_embeddings import render_embed
+                emb_all = self._dsolver.get_positions()
+                frame = render_embed(
+                    emb_all, self.n_sensory,
+                    pixel_values=self._pixel_values,
+                    cluster_ids=most_recent,
+                    n_outputs=self.column_n_outputs,
+                    method=self.embed_method)
+                path = os.path.join(self.output_dir, f"embed_{tick:06d}.png")
+                cv2.imwrite(path, frame)
 
     def _save_signal_frame(self, signal, tick):
         """Save the raw signal frame as an image for comparison."""
@@ -591,7 +623,7 @@ class _ClusterManager:
 
 def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
                        on_save=None, on_display=None, can_break=None,
-                       cluster_mgr=None):
+                       cluster_mgr=None, n_sensory=None):
     """Shared training loop for async and sync render paths.
 
     Callbacks:
@@ -655,7 +687,8 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
         if dsolver.knn_k > 0 and tick % knn_report_every == 0:
             dsolver._refresh_knn_dists()
             overlap, n_changed, top50_swaps, top90_swaps = dsolver.knn_stability()
-            spatial_acc = dsolver.knn_spatial_accuracy(w, radius=3, channels=sig_channels)
+            spatial_acc = dsolver.knn_spatial_accuracy(w, radius=3, channels=sig_channels,
+                                                       n_eval=n_sensory)
             dsolver._knn_overlap_history.append((tick, overlap, spatial_acc))
             lr_str = f" lr={dsolver.lr:.6f}" if dsolver.lr_decay < 1.0 else ""
             print(f"  KNN @ tick {tick}: overlap={overlap:.3f} "
@@ -759,12 +792,32 @@ def run_word2vec(args):
         anchor_sample = args.batch_size  # default: 1 batch
 
     if mode in ("sentence", "correlation"):
-        from render_embeddings import project, align_to_grid, render as render_emb
+        from render_embeddings import (project, align_to_grid,
+                                       render as render_emb, render_embed)
         import time
         import torch
 
         sig_channels = getattr(args, 'signal_channels', 1)
         n = w * h * sig_channels
+        n_sensory = n
+
+        # --- Feedback loop: column outputs → feedback neurons ---
+        column_outputs = getattr(args, 'column_outputs', 0)
+        column_feedback = getattr(args, 'column_feedback', False)
+        cluster_m = getattr(args, 'cluster_m', 0)
+        neurons_per = getattr(args, 'cluster_neurons_per', 0)
+
+        # Auto-compute M from neurons-per-cluster target
+        if cluster_m == 0 and neurons_per > 0 and column_outputs > 0:
+            cluster_m = n_sensory // (neurons_per - column_outputs)
+            args.cluster_m = cluster_m
+
+        K = 0
+        if column_feedback and cluster_m > 0 and column_outputs > 0:
+            K = cluster_m * column_outputs
+            n = n_sensory + K
+            print(f"Column feedback: K={K} feedback neurons, "
+                  f"n_sensory={n_sensory}, n_total={n}")
 
         # --- Pixel values for rendering (no model dependency) ---
         pixel_values = None
@@ -776,17 +829,39 @@ def run_word2vec(args):
                     2: np.array([1.0, 0.3, 0.3]),  # B -> blue (BGR)
                     3: np.array([0.8, 0.8, 0.8]),  # GS -> gray (BGR)
                 }
-                pixel_values = np.zeros((n, 3), dtype=np.uint8)
-                for i in range(n):
+                pixel_values = np.zeros((n_sensory, 3), dtype=np.uint8)
+                for i in range(n_sensory):
                     px = i // sig_channels
                     ch = i % sig_channels
                     gray = float(image[px // w, px % w])
                     tint = channel_tints.get(ch, np.array([1.0, 1.0, 1.0]))
                     pixel_values[i] = np.clip(gray * tint, 0, 255).astype(np.uint8)
             else:
-                pixel_values = np.zeros(n, dtype=np.uint8)
-                for i in range(n):
+                pixel_values = np.zeros(n_sensory, dtype=np.uint8)
+                for i in range(n_sensory):
                     pixel_values[i] = image[i // w, i % w]
+        elif args.signal_source and (
+                args.signal_source.endswith('.png') or
+                args.signal_source.endswith('.jpg') or
+                args.signal_source.endswith('.npy')):
+            # Center crop from signal source as static pixel values
+            if args.signal_source.endswith('.npy'):
+                src = np.load(args.signal_source)
+            else:
+                img_bgr = cv2.imread(args.signal_source)
+                src = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+            if src.ndim == 3:
+                src_h, src_w = src.shape[:2]
+            else:
+                src_h, src_w = src.shape
+            cy, cx = (src_h - h) // 2, (src_w - w) // 2
+            crop = src[cy:cy+h, cx:cx+w]
+            raw = crop.ravel()[:n_sensory]
+            vmin, vmax = raw.min(), raw.max()
+            if vmax > vmin:
+                pixel_values = ((raw - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+            else:
+                pixel_values = np.full(n_sensory, 128, dtype=np.uint8)
 
         render_w = w * sig_channels
         render_h = h
@@ -814,7 +889,7 @@ def run_word2vec(args):
             except RuntimeError:
                 pass  # already set
 
-            buf_size = n * args.dims
+            buf_size = n_sensory * args.dims
             shm_buf0 = mp.Array('f', buf_size)
             shm_buf1 = mp.Array('f', buf_size)
             shm_active = mp.Value('i', 0)
@@ -824,7 +899,7 @@ def run_word2vec(args):
             bufs = [shm_buf0, shm_buf1]
             worker = mp.Process(target=_render_worker,
                                 args=(shm_buf0, shm_buf1, shm_active, shm_tick,
-                                      shm_done, n, args.dims,
+                                      shm_done, n_sensory, args.dims,
                                       render_w, render_h, pixel_values,
                                       render_method,
                                       args.align, args.cold_projection,
@@ -852,6 +927,9 @@ def run_word2vec(args):
 
         if args.warm_start:
             warm = np.load(args.warm_start)
+            if K > 0 and warm.shape[0] == n_sensory:
+                fb_init = np.random.randn(K, args.dims).astype(np.float32) * 0.01
+                warm = np.concatenate([warm, fb_init], axis=0)
             dsolver.positions = torch.from_numpy(warm).to(dsolver.device)
             print(f"Warm start from {args.warm_start} ({warm.shape})")
 
@@ -866,7 +944,8 @@ def run_word2vec(args):
                   f"signal: T={T}, sigma={sigma}, "
                   f"normalize_every={norm_every}, align={args.align}")
 
-            signals_np = np.zeros((n, T), dtype=np.float32)
+            signals_np = np.random.rand(n, T).astype(np.float32) if K > 0 \
+                else np.zeros((n, T), dtype=np.float32)
 
             if args.signal_source:
                 if args.signal_source.endswith('.png') or args.signal_source.endswith('.jpg'):
@@ -908,9 +987,9 @@ def run_word2vec(args):
                                       0, max_dx)
                     crop = source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].ravel()
                     if use_raw:
-                        signals_np[:, t] = crop
+                        signals_np[:n_sensory, t] = crop
                     else:
-                        signals_np[:, t] = crop - crop.mean()
+                        signals_np[:n_sensory, t] = crop - crop.mean()
                 src_desc = f"{src_w}x{src_h}" + (f"x{sig_channels}" if source.ndim == 3 else "")
                 crop_desc = f"{crop_w}x{crop_h}" + (f"x{sig_channels}" if source.ndim == 3 else "")
                 mean_sub = "raw" if use_raw else "mean-subtracted"
@@ -923,7 +1002,7 @@ def run_word2vec(args):
                 for t in range(T):
                     noise = np.random.randn(h, w).astype(np.float32)
                     smoothed = gaussian_filter(noise, sigma=sigma)
-                    signals_np[:, t] = smoothed.ravel()
+                    signals_np[:n_sensory, t] = smoothed.ravel()
                 print(f"  signal buffer: ({n}, {T}), spatial sigma={sigma}")
 
             signals = torch.from_numpy(signals_np).to(dsolver.device)
@@ -946,9 +1025,9 @@ def run_word2vec(args):
                     crop = saccade_source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].reshape(-1)
                     col = tick_counter[0] % T
                     if use_raw:
-                        signals[:, col] = crop
+                        signals[:n_sensory, col] = crop
                     else:
-                        signals[:, col] = crop - crop.mean()
+                        signals[:n_sensory, col] = crop - crop.mean()
                     tick_counter[0] += 1
                 return dsolver.tick_correlation(
                     signals, k_sample=args.k_sample,
@@ -968,6 +1047,7 @@ def run_word2vec(args):
                 return 0
 
         # --- Live clustering ---
+        embed_render_mode = getattr(args, 'render_mode', 'grid') == 'embed'
         cluster_mgr = None
         cluster_m = getattr(args, 'cluster_m', 0)
         if cluster_m > 0:
@@ -993,10 +1073,16 @@ def run_word2vec(args):
                 column_lr=getattr(args, 'column_lr', 0.05),
                 column_temperature=getattr(args, 'column_temperature', 0.5),
                 column_match_threshold=getattr(args, 'column_match_threshold', 0.1),
-                column_streaming_decay=getattr(args, 'column_streaming_decay', 0.5))
+                column_streaming_decay=getattr(args, 'column_streaming_decay', 0.5),
+                n_sensory=n_sensory,
+                embed_render=embed_render_mode,
+                embed_method=render_method,
+                column_n_outputs=column_outputs)
             render_mode = getattr(args, 'cluster_render_mode', 'color')
             if render_mode in ('signal', 'both') or column_outputs > 0:
                 cluster_mgr.set_signals(signals, sig_channels, T)
+            cluster_mgr._pixel_values = pixel_values
+            cluster_mgr._dsolver = dsolver
             col_str = f", columns={column_outputs}out" if column_outputs > 0 else ""
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "
@@ -1009,7 +1095,7 @@ def run_word2vec(args):
             write_slot = [1]
 
             def on_save_async(tick, total_pairs):
-                emb = dsolver.get_positions()
+                emb = dsolver.get_positions()[:n_sensory]
                 dst = np.frombuffer(bufs[write_slot[0]].get_obj(),
                                     dtype=np.float32)
                 np.copyto(dst, emb.ravel())
@@ -1019,10 +1105,11 @@ def run_word2vec(args):
 
             t0, total_pairs = _run_training_loop(
                 do_tick, dsolver, args, n, w, sig_channels, wlog,
-                on_save=on_save_async, cluster_mgr=cluster_mgr)
+                on_save=on_save_async, cluster_mgr=cluster_mgr,
+                n_sensory=n_sensory if K > 0 else None)
 
             # Final snapshot
-            emb = dsolver.get_positions()
+            emb = dsolver.get_positions()[:n_sensory]
             dst = np.frombuffer(bufs[write_slot[0]].get_obj(), dtype=np.float32)
             np.copyto(dst, emb.ravel())
             shm_active.value = write_slot[0]
@@ -1043,9 +1130,22 @@ def run_word2vec(args):
         else:
             prev_2d = None
 
+            def _current_pixel_values():
+                """Derive pixel values from current signal crop."""
+                if pixel_values is not None:
+                    return pixel_values
+                if mode != "correlation":
+                    return None
+                col = (tick_counter[0] - 1) % T
+                raw = signals[:n_sensory, col].cpu().numpy()
+                vmin, vmax = raw.min(), raw.max()
+                if vmax > vmin:
+                    return ((raw - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+                return np.full(n_sensory, 128, dtype=np.uint8)
+
             def render_frame():
                 nonlocal prev_2d
-                emb = dsolver.get_positions()
+                emb = dsolver.get_positions()[:n_sensory]
                 warm = None if args.cold_projection else prev_2d
                 pos_2d = project(emb, render_w, render_h, render_method,
                                  prev_2d=warm, gpu=args.render_gpu)
@@ -1053,7 +1153,10 @@ def run_word2vec(args):
                     pos_2d = align_to_grid(pos_2d, render_w, render_h)
                 if not args.cold_projection:
                     prev_2d = pos_2d.copy()
-                return render_emb(pos_2d, render_w, render_h, pixel_values)
+                pv = _current_pixel_values()
+                if pv is None:
+                    return None
+                return render_emb(pos_2d, render_w, render_h, pv)
 
             saved = [0]
 
@@ -1083,7 +1186,8 @@ def run_word2vec(args):
                 do_tick, dsolver, args, n, w, sig_channels, wlog,
                 on_save=on_save_sync if output_dir else None,
                 on_display=on_display_sync if not output_dir else None,
-                can_break=poll_quit, cluster_mgr=cluster_mgr)
+                can_break=poll_quit, cluster_mgr=cluster_mgr,
+                n_sensory=n_sensory if K > 0 else None)
 
             elapsed = time.time() - t0
             s = dsolver.stats()
@@ -1108,7 +1212,7 @@ def run_word2vec(args):
 
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
                                t0, args.frames, total_pairs=total_pairs,
-                               wlog=wlog)
+                               wlog=wlog, n_sensory=n_sensory if K > 0 else None)
         wlog.finish()
         return
 
@@ -1262,6 +1366,10 @@ def main():
                             "bestpc (grid-correlated PCs), angular (unit norm + PCA), "
                             "direct (first 2 dims), procrustes/lstsq (supervised linear), "
                             "umap/tsne/spectral/mds (nonlinear) (default: euclidean)")
+    p_w2v.add_argument("--render-mode", choices=["grid", "embed"],
+                       default="grid",
+                       help="'grid' (default), 'embed' saves additional embed_NNNNNN.png "
+                            "scatter plots at cluster_report_every intervals")
     p_w2v.add_argument("--align", action="store_true",
                        help="Procrustes-align rendered output to grid (fixes rotation/flip)")
     p_w2v.add_argument("--warm-start", type=str, default=None,
@@ -1337,12 +1445,16 @@ def main():
                        help="Sliding window size for streaming columns (default: 4)")
     p_w2v.add_argument("--column-lr", type=float, default=0.05,
                        help="Column learning rate (default: 0.05)")
-    p_w2v.add_argument("--column-temperature", type=float, default=0.5,
-                       help="Column softmax temperature (default: 0.5)")
+    p_w2v.add_argument("--column-temperature", type=float, default=0.2,
+                       help="Column softmax temperature (default: 0.2)")
     p_w2v.add_argument("--column-match-threshold", type=float, default=0.1,
                        help="Column match threshold for dormant reassignment (default: 0.1)")
     p_w2v.add_argument("--column-streaming-decay", type=float, default=0.5,
                        help="Column streaming EMA decay (default: 0.5, rule of thumb: 1-2/window)")
+    p_w2v.add_argument("--column-feedback", action="store_true",
+                       help="Feed column outputs back as signal for feedback neurons")
+    p_w2v.add_argument("--cluster-neurons-per", type=int, default=0,
+                       help="Target neurons per cluster (auto-computes M from formula)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")

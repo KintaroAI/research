@@ -189,6 +189,88 @@ def render(pos_2d, width, height, pixel_values):
     return pixel_values[nearest].reshape(height, width)
 
 
+def render_embed(emb, n_sensory, pixel_values=None, cluster_ids=None,
+                 n_outputs=4, img_size=800, method='pca'):
+    """Scatter plot of all neurons in 2D embedding space.
+
+    Sensory neurons are small dots colored by pixel value (or grid position).
+    Feedback neurons are larger dots colored by their column (cluster) hue.
+
+    Args:
+        emb: (n_total, dims) embeddings for all neurons
+        n_sensory: number of sensory neurons (first n_sensory rows)
+        pixel_values: (n_sensory,) uint8 grayscale values, or None
+        cluster_ids: (n_total,) primary cluster per neuron, for coloring feedback
+        n_outputs: column outputs per cluster (feedback neurons per column)
+        img_size: output image size in pixels
+        method: projection method for 2D ('pca' or 'umap')
+
+    Returns:
+        (img_size, img_size, 3) uint8 BGR image
+    """
+    n_total = emb.shape[0]
+    K = n_total - n_sensory
+
+    # Project to 2D
+    if method == 'umap':
+        try:
+            import umap
+            reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1,
+                                random_state=42)
+            pos_2d = reducer.fit_transform(emb).astype(np.float64)
+        except ImportError:
+            method = 'pca'
+
+    if method != 'umap':
+        _, _, Vt = np.linalg.svd(emb, full_matrices=False)
+        pos_2d = (emb @ Vt[:2].T).astype(np.float64)
+
+    # Normalize to image coords with margin
+    margin = 0.05
+    for d in range(2):
+        mn, mx = pos_2d[:, d].min(), pos_2d[:, d].max()
+        span = mx - mn if mx - mn > 1e-8 else 1.0
+        pos_2d[:, d] = margin + (pos_2d[:, d] - mn) / span * (1 - 2 * margin)
+    coords = (pos_2d * (img_size - 1)).astype(np.int32)
+    coords = np.clip(coords, 0, img_size - 1)
+
+    img = np.full((img_size, img_size, 3), 32, dtype=np.uint8)  # dark background
+
+    # --- Draw sensory neurons (small dots) ---
+    if pixel_values is not None and len(pixel_values) == n_sensory:
+        for i in range(n_sensory):
+            x, y = coords[i]
+            v = int(pixel_values[i])
+            cv2.circle(img, (x, y), 1, (v, v, v), -1)
+    else:
+        # Color by grid position: x→hue, y→brightness
+        for i in range(n_sensory):
+            x, y = coords[i]
+            cv2.circle(img, (x, y), 1, (160, 160, 160), -1)
+
+    # --- Draw feedback neurons (larger, colored by column) ---
+    if K > 0:
+        # Generate per-column colors via golden ratio hue spacing
+        m = K // n_outputs if n_outputs > 0 else K
+        col_colors = np.zeros((m, 3), dtype=np.uint8)
+        for c in range(m):
+            hue = int((c * 137.508) % 180)
+            col_colors[c] = [hue, 230, 230]
+        hsv_block = col_colors.reshape(1, m, 3)
+        bgr_colors = cv2.cvtColor(hsv_block, cv2.COLOR_HSV2BGR).reshape(m, 3)
+
+        for i in range(K):
+            idx = n_sensory + i
+            x, y = coords[idx]
+            col_id = i // n_outputs if n_outputs > 0 else i
+            col_id = min(col_id, m - 1)
+            color = tuple(int(c) for c in bgr_colors[col_id])
+            cv2.circle(img, (x, y), 3, color, -1)
+            cv2.circle(img, (x, y), 3, (0, 0, 0), 1)  # black outline
+
+    return img
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Render saved embeddings to an image")
