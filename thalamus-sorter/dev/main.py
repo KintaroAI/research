@@ -594,12 +594,16 @@ class _ClusterManager:
             slot_map_path = os.path.join(state_dir, "column_slot_map.npy")
             if os.path.exists(col_state_path) and os.path.exists(slot_map_path):
                 state = torch.load(col_state_path, weights_only=True)
-                self.column_mgr.prototypes = state['prototypes']
-                self.column_mgr.usage = state['usage']
-                self.column_mgr.proj_mean = state.get('proj_mean',
-                    torch.zeros(self.m, self.column_mgr.n_outputs))
-                self.column_mgr.proj_var = state.get('proj_var',
-                    torch.zeros(self.m, self.column_mgr.n_outputs))
+                def _to_np(t):
+                    return t.numpy() if hasattr(t, 'numpy') else np.array(t)
+                self.column_mgr.prototypes = _to_np(state['prototypes'])
+                self.column_mgr.usage = _to_np(state['usage'])
+                self.column_mgr.proj_mean = _to_np(state.get('proj_mean',
+                    torch.zeros(self.m, self.column_mgr.n_outputs)))
+                self.column_mgr.proj_var = _to_np(state.get('proj_var',
+                    torch.zeros(self.m, self.column_mgr.n_outputs)))
+                if self.column_mgr.lateral and state.get('lateral_protos') is not None:
+                    self.column_mgr.lateral_protos = _to_np(state['lateral_protos'])
                 self.column_mgr.slot_map = np.load(slot_map_path)
                 n_wired = (self.column_mgr.slot_map >= 0).sum()
                 print(f"  Columns restored: {n_wired} wirings")

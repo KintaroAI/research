@@ -265,27 +265,27 @@ class ColumnManager:
         self.streaming_decay = streaming_decay
         self.lateral = lateral
 
-        # Batched state: (m, n_outputs, max_inputs) prototypes on unit sphere
-        self.prototypes = F.normalize(
-            torch.randn(m, n_outputs, max_inputs), dim=2)
-        # (m, n_outputs) usage counters
-        self.usage = torch.full((m, n_outputs), 1.0 / n_outputs)
-        # (m, n_outputs) streaming EMA state
-        self.proj_mean = torch.zeros(m, n_outputs)
-        self.proj_var = torch.zeros(m, n_outputs)
+        # Batched state: all numpy for minimal overhead on small tensors
+        rng = np.random.RandomState(42)
+        protos = rng.randn(m, n_outputs, max_inputs).astype(np.float32)
+        norms = np.linalg.norm(protos, axis=2, keepdims=True).clip(1e-8)
+        self.prototypes = protos / norms
+        self.usage = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
+        self.proj_mean = np.zeros((m, n_outputs), dtype=np.float32)
+        self.proj_var = np.zeros((m, n_outputs), dtype=np.float32)
 
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
-        self._arange_m = torch.arange(m)
+        self._arange_m = np.arange(m)
 
         # Lateral connections: each column receives all other columns' outputs
-        self.lateral_sparsity = 1.0  # fraction of connections to KEEP
+        self.lateral_sparsity = 1.0
         if lateral:
             lateral_dim = m * n_outputs
-            self.lateral_protos = F.normalize(
-                torch.randn(m, n_outputs, lateral_dim), dim=2)
-            self._prev_outputs = torch.zeros(m * n_outputs)
-            # Sparse mask: set via set_lateral_sparsity() after init
+            lat = rng.randn(m, n_outputs, lateral_dim).astype(np.float32)
+            lat_norms = np.linalg.norm(lat, axis=2, keepdims=True).clip(1e-8)
+            self.lateral_protos = lat / lat_norms
+            self._prev_outputs = np.zeros(m * n_outputs, dtype=np.float32)
             self._lateral_mask = None  # None = full connectivity
 
     def wire(self, cluster_id, neuron_id):
@@ -304,11 +304,11 @@ class ColumnManager:
         if keep_fraction >= 1.0:
             self._lateral_mask = None
             return
-        rng = torch.manual_seed(seed)
+        rng = np.random.RandomState(seed)
         lateral_dim = self.m * self.n_outputs
-        mask = (torch.rand(self.m, lateral_dim) < keep_fraction).float()
+        mask = (rng.rand(self.m, lateral_dim) < keep_fraction).astype(np.float32)
         self._lateral_mask = mask
-        n_kept = int(mask.sum().item())
+        n_kept = int(mask.sum())
         n_total = self.m * lateral_dim
         print(f"  Lateral sparsity: keeping {n_kept}/{n_total} "
               f"({keep_fraction*100:.0f}%) connections")
@@ -321,114 +321,100 @@ class ColumnManager:
             row[matches[0]] = -1
 
     def tick(self, signal_window):
-        """Batched forward + learn for all M columns in one pass.
-
-        Args:
-            signal_window: (n, window) signal trace — column 0 is most recent.
-        """
+        """Batched forward + learn for all M columns. Pure numpy, no torch."""
         m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
         w = self.window
         ar = self._arange_m
 
         # --- Build batched input (m, max_inputs, window) via gather ---
-        sm = torch.from_numpy(self.slot_map)        # (m, max_inputs)
-        valid = sm >= 0                              # (m, max_inputs)
-        safe_sm = sm.clamp(min=0)                    # safe for indexing
-        sig = torch.from_numpy(signal_window)        # (n, window)
-        X = sig[safe_sm]                             # (m, max_inputs, window)
+        safe_sm = np.clip(self.slot_map, 0, None)
+        valid = self.slot_map >= 0                    # (m, max_inputs)
+        X = signal_window[safe_sm]                    # (m, max_inputs, window)
         X[~valid] = 0.0
 
         # --- Batched forward: streaming variance ---
-        # proj: (m, n_outputs, window) = prototypes @ X
-        proj = torch.bmm(self.prototypes, X)
-        proj_c = proj - proj.mean(dim=2, keepdim=True)
-        sim = (proj_c ** 2).mean(dim=2)              # (m, n_outputs)
+        proj = self.prototypes @ X                    # (m, n_out, window)
+        proj_c = proj - proj.mean(axis=2, keepdims=True)
+        sim = (proj_c ** 2).mean(axis=2)              # (m, n_out)
 
         # EMA update
         d = self.streaming_decay
-        proj_mean_batch = proj.mean(dim=2)
-        self.proj_mean = d * self.proj_mean + (1 - d) * proj_mean_batch
+        self.proj_mean = d * self.proj_mean + (1 - d) * proj.mean(axis=2)
         self.proj_var = d * self.proj_var + (1 - d) * sim
 
-        # Lateral input: add similarity from other columns' previous outputs
+        # Lateral input
         if self.lateral:
-            lat_input = self._prev_outputs.unsqueeze(0).expand(m, -1)
+            lat_input = np.broadcast_to(self._prev_outputs, (m, len(self._prev_outputs)))
             if self._lateral_mask is not None:
                 lat_input = lat_input * self._lateral_mask
-            lat_sim = torch.bmm(
-                self.lateral_protos,
-                lat_input.unsqueeze(2)
-            ).squeeze(2)  # (m, n_outputs)
+            lat_sim = np.einsum('moi,mi->mo', self.lateral_protos, lat_input)
             sim = sim + lat_sim
 
-        # Softmax probabilities
-        probs = F.softmax(sim / self.temperature, dim=1)  # (m, n_outputs)
+        # Softmax
+        sim_scaled = sim / self.temperature
+        sim_scaled -= sim_scaled.max(axis=1, keepdims=True)
+        e = np.exp(sim_scaled)
+        probs = e / e.sum(axis=1, keepdims=True)      # (m, n_out)
 
         # --- Batched update ---
-        original_winners = probs.argmax(dim=1)       # (m,)
+        original_winners = probs.argmax(axis=1)        # (m,)
 
-        # Match quality: fraction of total variance from winner prototype
-        total_var = self.proj_var.sum(dim=1).clamp(min=1e-8)
+        # Match quality
+        total_var = self.proj_var.sum(axis=1).clip(1e-8)
         match_q = self.proj_var[ar, original_winners] / total_var
 
         # Dormant reassignment
-        dormant = self.usage.argmin(dim=1)
+        dormant = self.usage.argmin(axis=1)
         needs_reassign = (match_q < self.match_threshold) & (dormant != original_winners)
-        actual_winners = torch.where(needs_reassign, dormant, original_winners)
+        actual_winners = np.where(needs_reassign, dormant, original_winners)
 
         # Per-column learning rate
         usage_at_orig = self.usage[ar, original_winners]
         lr_normal = self.lr / (1.0 + n_out * usage_at_orig)
-        lr_eff = torch.where(needs_reassign, self.lr, lr_normal)  # (m,)
+        lr_eff = np.where(needs_reassign, self.lr, lr_normal)
 
-        # Entropy-scaled lr: uniform columns learn fast, differentiated slow
+        # Entropy-scaled lr
         if ENTROPY_SCALED_LR:
-            H = -(probs * torch.log(probs + 1e-10)).sum(dim=1)  # (m,)
+            H = -(probs * np.log(probs + 1e-10)).sum(axis=1)
             H_max = np.log(n_out)
             lr_eff = lr_eff * (H / H_max)
 
         # Power iteration targets
-        X_c = X - X.mean(dim=2, keepdim=True)       # (m, n_in, w)
-        w_proto = self.prototypes[ar, actual_winners] # (m, n_in)
-        inner = torch.einsum('miw,mi->mw', X_c, w_proto)  # (m, w)
-        target = torch.einsum('miw,mw->mi', X_c, inner)   # (m, n_in)
+        X_c = X - X.mean(axis=2, keepdims=True)       # (m, n_in, w)
+        w_proto = self.prototypes[ar, actual_winners]  # (m, n_in)
+        inner = np.einsum('miw,mi->mw', X_c, w_proto)
+        target = np.einsum('miw,mw->mi', X_c, inner)
         target = target / max(w - 1, 1)
-        target_norm = target.norm(dim=1, keepdim=True)
-        target = target / target_norm.clamp(min=1e-8)
+        target_norm = np.linalg.norm(target, axis=1, keepdims=True).clip(1e-8)
+        target = target / target_norm
 
-        # Update winner prototypes where target is nonzero
-        do_update = (target_norm.squeeze(1) > 1e-8)
-        new_proto = w_proto + lr_eff.unsqueeze(1) * (target - w_proto)
-        new_proto = F.normalize(new_proto, dim=1)
-        idx = ar[do_update]
-        self.prototypes[idx, actual_winners[do_update]] = new_proto[do_update]
+        # Update winner prototypes
+        do_update = target_norm.squeeze(1) > 1e-8
+        new_proto = w_proto + lr_eff[:, None] * (target - w_proto)
+        norms = np.linalg.norm(new_proto, axis=1, keepdims=True).clip(1e-8)
+        new_proto = new_proto / norms
+        update_idx = ar[do_update]
+        self.prototypes[update_idx, actual_winners[do_update]] = new_proto[do_update]
 
-        # Lateral weight update: contrastive — winner pulls, losers push
+        # Lateral contrastive update
         if self.lateral:
-            lat_input = self._prev_outputs.unsqueeze(0).expand(m, -1)  # (m, lat_dim)
-            # Build per-output sign: +1 for winner, -1/(n_out-1) for losers
-            # This makes each output specialize on different lateral patterns
-            winner_mask = torch.zeros(m, n_out)
-            winner_mask[ar, actual_winners] = 1.0
-            sign = torch.where(winner_mask > 0,
-                               torch.ones(m, n_out),
-                               torch.full((m, n_out), -1.0 / (n_out - 1)))
-            # Update all outputs simultaneously
-            delta = lat_input.unsqueeze(1) - self.lateral_protos  # (m, n_out, lat_dim)
-            lr_3d = lr_eff.unsqueeze(1).unsqueeze(2)  # (m, 1, 1)
-            sign_3d = sign.unsqueeze(2)                # (m, n_out, 1)
-            new_lat = self.lateral_protos + lr_3d * sign_3d * delta
-            self.lateral_protos = F.normalize(new_lat, dim=2)
-            # Store current outputs for next tick
-            self._prev_outputs = probs.detach().flatten()
+            lat_in = np.broadcast_to(self._prev_outputs, (m, len(self._prev_outputs)))
+            # Sign: +1 for winner, -1/(n_out-1) for losers
+            sign = np.full((m, n_out), -1.0 / (n_out - 1), dtype=np.float32)
+            sign[ar, actual_winners] = 1.0
+            delta = lat_in[:, None, :] - self.lateral_protos  # (m, n_out, lat_dim)
+            new_lat = self.lateral_protos + lr_eff[:, None, None] * sign[:, :, None] * delta
+            lat_norms = np.linalg.norm(new_lat, axis=2, keepdims=True).clip(1e-8)
+            self.lateral_protos = new_lat / lat_norms
+            self._prev_outputs = probs.ravel().copy()
 
         # Usage EMA
-        usage_target = torch.zeros(m, n_out)
+        usage_target = np.zeros((m, n_out), dtype=np.float32)
         usage_target[ar, actual_winners] = 1.0
         self.usage = self.usage * self.usage_decay + usage_target * (1 - self.usage_decay)
 
         # Store outputs
-        self._outputs = probs.detach().numpy()
+        self._outputs = probs.astype(np.float32)
 
     def get_outputs(self):
         """Return (m, n_outputs) array of all column outputs."""
@@ -436,12 +422,13 @@ class ColumnManager:
 
     def save(self, output_dir):
         """Save slot_map + batched column state."""
+        import torch as _torch
         np.save(os.path.join(output_dir, "column_slot_map.npy"), self.slot_map)
-        torch.save({
-            'prototypes': self.prototypes,
-            'usage': self.usage,
-            'proj_mean': self.proj_mean,
-            'proj_var': self.proj_var,
+        _torch.save({
+            'prototypes': _torch.from_numpy(self.prototypes),
+            'usage': _torch.from_numpy(self.usage),
+            'proj_mean': _torch.from_numpy(self.proj_mean),
+            'proj_var': _torch.from_numpy(self.proj_var),
             'm': self.m,
             'n_outputs': self.n_outputs,
             'max_inputs': self.max_inputs,
@@ -451,6 +438,6 @@ class ColumnManager:
             'match_threshold': self.match_threshold,
             'streaming_decay': self.streaming_decay,
             'lateral': self.lateral,
-            'lateral_protos': self.lateral_protos if self.lateral else None,
+            'lateral_protos': _torch.from_numpy(self.lateral_protos) if self.lateral else None,
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")
