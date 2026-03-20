@@ -165,7 +165,7 @@ class _ClusterManager:
                  column_lr=0.05, column_temperature=0.5,
                  column_match_threshold=0.1, column_streaming_decay=0.5,
                  n_sensory=None, embed_render=False, embed_method='pca',
-                 column_n_outputs=0):
+                 column_n_outputs=0, renderer=None):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -179,6 +179,7 @@ class _ClusterManager:
         self.column_n_outputs = column_n_outputs
         self._dsolver = None  # set externally for embed rendering
         self._pixel_values = None
+        self._renderer = renderer
         self.k2, self.lr, self.split_every = k2, lr, split_every
         self.max_k = max_k
         self.output_dir = output_dir
@@ -539,61 +540,23 @@ class _ClusterManager:
                 stability=stability,
                 switches_per_tick=switches_per_tick,
                 total_switches=self.total_switches)
-        if self.output_dir:
+        if self._renderer is not None:
             ns = self.n_sensory
+            sensory_ids = most_recent[:ns]
             if self.render_mode in ('color', 'both'):
-                path = os.path.join(self.output_dir, f"clusters_{tick:06d}.png")
-                self._visualize(most_recent[:ns], self.w, self.h, path)
+                self._renderer.cluster(tick, sensory_ids)
             if self.render_mode in ('signal', 'both') and self._signals is not None:
                 t = tick % self._signal_T
                 signal = self._signals[:ns, t].cpu().numpy()
-                path = os.path.join(self.output_dir, f"clusters_sig_{tick:06d}.png")
-                self._visualize_signal(most_recent[:ns], signal, self.w, self.h,
-                                       self._sig_channels, path)
-                # Save raw signal frame for comparison
-                self._save_signal_frame(signal, tick)
+                self._renderer.cluster_signal(tick, sensory_ids, signal)
+                self._renderer.signal(tick, signal)
             if self.embed_render and self._dsolver is not None:
-                from render_embeddings import render_embed
                 emb_all = self._dsolver.get_positions()
-                frame = render_embed(
-                    emb_all, self.n_sensory,
-                    pixel_values=self._pixel_values,
-                    cluster_ids=most_recent,
-                    n_outputs=self.column_n_outputs,
-                    method=self.embed_method)
-                path = os.path.join(self.output_dir, f"embed_{tick:06d}.png")
-                cv2.imwrite(path, frame)
-
-    def _save_signal_frame(self, signal, tick):
-        """Save the raw signal frame as an image for comparison."""
-        try:
-            import cv2
-        except ImportError:
-            return
-        if self._sig_channels == 1:
-            vmin, vmax = signal.min(), signal.max()
-            if vmax > vmin:
-                img = ((signal - vmin) / (vmax - vmin) * 255).astype(np.uint8)
-            else:
-                img = np.full_like(signal, 128, dtype=np.uint8)
-            img = img.reshape(self.h, self.w)
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        else:
-            n_pixels = self.h * self.w
-            rgb = signal.reshape(n_pixels, self._sig_channels)
-            vmin, vmax = rgb.min(), rgb.max()
-            if vmax > vmin:
-                rgb = ((rgb - vmin) / (vmax - vmin) * 255).astype(np.uint8)
-            else:
-                rgb = np.full_like(rgb, 128, dtype=np.uint8)
-            img = rgb.reshape(self.h, self.w, self._sig_channels)
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        scale = max(1, 512 // max(self.w, self.h))
-        if scale > 1:
-            img = cv2.resize(img, (self.w * scale, self.h * scale),
-                             interpolation=cv2.INTER_NEAREST)
-        path = os.path.join(self.output_dir, f"signal_{tick:06d}.png")
-        cv2.imwrite(path, img)
+                self._renderer.embed(tick, emb_all, ns,
+                                     pixel_values=self._pixel_values,
+                                     cluster_ids=most_recent,
+                                     n_outputs=self.column_n_outputs,
+                                     method=self.embed_method)
 
     def save(self, output_dir):
         """Save cluster state at end of run."""
@@ -711,59 +674,6 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
     return t0, total_pairs
 
 
-def _render_worker(shm_buf0, shm_buf1, shm_active, shm_tick,
-                   shm_done, n, dims, w, h, pixel_values,
-                   render_method, do_align, cold_proj, output_dir,
-                   gpu=False):
-    """Pull-based render worker. Reads from active double-buffer slot."""
-    import time
-    import os
-    import cv2
-    import numpy as np
-    from render_embeddings import (project, align_to_grid,
-                                   render as render_emb)
-    bufs = [shm_buf0, shm_buf1]
-    prev_2d = None
-    last_rendered_tick = 0
-    frame_idx = 0
-
-    while True:
-        cur_tick = shm_tick.value
-        done = shm_done.value
-
-        if cur_tick > last_rendered_tick:
-            slot = shm_active.value
-            emb = np.frombuffer(bufs[slot].get_obj(),
-                                dtype=np.float32).reshape(n, dims).copy()
-            last_rendered_tick = cur_tick
-
-            warm = None if cold_proj else prev_2d
-            pos_2d = project(emb, w, h, render_method, prev_2d=warm,
-                             gpu=gpu)
-            if do_align:
-                pos_2d = align_to_grid(pos_2d, w, h)
-            if not cold_proj:
-                prev_2d = pos_2d.copy()
-            frame = render_emb(pos_2d, w, h, pixel_values)
-
-            if frame is not None:
-                normalized = cv2.normalize(
-                    frame, None, 0, 255, cv2.NORM_MINMAX,
-                    dtype=cv2.CV_8U)
-                path = os.path.join(output_dir,
-                                    f"frame_{frame_idx:06d}.png")
-                cv2.imwrite(path, normalized)
-                frame_idx += 1
-
-        elif done:
-            break
-        else:
-            time.sleep(0.001)
-
-    print(f"  render worker: {frame_idx} frames saved, "
-          f"last tick={last_rendered_tick}")
-
-
 def run_word2vec(args):
     from utils.wandb_logger import WandbLogger
     # Parse comma-separated tags
@@ -792,8 +702,6 @@ def run_word2vec(args):
         anchor_sample = args.batch_size  # default: 1 batch
 
     if mode in ("sentence", "correlation"):
-        from render_embeddings import (project, align_to_grid,
-                                       render as render_emb, render_embed)
         import time
         import torch
 
@@ -875,36 +783,10 @@ def run_word2vec(args):
         if render_method == 'euclidean':
             render_method = 'pca'
 
-        if getattr(args, 'sync_render', False):
-            args.async_render = False
-
-        # --- Spawn render worker early so its imports overlap with model init ---
-        worker = None
-        bufs = None
-        shm_active = shm_tick = shm_done = None
-        if args.async_render and output_dir:
-            import multiprocessing as mp
-            try:
-                mp.set_start_method('spawn')
-            except RuntimeError:
-                pass  # already set
-
-            buf_size = n_sensory * args.dims
-            shm_buf0 = mp.Array('f', buf_size)
-            shm_buf1 = mp.Array('f', buf_size)
-            shm_active = mp.Value('i', 0)
-            shm_tick = mp.Value('i', 0)
-            shm_done = mp.Value('i', 0)
-
-            bufs = [shm_buf0, shm_buf1]
-            worker = mp.Process(target=_render_worker,
-                                args=(shm_buf0, shm_buf1, shm_active, shm_tick,
-                                      shm_done, n_sensory, args.dims,
-                                      render_w, render_h, pixel_values,
-                                      render_method,
-                                      args.align, args.cold_projection,
-                                      output_dir, args.render_gpu))
-            worker.start()
+        # --- Create renderer ---
+        from render_server import Renderer
+        renderer = Renderer(output_dir, render_w, render_h,
+                            sig_channels=sig_channels) if output_dir else None
 
         # --- Create solver (imports torch/cuml in main process) ---
         if mode == "sentence":
@@ -1155,7 +1037,8 @@ def run_word2vec(args):
                 n_sensory=n_sensory,
                 embed_render=embed_render_mode,
                 embed_method=render_method,
-                column_n_outputs=column_outputs)
+                column_n_outputs=column_outputs,
+                renderer=renderer)
             render_mode = getattr(args, 'cluster_render_mode', 'color')
             if render_mode in ('signal', 'both') or column_outputs > 0:
                 cluster_mgr.set_signals(signals, sig_channels, T)
@@ -1171,119 +1054,31 @@ def run_word2vec(args):
                 print(f"Motor control: column {motor_col_id}, scale={motor_scale}")
 
         # --- Training + rendering ---
-        if worker is not None:
-            write_slot = [1]
-
-            def on_save_async(tick, total_pairs):
+        def on_save(tick, total_pairs):
+            if renderer is not None and pixel_values is not None:
                 emb = dsolver.get_positions()[:n_sensory]
-                dst = np.frombuffer(bufs[write_slot[0]].get_obj(),
-                                    dtype=np.float32)
-                np.copyto(dst, emb.ravel())
-                shm_active.value = write_slot[0]
-                shm_tick.value = tick
-                write_slot[0] = 1 - write_slot[0]
+                renderer.grid(tick, emb, pixel_values,
+                              method=render_method,
+                              align=args.align, gpu=args.render_gpu)
 
-            t0, total_pairs = _run_training_loop(
-                do_tick, dsolver, args, n, w, sig_channels, wlog,
-                on_save=on_save_async, cluster_mgr=cluster_mgr,
-                n_sensory=n_sensory if K > 0 else None)
+        t0, total_pairs = _run_training_loop(
+            do_tick, dsolver, args, n, w, sig_channels, wlog,
+            on_save=on_save if output_dir else None,
+            can_break=poll_quit, cluster_mgr=cluster_mgr,
+            n_sensory=n_sensory if K > 0 else None)
 
-            # Final snapshot
+        elapsed = time.time() - t0
+        s = dsolver.stats()
+        print(f"Done: {args.frames} ticks in {elapsed:.1f}s, "
+              f"std={s['std']:.4f}, total_pairs={total_pairs}")
+        wlog.log_done(args.frames, elapsed, s['std'], total_pairs)
+
+        # Final frame
+        if renderer is not None and pixel_values is not None:
             emb = dsolver.get_positions()[:n_sensory]
-            dst = np.frombuffer(bufs[write_slot[0]].get_obj(), dtype=np.float32)
-            np.copyto(dst, emb.ravel())
-            shm_active.value = write_slot[0]
-            shm_tick.value = args.frames + 1
-            time.sleep(0.01)
-            shm_done.value = 1
-
-            elapsed_train = time.time() - t0
-            s = dsolver.stats()
-            print(f"Training done: {args.frames} ticks in {elapsed_train:.1f}s, "
-                  f"std={s['std']:.4f}, total_pairs={total_pairs}")
-            wlog.log_done(args.frames, elapsed_train, s['std'], total_pairs)
-
-            worker.join()
-            elapsed_total = time.time() - t0
-            print(f"Total (train + render drain): {elapsed_total:.1f}s")
-
-        else:
-            prev_2d = None
-
-            def _current_pixel_values():
-                """Derive pixel values from current signal crop."""
-                if pixel_values is not None:
-                    return pixel_values
-                if mode != "correlation":
-                    return None
-                col = (tick_counter[0] - 1) % T
-                raw = signals[:n_sensory, col].cpu().numpy()
-                vmin, vmax = raw.min(), raw.max()
-                if vmax > vmin:
-                    return ((raw - vmin) / (vmax - vmin) * 255).astype(np.uint8)
-                return np.full(n_sensory, 128, dtype=np.uint8)
-
-            def render_frame():
-                nonlocal prev_2d
-                emb = dsolver.get_positions()[:n_sensory]
-                warm = None if args.cold_projection else prev_2d
-                pos_2d = project(emb, render_w, render_h, render_method,
-                                 prev_2d=warm, gpu=args.render_gpu)
-                if args.align:
-                    pos_2d = align_to_grid(pos_2d, render_w, render_h)
-                if not args.cold_projection:
-                    prev_2d = pos_2d.copy()
-                pv = _current_pixel_values()
-                if pv is None:
-                    return None
-                return render_emb(pos_2d, render_w, render_h, pv)
-
-            saved = [0]
-
-            def on_save_sync(tick, total_pairs):
-                frame = render_frame()
-                if frame is not None:
-                    normalized = cv2.normalize(
-                        frame, None, 0, 255, cv2.NORM_MINMAX,
-                        dtype=cv2.CV_8U)
-                    path = os.path.join(output_dir, f"frame_{saved[0]:06d}.png")
-                    cv2.imwrite(path, normalized)
-                    saved[0] += 1
-                    if saved[0] % 100 == 0:
-                        s = dsolver.stats()
-                        print(f"  tick {tick}, saved {saved[0]} frames, "
-                              f"std={s['std']:.4f}, pairs={total_pairs}")
-
-            def on_display_sync(tick):
-                if tick % 10 == 0:
-                    if pixel_values is not None:
-                        frame = render_frame()
-                        if frame is not None:
-                            show_grid(f"{mode} skip-gram", frame)
-                    wait()
-
-            t0, total_pairs = _run_training_loop(
-                do_tick, dsolver, args, n, w, sig_channels, wlog,
-                on_save=on_save_sync if output_dir else None,
-                on_display=on_display_sync if not output_dir else None,
-                can_break=poll_quit, cluster_mgr=cluster_mgr,
-                n_sensory=n_sensory if K > 0 else None)
-
-            elapsed = time.time() - t0
-            s = dsolver.stats()
-            print(f"Done: {args.frames} ticks in {elapsed:.1f}s, "
-                  f"std={s['std']:.4f}, total_pairs={total_pairs}")
-            wlog.log_done(args.frames, elapsed, s['std'], total_pairs)
-
-            if output_dir:
-                frame = render_frame()
-                if frame is not None:
-                    normalized = cv2.normalize(
-                        frame, None, 0, 255, cv2.NORM_MINMAX,
-                        dtype=cv2.CV_8U)
-                    path = os.path.join(output_dir, f"frame_{saved[0]:06d}.png")
-                    cv2.imwrite(path, normalized)
-                    print(f"  final frame saved: {path}")
+            renderer.grid(args.frames, emb, pixel_values,
+                          method=render_method,
+                          align=args.align, gpu=args.render_gpu)
 
         if cluster_mgr is not None and cluster_mgr.initialized:
             cluster_mgr.report(args.frames)
@@ -1326,33 +1121,19 @@ def run_word2vec(args):
             log_arr = np.array([(t, x, y, mdx, mdy) for t, x, y, mdx, mdy, _ in motor_log],
                                dtype=np.float32)
             np.save(os.path.join(output_dir, "motor_log.npy"), log_arr)
-            # Position histogram
-            positions = log_arr[:, 1:3].astype(int)  # (ticks, 2): x, y
+            positions = log_arr[:, 1:3].astype(int)
             if len(positions) > 0:
-                x_range = int(positions[:, 0].max()) + 1
-                y_range = int(positions[:, 1].max()) + 1
-                hist2d, _, _ = np.histogram2d(positions[:, 1], positions[:, 0],
-                                              bins=[y_range, x_range])
-                # Uniformity: std/mean of histogram (lower = more uniform)
-                hist_flat = hist2d.ravel()
-                uniformity = hist_flat.std() / max(hist_flat.mean(), 1e-8)
-                # Mean motor magnitude
                 motor_mag = np.sqrt(log_arr[:, 3]**2 + log_arr[:, 4]**2)
+                hist_flat = np.histogram2d(positions[:, 1], positions[:, 0],
+                                           bins=[int(positions[:, 1].max()) + 1,
+                                                 int(positions[:, 0].max()) + 1])[0].ravel()
+                uniformity = hist_flat.std() / max(hist_flat.mean(), 1e-8)
                 print(f"  Motor: {len(motor_log)} ticks logged, "
                       f"mean|motor|={motor_mag.mean():.2f}, "
                       f"position uniformity={uniformity:.3f} "
                       f"(0=uniform, higher=concentrated)")
-                # Save heatmap: circles + blur for visibility
-                img_heat = np.zeros((y_range, x_range, 3), dtype=np.uint8)
-                for px, py in positions:
-                    cv2.circle(img_heat, (px, py), 3, (0, 0, 25), -1)
-                img_heat = cv2.GaussianBlur(img_heat, (15, 15), 0)
-                channel = img_heat[:, :, 2]
-                p90 = np.percentile(channel[channel > 0], 90) if (channel > 0).any() else 1
-                channel = np.clip(channel.astype(np.float32) / p90 * 255, 0, 255).astype(np.uint8)
-                hist_img = cv2.applyColorMap(channel, cv2.COLORMAP_HOT)
-                cv2.imwrite(os.path.join(output_dir, "motor_heatmap.png"), hist_img)
-                print(f"  motor heatmap saved: {output_dir}/motor_heatmap.png")
+                if renderer is not None:
+                    renderer.heatmap(positions)
 
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
                                t0, args.frames, total_pairs=total_pairs,
