@@ -324,3 +324,31 @@ Default: cluster 0 (arbitrary but deterministic).
    with image features (edges, textures, high-variance regions)?
 4. **Closed-loop effect:** Does motor control change clustering quality
    (contiguity, stability) compared to pure random saccades?
+
+### Run 017: 16×16, garden, motor-column 0, 10k ticks
+
+Config: `--preset gray_16x16_garden --motor-column 0 -f 10000`
+M=42, K=168, n_total=424. Contiguity=1.000, 98.3% within 3px.
+Mean motor magnitude=1.34 px (on top of ±50 random step).
+
+Cluster 0 is pure sensory: 10 neurons at grid positions (5-8, 3-5), a
+small patch in the upper-middle of the 16×16 grid. The motor column
+responds to local pixel variations at that specific patch — not a
+global scene feature.
+
+**Concern:** The motor column's neurons see the saccade crop at fixed
+grid positions. When the motor output steers the saccade, the pixels
+at those positions change, which changes the column output, which
+changes the motor signal. This creates a tight feedback loop where the
+motor column is effectively correlating with its own movement — it
+sees the *consequence* of its own action, not an independent feature.
+This may produce self-reinforcing drift (the saccade walks in one
+direction because the column learned to output that direction when it
+sees the texture that results from walking that direction) rather than
+meaningful attention.
+
+**To disentangle:** Need to compare motor-on vs motor-off runs on the
+same image and check whether the motor column's outputs are stable
+(learned preference) or follow the random walk (just echoing movement).
+A truly useful motor signal would produce a non-uniform position
+histogram concentrated on image regions with specific features.
