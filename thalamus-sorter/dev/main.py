@@ -1028,6 +1028,11 @@ def run_word2vec(args):
                   f"window={args.window}, normalize_every={norm_every}, "
                   f"align={args.align}, async={args.async_render}")
 
+        # --- Motor control setup ---
+        motor_col_id = getattr(args, 'motor_column', -1)
+        motor_scale = getattr(args, 'motor_scale', 5.0)
+        motor_log = [] if motor_col_id >= 0 else None
+
         # --- Tick function ---
         if mode == "correlation":
             def do_tick():
@@ -1038,9 +1043,22 @@ def run_word2vec(args):
                     tick_counter[0] += 1
                 elif saccade_source is not None:
                     nonlocal walk_dy, walk_dx
-                    walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
+                    # Motor bias from designated column
+                    motor_dx, motor_dy = 0.0, 0.0
+                    if (motor_col_id >= 0 and cluster_mgr is not None
+                            and cluster_mgr.column_mgr is not None):
+                        out = cluster_mgr.column_mgr.get_outputs()[motor_col_id]
+                        motor_dx = (out[0] - out[1]) * motor_scale
+                        motor_dy = (out[2] - out[3]) * motor_scale
+                        if motor_log is not None:
+                            motor_log.append((tick_counter[0], walk_dx, walk_dy,
+                                              float(motor_dx), float(motor_dy),
+                                              out.tolist()))
+                    rand_dy = np.random.randint(-saccade_step, saccade_step + 1)
+                    rand_dx = np.random.randint(-saccade_step, saccade_step + 1)
+                    walk_dy = np.clip(walk_dy + rand_dy + int(round(motor_dy)),
                                       0, max_dy)
-                    walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
+                    walk_dx = np.clip(walk_dx + rand_dx + int(round(motor_dx)),
                                       0, max_dx)
                     crop = saccade_source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].reshape(-1)
                     col = tick_counter[0] % T
@@ -1109,6 +1127,8 @@ def run_word2vec(args):
                   f"hysteresis={cluster_hyst}, knn2={knn2_mode}, "
                   f"centroid={centroid_mode}, render={render_mode}{col_str}, "
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
+            if motor_col_id >= 0:
+                print(f"Motor control: column {motor_col_id}, scale={motor_scale}")
 
         # --- Training + rendering ---
         if worker is not None:
@@ -1260,6 +1280,38 @@ def run_word2vec(args):
                 with open(xor_path, 'w') as f:
                     json.dump(results.get('best_per_feature', {}), f, indent=2)
                 print(f"  XOR analysis saved: {xor_path}")
+
+        # Motor log analysis
+        if motor_log and output_dir:
+            log_arr = np.array([(t, x, y, mdx, mdy) for t, x, y, mdx, mdy, _ in motor_log],
+                               dtype=np.float32)
+            np.save(os.path.join(output_dir, "motor_log.npy"), log_arr)
+            # Position histogram
+            positions = log_arr[:, 1:3].astype(int)  # (ticks, 2): x, y
+            if len(positions) > 0:
+                x_range = int(positions[:, 0].max()) + 1
+                y_range = int(positions[:, 1].max()) + 1
+                hist2d, _, _ = np.histogram2d(positions[:, 1], positions[:, 0],
+                                              bins=[y_range, x_range])
+                # Uniformity: std/mean of histogram (lower = more uniform)
+                hist_flat = hist2d.ravel()
+                uniformity = hist_flat.std() / max(hist_flat.mean(), 1e-8)
+                # Mean motor magnitude
+                motor_mag = np.sqrt(log_arr[:, 3]**2 + log_arr[:, 4]**2)
+                print(f"  Motor: {len(motor_log)} ticks logged, "
+                      f"mean|motor|={motor_mag.mean():.2f}, "
+                      f"position uniformity={uniformity:.3f} "
+                      f"(0=uniform, higher=concentrated)")
+                # Save histogram as image
+                hist_norm = hist2d / max(hist2d.max(), 1)
+                hist_img = (hist_norm * 255).astype(np.uint8)
+                scale = max(1, 512 // max(x_range, y_range))
+                if scale > 1:
+                    hist_img = cv2.resize(hist_img, (x_range * scale, y_range * scale),
+                                          interpolation=cv2.INTER_NEAREST)
+                hist_img = cv2.applyColorMap(hist_img, cv2.COLORMAP_HOT)
+                cv2.imwrite(os.path.join(output_dir, "motor_heatmap.png"), hist_img)
+                print(f"  motor heatmap saved: {output_dir}/motor_heatmap.png")
 
         _save_results_and_model(output_dir, args, dsolver, render_w, render_h,
                                t0, args.frames, total_pairs=total_pairs,
@@ -1510,6 +1562,10 @@ def main():
                        help="Feed column outputs back as signal for feedback neurons")
     p_w2v.add_argument("--cluster-neurons-per", type=int, default=0,
                        help="Target neurons per cluster (auto-computes M from formula)")
+    p_w2v.add_argument("--motor-column", type=int, default=-1,
+                       help="Cluster whose column outputs steer saccade (-1=disabled, 0=first cluster)")
+    p_w2v.add_argument("--motor-scale", type=float, default=5.0,
+                       help="Motor output scale in pixels (default: 5.0)")
     # wandb logging
     p_w2v.add_argument("--wandb", action="store_true",
                        help="Log metrics to Weights & Biases")

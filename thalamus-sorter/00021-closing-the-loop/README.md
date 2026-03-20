@@ -292,3 +292,35 @@ This is analogous to how feedback neurons work, but instead of going through
 the full embedding→cluster→column loop, lateral connections are a direct
 column-to-column shortcut along the knn2 graph. Much faster information
 propagation (1 tick vs many ticks for the embedding path).
+
+## Motor Output: Saccade Steering
+
+One column's 4 softmax outputs are treated as a motor signal that steers
+the saccade direction each tick:
+
+```
+output 0: dx+    output 1: dx-
+output 2: dy+    output 3: dy-
+
+dx = (out_0 - out_1) * scale
+dy = (out_2 - out_3) * scale
+saccade_step = random_step + (dx, dy)
+```
+
+Since outputs are softmax (sum to 1), the system has a fixed budget. When
+the column is uniform (all 0.25), net displacement is zero — pure random
+walk as before. When it differentiates, the saccade gets steered.
+
+`--motor-column` flag designates which cluster's column drives the motor.
+Default: cluster 0 (arbitrary but deterministic).
+
+### What to measure
+
+1. **Saccade position histogram:** With vs without motor control. If the
+   system learns to steer, certain image regions get visited more often.
+2. **Motor output stability:** Does the motor column converge to consistent
+   outputs, or oscillate randomly?
+3. **Gaze-contingent structure:** Does the chosen gaze pattern correlate
+   with image features (edges, textures, high-variance regions)?
+4. **Closed-loop effect:** Does motor control change clustering quality
+   (contiguity, stability) compared to pure random saccades?
