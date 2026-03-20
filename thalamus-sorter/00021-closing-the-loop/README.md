@@ -187,7 +187,24 @@ distinct column colors. Sensory neurons form a structured loop/manifold.
 
 ### Run 010: 80×80, 10pp, 100k ticks (temp=0.2, entropy-scaled lr)
 
-*(running — lr=0.001 matching presets)*
+Config: `--cluster-neurons-per 10 --column-outputs 4 --column-feedback --lr 0.001`
+M=1066, K=4264, n_total=10664. 73ms/tick, 4330s total.
+
+Clustering: 558/1066 alive, contiguity=**0.947**, diameter=**4.9**, stability=0.961.
+Winner dist [472/205/209/180].
+
+**Comparison with run 009 (temp=0.5, no entropy lr):**
+
+| Metric       | Run 009 (t=0.5) | Run 010 (t=0.2 + entropy lr) |
+|--------------|-----------------|------------------------------|
+| Contiguity   | 0.496           | **0.947**                    |
+| Diameter     | 19.4            | **4.9**                      |
+| Stability    | 0.571           | **0.961**                    |
+| Winner dist  | 442/212/222/190 | 472/205/209/180              |
+
+Massive improvement in cluster spatial coherence from lower temperature +
+entropy-scaled lr. Feedback neuron cloud shows L-shaped internal structure
+(vs diffuse blob at temp=0.5). Populations still fully separated.
 
 ### XOR Synthetic Benchmark (runs 012-015)
 
