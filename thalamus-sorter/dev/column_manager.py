@@ -380,20 +380,22 @@ class ColumnManager:
         idx = ar[do_update]
         self.prototypes[idx, actual_winners[do_update]] = new_proto[do_update]
 
-        # Lateral weight update
+        # Lateral weight update: contrastive — winner pulls, losers push
         if self.lateral:
-            lat_w = self.lateral_protos[ar, actual_winners]  # (m, lat_dim)
             lat_input = self._prev_outputs.unsqueeze(0).expand(m, -1)  # (m, lat_dim)
-            # Per-column target: scale lateral input by local match quality.
-            # Columns with strong local match reinforce the lateral pattern
-            # that co-occurred with their local activation. Columns with weak
-            # local match don't update lateral weights much.
-            local_strength = sim[ar, actual_winners]  # (m,) local variance sim
-            scale = local_strength / local_strength.mean().clamp(min=1e-8)
-            scaled_input = lat_input * scale.unsqueeze(1)
-            new_lat = lat_w + lr_eff.unsqueeze(1) * (scaled_input - lat_w)
-            new_lat = F.normalize(new_lat, dim=1)
-            self.lateral_protos[ar[do_update], actual_winners[do_update]] = new_lat[do_update]
+            # Build per-output sign: +1 for winner, -1/(n_out-1) for losers
+            # This makes each output specialize on different lateral patterns
+            winner_mask = torch.zeros(m, n_out)
+            winner_mask[ar, actual_winners] = 1.0
+            sign = torch.where(winner_mask > 0,
+                               torch.ones(m, n_out),
+                               torch.full((m, n_out), -1.0 / (n_out - 1)))
+            # Update all outputs simultaneously
+            delta = lat_input.unsqueeze(1) - self.lateral_protos  # (m, n_out, lat_dim)
+            lr_3d = lr_eff.unsqueeze(1).unsqueeze(2)  # (m, 1, 1)
+            sign_3d = sign.unsqueeze(2)                # (m, n_out, 1)
+            new_lat = self.lateral_protos + lr_3d * sign_3d * delta
+            self.lateral_protos = F.normalize(new_lat, dim=2)
             # Store current outputs for next tick
             self._prev_outputs = probs.detach().flatten()
 

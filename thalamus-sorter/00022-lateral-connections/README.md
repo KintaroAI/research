@@ -165,3 +165,34 @@ local state, not just co-occurrence. This requires either:
    Hebbian rule doesn't push toward this.
 
 Next step: try contrastive lateral update — winner pulls, losers push.
+
+### Run 003: XOR + contrastive lateral, hold=5, 10k ticks
+
+XOR max|r|=0.160 — still noise floor. Contrastive push does differentiate
+lateral weights (60% negative cosine pairs, mean=-0.03) but the signal
+is too noisy. Even A and B features have weak correlation (0.17, 0.29).
+
+The issue: hold=5 means the XOR signal flips every 5 ticks. With streaming
+variance over the window, columns only see variance at transitions. The
+column outputs never stabilize enough for lateral weights to learn from.
+
+### Run 004: XOR + contrastive lateral, hold=50, 10k ticks — BREAKTHROUGH
+
+Config: `--xor-hold 50 --column-lateral -f 10000`
+
+| Feature | hold=5 | hold=50 |
+|---------|--------|---------|
+| A       | 0.17   | **0.40** |
+| B       | 0.29   | **0.64** |
+| XOR     | 0.16   | **0.64** |
+| AND     | 0.27   | **0.52** |
+
+**XOR max|r|=0.641** — column 9, output 0 detects XOR with r=0.64.
+This is a genuine non-linear feature detection through lateral connections.
+
+The short hold time was the bottleneck, not the architecture. With hold=50,
+each A/B state persists long enough for columns to produce stable outputs,
+which the lateral weights can then learn to combine for XOR detection.
+
+Column 9 likely has lateral weights that respond to "A-column output high
+AND B-column output low" (or vice versa) — exactly the XOR pattern.
