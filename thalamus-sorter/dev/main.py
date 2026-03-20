@@ -1069,6 +1069,13 @@ def run_word2vec(args):
                     old_dx, old_dy = walk_dx, walk_dy
                     rand_dy = np.random.randint(-saccade_step, saccade_step + 1)
                     rand_dx = np.random.randint(-saccade_step, saccade_step + 1)
+                    # Motor confidence suppresses random walk
+                    if motor_proprio:
+                        motor_mag = np.sqrt(motor_dx**2 + motor_dy**2)
+                        confidence = min(1.0, motor_mag / motor_scale)
+                        rand_scale = 1.0 - confidence
+                        rand_dy = int(round(rand_dy * rand_scale))
+                        rand_dx = int(round(rand_dx * rand_scale))
                     walk_dy = np.clip(walk_dy + rand_dy + int(round(motor_dy)),
                                       0, max_dy)
                     walk_dx = np.clip(walk_dx + rand_dx + int(round(motor_dx)),
