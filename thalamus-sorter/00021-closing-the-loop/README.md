@@ -418,3 +418,33 @@ a smaller fragmented cluster.
 **Motor heatmap (100k saccade positions):**
 
 ![motor_heatmap_100k](motor_heatmap_100k.png)
+
+### Run 026: 80×80, garden, motor, saccade_step=15, 100k ticks
+
+Config: `--preset gray_80x80_garden --saccade-step 15 --motor-column 0
+--motor-scale 15 -f 100000`
+M=1066, K=4264, n_total=10664. lr=0.001.
+
+Clustering: 446/1066 alive, contiguity=**0.066**, diameter=89.5.
+Eval: 2.5% within 5px — **barely converged** at lr=0.001 with 100k ticks.
+Winner dist [284/234/267/281] — well balanced.
+
+**Cluster 0 is pure feedback** — 9 feedback neurons, 0 sensory. The motor
+column is driven entirely by feedback signals, not pixel values. This creates
+a closed loop with no sensory grounding.
+
+**First mixed clusters observed:** 10 clusters contain both sensory and
+feedback neurons. All 6 proprio neurons ended up in mixed clusters (each
+paired with 1 sensory + several feedback). The urgency/position signals
+apparently correlate enough with some sensory pixels to co-cluster.
+
+**48 isolated feedback loops found:** Feedback-only clusters whose member
+neurons come from columns whose own clusters are also pure feedback.
+Completely self-referential circuits with no sensory input.
+
+**Cluster composition:** 436 pure sensory, 620 pure feedback, 10 mixed.
+The poor convergence (contiguity=0.066) means noisy clustering — feedback
+neurons spread into many small isolated clusters.
+
+**Implication:** lr=0.001 is too slow for 80×80 with feedback. Need either
+higher lr, more anchor batches, or longer training.
