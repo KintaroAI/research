@@ -1066,18 +1066,13 @@ def run_word2vec(args):
                             motor_log.append((tick_counter[0], walk_dx, walk_dy,
                                               float(motor_dx), float(motor_dy),
                                               out.tolist()))
-                    if motor_proprio:
-                        # No random walk — movement only from motor output
-                        old_dx, old_dy = walk_dx, walk_dy
-                        walk_dy = np.clip(walk_dy + int(round(motor_dy)), 0, max_dy)
-                        walk_dx = np.clip(walk_dx + int(round(motor_dx)), 0, max_dx)
-                    else:
-                        rand_dy = np.random.randint(-saccade_step, saccade_step + 1)
-                        rand_dx = np.random.randint(-saccade_step, saccade_step + 1)
-                        walk_dy = np.clip(walk_dy + rand_dy + int(round(motor_dy)),
-                                          0, max_dy)
-                        walk_dx = np.clip(walk_dx + rand_dx + int(round(motor_dx)),
-                                          0, max_dx)
+                    old_dx, old_dy = walk_dx, walk_dy
+                    rand_dy = np.random.randint(-saccade_step, saccade_step + 1)
+                    rand_dx = np.random.randint(-saccade_step, saccade_step + 1)
+                    walk_dy = np.clip(walk_dy + rand_dy + int(round(motor_dy)),
+                                      0, max_dy)
+                    walk_dx = np.clip(walk_dx + rand_dx + int(round(motor_dx)),
+                                      0, max_dx)
                     crop = saccade_source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].reshape(-1)
                     col = tick_counter[0] % T
                     if use_raw:
