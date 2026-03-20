@@ -471,3 +471,18 @@ pixels → sensory clusters → sensory columns → feedback neurons →
 
 106 isolated feedback loops. 631 pure sensory, 434 pure feedback, 1 mixed.
 Motor magnitude=0.10, position uniformity=3.9 (fairly spread).
+
+**Column differentiation (temp=0.2, entropy-scaled lr):**
+
+| Metric | Run 008 (t=0.5) | Run 027 (t=0.2) |
+|--------|-----------------|-----------------|
+| Uniform (≤0.30) | 46% | **0.3%** |
+| Dominant (≥0.60) | 22% | **96%** |
+| Mean max prob | 0.387 | **0.775** |
+| Mean entropy | 1.248 | **0.525** |
+
+96% of columns have a clear winner (max prob ≥0.60), 44% very dominant
+(>0.80). Winner distribution across random inputs perfectly balanced at
+~25% per output — no output collapse. The entropy-scaled lr + lower
+temperature successfully forces differentiation while maintaining
+diversity across columns.
