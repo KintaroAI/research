@@ -247,3 +247,38 @@ beginning to separate in embedding space.
 **Embedding at tick 20000:**
 
 ![embed_xor_20k](embed_xor_20k.png)
+
+### Sparsity sweep: less is more
+
+Random pruning of lateral connections via `--lateral-sparsity`. Binary mask
+zeroes out a fraction of connections at init. The surviving connections
+learn normally.
+
+| Keep % | Connections | XOR max|r| | B max|r| |
+|--------|------------|-----------|---------|
+| 10%    | 690/7056   | **0.734** | 0.483   |
+| 25%    | 1748/7056  | 0.613     | 0.437   |
+| 50%    | 3540/7056  | 0.577     | 0.587   |
+| 100%   | 7056/7056  | 0.598     | 0.519   |
+
+**10% connectivity gives the best XOR detection.** Sparser connections
+reduce noise from irrelevant columns — with full connectivity, the XOR
+column receives outputs from 42 columns but only needs 2 (A and B). The
+other 40 are pure noise that the contrastive learning must learn to ignore.
+With 10%, fewer irrelevant connections means a cleaner learning signal.
+
+**Scaling implications:** At 80×80 (M=1066), 10% sparsity means ~425
+lateral inputs per column instead of 4264. This is tractable and actually
+better than full connectivity. The O(M²) concern is resolved — random
+sparse lateral connections scale linearly with M at fixed sparsity.
+
+**Open question:** Can we do better than random pruning? Options:
+1. **Learned pruning:** Start full, prune connections with low weight
+   magnitude after a warmup period
+2. **Spatial pruning:** Connect columns whose clusters are nearby on
+   the grid (biologically plausible but may miss XOR-type connections)
+3. **knn2-based:** Connect along the cluster KNN graph (captures
+   embedding proximity but not functional relationships)
+4. **Activity-based:** Connect columns whose outputs are most correlated
+   or anti-correlated (discovers functional relationships but requires
+   a discovery phase)
