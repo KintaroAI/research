@@ -486,3 +486,28 @@ Motor magnitude=0.10, position uniformity=3.9 (fairly spread).
 ~25% per output — no output collapse. The entropy-scaled lr + lower
 temperature successfully forces differentiation while maintaining
 diversity across columns.
+
+### Run 028: 80×80, garden, warm restart from 027, +100k ticks (200k total)
+
+Config: `--warm-start model.npy --warm-start-clusters <027_dir> -f 100000`
+Full cluster+column state restored — no re-training needed.
+
+Clustering: 629/1066 alive, contiguity=**0.985**, diameter=4.2,
+stability=0.976. Eval: **98.8% within 3px, 99.9% within 5px**.
+
+| Metric | Run 027 (100k) | Run 028 (+100k) |
+|--------|---------------|-----------------|
+| Isolated fb loops | 106 | **86** |
+| Mixed clusters | 1 | **0** |
+| Motor magnitude | 0.10 | **0.03** |
+
+Motor magnitude faded to 0.03 — the motor column settled into near-uniform
+output with longer training. The map quality is maintained but the motor
+signal effectively died. Possible cause: entropy-scaled lr slows the motor
+column's learning once it differentiates, so it can't adapt to the changing
+signal as the map reorganizes.
+
+Embedding shows garden image structure clearly visible in the sensory
+manifold. Feedback cloud has complex branching structure.
+
+![embed_80_garden_200k](embed_80_garden_200k.png)
