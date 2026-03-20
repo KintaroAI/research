@@ -157,7 +157,69 @@ The feedback neurons do self-organize — same-column outputs cluster together,
 column identity is captured in embedding directions — but this is an isolated
 system that doesn't interact with the sensory representation.
 
+### Run 011: 16×16, garden, 10pp, 5k ticks (temp=0.2, entropy-scaled lr)
+
+Config: `--preset gray_16x16_garden -f 5000`
+M=42, K=168, n_total=424. 47ms/tick, 279s total.
+
+Clustering: 22/42 alive, contiguity=0.970, diameter=4.7, stability=0.84.
+Eval: PCA=0.51, K10: mean=1.93, **94.5% within 3px, 100% within 5px**.
+Winner dist [11/12/12/7] — well balanced columns.
+
+Feedback neurons split into 2-3 clearly separated sub-clusters, each with
+distinct column colors. Sensory neurons form a structured loop/manifold.
+
+**Embedding at tick 500 (early):**
+
+![embed_16_500](embed_16_500.png)
+
+**Embedding at tick 5000 (converged):**
+
+![embed_16_5000](embed_16_5000.png)
+
+**Clusters at tick 500 (early):**
+
+![clusters_16_500](clusters_16_500.png)
+
+**Clusters at tick 5000 (converged):**
+
+![clusters_16_5000](clusters_16_5000.png)
+
 ### Run 010: 80×80, 10pp, 100k ticks (temp=0.2, entropy-scaled lr)
 
-*(running — lr=0.001 matching presets, testing whether peakier softmax and
-entropy-adaptive lr change the feedback signal enough to mix populations)*
+*(running — lr=0.001 matching presets)*
+
+### XOR Synthetic Benchmark (runs 012-015)
+
+**Setup:** 16×16 grid, `--signal-source xor`. Four quadrants with binary
+features A, B, XOR=A^B, AND=A&B. Each tick draws random bits, held for 5
+ticks. Tests whether columns can detect non-linear (XOR) features.
+
+**Results across configs:**
+
+| Run | lr    | batches | A    | B    | XOR  | AND  |
+|-----|-------|---------|------|------|------|------|
+| 013 | 0.001 | 1       | 0.11 | 0.26 | 0.20 | 0.20 |
+| 014 | 0.001 | 2       | 0.11 | 0.26 | 0.17 | 0.20 |
+| 015 | 0.01  | 2       | 0.17 | 0.29 | 0.17 | 0.22 |
+
+Max |r| between any column output and each feature (500-tick sample after
+10k training). All correlations at noise floor (~0.1-0.3), invariant to lr
+and anchor count.
+
+**Root cause:** Columns are per-cluster, and correlation-based clustering
+separates A, B, XOR, AND into different spatial clusters. No column ever
+sees neurons from multiple regions simultaneously, so no column can compute
+cross-region functions like XOR.
+
+For XOR detection, a column would need inputs from both region A and region B,
+which requires them to share a cluster. But A and B are uncorrelated signals →
+they cluster separately. The feedback loop doesn't help because feedback
+neurons also form isolated clusters (see Key Finding above).
+
+**Architectural implication:** The current per-cluster column architecture can
+only detect features that are **local to one cluster** (i.e., variations among
+neurons that already correlate enough to cluster together). Cross-cluster
+non-linear features require either: (1) a mechanism to route information
+between clusters (lateral connections, attention), or (2) a hierarchical layer
+where cluster-level representations are combined.
