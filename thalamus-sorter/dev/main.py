@@ -558,6 +558,55 @@ class _ClusterManager:
                                      n_outputs=self.column_n_outputs,
                                      method=self.embed_method)
 
+    def load_state(self, state_dir, embeddings_t):
+        """Load saved cluster + column state for warm restart."""
+        import torch
+        self.device = embeddings_t.device
+
+        self.cluster_ids = np.load(os.path.join(state_dir, "cluster_ids.npy"))
+        self.pointers = np.load(os.path.join(state_dir, "pointers.npy"))
+        self.last_used = np.load(os.path.join(state_dir, "last_used.npy"))
+        centroids_np = np.load(os.path.join(state_dir, "centroids.npy"))
+        self.centroids_t = torch.from_numpy(centroids_np).to(self.device)
+        most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
+        self.cluster_ids_t = torch.from_numpy(
+            most_recent.astype(np.int64)).to(self.device)
+        self.sizes = np.bincount(most_recent[most_recent >= 0],
+                                 minlength=self.m).astype(np.int64)
+
+        knn2_np = np.load(os.path.join(state_dir, "knn2.npy"))
+        if self.knn2_mode == 'knn':
+            self.knn2 = knn2_np
+        else:
+            self.knn2_t = torch.from_numpy(knn2_np).to(self.device)
+            knn2_dists_np = np.full_like(knn2_np, np.inf, dtype=np.float32)
+            self.knn2_dists_t = torch.from_numpy(knn2_dists_np).to(self.device)
+            self._recompute_knn2_dists()
+
+        if self.track_history:
+            self._jump_counts = np.zeros(self.n, dtype=np.int64)
+
+        # Load column state
+        if self.column_mgr:
+            col_state_path = os.path.join(state_dir, "column_states.pt")
+            slot_map_path = os.path.join(state_dir, "column_slot_map.npy")
+            if os.path.exists(col_state_path) and os.path.exists(slot_map_path):
+                state = torch.load(col_state_path, weights_only=True)
+                self.column_mgr.prototypes = state['prototypes']
+                self.column_mgr.usage = state['usage']
+                self.column_mgr.proj_mean = state.get('proj_mean',
+                    torch.zeros(self.m, self.column_mgr.n_outputs))
+                self.column_mgr.proj_var = state.get('proj_var',
+                    torch.zeros(self.m, self.column_mgr.n_outputs))
+                self.column_mgr.slot_map = np.load(slot_map_path)
+                n_wired = (self.column_mgr.slot_map >= 0).sum()
+                print(f"  Columns restored: {n_wired} wirings")
+
+        self.initialized = True
+        n_empty = (self.sizes == 0).sum()
+        print(f"  Clusters restored from {state_dir}: "
+              f"{self.m - n_empty}/{self.m} alive")
+
     def save(self, output_dir):
         """Save cluster state at end of run."""
         if not self.initialized:
@@ -1052,6 +1101,10 @@ def run_word2vec(args):
                   f"report_every={getattr(args, 'cluster_report_every', 1000)}")
             if motor_col_id >= 0:
                 print(f"Motor control: column {motor_col_id}, scale={motor_scale}")
+            # Warm-start cluster + column state
+            warm_clusters = getattr(args, 'warm_start_clusters', None)
+            if warm_clusters and os.path.isdir(warm_clusters):
+                cluster_mgr.load_state(warm_clusters, dsolver.positions)
 
         # --- Training + rendering ---
         def on_save(tick, total_pairs):
@@ -1303,6 +1356,8 @@ def main():
                        help="Procrustes-align rendered output to grid (fixes rotation/flip)")
     p_w2v.add_argument("--warm-start", type=str, default=None,
                        help="Load .npy embeddings as initial positions (warm start)")
+    p_w2v.add_argument("--warm-start-clusters", type=str, default=None,
+                       help="Load cluster+column state from this directory (full resume)")
     p_w2v.add_argument("--cold-projection", action=argparse.BooleanOptionalAction, default=True,
                        help="Run UMAP/t-SNE from scratch each frame (--no-cold-projection for warm start)")
     p_w2v.add_argument("--async-render", action="store_true", default=True,
