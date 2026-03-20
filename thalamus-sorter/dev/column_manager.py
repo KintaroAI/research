@@ -279,11 +279,14 @@ class ColumnManager:
         self._arange_m = torch.arange(m)
 
         # Lateral connections: each column receives all other columns' outputs
+        self.lateral_sparsity = 1.0  # fraction of connections to KEEP
         if lateral:
             lateral_dim = m * n_outputs
             self.lateral_protos = F.normalize(
                 torch.randn(m, n_outputs, lateral_dim), dim=2)
             self._prev_outputs = torch.zeros(m * n_outputs)
+            # Sparse mask: set via set_lateral_sparsity() after init
+            self._lateral_mask = None  # None = full connectivity
 
     def wire(self, cluster_id, neuron_id):
         """Wire a neuron to a cluster's column (lowest empty slot)."""
@@ -292,6 +295,23 @@ class ColumnManager:
         if len(empty) == 0:
             return  # cluster full
         row[empty[0]] = neuron_id
+
+    def set_lateral_sparsity(self, keep_fraction, seed=42):
+        """Randomly prune lateral connections. keep_fraction=1.0 is full."""
+        if not self.lateral:
+            return
+        self.lateral_sparsity = keep_fraction
+        if keep_fraction >= 1.0:
+            self._lateral_mask = None
+            return
+        rng = torch.manual_seed(seed)
+        lateral_dim = self.m * self.n_outputs
+        mask = (torch.rand(self.m, lateral_dim) < keep_fraction).float()
+        self._lateral_mask = mask
+        n_kept = int(mask.sum().item())
+        n_total = self.m * lateral_dim
+        print(f"  Lateral sparsity: keeping {n_kept}/{n_total} "
+              f"({keep_fraction*100:.0f}%) connections")
 
     def unwire(self, cluster_id, neuron_id):
         """Unwire a neuron from a cluster's column."""
@@ -332,9 +352,12 @@ class ColumnManager:
 
         # Lateral input: add similarity from other columns' previous outputs
         if self.lateral:
+            lat_input = self._prev_outputs.unsqueeze(0).expand(m, -1)
+            if self._lateral_mask is not None:
+                lat_input = lat_input * self._lateral_mask
             lat_sim = torch.bmm(
                 self.lateral_protos,
-                self._prev_outputs.unsqueeze(0).expand(m, -1).unsqueeze(2)
+                lat_input.unsqueeze(2)
             ).squeeze(2)  # (m, n_outputs)
             sim = sim + lat_sim
 

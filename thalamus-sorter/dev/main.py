@@ -1096,6 +1096,9 @@ def run_word2vec(args):
                 cluster_mgr.set_signals(signals, sig_channels, T)
             cluster_mgr._pixel_values = pixel_values
             cluster_mgr._dsolver = dsolver
+            lat_sparsity = getattr(args, 'lateral_sparsity', 1.0)
+            if cluster_mgr.column_mgr and lat_sparsity < 1.0:
+                cluster_mgr.column_mgr.set_lateral_sparsity(lat_sparsity)
             col_str = f", columns={column_outputs}out" if column_outputs > 0 else ""
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "
@@ -1442,6 +1445,8 @@ def main():
                        help="Feed column outputs back as signal for feedback neurons")
     p_w2v.add_argument("--column-lateral", action="store_true",
                        help="Enable lateral connections between columns (full connectivity)")
+    p_w2v.add_argument("--lateral-sparsity", type=float, default=1.0,
+                       help="Fraction of lateral connections to keep (1.0=full, 0.1=10%%)")
     p_w2v.add_argument("--cluster-neurons-per", type=int, default=0,
                        help="Target neurons per cluster (auto-computes M from formula)")
     p_w2v.add_argument("--motor-column", type=int, default=-1,
