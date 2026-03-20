@@ -1032,6 +1032,18 @@ def run_word2vec(args):
         motor_col_id = getattr(args, 'motor_column', -1)
         motor_scale = getattr(args, 'motor_scale', 5.0)
         motor_log = [] if motor_col_id >= 0 else None
+        # Proprioception: 6 override neurons (last 6 sensory neurons)
+        # [0,1] = position_x, position_y normalized
+        # [2,3,4,5] = urgency for dx+, dx-, dy+, dy-
+        motor_proprio = motor_col_id >= 0
+        if motor_proprio:
+            proprio_idx = list(range(n_sensory - 6, n_sensory))
+            urgency = np.zeros(4, dtype=np.float32)  # dx+, dx-, dy+, dy-
+            urgency_rate = 0.02  # ramp per tick when not moving
+            prev_walk = [walk_dx if saccade_source is not None else 0,
+                         walk_dy if saccade_source is not None else 0]
+            print(f"Motor proprioception: neurons {proprio_idx}, "
+                  f"urgency_rate={urgency_rate}")
 
         # --- Tick function ---
         if mode == "correlation":
@@ -1054,18 +1066,44 @@ def run_word2vec(args):
                             motor_log.append((tick_counter[0], walk_dx, walk_dy,
                                               float(motor_dx), float(motor_dy),
                                               out.tolist()))
-                    rand_dy = np.random.randint(-saccade_step, saccade_step + 1)
-                    rand_dx = np.random.randint(-saccade_step, saccade_step + 1)
-                    walk_dy = np.clip(walk_dy + rand_dy + int(round(motor_dy)),
-                                      0, max_dy)
-                    walk_dx = np.clip(walk_dx + rand_dx + int(round(motor_dx)),
-                                      0, max_dx)
+                    if motor_proprio:
+                        # No random walk — movement only from motor output
+                        old_dx, old_dy = walk_dx, walk_dy
+                        walk_dy = np.clip(walk_dy + int(round(motor_dy)), 0, max_dy)
+                        walk_dx = np.clip(walk_dx + int(round(motor_dx)), 0, max_dx)
+                    else:
+                        rand_dy = np.random.randint(-saccade_step, saccade_step + 1)
+                        rand_dx = np.random.randint(-saccade_step, saccade_step + 1)
+                        walk_dy = np.clip(walk_dy + rand_dy + int(round(motor_dy)),
+                                          0, max_dy)
+                        walk_dx = np.clip(walk_dx + rand_dx + int(round(motor_dx)),
+                                          0, max_dx)
                     crop = saccade_source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].reshape(-1)
                     col = tick_counter[0] % T
                     if use_raw:
                         signals[:n_sensory, col] = crop
                     else:
                         signals[:n_sensory, col] = crop - crop.mean()
+                    # Override proprioception neurons
+                    if motor_proprio:
+                        dx_moved = walk_dx - old_dx
+                        dy_moved = walk_dy - old_dy
+                        # Update urgency: ramp up when not moving, reset on move
+                        # [0]=dx+, [1]=dx-, [2]=dy+, [3]=dy-
+                        moves = [dx_moved > 0, dx_moved < 0,
+                                 dy_moved > 0, dy_moved < 0]
+                        for i in range(4):
+                            if moves[i]:
+                                urgency[i] = 0.0
+                            else:
+                                urgency[i] = min(1.0, urgency[i] + urgency_rate)
+                        # Write to signal buffer
+                        pos_x = walk_dx / max(max_dx, 1)
+                        pos_y = walk_dy / max(max_dy, 1)
+                        proprio_vals = torch.tensor(
+                            [pos_x, pos_y] + urgency.tolist(),
+                            dtype=torch.float32, device=signals.device)
+                        signals[proprio_idx, col] = proprio_vals
                     tick_counter[0] += 1
                 return dsolver.tick_correlation(
                     signals, k_sample=args.k_sample,
