@@ -196,3 +196,19 @@ which the lateral weights can then learn to combine for XOR detection.
 
 Column 9 likely has lateral weights that respond to "A-column output high
 AND B-column output low" (or vice versa) — exactly the XOR pattern.
+
+### Run 005: XOR + contrastive lateral, hold=50, 20k ticks
+
+Same config, longer training. XOR max|r|=0.496, mean|r|=0.233.
+All features detected: A=0.33, B=0.42, XOR=0.50, AND=0.44.
+
+**Embedding at tick 1000 (early):**
+
+Sensory neurons split into two separate clouds — the 4 XOR quadrants
+beginning to separate in embedding space.
+
+![embed_xor_1k](embed_xor_1k.png)
+
+**Embedding at tick 20000:**
+
+![embed_xor_20k](embed_xor_20k.png)
