@@ -2,10 +2,11 @@
 
 Runs as a single background process, accepts render jobs via Unix socket.
 Survives across training runs — check if running before spawning.
+Multiple worker processes render in parallel.
 
 Usage:
     # Start server (normally done automatically by main.py)
-    python render_server.py
+    python render_server.py [--workers N]
 
     # From training code:
     from render_server import RenderClient
@@ -21,11 +22,16 @@ import signal
 import struct
 import time
 import socket
+import threading
+import queue
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor, Future
 
 SOCK_PATH = f"/tmp/thalamus-render-{os.getuid()}.sock"
 PID_PATH = f"/tmp/thalamus-render-{os.getuid()}.pid"
 IDLE_TIMEOUT = 300  # shutdown after 5 min idle
+DEFAULT_WORKERS = 2
+MAX_QUEUE = 100  # drop oldest jobs beyond this
 
 
 def _send_msg(sock, data):
@@ -53,7 +59,7 @@ def _recv_msg(sock):
 
 
 # ---------------------------------------------------------------------------
-# Render functions (run in server process, no GPU needed)
+# Render functions (run in worker processes, no GPU needed)
 # ---------------------------------------------------------------------------
 
 def _render_grid(job):
@@ -78,8 +84,6 @@ def _render_grid(job):
         normalized = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX,
                                    dtype=cv2.CV_8U)
         cv2.imwrite(job['output_path'], normalized)
-
-    return pos_2d  # for warm-start chaining
 
 
 def _render_cluster(job):
@@ -140,29 +144,52 @@ HANDLERS = {
 }
 
 
+def _execute_job(job):
+    """Top-level function for worker processes. Must be picklable."""
+    handler = HANDLERS.get(job.get('type'))
+    if handler is None:
+        return {'status': 'error', 'msg': f"unknown type: {job.get('type')}"}
+    try:
+        handler(job)
+        return {'status': 'ok', 'path': job.get('output_path', '')}
+    except Exception as e:
+        return {'status': 'error', 'msg': str(e),
+                'path': job.get('output_path', '')}
+
+
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 
-def run_server():
-    """Main server loop. Listens on Unix socket, processes render jobs."""
+def run_server(n_workers=DEFAULT_WORKERS):
+    """Main server loop. Accepts jobs via socket, dispatches to worker pool."""
     # Clean up stale socket
     if os.path.exists(SOCK_PATH):
         os.unlink(SOCK_PATH)
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCK_PATH)
-    server.listen(5)
-    server.settimeout(IDLE_TIMEOUT)
+    server.listen(16)
+    server.settimeout(1.0)  # poll interval for idle check
 
     # Write PID file
     with open(PID_PATH, 'w') as f:
         f.write(str(os.getpid()))
 
-    print(f"Render server started: pid={os.getpid()}, socket={SOCK_PATH}")
+    # Worker pool
+    pool = ProcessPoolExecutor(max_workers=n_workers)
+    pending = []  # list of Future objects
+    jobs_submitted = 0
     jobs_done = 0
+    jobs_dropped = 0
+    last_activity = time.time()
+    shutdown_requested = False
+
+    print(f"Render server started: pid={os.getpid()}, workers={n_workers}, "
+          f"socket={SOCK_PATH}")
 
     def cleanup(signum=None, frame=None):
+        pool.shutdown(wait=False, cancel_futures=True)
         try:
             os.unlink(SOCK_PATH)
         except OSError:
@@ -171,19 +198,42 @@ def run_server():
             os.unlink(PID_PATH)
         except OSError:
             pass
-        print(f"Render server stopped: {jobs_done} jobs done")
+        print(f"Render server stopped: {jobs_done}/{jobs_submitted} done, "
+              f"{jobs_dropped} dropped")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
 
     try:
-        while True:
+        while not shutdown_requested:
+            # Reap completed futures
+            still_pending = []
+            for f in pending:
+                if f.done():
+                    jobs_done += 1
+                    try:
+                        result = f.result()
+                        if result.get('status') == 'error':
+                            print(f"  render error: {result.get('msg', '?')} "
+                                  f"({result.get('path', '')})")
+                    except Exception as e:
+                        print(f"  render exception: {e}")
+                else:
+                    still_pending.append(f)
+            pending = still_pending
+
+            # Accept new connections
             try:
                 conn, _ = server.accept()
             except socket.timeout:
-                print(f"Render server idle {IDLE_TIMEOUT}s, shutting down")
-                break
+                # Check idle timeout
+                if time.time() - last_activity > IDLE_TIMEOUT:
+                    print(f"Render server idle {IDLE_TIMEOUT}s, shutting down")
+                    break
+                continue
+
+            last_activity = time.time()
 
             try:
                 job = _recv_msg(conn)
@@ -191,36 +241,65 @@ def run_server():
                     conn.close()
                     continue
 
-                if job.get('type') == 'shutdown':
-                    _send_msg(conn, {'status': 'ok'})
-                    conn.close()
-                    break
+                jtype = job.get('type', '')
 
-                if job.get('type') == 'ping':
-                    _send_msg(conn, {'status': 'alive', 'jobs_done': jobs_done})
+                if jtype == 'shutdown':
+                    _send_msg(conn, {'status': 'ok',
+                                     'jobs_done': jobs_done,
+                                     'pending': len(pending)})
+                    conn.close()
+                    shutdown_requested = True
+                    continue
+
+                if jtype == 'ping':
+                    _send_msg(conn, {'status': 'alive',
+                                     'jobs_done': jobs_done,
+                                     'pending': len(pending),
+                                     'workers': n_workers})
                     conn.close()
                     continue
 
-                handler = HANDLERS.get(job.get('type'))
-                if handler is None:
+                if jtype not in HANDLERS:
                     _send_msg(conn, {'status': 'error',
-                                     'msg': f"unknown type: {job.get('type')}"})
+                                     'msg': f"unknown type: {jtype}"})
                     conn.close()
                     continue
 
-                t0 = time.time()
-                try:
-                    result = handler(job)
-                    elapsed = time.time() - t0
-                    jobs_done += 1
-                    _send_msg(conn, {'status': 'ok', 'elapsed': elapsed})
-                except Exception as e:
-                    _send_msg(conn, {'status': 'error', 'msg': str(e)})
+                # Backpressure: drop oldest if queue too large
+                if len(pending) >= MAX_QUEUE:
+                    jobs_dropped += 1
+                    _send_msg(conn, {'status': 'dropped',
+                                     'pending': len(pending)})
+                    conn.close()
+                    continue
 
-            finally:
+                # Submit to worker pool
+                future = pool.submit(_execute_job, job)
+                pending.append(future)
+                jobs_submitted += 1
+
+                _send_msg(conn, {'status': 'queued',
+                                 'pending': len(pending)})
+                conn.close()
+
+            except Exception as e:
+                try:
+                    _send_msg(conn, {'status': 'error', 'msg': str(e)})
+                except Exception:
+                    pass
                 conn.close()
 
     finally:
+        # Wait for remaining jobs
+        if pending:
+            print(f"Draining {len(pending)} pending jobs...")
+            for f in pending:
+                try:
+                    f.result(timeout=30)
+                    jobs_done += 1
+                except Exception:
+                    pass
+        pool.shutdown(wait=True)
         cleanup()
 
 
@@ -229,10 +308,10 @@ def run_server():
 # ---------------------------------------------------------------------------
 
 class RenderClient:
-    """Client for submitting render jobs to the server."""
+    """Client for submitting render jobs to the server. Fire-and-forget."""
 
     def __init__(self):
-        self._prev_2d = None  # warm-start state for grid renders
+        pass
 
     @staticmethod
     def is_server_running():
@@ -242,12 +321,12 @@ class RenderClient:
         try:
             with open(PID_PATH) as f:
                 pid = int(f.read().strip())
-            os.kill(pid, 0)  # check if process exists
+            os.kill(pid, 0)
         except (OSError, ValueError):
             return False
-        # Process exists, try ping
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
             sock.connect(SOCK_PATH)
             _send_msg(sock, {'type': 'ping'})
             resp = _recv_msg(sock)
@@ -257,16 +336,16 @@ class RenderClient:
             return False
 
     @staticmethod
-    def spawn_server():
+    def spawn_server(n_workers=DEFAULT_WORKERS):
         """Spawn render server as a background process."""
         import subprocess
-        script = os.path.join(os.path.dirname(__file__), 'render_server.py')
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'render_server.py')
         proc = subprocess.Popen(
-            [sys.executable, script],
+            [sys.executable, script, '--workers', str(n_workers)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True)
-        # Wait for socket to appear
         for _ in range(50):
             time.sleep(0.1)
             if os.path.exists(SOCK_PATH):
@@ -275,40 +354,48 @@ class RenderClient:
         return False
 
     @classmethod
-    def connect_or_spawn(cls):
+    def connect_or_spawn(cls, n_workers=DEFAULT_WORKERS):
         """Connect to existing server or spawn a new one."""
         client = cls()
         if not cls.is_server_running():
-            cls.spawn_server()
+            cls.spawn_server(n_workers=n_workers)
         return client
 
     def submit(self, render_type, output_path, **kwargs):
-        """Submit a render job. Non-blocking (fire and forget)."""
+        """Submit a render job. Returns immediately after queueing."""
         job = {'type': render_type, 'output_path': output_path}
         job.update(kwargs)
-
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
             sock.connect(SOCK_PATH)
             _send_msg(sock, job)
             resp = _recv_msg(sock)
             sock.close()
             return resp
-        except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
-            print(f"  render submit failed: {e}")
-            return None
+        except (ConnectionRefusedError, FileNotFoundError,
+                OSError, socket.timeout) as e:
+            return {'status': 'error', 'msg': str(e)}
 
     def shutdown(self):
-        """Ask server to shut down."""
+        """Ask server to shut down (drains pending jobs first)."""
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
             sock.connect(SOCK_PATH)
             _send_msg(sock, {'type': 'shutdown'})
-            _recv_msg(sock)
+            resp = _recv_msg(sock)
             sock.close()
-        except (ConnectionRefusedError, FileNotFoundError, OSError):
-            pass
+            return resp
+        except (ConnectionRefusedError, FileNotFoundError,
+                OSError, socket.timeout):
+            return None
 
 
 if __name__ == '__main__':
-    run_server()
+    import argparse
+    p = argparse.ArgumentParser(description="Thalamus render server")
+    p.add_argument('--workers', type=int, default=DEFAULT_WORKERS,
+                   help=f"Number of worker processes (default: {DEFAULT_WORKERS})")
+    args = p.parse_args()
+    run_server(n_workers=args.workers)
