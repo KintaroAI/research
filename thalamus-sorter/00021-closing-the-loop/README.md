@@ -448,3 +448,26 @@ neurons spread into many small isolated clusters.
 
 **Implication:** lr=0.001 is too slow for 80×80 with feedback. Need either
 higher lr, more anchor batches, or longer training.
+
+### Run 027: 80×80, garden, motor, lr=0.01, 100k ticks
+
+Config: `--preset gray_80x80_garden --lr 0.01 --saccade-step 15
+--motor-column 0 --motor-scale 15 -f 100000`
+
+Clustering: 632/1066 alive, contiguity=**0.982**, diameter=**4.1**,
+stability=0.986. Eval: **98.8% within 3px, 99.9% within 5px**.
+Winner dist [270/273/246/277] — fully balanced.
+
+**Cluster 0 is pure feedback** (20 neurons). The motor column processes
+feedback signals, not raw pixels. This is actually the desired architecture:
+a two-layer processing chain where the motor column receives a summary of
+what sensory columns detect, then steers the saccade based on that
+higher-level representation:
+
+```
+pixels → sensory clusters → sensory columns → feedback neurons →
+    motor cluster (fb) → motor column → saccade steering
+```
+
+106 isolated feedback loops. 631 pure sensory, 434 pure feedback, 1 mixed.
+Motor magnitude=0.10, position uniformity=3.9 (fairly spread).
