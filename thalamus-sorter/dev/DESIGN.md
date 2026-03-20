@@ -321,9 +321,45 @@ algorithm, frequency-based knn2 selection, streaming cluster maintenance,
 balance control, and two approaches for hierarchical stacking (derived vs
 full layer 2 training).
 
+## Lateral connections between columns
+
+Per-cluster columns can only detect features local to one cluster. Cross-cluster
+non-linear features (e.g., XOR of two uncorrelated signals) are architecturally
+unreachable — verified experimentally in ts-00021.
+
+**Solution: lateral connections via the cluster knn2 graph.** Each column
+receives its knn2-neighbors' outputs as additional input, enabling cross-cluster
+information flow in a single tick.
+
+```
+Column A ──outputs──→ lateral input to Column B
+Column B ──outputs──→ lateral input to Column C
+                      (routed along knn2 edges)
+```
+
+This is biologically analogous to horizontal connections between cortical
+columns. The knn2 graph provides the wiring topology — columns that are nearby
+in embedding space exchange outputs. A column in an XOR-sensitive region would
+receive lateral inputs from columns encoding A and B features, giving it the
+raw material for non-linear combination.
+
+**Simplest implementation:** Previous tick's column outputs from k2 nearest
+cluster neighbors, concatenated as additional input slots to SoftWTA. With
+k2=16 neighbors × 4 outputs = 64 lateral values per column per tick. The
+column's prototype matrix extends from `(n_outputs, max_inputs)` to
+`(n_outputs, max_inputs + k2 * n_outputs)`.
+
+**Key advantage over feedback neurons:** Lateral connections are a direct
+column-to-column shortcut. Information propagates in 1 tick vs the multi-tick
+path through feedback neurons (column → signal buffer → embedding → cluster →
+column). This is critical for temporal coherence — by the time information
+flows through the feedback path, the input has changed.
+
 ## Open questions
 
 - Can we force cross-channel spatial structure (e.g., shared spatial dimensions + channel-specific dimensions)?
 - Auto-adaptive k_sample based on dead anchor rate?
 - Scaling beyond 160x160? Estimated need: k_sample ~ 0.03n, training time ~ O(n * ticks)
 - Optimal lr_decay / normalize_every for very long runs (millions of ticks)?
+- Lateral connection learning: fixed projections vs learned weights? What learning signal?
+- Lateral input scale: how to balance local neuron signals vs lateral column outputs?

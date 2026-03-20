@@ -240,3 +240,55 @@ neurons that already correlate enough to cluster together). Cross-cluster
 non-linear features require either: (1) a mechanism to route information
 between clusters (lateral connections, attention), or (2) a hierarchical layer
 where cluster-level representations are combined.
+
+## Next: Lateral Connections Between Columns
+
+The feedback loop closes a vertical path (sensory → column → feedback neuron →
+embedding space), but the missing piece is **horizontal** information flow
+between columns. In the current architecture each column is an isolated unit
+that only sees its own cluster's neurons. Non-linear features like XOR require
+combining outputs from multiple columns.
+
+### Proposed Architecture
+
+Each column receives two types of input:
+1. **Local input** (current): signal window from its cluster's wired neurons
+2. **Lateral input** (new): outputs from neighboring columns in cluster-KNN
+   space (knn2)
+
+```
+Column A ──outputs──→ lateral input to Column B
+Column B ──outputs──→ lateral input to Column A
+                      (via cluster knn2 neighborhood)
+```
+
+The cluster-level KNN graph (knn2) already tracks which clusters are near each
+other in embedding space. Lateral connections would route column outputs along
+these edges. A column in the XOR region would receive lateral inputs from
+columns in the A and B regions (if those clusters are knn2 neighbors), giving
+it the information needed to compute XOR.
+
+### Key Design Questions
+
+1. **What to send:** Raw column outputs (4 floats per column)? Winner ID only?
+   Concatenated with local input or as a separate input stream?
+2. **How many lateral inputs:** All knn2 neighbors (k2=16)? Top-k by distance?
+   Would make column input size variable or require padding.
+3. **Routing:** Static (wired at cluster init, updated on knn2 changes) or
+   dynamic (attention-weighted based on current column outputs)?
+4. **Timescale:** Lateral inputs from same tick (synchronous, requires
+   ordering) or previous tick (asynchronous, simpler, like feedback neurons)?
+5. **Learning:** Do lateral connection weights learn, or are they fixed
+   projections? If learned, what's the learning signal?
+
+### Simplest Version
+
+Use previous tick's column outputs from knn2 neighbors as additional input
+slots in the SoftWTA column. Each column currently has `max_inputs=20` slots.
+With k2=16 neighbors × 4 outputs = 64 lateral values per tick. Could add a
+separate `lateral_inputs` slot array alongside the existing neuron-signal slots.
+
+This is analogous to how feedback neurons work, but instead of going through
+the full embedding→cluster→column loop, lateral connections are a direct
+column-to-column shortcut along the knn2 graph. Much faster information
+propagation (1 tick vs many ticks for the embedding path).
