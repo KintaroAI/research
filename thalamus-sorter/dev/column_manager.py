@@ -27,6 +27,14 @@ import torch.nn.functional as F
 # Set to False to use the original usage-only lr scaling.
 ENTROPY_SCALED_LR = True
 
+# Lateral learning mode:
+#   'contrastive' — winner pulls toward prev_outputs, losers push away
+#                   (associative: memorizes co-occurring lateral patterns)
+#   'covariance'  — power iteration on cross-covariance between lateral
+#                   input and local projection (variance-based: finds which
+#                   lateral direction correlates with local state changes)
+LATERAL_LEARN_MODE = 'covariance'
+
 # ---------------------------------------------------------------------------
 # SoftWTACell — from column/dev/column.py, instantaneous + streaming modes
 # (kept for standalone use and benchmarks; ColumnManager uses batched ops)
@@ -396,14 +404,35 @@ class ColumnManager:
         update_idx = ar[do_update]
         self.prototypes[update_idx, actual_winners[do_update]] = new_proto[do_update]
 
-        # Lateral contrastive update
+        # Lateral weight update
         if self.lateral:
             lat_in = np.broadcast_to(self._prev_outputs, (m, len(self._prev_outputs)))
-            # Sign: +1 for winner, -1/(n_out-1) for losers
-            sign = np.full((m, n_out), -1.0 / (n_out - 1), dtype=np.float32)
-            sign[ar, actual_winners] = 1.0
-            delta = lat_in[:, None, :] - self.lateral_protos  # (m, n_out, lat_dim)
-            new_lat = self.lateral_protos + lr_eff[:, None, None] * sign[:, :, None] * delta
+
+            if LATERAL_LEARN_MODE == 'contrastive':
+                # Winner pulls toward prev_outputs, losers push away
+                sign = np.full((m, n_out), -1.0 / (n_out - 1), dtype=np.float32)
+                sign[ar, actual_winners] = 1.0
+                delta = lat_in[:, None, :] - self.lateral_protos
+                new_lat = self.lateral_protos + lr_eff[:, None, None] * sign[:, :, None] * delta
+
+            elif LATERAL_LEARN_MODE == 'covariance':
+                # Power iteration on cross-covariance: find which lateral
+                # direction correlates with each output's local projection.
+                # local_proj: (m, n_out) = how strongly each output matched
+                # lat_in: (m, lat_dim) = what the lateral input looked like
+                # Cross-covariance target: lat_direction that predicts local_proj
+                #
+                # For each output j: target_j = sim_j * lat_in (outer product)
+                # This pulls lateral weights toward lateral patterns that
+                # co-occur with HIGH local similarity for that output.
+                # Mean-center sim to get contrast (high vs low local match).
+                sim_c = sim - sim.mean(axis=1, keepdims=True)  # (m, n_out)
+                # target[m, j, lat] = sim_c[m, j] * lat_in[m, lat]
+                lat_target = sim_c[:, :, None] * lat_in[:, None, :]  # (m, n_out, lat_dim)
+                lat_target_norm = np.linalg.norm(lat_target, axis=2, keepdims=True).clip(1e-8)
+                lat_target = lat_target / lat_target_norm
+                new_lat = self.lateral_protos + lr_eff[:, None, None] * (lat_target - self.lateral_protos)
+
             lat_norms = np.linalg.norm(new_lat, axis=2, keepdims=True).clip(1e-8)
             self.lateral_protos = new_lat / lat_norms
             self._prev_outputs = probs.ravel().copy()
