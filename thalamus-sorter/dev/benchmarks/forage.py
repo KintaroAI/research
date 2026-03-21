@@ -35,6 +35,30 @@ import numpy as np
 name = 'forage'
 description = 'Foraging: navigate to POIs, collect them, manage hunger'
 
+
+def pulsate(value, t, period):
+    """Amplitude-modulate a slow signal with a periodic carrier.
+
+    Slow signals (hunger ramp, position drift) have near-zero temporal
+    derivative, making them invisible to derivative-correlation. Pulsation
+    adds a carrier wave whose amplitude encodes the value:
+
+        output = |sin(t * 2π / period)| * value
+
+    Different periods for different signals prevent cross-correlation
+    from the carrier alone — the system must attend to amplitude.
+
+    Args:
+        value: float in [0, 1], the actual signal to encode
+        t: current tick (int)
+        period: carrier period in ticks (use different per signal type)
+
+    Returns:
+        float in [0, 1], pulsating signal
+    """
+    carrier = abs(np.sin(t * 2.0 * np.pi / period))
+    return float(carrier * value)
+
 N_SENSE = 26  # 14 base + 4 dir_split + 4 restless + 4 tired
 # 2×pos + 2×target + 4×dir(+/-) + 2×hunger + 4×restless + 4×tired = 26
 
@@ -250,36 +274,40 @@ def make_signal(w, h, args):
         norm_pos = pos / field_size
         norm_target = nearest_pos / field_size
 
+        # Override neurons with pulsating signals.
+        # Different periods per signal type prevent carrier cross-correlation.
         for i in idx['pos_x']:
-            sig[i] = norm_pos[0]
+            sig[i] = pulsate(norm_pos[0], t, 7)
         for i in idx['pos_y']:
-            sig[i] = norm_pos[1]
+            sig[i] = pulsate(norm_pos[1], t, 9)
         for i in idx['target_x']:
-            sig[i] = norm_target[0]
+            sig[i] = pulsate(norm_target[0], t, 11)
         for i in idx['target_y']:
-            sig[i] = norm_target[1]
-        # Direction split: each channel is 0 to 1
+            sig[i] = pulsate(norm_target[1], t, 13)
+        # Direction split: each channel is 0 to 1, pulsating
         for i in idx['dir_xp']:
-            sig[i] = max(0.0, direction[0])   # positive x component
+            sig[i] = pulsate(max(0.0, direction[0]), t, 5)
         for i in idx['dir_xn']:
-            sig[i] = max(0.0, -direction[0])  # negative x component
+            sig[i] = pulsate(max(0.0, -direction[0]), t, 5)
         for i in idx['dir_yp']:
-            sig[i] = max(0.0, direction[1])   # positive y component
+            sig[i] = pulsate(max(0.0, direction[1]), t, 5)
         for i in idx['dir_yn']:
-            sig[i] = max(0.0, -direction[1])  # negative y component
+            sig[i] = pulsate(max(0.0, -direction[1]), t, 5)
         # Proximity: closer = higher (inverse distance, capped)
         if len(pois) > 0:
             prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
         else:
             prox = 0.0
         for i in idx['proximity']:
-            sig[i] = prox
+            sig[i] = pulsate(prox, t, 15)
         for i in idx['hunger']:
-            sig[i] = hunger
-        # Muscle feedback signals
+            sig[i] = pulsate(hunger, t, 17)
+        # Muscle feedback signals — each direction gets its own period
+        rest_periods = [19, 21, 23, 25]
+        tire_periods = [27, 29, 31, 33]
         for i in range(4):
-            sig[idx['restless'][i]] = restlessness[i]
-            sig[idx['tired'][i]] = tiredness[i]
+            sig[idx['restless'][i]] = pulsate(restlessness[i], t, rest_periods[i])
+            sig[idx['tired'][i]] = pulsate(tiredness[i], t, tire_periods[i])
 
         feature_log.append((t, norm_pos[0], norm_pos[1],
                             norm_target[0], norm_target[1],
