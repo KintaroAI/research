@@ -604,6 +604,18 @@ right after collecting POI, then consolidates.
 the count. Direction tracking jumped to r=0.81. Position r=0.94,
 target r=0.92. Agent stays near field center, not stuck at borders.
 
+**Run 030: pulsating signals**
+
+All sensory signals amplitude-modulated with `|sin(t*2π/period)| * value`.
+Slow-changing signals (hunger, proximity) have near-zero derivative —
+invisible to derivative-correlation. Pulsation adds a carrier wave.
+Different prime periods per signal prevent carrier cross-correlation.
+
+89 collections. Proximity detection improved (0.42→0.65) — the
+pulsation made this slow signal visible. Direction y improved
+(0.34→0.43). But direction x dropped (0.81→0.52) — period=5 carrier
+may be too fast for already-varying direction signals.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
