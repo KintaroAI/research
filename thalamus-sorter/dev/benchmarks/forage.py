@@ -35,8 +35,8 @@ import numpy as np
 name = 'forage'
 description = 'Foraging: navigate to POIs, collect them, manage hunger'
 
-N_SENSE = 22  # 14 base + 4 restlessness + 4 tiredness
-# 2×pos + 2×target + 2×dir + 2×hunger + 4×restless + 4×tired = 22
+N_SENSE = 26  # 14 base + 4 dir_split + 4 restless + 4 tired
+# 2×pos + 2×target + 4×dir(+/-) + 2×hunger + 4×restless + 4×tired = 26
 
 
 def add_args(parser):
@@ -98,12 +98,19 @@ def make_signal(w, h, args):
         'pos_y': [2, 3],
         'target_x': [4, 5],
         'target_y': [6, 7],
-        'dir_x': [8, 9],
-        'dir_y': [10, 11],
+        # Direction split into +/- channels (0 to 1 each)
+        'dir_xp': [8],     # target is to the right
+        'dir_xn': [9],     # target is to the left
+        'dir_yp': [10],    # target is below
+        'dir_yn': [11],    # target is above
         'hunger': [12, 13],
         # Muscle feedback: dx+, dx-, dy+, dy-
         'restless': [14, 15, 16, 17],
         'tired': [18, 19, 20, 21],
+        # Extra: distance to target (0=far, 1=close)
+        'proximity': [22, 23],
+        # Spare for alignment with motor outputs
+        'spare': [24, 25],
     }
 
     feature_log = []
@@ -240,10 +247,22 @@ def make_signal(w, h, args):
             sig[i] = norm_target[0]
         for i in idx['target_y']:
             sig[i] = norm_target[1]
-        for i in idx['dir_x']:
-            sig[i] = np.clip(direction[0], -1, 1)
-        for i in idx['dir_y']:
-            sig[i] = np.clip(direction[1], -1, 1)
+        # Direction split: each channel is 0 to 1
+        for i in idx['dir_xp']:
+            sig[i] = max(0.0, direction[0])   # positive x component
+        for i in idx['dir_xn']:
+            sig[i] = max(0.0, -direction[0])  # negative x component
+        for i in idx['dir_yp']:
+            sig[i] = max(0.0, direction[1])   # positive y component
+        for i in idx['dir_yn']:
+            sig[i] = max(0.0, -direction[1])  # negative y component
+        # Proximity: closer = higher (inverse distance, capped)
+        if len(pois) > 0:
+            prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
+        else:
+            prox = 0.0
+        for i in idx['proximity']:
+            sig[i] = prox
         for i in idx['hunger']:
             sig[i] = hunger
         # Muscle feedback signals
@@ -253,8 +272,9 @@ def make_signal(w, h, args):
 
         feature_log.append((t, norm_pos[0], norm_pos[1],
                             norm_target[0], norm_target[1],
-                            direction[0], direction[1],
-                            hunger, float(is_sparse)))
+                            max(0, direction[0]), max(0, -direction[0]),
+                            max(0, direction[1]), max(0, -direction[1]),
+                            hunger, prox, float(is_sparse)))
 
         # Save field visualization
         renderer = _refs.get('renderer')
@@ -348,7 +368,8 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     all_outputs = np.array([a[1] for a in aligned])
     n_ticks, m, n_out = all_outputs.shape
     feature_names = ['pos_x', 'pos_y', 'target_x', 'target_y',
-                     'dir_x', 'dir_y', 'hunger', 'is_sparse']
+                     'dir_xp', 'dir_xn', 'dir_yp', 'dir_yn',
+                     'hunger', 'proximity', 'is_sparse']
 
     best = {}
     for fi, fname in enumerate(feature_names):
