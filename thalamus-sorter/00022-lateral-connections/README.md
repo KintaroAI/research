@@ -341,6 +341,34 @@ dispatch overhead on small tensors:
    columns lets the system focus on the A/B columns it needs.
 4. **2 anchor batches give a small boost** (0.75→0.79) — more training
    pairs per tick help lateral learning converge faster.
-5. **Signal drifts with very long training** (0.75→0.54 at 130k) — the
-   detecting column shifts as clusters reorganize. Adaptive lateral
-   wiring or stable clusters would help maintain peak performance.
+5. **Signal drifts with very long training** — the detecting column shifts
+   as clusters reorganize. Covariance mode drifts less than contrastive.
+
+### Lateral learning modes
+
+Two learning rules for lateral weights, switchable via `LATERAL_LEARN_MODE`
+in `column_manager.py`:
+
+**Contrastive** (associative): Winner's lateral weights pull toward
+`prev_outputs`, losers push away. Memorizes which lateral pattern
+co-occurred with winning. Fast learning, strong initial signal.
+
+**Covariance** (variance-based): Power iteration on cross-covariance
+between lateral input and local similarity. Each output's target is
+`sim_centered * lat_input` — finds which lateral direction predicts
+high local match for that output. Same principle as local prototype
+learning (variance-seeking), applied to the lateral dimension.
+
+| Mode | 10k | 130k | Drift |
+|------|-----|------|-------|
+| Contrastive | **0.79** | 0.54 | -32% |
+| Covariance | 0.58 | **0.43** | -26% |
+| No lateral | 0.22 | 0.22 | 0% |
+
+Contrastive peaks higher but drifts more. Covariance starts lower but
+is more stable — it continuously tracks variance rather than memorizing
+specific patterns that break when clusters reorganize.
+
+Both modes share the same lr as local prototypes (`--column-lr`, default
+0.05), reduced by usage scaling and entropy scaling. This is independent
+of the embedding lr (`--lr`).
