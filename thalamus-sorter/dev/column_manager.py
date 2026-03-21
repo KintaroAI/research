@@ -294,6 +294,7 @@ class ColumnManager:
         if lateral:
             K_lat = min(self.lateral_K, m - 1)
             self.lateral_K = K_lat
+            self.lateral_K_near = K_lat // 2  # first half = knn2 neighbors
             # Init with random wiring — knn2 synced later via sync_lateral_knn2()
             self.lateral_adj = np.full((m, K_lat), -1, dtype=np.int64)
             for c in range(m):
@@ -309,12 +310,13 @@ class ColumnManager:
             self._prev_outputs = np.zeros((m, n_outputs), dtype=np.float32)
             self._lateral_rng = np.random.RandomState(123)
             self._evict_threshold = 0.1
+            self._knn2_cache = None  # cached for eviction rewiring
 
-            # Future enhancement: biased candidate selection.
+            # Future enhancement: biased candidate selection for long-range.
             # Track per-column co-activation EMA:
             #   co_act[c, c_other] = decay * co_act + (1-decay) * both_active
-            # When evicting, pick most co-activated non-connected column
-            # instead of random. Discovers functional relationships (A↔XOR).
+            # When evicting long-range, pick most co-activated non-connected
+            # column. Discovers functional relationships (A↔XOR).
 
     def sync_lateral_knn2(self, knn2):
         """Sync lateral adjacency with cluster knn2 neighbors.
@@ -327,9 +329,10 @@ class ColumnManager:
             knn2: (M, k2) array of cluster neighbor indices
         """
         if not self.lateral:
-            return
+            return 0
+        self._knn2_cache = knn2.copy()
         m, K_lat, n_out = self.m, self.lateral_K, self.n_outputs
-        half = K_lat // 2
+        half = self.lateral_K_near
         n_synced = 0
         for c in range(m):
             old_near = set(self.lateral_adj[c, :half])
@@ -477,28 +480,33 @@ class ColumnManager:
             assert not np.any(np.isnan(self.lateral_protos)), \
                 "NaN in lateral_protos after update"
 
-            # Streaming eviction: one random column per tick
-            # Replace weakest connection with random non-connected column
+            # Streaming eviction: one random column per tick.
+            # Near slots (< K_near) rewire to knn2 neighbor.
+            # Far slots (>= K_near) rewire to random non-connected column.
             c = self._lateral_rng.randint(m)
             weight_mags = np.abs(self.lateral_protos[c]).sum(axis=0)  # (K*n_out,)
-            # Sum magnitude per connection slot (K slots, each with n_out weights)
-            slot_mags = weight_mags.reshape(self.lateral_K, n_out).sum(axis=1)  # (K,)
-            weakest = slot_mags.argmin()
+            slot_mags = weight_mags.reshape(self.lateral_K, n_out).sum(axis=1)
+            weakest = int(slot_mags.argmin())
             if slot_mags[weakest] < self._evict_threshold:
                 connected = set(self.lateral_adj[c])
-                candidates = [i for i in range(m) if i != c and i not in connected]
+                is_near = weakest < self.lateral_K_near
+                if is_near and self._knn2_cache is not None:
+                    # Replace with next knn2 neighbor not already connected
+                    candidates = [int(nb) for nb in self._knn2_cache[c]
+                                  if nb >= 0 and nb != c and nb not in connected]
+                else:
+                    # Replace with random non-connected column
+                    candidates = [i for i in range(m)
+                                  if i != c and i not in connected]
                 if candidates:
                     new_neighbor = self._lateral_rng.choice(candidates)
                     self.lateral_adj[c, weakest] = new_neighbor
-                    # Re-init weights for new connection slot
                     slot_start = weakest * n_out
                     slot_end = slot_start + n_out
                     new_w = self._lateral_rng.randn(n_out, n_out).astype(np.float32)
                     new_w /= np.linalg.norm(new_w, axis=1, keepdims=True).clip(1e-8)
-                    # Insert into each output's lateral proto
                     for o in range(n_out):
                         self.lateral_protos[c, o, slot_start:slot_end] = new_w[o]
-                        # Re-normalize full lateral proto
                         norm = np.linalg.norm(self.lateral_protos[c, o]).clip(1e-8)
                         self.lateral_protos[c, o] /= norm
 
