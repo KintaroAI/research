@@ -81,8 +81,8 @@ def add_args(parser):
                         help="Random walk step size (default: 2.0)")
     parser.add_argument("--forage-hunger-rate", type=float, default=0.01,
                         help="Hunger ramp per tick (default: 0.01, 100 ticks to 1.0)")
-    parser.add_argument("--forage-motor-column", type=int, default=0,
-                        help="Which column drives motor output (default: 0)")
+    parser.add_argument("--forage-motor-columns", type=str, default="0,1,2,3,4,5,6,7",
+                        help="Comma-separated columns for motor (8 = one per fiber, default: 0,1,2,3,4,5,6,7)")
     parser.add_argument("--forage-motor-scale", type=float, default=0.5,
                         help="Motor output scale in field units (default: 0.5)")
 
@@ -96,8 +96,9 @@ def make_signal(w, h, args):
     collect_radius = getattr(args, 'forage_collect_radius', 5.0)
     walk_step = getattr(args, 'forage_walk_step', 2.0)
     hunger_rate = getattr(args, 'forage_hunger_rate', 0.01)
-    motor_column = getattr(args, 'forage_motor_column', 0)
-    motor_scale = getattr(args, 'forage_motor_scale', 3.0)
+    motor_cols_str = getattr(args, 'forage_motor_columns', '0,1,2,3,4,5,6,7')
+    motor_columns = [int(x) for x in motor_cols_str.split(',')]
+    motor_scale = getattr(args, 'forage_motor_scale', 0.5)
     rng = np.random.RandomState(42)
 
     # Agent state
@@ -141,13 +142,21 @@ def make_signal(w, h, args):
         nonlocal hunger
         is_sparse = t >= phase_ticks
 
-        # Motor control from column outputs
-        motor_dx, motor_dy = 0.0, 0.0
+        # Motor control: 8 columns, each drives one fiber per direction.
+        # Column c: out[0]→dx+ fiber c, out[1]→dx- fiber c,
+        #           out[2]→dy+ fiber c, out[3]→dy- fiber c
+        motor_forces = np.zeros(4, dtype=np.float32)  # dx+, dx-, dy+, dy-
         col_mgr = _refs['column_mgr']
-        if col_mgr is not None and motor_column >= 0:
-            out = col_mgr.get_outputs()[motor_column]
-            motor_dx = (out[0] - out[1]) * motor_scale
-            motor_dy = (out[2] - out[3]) * motor_scale
+        if col_mgr is not None and len(motor_columns) > 0:
+            all_out = col_mgr.get_outputs()
+            m = all_out.shape[0]
+            for i, mc in enumerate(motor_columns):
+                if mc < m:
+                    out = all_out[mc]
+                    motor_forces[0] += out[0] * motor_scale  # dx+
+                    motor_forces[1] += out[1] * motor_scale  # dx-
+                    motor_forces[2] += out[2] * motor_scale  # dy+
+                    motor_forces[3] += out[3] * motor_scale  # dy-
 
         # Per-fiber muscle spasms: each of 8 fibers per direction
         # independently gets restless and spasms. Total force = sum/n_fibers.
@@ -160,11 +169,7 @@ def make_signal(w, h, args):
                     spasm_forces[d] += walk_step * (0.5 + rng.rand() * 0.5)
 
         # Combine motor + spasm forces per direction
-        raw_forces = np.zeros(4, dtype=np.float32)
-        raw_forces[0] = max(0, motor_dx) + spasm_forces[0]   # dx+
-        raw_forces[1] = max(0, -motor_dx) + spasm_forces[1]  # dx-
-        raw_forces[2] = max(0, motor_dy) + spasm_forces[2]   # dy+
-        raw_forces[3] = max(0, -motor_dy) + spasm_forces[3]  # dy-
+        raw_forces = motor_forces + spasm_forces
 
         # Apply tiredness: average across fibers, tired fibers weaken force
         mean_tiredness = tiredness.mean(axis=1)  # (4,)
