@@ -176,12 +176,11 @@ def make_signal(w, h, args):
                 if rng.rand() < restlessness[d, f] * 0.3 * spasm_decay:
                     spasm_forces[d] += walk_step * (0.5 + rng.rand() * 0.5)
 
-        # Combine motor + spasm forces per direction
-        raw_forces = motor_forces + spasm_forces
-
-        # Apply tiredness: average across fibers, tired fibers weaken force
+        # Combine: motor already has per-fiber tiredness applied in gate.
+        # Spasms get global tiredness scaling (tired muscles spasm weaker).
         mean_tiredness = tiredness.mean(axis=1)  # (4,)
-        effective = raw_forces * (1.0 - mean_tiredness)
+        effective_spasms = spasm_forces * (1.0 - mean_tiredness)
+        effective = motor_forces + effective_spasms
 
         total_dx = effective[0] - effective[1]
         total_dy = effective[2] - effective[3]
