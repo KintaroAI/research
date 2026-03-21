@@ -209,8 +209,26 @@ def make_signal(w, h, args):
         # Hunger ramps
         hunger = min(1.0, hunger + hunger_rate)
 
-        # Build signal
-        sig = rng.randn(n).astype(np.float32) * 0.05  # background noise
+        # Build signal: retina renders the field onto the neuron grid.
+        # Each neuron "sees" a patch of the field. POIs appear as bright
+        # gaussian spots, agent position as a separate gaussian.
+        sig = np.zeros(n, dtype=np.float32)
+        # Map each neuron to a field position
+        neuron_field_x = (np.arange(n) % w).astype(np.float32) / (w - 1) * field_size
+        neuron_field_y = (np.arange(n) // w).astype(np.float32) / (h - 1) * field_size
+        # POI spots: gaussian with radius ~field_size/8
+        poi_sigma2 = (field_size / 8.0) ** 2
+        for pi in range(len(pois)):
+            dx = neuron_field_x - pois[pi, 0]
+            dy = neuron_field_y - pois[pi, 1]
+            sig += np.exp(-(dx * dx + dy * dy) / (2 * poi_sigma2))
+        # Agent spot: narrower gaussian
+        agent_sigma2 = (field_size / 16.0) ** 2
+        dx_a = neuron_field_x - pos[0]
+        dy_a = neuron_field_y - pos[1]
+        sig -= 0.5 * np.exp(-(dx_a * dx_a + dy_a * dy_a) / (2 * agent_sigma2))
+        # Add small noise
+        sig += rng.randn(n).astype(np.float32) * 0.02
         norm_pos = pos / field_size
         norm_target = nearest_pos / field_size
 
