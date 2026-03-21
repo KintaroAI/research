@@ -110,8 +110,9 @@ def make_signal(w, h, args):
     move_threshold = 0.5  # minimum movement to count as "active"
     score = [0]
     phase_scores = [0, 0]
-    _refs = {'column_mgr': None, 'renderer': None}
+    _refs = {'column_mgr': None, 'renderer': None, 'dsolver': None}
     base_column_lr = [None]  # captured from column_mgr on first tick
+    base_embed_lr = [None]   # captured from dsolver on first tick
     field_save_every = 100
 
     # POIs
@@ -241,15 +242,20 @@ def make_signal(w, h, args):
         # Hunger ramps
         hunger = min(1.0, hunger + hunger_rate)
 
-        # Hunger modulates column learning rate:
+        # Hunger modulates learning rates:
         # Just ate (hunger=0) → full lr, starving (hunger=1) → lr * 0.01
         # Like glucose: no food → no energy → no plasticity
+        lr_scale = max(0.01, 1.0 - hunger * 0.99)
         col_mgr = _refs['column_mgr']
         if col_mgr is not None:
             if base_column_lr[0] is None:
                 base_column_lr[0] = col_mgr.lr
-            lr_scale = max(0.01, 1.0 - hunger * 0.99)
             col_mgr.lr = base_column_lr[0] * lr_scale
+        dsolver = _refs.get('dsolver')
+        if dsolver is not None:
+            if base_embed_lr[0] is None:
+                base_embed_lr[0] = dsolver.lr
+            dsolver.lr = base_embed_lr[0] * lr_scale
 
         # Build signal: retina renders the field onto the neuron grid.
         # Each neuron "sees" a patch of the field. POIs appear as bright

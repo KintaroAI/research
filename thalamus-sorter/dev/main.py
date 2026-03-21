@@ -1115,6 +1115,7 @@ def run_word2vec(args):
             if bench_metadata is not None and '_refs' in bench_metadata:
                 bench_metadata['_refs']['column_mgr'] = cluster_mgr.column_mgr
                 bench_metadata['_refs']['renderer'] = renderer
+                bench_metadata['_refs']['dsolver'] = dsolver
             col_str = f", columns={column_outputs}out" if column_outputs > 0 else ""
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "
