@@ -125,12 +125,23 @@ def make_signal(w, h, args):
         else:
             rand_scale = 1.0
 
-        # Move: random walk (scaled by confidence) + motor bias
+        # Muscle spasms: restless muscles fire involuntarily.
+        # Probability of spasm proportional to restlessness.
+        # This IS the "random walk" — but driven by muscle state.
+        spasm_dx, spasm_dy = 0.0, 0.0
+        # directions: 0=dx+, 1=dx-, 2=dy+, 3=dy-
+        for i in range(4):
+            if rng.rand() < restlessness[i] * 0.3:  # max 30% chance at full restless
+                spasm_strength = walk_step * (0.5 + rng.rand() * 0.5)
+                if i == 0: spasm_dx += spasm_strength
+                elif i == 1: spasm_dx -= spasm_strength
+                elif i == 2: spasm_dy += spasm_strength
+                elif i == 3: spasm_dy -= spasm_strength
+
+        # Move: spasms + motor bias
         prev_pos[:] = pos
-        pos[0] = np.clip(pos[0] + rng.randn() * walk_step * rand_scale + motor_dx,
-                         0, field_size)
-        pos[1] = np.clip(pos[1] + rng.randn() * walk_step * rand_scale + motor_dy,
-                         0, field_size)
+        pos[0] = np.clip(pos[0] + spasm_dx + motor_dx, 0, field_size)
+        pos[1] = np.clip(pos[1] + spasm_dy + motor_dy, 0, field_size)
 
         # Actual movement for muscle feedback
         actual_dx = pos[0] - prev_pos[0]
