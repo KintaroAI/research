@@ -898,20 +898,15 @@ def run_word2vec(args):
             signals_np = np.random.rand(n, T).astype(np.float32) if K > 0 \
                 else np.zeros((n, T), dtype=np.float32)
 
-            # Synthetic signal sources
-            xor_signal = None
-            xor_metadata = None
-            if args.signal_source == 'xor':
-                from synthetic_signals import make_xor_signal
-                xor_noise = getattr(args, 'xor_noise', 0.1)
-                xor_hold = getattr(args, 'xor_hold', 5)
-                xor_signal, xor_metadata = make_xor_signal(
-                    w, h, noise_std=xor_noise, hold_ticks=xor_hold)
-                # Pre-fill buffer
+            # Synthetic benchmark signals
+            from benchmarks import get_benchmark
+            bench = get_benchmark(args.signal_source) if args.signal_source else None
+            bench_signal = None
+            bench_metadata = None
+            if bench is not None:
+                bench_signal, bench_metadata = bench.make_signal(w, h, args)
                 for t in range(T):
-                    signals_np[:n_sensory, t] = xor_signal(t)
-                print(f"  signal buffer: ({n}, {T}), XOR synthetic "
-                      f"(noise={xor_noise}, hold={xor_hold})")
+                    signals_np[:n_sensory, t] = bench_signal(t)
 
             elif args.signal_source:
                 if args.signal_source.endswith('.png') or args.signal_source.endswith('.jpg'):
@@ -963,7 +958,7 @@ def run_word2vec(args):
                       f"{args.signal_source} ({src_desc}), "
                       f"crop={crop_desc}, step={saccade_step}, {mean_sub}")
                 saccade_source = torch.from_numpy(source).to(dsolver.device)
-            elif xor_signal is None:
+            elif bench_signal is None:
                 from scipy.ndimage import gaussian_filter
                 for t in range(T):
                     noise = np.random.randn(h, w).astype(np.float32)
@@ -999,10 +994,10 @@ def run_word2vec(args):
         # --- Tick function ---
         if mode == "correlation":
             def do_tick():
-                if xor_signal is not None:
+                if bench_signal is not None:
                     col = tick_counter[0] % T
                     signals[:n_sensory, col] = torch.from_numpy(
-                        xor_signal(tick_counter[0] + T)).to(signals.device)
+                        bench_signal(tick_counter[0] + T)).to(signals.device)
                     tick_counter[0] += 1
                 elif saccade_source is not None:
                     nonlocal walk_dy, walk_dx
@@ -1159,36 +1154,12 @@ def run_word2vec(args):
             if output_dir:
                 cluster_mgr.save(output_dir)
 
-        # XOR analysis
-        if xor_metadata is not None and cluster_mgr is not None:
-            from synthetic_signals import analyze_xor_columns
-            # Collect current column outputs over a sample window
-            print("  XOR analysis: sampling 500 ticks...")
-            col_history = []
-            for t in range(500):
-                sig_t = xor_signal(args.frames + T + t)
-                col_t = tick_counter[0] % T
-                signals[:n_sensory, col_t] = torch.from_numpy(sig_t).to(signals.device)
-                tick_counter[0] += 1
-                if cluster_mgr.column_mgr and cluster_mgr._signals is not None:
-                    cw = cluster_mgr.column_mgr.window
-                    indices = [(tick_counter[0] - 1 - i) % T for i in range(cw)]
-                    sw = cluster_mgr._signals[:, indices].cpu().numpy()
-                    cluster_mgr.column_mgr.tick(sw)
-                    col_history.append((t, cluster_mgr.column_mgr.get_outputs()))
-            results = analyze_xor_columns(xor_metadata, col_history)
-            if 'best_per_feature' in results:
-                print(f"  XOR results ({results['n_ticks']} ticks):")
-                for fname, info in results['best_per_feature'].items():
-                    print(f"    {fname:3s}: max|r|={info['max_abs_corr']:.3f} "
-                          f"(col {info['best_column']}, out {info['best_output']}), "
-                          f"mean|r|={info['mean_abs_corr']:.3f}")
-            if output_dir:
-                import json
-                xor_path = os.path.join(output_dir, "xor_analysis.json")
-                with open(xor_path, 'w') as f:
-                    json.dump(results.get('best_per_feature', {}), f, indent=2)
-                print(f"  XOR analysis saved: {xor_path}")
+        # Benchmark analysis
+        if bench is not None and bench_metadata is not None:
+            bench_metadata['_tick_fn'] = bench_signal
+            bench_metadata['_total_ticks'] = args.frames
+            bench.analyze(bench_metadata, cluster_mgr, signals,
+                          tick_counter, T, output_dir)
 
         # Motor log analysis
         if motor_log and output_dir:
@@ -1325,11 +1296,13 @@ def main():
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
                        help="Gaussian smoothing sigma for signal generation (correlation mode, default: 3.0)")
     p_w2v.add_argument("--signal-source", type=str, default=None,
-                       help="Path to signal source: .npy/.png/.jpg, or 'xor' for synthetic XOR benchmark")
-    p_w2v.add_argument("--xor-noise", type=float, default=0.1,
-                       help="Per-neuron noise std for XOR signal (default: 0.1)")
-    p_w2v.add_argument("--xor-hold", type=int, default=5,
-                       help="Ticks to hold each A,B state in XOR signal (default: 5)")
+                       help="Path to signal source: .npy/.png/.jpg, or benchmark name (e.g. 'xor')")
+    # Register benchmark-specific args
+    from benchmarks import list_benchmarks, get_benchmark
+    for bname in list_benchmarks():
+        bmod = get_benchmark(bname)
+        if bmod and hasattr(bmod, 'add_args'):
+            bmod.add_args(p_w2v)
     p_w2v.add_argument("--signal-channels", type=int, default=1,
                        help="Channels per pixel from source: 1=gray, 3=RGB, 4=RGBG (default: 1). "
                             "n = W*H*channels. PNG auto-loads as RGB.")
