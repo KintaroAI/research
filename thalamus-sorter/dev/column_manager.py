@@ -474,6 +474,7 @@ class ColumnManager:
 
             lat_norms = np.linalg.norm(new_lat, axis=2, keepdims=True).clip(1e-8)
             self.lateral_protos = new_lat / lat_norms
+            np.nan_to_num(self.lateral_protos, copy=False)
 
             # Streaming eviction: one random column per tick
             # Replace weakest connection with random non-connected column
@@ -507,7 +508,8 @@ class ColumnManager:
         usage_target[ar, actual_winners] = 1.0
         self.usage = self.usage * self.usage_decay + usage_target * (1 - self.usage_decay)
 
-        # Store outputs
+        # Store outputs (NaN guard — one bad value can poison entire system)
+        np.nan_to_num(probs, copy=False)
         self._outputs = probs.astype(np.float32)
 
     def get_outputs(self):
