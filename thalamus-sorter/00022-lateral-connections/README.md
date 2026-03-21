@@ -522,17 +522,38 @@ Agent does random walk. When within `collect_radius` of a POI, it's
 collected (score +1, hunger resets, POI respawns). Dense phase (20 POIs)
 transitions to sparse phase (3 POIs) at `phase_ticks`.
 
-First results at 10k:
-- **43 POIs collected** (26 dense, 17 sparse)
-- Position tracking: **r=0.85** — strong self-localization
-- Direction to target: **r=0.50-0.56** — columns detect where to go
-- Hunger: **r=0.51** — drive state is represented
-- Target position: r=0.31-0.85 — partial target tracking
+**Muscle feedback system:**
+- 4 restlessness neurons (dx+, dx-, dy+, dy-): ramp when idle, reset
+  on movement. Restless muscles fire involuntarily (spasms) — this IS
+  the random walk, driven by muscle state instead of external noise.
+- 4 tiredness neurons: ramp when active, recover slowly when resting,
+  reset on POI collection (reward). Tired muscles produce less force —
+  continuous one-direction movement → full halt. Forces direction changes.
 
-The system learns to represent position, direction, and hunger purely
-from signal correlations — no explicit training signal. The direction
-correlation (r=0.56) suggests motor control could use this to navigate
-toward POIs rather than random walking.
+Like infant motor learning: spasms first, then associating motor
+commands with consequences.
+
+**Run 019: spasm motor, 100k ticks**
+
+| Feature | Old motor (018) | Spasm motor (019) |
+|---------|----------------|-------------------|
+| pos_x | 0.25 | **0.91** |
+| pos_y | 0.27 | **0.94** |
+| target_x | 0.27 | **0.78** |
+| target_y | 0.32 | **0.85** |
+| dir_x | 0.21 | **0.85** |
+| dir_y | 0.28 | **0.86** |
+| hunger | 0.26 | **0.80** |
+| Collections | 2 | **7** |
+
+**Motor column learns direction:** Column 0 output 3 tracks dir_x at
+r=0.85 — the motor column IS learning direction through the spasm
+mechanism. The system observes spasm→movement→direction change and
+learns the association.
+
+Spasm-based movement prevents the stuck-in-corner problem (old motor
+got 2 collections, representations degraded to ~0.25). With spasms,
+exploration is guaranteed and representations stay strong (>0.78).
 
 ### Summary
 
