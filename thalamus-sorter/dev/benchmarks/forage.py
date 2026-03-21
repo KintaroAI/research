@@ -86,7 +86,8 @@ def make_signal(w, h, args):
     move_threshold = 0.5  # minimum movement to count as "active"
     score = [0]
     phase_scores = [0, 0]
-    _refs = {'column_mgr': None}
+    _refs = {'column_mgr': None, 'renderer': None}
+    field_save_every = 100
 
     # POIs
     pois = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
@@ -255,6 +256,12 @@ def make_signal(w, h, args):
                             norm_target[0], norm_target[1],
                             direction[0], direction[1],
                             hunger, float(is_sparse)))
+
+        # Save field visualization
+        renderer = _refs.get('renderer')
+        if renderer is not None and t % field_save_every == 0:
+            renderer.field(t, pos.copy(), pois.copy(), field_size,
+                           collect_radius=collect_radius)
 
         return sig
 

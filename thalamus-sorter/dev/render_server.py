@@ -149,6 +149,38 @@ def _render_signal(job):
     cv2.imwrite(job['output_path'], img)
 
 
+def _render_field(job):
+    """2D field with agent and points of interest."""
+    import cv2
+    field_size = job['field_size']
+    agent_pos = job['agent_pos']  # (2,) x, y
+    pois = job['pois']            # (N, 2) x, y
+    img_size = job.get('img_size', 400)
+
+    img = np.full((img_size, img_size, 3), 32, dtype=np.uint8)
+    scale = img_size / field_size
+
+    # Draw POIs as green circles
+    for i in range(len(pois)):
+        px = int(pois[i, 0] * scale)
+        py = int(pois[i, 1] * scale)
+        cv2.circle(img, (px, py), 6, (0, 200, 0), -1)
+        cv2.circle(img, (px, py), 6, (0, 255, 0), 1)
+
+    # Draw agent as red circle
+    ax = int(agent_pos[0] * scale)
+    ay = int(agent_pos[1] * scale)
+    cv2.circle(img, (ax, ay), 8, (0, 0, 200), -1)
+    cv2.circle(img, (ax, ay), 8, (0, 0, 255), 2)
+
+    # Draw collection radius
+    collect_radius = job.get('collect_radius', 5.0)
+    cr = int(collect_radius * scale)
+    cv2.circle(img, (ax, ay), cr, (0, 0, 100), 1)
+
+    cv2.imwrite(job['output_path'], img)
+
+
 def _render_heatmap(job):
     """Motor position heatmap."""
     import cv2
@@ -172,6 +204,7 @@ HANDLERS = {
     'cluster': _render_cluster,
     'cluster_signal': _render_cluster_signal,
     'signal': _render_signal,
+    'field': _render_field,
     'embed': _render_embed,
     'heatmap': _render_heatmap,
 }
@@ -497,6 +530,15 @@ class Renderer:
                      embeddings=embeddings, n_sensory=n_sensory,
                      pixel_values=pixel_values, cluster_ids=cluster_ids,
                      n_outputs=n_outputs, method=method)
+
+    def field(self, tick, agent_pos, pois, field_size,
+              collect_radius=5.0, img_size=400):
+        """2D field with agent and POIs."""
+        self._submit('field', self._path('field', tick),
+                     agent_pos=agent_pos, pois=pois,
+                     field_size=field_size,
+                     collect_radius=collect_radius,
+                     img_size=img_size)
 
     def heatmap(self, positions, name='motor_heatmap'):
         """Position heatmap (e.g., motor saccade positions)."""
