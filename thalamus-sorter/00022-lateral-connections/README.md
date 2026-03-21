@@ -441,3 +441,53 @@ proximity, far connections discover cross-region features like XOR.
 K=6 with typed eviction nearly matches 10% mask (0.77 vs 0.79) with
 3× fewer connections. The scaling advantage is massive: K=6 is O(M)
 while 10% mask is O(M²). At M=10000, K=6 uses 60K edges vs 10M.
+
+## Benchmark Suite
+
+Modular benchmark framework in `benchmarks/`. Each test is a module with
+`make_signal()` and `analyze()`. Auto-discovered via `--signal-source <name>`.
+
+### XOR — 2-input non-linear
+
+`--signal-source xor --xor-hold 50`
+
+4 quadrants: A, B, XOR=A^B, AND=A&B. Tests cross-cluster non-linear
+feature detection. **Best: r=0.77** with K=6 lateral (vs 0.22 without).
+
+### MAJORITY — 3-input non-linear
+
+`--signal-source majority --majority-hold 50`
+
+4 quadrants: A, B, C, MAJ=majority(A,B,C). MAJ=1 when two or more inputs
+are 1. Tests whether lateral connections can combine 3 sources (XOR only
+needs 2). Harder because the correct lateral weights must attend to 3
+columns simultaneously.
+
+First result at 10k: MAJ r=0.40 (above individual inputs A=0.33, B=0.32,
+C=0.36). The system detects the non-linear combination but not as strongly
+as XOR — expected with more inputs to integrate.
+
+### SEQUENCE — temporal order detection
+
+`--signal-source sequence --sequence-hold 50`
+
+4 quadrants: A, B, SEQ=A_prev AND B_now, baseline. SEQ=1 only if A was
+active in the PREVIOUS hold period AND B is active NOW. Order matters:
+A-then-B ≠ B-then-A.
+
+Tests temporal memory depth: the current signal window doesn't contain A's
+previous state. That information must flow through lateral connections —
+a column carrying A's previous output via `prev_outputs`.
+
+First result at 10k: SEQ r=0.24 (near noise floor). The system tracks
+prev_A (r=0.33) but can't yet combine it with current B for sequence
+detection. This is the hardest benchmark — requires lateral connections
+to carry memory across hold periods, not just spatial integration.
+
+### Summary
+
+| Benchmark | Feature | Difficulty | Best max\|r\| |
+|-----------|---------|------------|--------------|
+| XOR | A^B | 2-input non-linear | **0.77** |
+| MAJORITY | maj(A,B,C) | 3-input non-linear | **0.40** |
+| SEQUENCE | A_prev & B_now | temporal memory | **0.24** |
