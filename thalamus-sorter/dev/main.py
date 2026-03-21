@@ -905,6 +905,8 @@ def run_word2vec(args):
             bench_metadata = None
             if bench is not None:
                 bench_signal, bench_metadata = bench.make_signal(w, h, args)
+                if '_refs' in bench_metadata and renderer is not None:
+                    bench_metadata['_refs']['renderer'] = renderer
                 for t in range(T):
                     signals_np[:n_sensory, t] = bench_signal(t)
 
