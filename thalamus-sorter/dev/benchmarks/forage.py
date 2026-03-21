@@ -151,19 +151,18 @@ def make_signal(w, h, args):
         pos[0] = np.clip(pos[0] + total_dx, 0, field_size)
         pos[1] = np.clip(pos[1] + total_dy, 0, field_size)
 
-        # Actual movement for muscle feedback
-        actual_dx = pos[0] - prev_pos[0]
-        actual_dy = pos[1] - prev_pos[1]
-        # 4 directions: dx+, dx-, dy+, dy-
-        movements = [
-            max(0, actual_dx),     # dx+
-            max(0, -actual_dx),    # dx-
-            max(0, actual_dy),     # dy+
-            max(0, -actual_dy),    # dy-
+        # Muscle feedback based on FORCE applied, not actual displacement.
+        # Pushing against a wall still tires the muscle — it's straining
+        # even if position doesn't change.
+        forces = [
+            dx_pos,    # dx+ force (motor + spasm, before tiredness scaling)
+            dx_neg,    # dx-
+            dy_pos,    # dy+
+            dy_neg,    # dy-
         ]
         for i in range(4):
-            if movements[i] > move_threshold:
-                # Muscle active: tiredness ramps, restlessness resets
+            if forces[i] > move_threshold:
+                # Muscle straining: tiredness ramps, restlessness resets
                 restlessness[i] = 0.0
                 tiredness[i] = min(1.0, tiredness[i] + tire_rate)
             else:
