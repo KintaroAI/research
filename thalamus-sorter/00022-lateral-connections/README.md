@@ -596,6 +596,21 @@ target r=0.86, direction r=0.71-0.86. Both cluster 0 (motor) and
 cluster 33 are pure feedback. All world knowledge flows through
 lateral connections from 9 sensory clusters to feedback processing.
 
+**Field at start vs 10M ticks:**
+
+![field_first](forage_10M_field_first.png)
+![field_last](forage_10M_field_last.png)
+
+**Embedding at 50k vs 10M ticks:**
+
+![embed_first](forage_10M_embed_first.png)
+![embed_last](forage_10M_embed_last.png)
+
+**Clusters at 50k vs 10M ticks:**
+
+![clusters_first](forage_10M_clusters_first.png)
+![clusters_last](forage_10M_clusters_last.png)
+
 **Run 029: hunger-modulated lr — breakthrough**
 
 Hunger scales column learning rate: just ate → full lr, starving → 1%.
