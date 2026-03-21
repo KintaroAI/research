@@ -80,8 +80,8 @@ def add_args(parser):
                         help="Hunger ramp per tick (default: 0.01, 100 ticks to 1.0)")
     parser.add_argument("--forage-motor-column", type=int, default=0,
                         help="Which column drives motor output (default: 0)")
-    parser.add_argument("--forage-motor-scale", type=float, default=3.0,
-                        help="Motor output scale in field units (default: 3.0)")
+    parser.add_argument("--forage-motor-scale", type=float, default=0.5,
+                        help="Motor output scale in field units (default: 0.5)")
 
 
 def make_signal(w, h, args):
