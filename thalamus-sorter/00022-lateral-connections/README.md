@@ -318,3 +318,29 @@ dispatch overhead on small tensors:
 |-----------|---------------|---------------|
 | column_manager.tick() | 17.0 ms | **0.6 ms** (28×) |
 | Total training | 15.0 ms | **7.6 ms** (2×) |
+
+### Full comparison matrix
+
+| Run | hold | lateral | batches | XOR max\|r\| |
+|-----|------|---------|---------|-------------|
+| 015 (ts-00021) | 5 | no | 2 | 0.17 |
+| 009 | 5 | 10% | 2 | 0.19 |
+| 008 baseline | 50 | no | 1 | 0.22 |
+| 004 | 50 | 100% | 1 | 0.64 |
+| 006 | 50 | 10% | 1 | 0.75 |
+| 007 (warm +100k) | 50 | 10% | 1 | 0.54 |
+| **010** | **50** | **10%** | **2** | **0.79** |
+
+**Key findings:**
+1. **hold=50 is the prerequisite.** With hold=5 (fast-flipping signal),
+   neither lateral connections nor more batches help — columns can't
+   produce stable outputs for lateral weights to learn from.
+2. **Lateral connections are essential.** Without them, XOR stays at ~0.22
+   even after 130k ticks with hold=50. With them, XOR jumps to 0.64-0.79.
+3. **10% sparse beats full connectivity.** Less noise from irrelevant
+   columns lets the system focus on the A/B columns it needs.
+4. **2 anchor batches give a small boost** (0.75→0.79) — more training
+   pairs per tick help lateral learning converge faster.
+5. **Signal drifts with very long training** (0.75→0.54 at 130k) — the
+   detecting column shifts as clusters reorganize. Adaptive lateral
+   wiring or stable clusters would help maintain peak performance.
