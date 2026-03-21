@@ -183,11 +183,21 @@ def make_signal(w, h, args):
         pos[0] = (pos[0] + total_dx) % field_size
         pos[1] = (pos[1] + total_dy) % field_size
 
-        # Per-fiber muscle feedback based on force applied
+        # Per-fiber muscle feedback based on NET movement.
+        # Only the winning direction per axis tires — the losing direction
+        # rests. This prevents uniform tiredness from symmetric softmax.
+        net_dx = effective[0] - effective[1]  # positive = dx+ wins
+        net_dy = effective[2] - effective[3]
+        # Which direction is active per axis
+        active = [
+            net_dx > move_threshold,     # dx+ active
+            -net_dx > move_threshold,    # dx- active
+            net_dy > move_threshold,     # dy+ active
+            -net_dy > move_threshold,    # dy- active
+        ]
         for d in range(4):
             for f in range(n_fibers):
-                fiber_force = raw_forces[d] / max(1, n_fibers)
-                if fiber_force > move_threshold or spasm_forces[d] > 0:
+                if active[d]:
                     restlessness[d, f] = 0.0
                     tiredness[d, f] = min(1.0, tiredness[d, f] + tire_rate)
                 else:
