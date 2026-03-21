@@ -141,7 +141,9 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
                 out = all_outputs[:, c, o]
                 if out.std() < 1e-8:
                     continue
-                results[c, o, fi] = np.corrcoef(feat, out)[0, 1]
+                r = np.corrcoef(feat, out)[0, 1]
+                if not np.isnan(r):
+                    results[c, o, fi] = r
 
     best = {}
     for fi, fname in enumerate(feature_names):
