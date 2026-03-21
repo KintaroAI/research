@@ -35,8 +35,8 @@ import numpy as np
 name = 'forage'
 description = 'Foraging: navigate to POIs, collect them, manage hunger'
 
-N_SENSE = 14  # override neurons: 2×pos + 2×target + 2×dir + 2×hunger = 14... wait
-# 2 pos_x + 2 pos_y + 2 target_x + 2 target_y + 2 dir_x + 2 dir_y + 2 hunger = 14
+N_SENSE = 22  # 14 base + 4 restlessness + 4 tiredness
+# 2×pos + 2×target + 2×dir + 2×hunger + 4×restless + 4×tired = 22
 
 
 def add_args(parser):
@@ -75,10 +75,17 @@ def make_signal(w, h, args):
 
     # Agent state
     pos = np.array([field_size / 2, field_size / 2], dtype=np.float32)
+    prev_pos = pos.copy()
     hunger = np.float32(0.0)
+    # Muscle feedback: 4 directions (dx+, dx-, dy+, dy-)
+    restlessness = np.zeros(4, dtype=np.float32)  # ramps when muscle idle
+    tiredness = np.zeros(4, dtype=np.float32)      # ramps when muscle active
+    rest_rate = 0.01    # restlessness ramp per idle tick
+    tire_rate = 0.005   # tiredness ramp per active tick
+    recovery_rate = 0.002  # tiredness decay per idle tick
+    move_threshold = 0.5  # minimum movement to count as "active"
     score = [0]
-    phase_scores = [0, 0]  # [dense_collections, sparse_collections]
-    # Column manager reference — set by main.py via metadata['_column_mgr']
+    phase_scores = [0, 0]
     _refs = {'column_mgr': None}
 
     # POIs
@@ -93,6 +100,9 @@ def make_signal(w, h, args):
         'dir_x': [8, 9],
         'dir_y': [10, 11],
         'hunger': [12, 13],
+        # Muscle feedback: dx+, dx-, dy+, dy-
+        'restless': [14, 15, 16, 17],
+        'tired': [18, 19, 20, 21],
     }
 
     feature_log = []
@@ -116,10 +126,31 @@ def make_signal(w, h, args):
             rand_scale = 1.0
 
         # Move: random walk (scaled by confidence) + motor bias
+        prev_pos[:] = pos
         pos[0] = np.clip(pos[0] + rng.randn() * walk_step * rand_scale + motor_dx,
                          0, field_size)
         pos[1] = np.clip(pos[1] + rng.randn() * walk_step * rand_scale + motor_dy,
                          0, field_size)
+
+        # Actual movement for muscle feedback
+        actual_dx = pos[0] - prev_pos[0]
+        actual_dy = pos[1] - prev_pos[1]
+        # 4 directions: dx+, dx-, dy+, dy-
+        movements = [
+            max(0, actual_dx),     # dx+
+            max(0, -actual_dx),    # dx-
+            max(0, actual_dy),     # dy+
+            max(0, -actual_dy),    # dy-
+        ]
+        for i in range(4):
+            if movements[i] > move_threshold:
+                # Muscle active: tiredness ramps, restlessness resets
+                restlessness[i] = 0.0
+                tiredness[i] = min(1.0, tiredness[i] + tire_rate)
+            else:
+                # Muscle idle: restlessness ramps, tiredness recovers
+                restlessness[i] = min(1.0, restlessness[i] + rest_rate)
+                tiredness[i] = max(0.0, tiredness[i] - recovery_rate)
 
         # Find nearest POI
         if len(pois) > 0:
@@ -137,6 +168,7 @@ def make_signal(w, h, args):
                 phase_idx = 1 if is_sparse else 0
                 phase_scores[phase_idx] += 1
                 hunger = 0.0
+                tiredness[:] = 0.0  # reward: muscles refreshed
                 # Remove collected POI
                 pois_list = list(range(len(pois)))
                 pois_list.remove(nearest_idx)
@@ -178,6 +210,10 @@ def make_signal(w, h, args):
             sig[i] = np.clip(direction[1], -1, 1)
         for i in idx['hunger']:
             sig[i] = hunger
+        # Muscle feedback signals
+        for i in range(4):
+            sig[idx['restless'][i]] = restlessness[i]
+            sig[idx['tired'][i]] = tiredness[i]
 
         feature_log.append((t, norm_pos[0], norm_pos[1],
                             norm_target[0], norm_target[1],
