@@ -183,21 +183,26 @@ def make_signal(w, h, args):
         pos[0] = (pos[0] + total_dx) % field_size
         pos[1] = (pos[1] + total_dy) % field_size
 
-        # Per-fiber muscle feedback based on NET movement.
-        # Only the winning direction per axis tires — the losing direction
-        # rests. This prevents uniform tiredness from symmetric softmax.
-        net_dx = effective[0] - effective[1]  # positive = dx+ wins
-        net_dy = effective[2] - effective[3]
-        # Which direction is active per axis
-        active = [
-            net_dx > move_threshold,     # dx+ active
-            -net_dx > move_threshold,    # dx- active
-            net_dy > move_threshold,     # dy+ active
-            -net_dy > move_threshold,    # dy- active
-        ]
+        # Per-fiber muscle feedback: each fiber tires from its OWN force.
+        # Fiber f gets force from motor column f's output + its own spasms.
+        per_fiber_force = np.zeros((4, n_fibers), dtype=np.float32)
+        # Motor contribution per fiber
+        if col_mgr is not None and len(motor_columns) > 0:
+            all_out = col_mgr.get_outputs()
+            m_cols = all_out.shape[0]
+            for f, mc in enumerate(motor_columns):
+                if f < n_fibers and mc < m_cols:
+                    for d in range(4):
+                        per_fiber_force[d, f] += all_out[mc, d] * motor_scale
+        # Spasm contribution per fiber (already tracked per direction, not per fiber)
+        # Distribute spasm evenly as a rough estimate
+        for d in range(4):
+            if spasm_forces[d] > 0:
+                per_fiber_force[d, :] += spasm_forces[d] / n_fibers
+
         for d in range(4):
             for f in range(n_fibers):
-                if active[d]:
+                if per_fiber_force[d, f] > move_threshold:
                     restlessness[d, f] = 0.0
                     tiredness[d, f] = min(1.0, tiredness[d, f] + tire_rate)
                 else:
