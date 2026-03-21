@@ -1441,8 +1441,8 @@ def main():
                        help="Feed column outputs back as signal for feedback neurons")
     p_w2v.add_argument("--column-lateral", action="store_true",
                        help="Enable lateral connections between columns")
-    p_w2v.add_argument("--lateral-k", type=int, default=6,
-                       help="Lateral connections per column (default: 6)")
+    p_w2v.add_argument("--lateral-k", type=int, default=2,
+                       help="Lateral connections per column (default: 2)")
     p_w2v.add_argument("--lateral-sparsity", type=float, default=1.0,
                        help="Fraction of lateral connections to keep (1.0=full, 0.1=10%%)")
     p_w2v.add_argument("--cluster-neurons-per", type=int, default=0,
