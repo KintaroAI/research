@@ -310,7 +310,6 @@ class ColumnManager:
             self._prev_outputs = np.zeros((m, n_outputs), dtype=np.float32)
             self._lateral_rng = np.random.RandomState(123)
             self._evict_threshold = 0.1
-            self._knn2_cache = None  # cached for eviction rewiring
 
             # Future enhancement: biased candidate selection for long-range.
             # Track per-column co-activation EMA:
@@ -330,7 +329,6 @@ class ColumnManager:
         """
         if not self.lateral:
             return 0
-        self._knn2_cache = knn2.copy()
         m, K_lat, n_out = self.m, self.lateral_K, self.n_outputs
         half = self.lateral_K_near
         n_synced = 0
@@ -382,7 +380,7 @@ class ColumnManager:
         if len(matches) > 0:
             row[matches[0]] = -1
 
-    def tick(self, signal_window):
+    def tick(self, signal_window, knn2=None):
         """Batched forward + learn for all M columns. Pure numpy, no torch."""
         m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
         w = self.window
@@ -490,9 +488,9 @@ class ColumnManager:
             if slot_mags[weakest] < self._evict_threshold:
                 connected = set(self.lateral_adj[c])
                 is_near = weakest < self.lateral_K_near
-                if is_near and self._knn2_cache is not None:
+                if is_near and knn2 is not None:
                     # Replace with next knn2 neighbor not already connected
-                    candidates = [int(nb) for nb in self._knn2_cache[c]
+                    candidates = [int(nb) for nb in knn2[c]
                                   if nb >= 0 and nb != c and nb not in connected]
                 else:
                     # Replace with random non-connected column

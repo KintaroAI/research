@@ -395,7 +395,10 @@ class _ClusterManager:
                 w = self.column_mgr.window
                 indices = [(global_tick - i) % self._signal_T for i in range(w)]
                 signal_window = self._signals[:, indices].cpu().numpy()  # (n, w)
-                self.column_mgr.tick(signal_window)
+                knn2_np = None
+                if self.column_mgr.lateral and self.knn2_mode != 'knn':
+                    knn2_np = self.knn2_t.cpu().numpy()
+                self.column_mgr.tick(signal_window, knn2=knn2_np)
                 # Write column outputs to feedback neuron rows for next tick
                 if self.n_sensory < self.n:
                     outputs = self.column_mgr.get_outputs()  # (m, n_outputs)
