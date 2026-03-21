@@ -118,30 +118,37 @@ def make_signal(w, h, args):
             out = col_mgr.get_outputs()[motor_column]
             motor_dx = (out[0] - out[1]) * motor_scale
             motor_dy = (out[2] - out[3]) * motor_scale
-            # Confidence-gated: suppress random walk when motor is strong
-            motor_mag = np.sqrt(motor_dx**2 + motor_dy**2)
-            confidence = min(1.0, motor_mag / motor_scale)
-            rand_scale = 1.0 - confidence
-        else:
-            rand_scale = 1.0
 
         # Muscle spasms: restless muscles fire involuntarily.
         # Probability of spasm proportional to restlessness.
-        # This IS the "random walk" — but driven by muscle state.
+        # This IS the "random walk" — driven by muscle state.
         spasm_dx, spasm_dy = 0.0, 0.0
-        # directions: 0=dx+, 1=dx-, 2=dy+, 3=dy-
         for i in range(4):
-            if rng.rand() < restlessness[i] * 0.3:  # max 30% chance at full restless
+            if rng.rand() < restlessness[i] * 0.3:
                 spasm_strength = walk_step * (0.5 + rng.rand() * 0.5)
                 if i == 0: spasm_dx += spasm_strength
                 elif i == 1: spasm_dx -= spasm_strength
                 elif i == 2: spasm_dy += spasm_strength
                 elif i == 3: spasm_dy -= spasm_strength
 
-        # Move: spasms + motor bias
+        # Apply tiredness: tired muscles produce less force.
+        # Continuous use in one direction → full halt.
+        # dx = dx+ force - dx- force, each scaled by (1 - tiredness)
+        total_dx = 0.0
+        total_dy = 0.0
+        # dx+ component (motor + spasm positive x)
+        dx_pos = max(0, motor_dx) + max(0, spasm_dx)
+        dx_neg = max(0, -motor_dx) + max(0, -spasm_dx)
+        dy_pos = max(0, motor_dy) + max(0, spasm_dy)
+        dy_neg = max(0, -motor_dy) + max(0, -spasm_dy)
+        # Scale each direction by (1 - tiredness)
+        total_dx = dx_pos * (1.0 - tiredness[0]) - dx_neg * (1.0 - tiredness[1])
+        total_dy = dy_pos * (1.0 - tiredness[2]) - dy_neg * (1.0 - tiredness[3])
+
+        # Move
         prev_pos[:] = pos
-        pos[0] = np.clip(pos[0] + spasm_dx + motor_dx, 0, field_size)
-        pos[1] = np.clip(pos[1] + spasm_dy + motor_dy, 0, field_size)
+        pos[0] = np.clip(pos[0] + total_dx, 0, field_size)
+        pos[1] = np.clip(pos[1] + total_dy, 0, field_size)
 
         # Actual movement for muscle feedback
         actual_dx = pos[0] - prev_pos[0]
