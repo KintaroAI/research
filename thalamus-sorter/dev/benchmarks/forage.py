@@ -151,10 +151,12 @@ def make_signal(w, h, args):
 
         # Per-fiber muscle spasms: each of 8 fibers per direction
         # independently gets restless and spasms. Total force = sum/n_fibers.
+        # Spasm probability decays over time: halves every 5000 ticks.
+        spasm_decay = 0.5 ** (t / 5000.0)
         spasm_forces = np.zeros(4, dtype=np.float32)
         for d in range(4):
             for f in range(n_fibers):
-                if rng.rand() < restlessness[d, f] * 0.3:
+                if rng.rand() < restlessness[d, f] * 0.3 * spasm_decay:
                     spasm_forces[d] += walk_step * (0.5 + rng.rand() * 0.5)
 
         # Combine motor + spasm forces per direction
