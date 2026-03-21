@@ -1100,9 +1100,6 @@ def run_word2vec(args):
                 cluster_mgr.set_signals(signals, sig_channels, T)
             cluster_mgr._pixel_values = pixel_values
             cluster_mgr._dsolver = dsolver
-            lat_sparsity = getattr(args, 'lateral_sparsity', 1.0)
-            if cluster_mgr.column_mgr and lat_sparsity < 1.0:
-                cluster_mgr.column_mgr.set_lateral_sparsity(lat_sparsity)
             col_str = f", columns={column_outputs}out" if column_outputs > 0 else ""
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "

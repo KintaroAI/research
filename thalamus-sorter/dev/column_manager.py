@@ -286,15 +286,46 @@ class ColumnManager:
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
         self._arange_m = np.arange(m)
 
-        # Lateral connections: each column receives all other columns' outputs
-        self.lateral_sparsity = 1.0
+        # Lateral connections: small-world graph with K neighbors per column.
+        # Adjacency list (M, K) stores neighbor indices. Lateral weights
+        # are (M, n_outputs, K * n_outputs) — only over connected neighbors.
+        # O(M*K) storage and compute, not O(M²).
+        self.lateral_K = 6  # connections per column
         if lateral:
-            lateral_dim = m * n_outputs
-            lat = rng.randn(m, n_outputs, lateral_dim).astype(np.float32)
+            K_lat = min(self.lateral_K, m - 1)
+            self.lateral_K = K_lat
+            # Small-world wiring: K/2 nearest + K/2 random (Watts-Strogatz)
+            self.lateral_adj = np.full((m, K_lat), -1, dtype=np.int64)
+            half = K_lat // 2
+            for c in range(m):
+                near = []
+                for d in range(1, half + 1):
+                    near.append((c + d) % m)
+                    if len(near) >= half:
+                        break
+                    near.append((c - d) % m)
+                    if len(near) >= half:
+                        break
+                available = [i for i in range(m) if i != c and i not in near]
+                n_random = K_lat - len(near)
+                far = list(rng.choice(available, size=min(n_random, len(available)),
+                                      replace=False))
+                neighbors = near + far
+                self.lateral_adj[c, :len(neighbors)] = neighbors
+
+            lat_dim = K_lat * n_outputs
+            lat = rng.randn(m, n_outputs, lat_dim).astype(np.float32)
             lat_norms = np.linalg.norm(lat, axis=2, keepdims=True).clip(1e-8)
             self.lateral_protos = lat / lat_norms
-            self._prev_outputs = np.zeros(m * n_outputs, dtype=np.float32)
-            self._lateral_mask = None  # None = full connectivity
+            self._prev_outputs = np.zeros((m, n_outputs), dtype=np.float32)
+            self._lateral_rng = np.random.RandomState(123)
+            self._evict_threshold = 0.1
+
+            # Future enhancement: biased candidate selection.
+            # Track per-column co-activation EMA:
+            #   co_act[c, c_other] = decay * co_act + (1-decay) * both_active
+            # When evicting, pick most co-activated non-connected column
+            # instead of random. Discovers functional relationships (A↔XOR).
 
     def wire(self, cluster_id, neuron_id):
         """Wire a neuron to a cluster's column (lowest empty slot)."""
@@ -303,23 +334,6 @@ class ColumnManager:
         if len(empty) == 0:
             return  # cluster full
         row[empty[0]] = neuron_id
-
-    def set_lateral_sparsity(self, keep_fraction, seed=42):
-        """Randomly prune lateral connections. keep_fraction=1.0 is full."""
-        if not self.lateral:
-            return
-        self.lateral_sparsity = keep_fraction
-        if keep_fraction >= 1.0:
-            self._lateral_mask = None
-            return
-        rng = np.random.RandomState(seed)
-        lateral_dim = self.m * self.n_outputs
-        mask = (rng.rand(self.m, lateral_dim) < keep_fraction).astype(np.float32)
-        self._lateral_mask = mask
-        n_kept = int(mask.sum())
-        n_total = self.m * lateral_dim
-        print(f"  Lateral sparsity: keeping {n_kept}/{n_total} "
-              f"({keep_fraction*100:.0f}%) connections")
 
     def unwire(self, cluster_id, neuron_id):
         """Unwire a neuron from a cluster's column."""
@@ -350,11 +364,10 @@ class ColumnManager:
         self.proj_mean = d * self.proj_mean + (1 - d) * proj.mean(axis=2)
         self.proj_var = d * self.proj_var + (1 - d) * sim
 
-        # Lateral input
+        # Lateral input: gather from K neighbors only
         if self.lateral:
-            lat_input = np.broadcast_to(self._prev_outputs, (m, len(self._prev_outputs)))
-            if self._lateral_mask is not None:
-                lat_input = lat_input * self._lateral_mask
+            neighbor_out = self._prev_outputs[self.lateral_adj]  # (m, K, n_out)
+            lat_input = neighbor_out.reshape(m, -1)              # (m, K*n_out)
             lat_sim = np.einsum('moi,mi->mo', self.lateral_protos, lat_input)
             sim = sim + lat_sim
 
@@ -406,36 +419,51 @@ class ColumnManager:
 
         # Lateral weight update
         if self.lateral:
-            lat_in = np.broadcast_to(self._prev_outputs, (m, len(self._prev_outputs)))
+            neighbor_out = self._prev_outputs[self.lateral_adj]  # (m, K, n_out)
+            lat_in = neighbor_out.reshape(m, -1)                 # (m, K*n_out)
 
             if LATERAL_LEARN_MODE == 'contrastive':
-                # Winner pulls toward prev_outputs, losers push away
                 sign = np.full((m, n_out), -1.0 / (n_out - 1), dtype=np.float32)
                 sign[ar, actual_winners] = 1.0
                 delta = lat_in[:, None, :] - self.lateral_protos
                 new_lat = self.lateral_protos + lr_eff[:, None, None] * sign[:, :, None] * delta
 
             elif LATERAL_LEARN_MODE == 'covariance':
-                # Power iteration on cross-covariance: find which lateral
-                # direction correlates with each output's local projection.
-                # local_proj: (m, n_out) = how strongly each output matched
-                # lat_in: (m, lat_dim) = what the lateral input looked like
-                # Cross-covariance target: lat_direction that predicts local_proj
-                #
-                # For each output j: target_j = sim_j * lat_in (outer product)
-                # This pulls lateral weights toward lateral patterns that
-                # co-occur with HIGH local similarity for that output.
-                # Mean-center sim to get contrast (high vs low local match).
-                sim_c = sim - sim.mean(axis=1, keepdims=True)  # (m, n_out)
-                # target[m, j, lat] = sim_c[m, j] * lat_in[m, lat]
-                lat_target = sim_c[:, :, None] * lat_in[:, None, :]  # (m, n_out, lat_dim)
+                sim_c = sim - sim.mean(axis=1, keepdims=True)
+                lat_target = sim_c[:, :, None] * lat_in[:, None, :]
                 lat_target_norm = np.linalg.norm(lat_target, axis=2, keepdims=True).clip(1e-8)
                 lat_target = lat_target / lat_target_norm
                 new_lat = self.lateral_protos + lr_eff[:, None, None] * (lat_target - self.lateral_protos)
 
             lat_norms = np.linalg.norm(new_lat, axis=2, keepdims=True).clip(1e-8)
             self.lateral_protos = new_lat / lat_norms
-            self._prev_outputs = probs.ravel().copy()
+
+            # Streaming eviction: one random column per tick
+            # Replace weakest connection with random non-connected column
+            c = self._lateral_rng.randint(m)
+            weight_mags = np.abs(self.lateral_protos[c]).sum(axis=0)  # (K*n_out,)
+            # Sum magnitude per connection slot (K slots, each with n_out weights)
+            slot_mags = weight_mags.reshape(self.lateral_K, n_out).sum(axis=1)  # (K,)
+            weakest = slot_mags.argmin()
+            if slot_mags[weakest] < self._evict_threshold:
+                connected = set(self.lateral_adj[c])
+                candidates = [i for i in range(m) if i != c and i not in connected]
+                if candidates:
+                    new_neighbor = self._lateral_rng.choice(candidates)
+                    self.lateral_adj[c, weakest] = new_neighbor
+                    # Re-init weights for new connection slot
+                    slot_start = weakest * n_out
+                    slot_end = slot_start + n_out
+                    new_w = self._lateral_rng.randn(n_out, n_out).astype(np.float32)
+                    new_w /= np.linalg.norm(new_w, axis=1, keepdims=True).clip(1e-8)
+                    # Insert into each output's lateral proto
+                    for o in range(n_out):
+                        self.lateral_protos[c, o, slot_start:slot_end] = new_w[o]
+                        # Re-normalize full lateral proto
+                        norm = np.linalg.norm(self.lateral_protos[c, o]).clip(1e-8)
+                        self.lateral_protos[c, o] /= norm
+
+            self._prev_outputs = probs.copy()
 
         # Usage EMA
         usage_target = np.zeros((m, n_out), dtype=np.float32)
@@ -468,5 +496,6 @@ class ColumnManager:
             'streaming_decay': self.streaming_decay,
             'lateral': self.lateral,
             'lateral_protos': _torch.from_numpy(self.lateral_protos) if self.lateral else None,
+            'lateral_adj': _torch.from_numpy(self.lateral_adj) if self.lateral else None,
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")

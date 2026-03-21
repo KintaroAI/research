@@ -372,3 +372,30 @@ specific patterns that break when clusters reorganize.
 Both modes share the same lr as local prototypes (`--column-lr`, default
 0.05), reduced by usage scaling and entropy scaling. This is independent
 of the embedding lr (`--lr`).
+
+### Small-world wiring (replacing random sparsity mask)
+
+Replaced O(M²) full connectivity + random mask with O(M×K) small-world
+graph. Each column has exactly K=6 connections stored as an adjacency
+list `(M, K)`:
+- K/2 nearest neighbors (by index distance, wrapping) — local connections
+- K/2 random long-range — cross-region shortcuts (Watts-Strogatz model)
+
+Lateral weights: `(M, n_outputs, K × n_outputs)` = `(M, 4, 24)` — tiny.
+
+| M | K=6 total edges | Storage | vs 10% full |
+|---|-----------------|---------|-------------|
+| 42 | 252 | 16KB | 28KB |
+| 1066 | 6.4K | 435KB | 18MB |
+| 10000 | 60K | 4MB | 1.6GB |
+
+**Streaming eviction:** Each tick, one random column checks its weakest
+connection (by weight magnitude). If below threshold, replace with a
+random non-connected column and re-init weights. O(1) per tick — the
+graph gradually improves as useless connections get replaced with
+potentially useful ones. The learned weights themselves serve as the
+utility signal (weights → 0 = column learned to ignore this connection).
+
+Biological parallel: cortical lateral connections are distance-dependent
+(many short-range, few long-range). Small-world topology gives both
+spatial coherence and cross-region information flow.
