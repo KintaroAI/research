@@ -484,10 +484,36 @@ prev_A (r=0.33) but can't yet combine it with current B for sequence
 detection. This is the hardest benchmark — requires lateral connections
 to carry memory across hold periods, not just spatial integration.
 
+### MATCH — spatial comparison
+
+`--signal-source match --match-hold 50`
+
+4 quadrants: P1, P2 each get one of 4 values (0, 0.33, 0.67, 1.0),
+EQ = (P1==P2), NEQ = (P1≠P2). Harder than XOR — comparing multi-valued
+patterns, not just binary bits. The lateral weights must learn
+"P1-column output matches P2-column output."
+
+First result at 10k: EQ r=0.23. Hardest benchmark — the relationship
+is equality across 4 values, not a fixed logical function.
+
+### ODDBALL — novelty detection
+
+`--signal-source oddball --oddball-hold 50`
+
+3 quadrants show the same random value, 1 shows a different value.
+ODD region encodes WHICH quadrant is the oddball. The system must learn
+"my value differs from what most others show" — comparing own local
+signal against lateral consensus.
+
+First result at 10k: odd_idx r=0.36. Promising — the system can partially
+detect which region deviates from the majority.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
 |-----------|---------|------------|--------------|
 | XOR | A^B | 2-input non-linear | **0.77** |
 | MAJORITY | maj(A,B,C) | 3-input non-linear | **0.40** |
-| SEQUENCE | A_prev & B_now | temporal memory | **0.24** |
+| ODDBALL | which is odd | consensus comparison | **0.36** |
+| SEQUENCE | A_prev & B_now | temporal memory | **0.26** |
+| MATCH | P1==P2 | multi-value comparison | **0.23** |
