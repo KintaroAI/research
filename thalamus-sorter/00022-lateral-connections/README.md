@@ -626,3 +626,21 @@ may be too fast for already-varying direction signals.
 | ODDBALL | which is odd | consensus comparison | **0.36** |
 | SEQUENCE | A_prev & B_now | temporal memory | **0.26** |
 | MATCH | P1==P2 | multi-value comparison | **0.23** |
+
+### Full K comparison across all benchmarks
+
+| Benchmark | Target | K=0 | K=2 | K=6 |
+|-----------|--------|-----|-----|-----|
+| XOR | A^B | 0.26 | **0.35** | **0.43** |
+| MAJORITY | MAJ | **0.44** | 0.39 | 0.40 |
+| SEQUENCE | SEQ | **0.32** | 0.28 | 0.26 |
+| MATCH | EQ | **0.36** | 0.25 | 0.23 |
+| ODDBALL | odd_idx | **0.41** | 0.33 | 0.36 |
+
+**Only XOR benefits from lateral connections.** The other benchmarks
+detect features from local signal patterns — MAJ region correlates
+with A+B+C within the same cluster. Lateral connections add noise
+that drowns out these weaker local correlations.
+
+M-sweep (M=42 to 1024, K=2): XOR stable at ~0.50 regardless of M.
+K-sweep (K=0 to 12): K=2 optimal for XOR, diminishing returns beyond.
