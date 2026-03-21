@@ -54,6 +54,10 @@ def add_args(parser):
                         help="Random walk step size (default: 2.0)")
     parser.add_argument("--forage-hunger-rate", type=float, default=0.01,
                         help="Hunger ramp per tick (default: 0.01, 100 ticks to 1.0)")
+    parser.add_argument("--forage-motor-column", type=int, default=0,
+                        help="Which column drives motor output (default: 0)")
+    parser.add_argument("--forage-motor-scale", type=float, default=3.0,
+                        help="Motor output scale in field units (default: 3.0)")
 
 
 def make_signal(w, h, args):
@@ -65,6 +69,8 @@ def make_signal(w, h, args):
     collect_radius = getattr(args, 'forage_collect_radius', 5.0)
     walk_step = getattr(args, 'forage_walk_step', 2.0)
     hunger_rate = getattr(args, 'forage_hunger_rate', 0.01)
+    motor_column = getattr(args, 'forage_motor_column', 0)
+    motor_scale = getattr(args, 'forage_motor_scale', 3.0)
     rng = np.random.RandomState(42)
 
     # Agent state
@@ -72,6 +78,8 @@ def make_signal(w, h, args):
     hunger = np.float32(0.0)
     score = [0]
     phase_scores = [0, 0]  # [dense_collections, sparse_collections]
+    # Column manager reference — set by main.py via metadata['_column_mgr']
+    _refs = {'column_mgr': None}
 
     # POIs
     pois = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
@@ -93,9 +101,25 @@ def make_signal(w, h, args):
         nonlocal hunger
         is_sparse = t >= phase_ticks
 
-        # Random walk
-        pos[0] = np.clip(pos[0] + rng.randn() * walk_step, 0, field_size)
-        pos[1] = np.clip(pos[1] + rng.randn() * walk_step, 0, field_size)
+        # Motor control from column outputs
+        motor_dx, motor_dy = 0.0, 0.0
+        col_mgr = _refs['column_mgr']
+        if col_mgr is not None and motor_column >= 0:
+            out = col_mgr.get_outputs()[motor_column]
+            motor_dx = (out[0] - out[1]) * motor_scale
+            motor_dy = (out[2] - out[3]) * motor_scale
+            # Confidence-gated: suppress random walk when motor is strong
+            motor_mag = np.sqrt(motor_dx**2 + motor_dy**2)
+            confidence = min(1.0, motor_mag / motor_scale)
+            rand_scale = 1.0 - confidence
+        else:
+            rand_scale = 1.0
+
+        # Move: random walk (scaled by confidence) + motor bias
+        pos[0] = np.clip(pos[0] + rng.randn() * walk_step * rand_scale + motor_dx,
+                         0, field_size)
+        pos[1] = np.clip(pos[1] + rng.randn() * walk_step * rand_scale + motor_dy,
+                         0, field_size)
 
         # Find nearest POI
         if len(pois) > 0:
@@ -175,6 +199,7 @@ def make_signal(w, h, args):
         'sensor_indices': idx,
         'phase_ticks': phase_ticks,
         'collect_radius': collect_radius,
+        '_refs': _refs,  # main.py sets _refs['column_mgr'] after cluster init
     }
 
     print(f"  signal buffer: FORAGE synthetic "

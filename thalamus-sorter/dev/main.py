@@ -1109,6 +1109,9 @@ def run_word2vec(args):
                 cluster_mgr.set_signals(signals, sig_channels, T)
             cluster_mgr._pixel_values = pixel_values
             cluster_mgr._dsolver = dsolver
+            # Give benchmark access to column manager for motor control
+            if bench_metadata is not None and '_refs' in bench_metadata:
+                bench_metadata['_refs']['column_mgr'] = cluster_mgr.column_mgr
             col_str = f", columns={column_outputs}out" if column_outputs > 0 else ""
             print(f"Live clustering enabled: m={cluster_m}, k2={cluster_k2}, "
                   f"max_k={cluster_max_k}, "
