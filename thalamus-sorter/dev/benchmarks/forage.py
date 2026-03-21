@@ -77,8 +77,8 @@ def add_args(parser):
                         help="Ticks before switching to sparse phase (default: 5000)")
     parser.add_argument("--forage-collect-radius", type=float, default=5.0,
                         help="Distance to collect a POI (default: 5.0)")
-    parser.add_argument("--forage-walk-step", type=float, default=2.0,
-                        help="Random walk step size (default: 2.0)")
+    parser.add_argument("--forage-walk-step", type=float, default=0.5,
+                        help="Spasm step size per fiber (default: 0.5)")
     parser.add_argument("--forage-hunger-rate", type=float, default=0.01,
                         help="Hunger ramp per tick (default: 0.01, 100 ticks to 1.0)")
     parser.add_argument("--forage-motor-columns", type=str, default="0,1,2,3,4,5,6,7",
