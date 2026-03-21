@@ -261,7 +261,7 @@ class ColumnManager:
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
                  temperature=0.2, lr=0.05, match_threshold=0.1,
-                 streaming_decay=0.5, lateral=False):
+                 streaming_decay=0.5, lateral=False, lateral_k=6):
         self.m = m
         self.n_outputs = n_outputs
         self.max_inputs = max_inputs
@@ -290,7 +290,7 @@ class ColumnManager:
         # K/2 from knn2 (embedding neighbors) + K/2 random long-range.
         # Adjacency list (M, K) — O(M*K) storage, not O(M²).
         # Lateral weights: (M, n_outputs, K * n_outputs).
-        self.lateral_K = 6  # connections per column
+        self.lateral_K = lateral_k  # connections per column
         if lateral:
             K_lat = min(self.lateral_K, m - 1)
             self.lateral_K = K_lat
