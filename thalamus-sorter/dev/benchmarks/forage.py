@@ -274,25 +274,26 @@ def make_signal(w, h, args):
         norm_pos = pos / field_size
         norm_target = nearest_pos / field_size
 
-        # Override neurons with pulsating signals.
-        # Different periods per signal type prevent carrier cross-correlation.
+        # Override neurons. Fast-changing signals (direction, position)
+        # get raw values — they already have natural temporal variance.
+        # Slow signals (hunger, tiredness, restlessness) get pulsation.
         for i in idx['pos_x']:
-            sig[i] = pulsate(norm_pos[0], t, 7)
+            sig[i] = norm_pos[0]
         for i in idx['pos_y']:
-            sig[i] = pulsate(norm_pos[1], t, 9)
+            sig[i] = norm_pos[1]
         for i in idx['target_x']:
-            sig[i] = pulsate(norm_target[0], t, 11)
+            sig[i] = norm_target[0]
         for i in idx['target_y']:
-            sig[i] = pulsate(norm_target[1], t, 13)
-        # Direction split: each channel is 0 to 1, pulsating
+            sig[i] = norm_target[1]
+        # Direction: raw — changes naturally with movement
         for i in idx['dir_xp']:
-            sig[i] = pulsate(max(0.0, direction[0]), t, 5)
+            sig[i] = max(0.0, direction[0])
         for i in idx['dir_xn']:
-            sig[i] = pulsate(max(0.0, -direction[0]), t, 5)
+            sig[i] = max(0.0, -direction[0])
         for i in idx['dir_yp']:
-            sig[i] = pulsate(max(0.0, direction[1]), t, 5)
+            sig[i] = max(0.0, direction[1])
         for i in idx['dir_yn']:
-            sig[i] = pulsate(max(0.0, -direction[1]), t, 5)
+            sig[i] = max(0.0, -direction[1])
         # Proximity: closer = higher (inverse distance, capped)
         if len(pois) > 0:
             prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
