@@ -165,7 +165,11 @@ def make_signal(w, h, args):
         # Per-fiber muscle spasms: each of 8 fibers per direction
         # independently gets restless and spasms. Total force = sum/n_fibers.
         # Spasm probability decays over time: halves every 5000 ticks.
-        spasm_decay = 0.5 ** (t / 5000.0)
+        # Spasm starts at ~6% level (like tick 20k in old decay), then
+        # slowly decays to 50% of that. Never reaches zero.
+        spasm_base = 0.0625  # = 0.5^4, equivalent to old t=20k
+        spasm_floor = spasm_base * 0.5
+        spasm_decay = spasm_floor + (spasm_base - spasm_floor) * (0.5 ** (t / 20000.0))
         spasm_forces = np.zeros(4, dtype=np.float32)
         for d in range(4):
             for f in range(n_fibers):
