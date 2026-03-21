@@ -287,31 +287,20 @@ class ColumnManager:
         self._arange_m = np.arange(m)
 
         # Lateral connections: small-world graph with K neighbors per column.
-        # Adjacency list (M, K) stores neighbor indices. Lateral weights
-        # are (M, n_outputs, K * n_outputs) — only over connected neighbors.
-        # O(M*K) storage and compute, not O(M²).
+        # K/2 from knn2 (embedding neighbors) + K/2 random long-range.
+        # Adjacency list (M, K) — O(M*K) storage, not O(M²).
+        # Lateral weights: (M, n_outputs, K * n_outputs).
         self.lateral_K = 6  # connections per column
         if lateral:
             K_lat = min(self.lateral_K, m - 1)
             self.lateral_K = K_lat
-            # Small-world wiring: K/2 nearest + K/2 random (Watts-Strogatz)
+            # Init with random wiring — knn2 synced later via sync_lateral_knn2()
             self.lateral_adj = np.full((m, K_lat), -1, dtype=np.int64)
-            half = K_lat // 2
             for c in range(m):
-                near = []
-                for d in range(1, half + 1):
-                    near.append((c + d) % m)
-                    if len(near) >= half:
-                        break
-                    near.append((c - d) % m)
-                    if len(near) >= half:
-                        break
-                available = [i for i in range(m) if i != c and i not in near]
-                n_random = K_lat - len(near)
-                far = list(rng.choice(available, size=min(n_random, len(available)),
-                                      replace=False))
-                neighbors = near + far
-                self.lateral_adj[c, :len(neighbors)] = neighbors
+                others = [i for i in range(m) if i != c]
+                chosen = list(rng.choice(others, size=min(K_lat, len(others)),
+                                         replace=False))
+                self.lateral_adj[c, :len(chosen)] = chosen
 
             lat_dim = K_lat * n_outputs
             lat = rng.randn(m, n_outputs, lat_dim).astype(np.float32)
@@ -326,6 +315,54 @@ class ColumnManager:
             #   co_act[c, c_other] = decay * co_act + (1-decay) * both_active
             # When evicting, pick most co-activated non-connected column
             # instead of random. Discovers functional relationships (A↔XOR).
+
+    def sync_lateral_knn2(self, knn2):
+        """Sync lateral adjacency with cluster knn2 neighbors.
+
+        Replaces the first K/2 lateral connections with knn2 neighbors.
+        Remaining K/2 slots keep their current (random/evolved) connections.
+        Lateral weights for replaced slots are re-initialized.
+
+        Args:
+            knn2: (M, k2) array of cluster neighbor indices
+        """
+        if not self.lateral:
+            return
+        m, K_lat, n_out = self.m, self.lateral_K, self.n_outputs
+        half = K_lat // 2
+        n_synced = 0
+        for c in range(m):
+            old_near = set(self.lateral_adj[c, :half])
+            new_near = []
+            for j in range(knn2.shape[1]):
+                nb = int(knn2[c, j])
+                if nb >= 0 and nb != c and nb not in new_near:
+                    new_near.append(nb)
+                    if len(new_near) >= half:
+                        break
+            # Check if random slots duplicate any new near slots
+            random_slots = self.lateral_adj[c, half:]
+            for s in range(len(random_slots)):
+                if random_slots[s] in new_near:
+                    # Replace duplicate with a fresh random
+                    connected = set(new_near) | set(random_slots)
+                    cands = [i for i in range(m) if i != c and i not in connected]
+                    if cands:
+                        random_slots[s] = self._lateral_rng.choice(cands)
+            # Write near slots
+            for s in range(min(half, len(new_near))):
+                if self.lateral_adj[c, s] != new_near[s]:
+                    self.lateral_adj[c, s] = new_near[s]
+                    # Re-init weights for changed slot
+                    slot_start = s * n_out
+                    slot_end = slot_start + n_out
+                    for o in range(n_out):
+                        w = self._lateral_rng.randn(n_out).astype(np.float32)
+                        self.lateral_protos[c, o, slot_start:slot_end] = w
+                        norm = np.linalg.norm(self.lateral_protos[c, o]).clip(1e-8)
+                        self.lateral_protos[c, o] /= norm
+                    n_synced += 1
+        return n_synced
 
     def wire(self, cluster_id, neuron_id):
         """Wire a neuron to a cluster's column (lowest empty slot)."""

@@ -281,6 +281,10 @@ class _ClusterManager:
                         self.column_mgr.wire(c, neuron)
             n_wired = (self.column_mgr.slot_map >= 0).sum()
             print(f"  Columns: {n_wired} initial wirings across {self.m} columns")
+            # Sync lateral connections with knn2
+            if self.column_mgr.lateral and self.knn2_mode != 'knn':
+                knn2_np = self.knn2_t.cpu().numpy()
+                self.column_mgr.sync_lateral_knn2(knn2_np)
         n_empty = (self.sizes == 0).sum()
         print(f"  Clusters initialized: m={self.m}, {self.m - n_empty} alive, "
               f"k2={self.k2}, knn2_mode={self.knn2_mode}, "
@@ -381,6 +385,8 @@ class _ClusterManager:
                         self.cluster_ids_t = torch.from_numpy(
                             most_recent.astype(np.int64)).to(self.device)
                         self._recompute_knn2_dists()
+                    # Note: lateral knn2 sync happens at report intervals,
+                    # not every split (too disruptive to learned weights)
 
         # Column tick (after all wiring is settled)
         if self.column_mgr:
@@ -687,6 +693,11 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
                     if cluster_mgr.knn2_mode == 'knn' and dsolver.knn_k > 0:
                         cluster_mgr.knn_lists = dsolver.get_knn_lists()
                     cluster_mgr.report(tick)
+                    # Periodic lateral knn2 sync (not every split — too disruptive)
+                    if (cluster_mgr.column_mgr and cluster_mgr.column_mgr.lateral
+                            and cluster_mgr.knn2_mode != 'knn'):
+                        knn2_np = cluster_mgr.knn2_t.cpu().numpy()
+                        cluster_mgr.column_mgr.sync_lateral_knn2(knn2_np)
 
         # Tick progress logging
         if log_every > 0 and tick % log_every == 0:
