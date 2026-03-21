@@ -555,6 +555,39 @@ Spasm-based movement prevents the stuck-in-corner problem (old motor
 got 2 collections, representations degraded to ~0.25). With spasms,
 exploration is guaranteed and representations stay strong (>0.78).
 
+**Run 020: tiredness force scaling, 100k (no retina)**
+
+dir_x correlation peaked at **r=0.93**. Tiredness prevents fixation —
+agent must rotate directions. Column 37 dominates all features.
+
+**Run 021: retina vision, 100k**
+
+All 256 neurons render the field as a low-res image: POIs as positive
+gaussians, agent as negative gaussian. Collections dropped (1 vs 5) —
+234 spatial neurons overwhelm 22 proprioceptive neurons at 16×16 scale.
+Retina may help at larger grids with room for both.
+
+**Run 022: 6×6 grid, 9 outputs per column, 100k**
+
+Tiny sensory grid: 36 neurons, M=36 clusters, K=324 feedback.
+System is 90% internal processing. Results still strong:
+hunger r=0.98, position r=0.86, direction r=0.58.
+
+| Run | Grid | Outputs | dir_x | hunger | Collections |
+|-----|------|---------|-------|--------|-------------|
+| 019 | 16×16 | 4 | 0.85 | 0.80 | 7 |
+| 020 | 16×16 | 4 | **0.93** | 0.77 | 5 |
+| 021 | 16×16 | 4 (retina) | 0.73 | 0.68 | 1 |
+| 022 | 6×6 | 9 | 0.58 | **0.98** | 5 |
+
+**Muscle physics:** Restless muscles fire involuntarily (spasms = the
+random walk). Tired muscles produce less force — continuous use in one
+direction → full halt. POI collection resets tiredness (reward). Like
+infant motor learning: spasms first, then voluntary control.
+
+**Field visualization:** `field_NNNNNN.png` saved every 100 ticks via
+render server. Agent (red), POIs (green), collection radius shown.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
