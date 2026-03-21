@@ -399,3 +399,26 @@ utility signal (weights → 0 = column learned to ignore this connection).
 Biological parallel: cortical lateral connections are distance-dependent
 (many short-range, few long-range). Small-world topology gives both
 spatial coherence and cross-region information flow.
+
+### knn2-synced wiring
+
+The "near" connections now come from the cluster knn2 graph (embedding-space
+neighbors) instead of arbitrary index distance. Synced periodically at
+`cluster_report_every` intervals — not every split (too disruptive to
+learned lateral weights).
+
+| Wiring | K/column | XOR max\|r\| |
+|--------|----------|-------------|
+| None | 0 | 0.22 |
+| Small-world random K=6 | 6 | 0.42 |
+| **Small-world knn2 K=6** | **6** | **0.66** |
+| 10% random mask | 17 | 0.79 |
+
+knn2-based near connections give 57% better XOR detection than random near,
+with the same K=6. Embedding-space neighbors are much more meaningful than
+index-based neighbors — they represent clusters that are actually similar
+in the learned representation.
+
+The gap to 10% mask (0.66 vs 0.79) is expected — K=6 has 3× fewer
+connections. But the scaling advantage is massive: K=6 is O(M) while
+10% mask is O(M²). At M=10000, K=6 uses 60K edges vs 10M for 10% mask.
