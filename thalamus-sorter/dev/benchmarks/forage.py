@@ -87,6 +87,7 @@ def make_signal(w, h, args):
     score = [0]
     phase_scores = [0, 0]
     _refs = {'column_mgr': None, 'renderer': None}
+    base_column_lr = [None]  # captured from column_mgr on first tick
     field_save_every = 100
 
     # POIs
@@ -215,6 +216,16 @@ def make_signal(w, h, args):
 
         # Hunger ramps
         hunger = min(1.0, hunger + hunger_rate)
+
+        # Hunger modulates column learning rate:
+        # Just ate (hunger=0) → full lr, starving (hunger=1) → lr * 0.01
+        # Like glucose: no food → no energy → no plasticity
+        col_mgr = _refs['column_mgr']
+        if col_mgr is not None:
+            if base_column_lr[0] is None:
+                base_column_lr[0] = col_mgr.lr
+            lr_scale = max(0.01, 1.0 - hunger * 0.99)
+            col_mgr.lr = base_column_lr[0] * lr_scale
 
         # Build signal: retina renders the field onto the neuron grid.
         # Each neuron "sees" a patch of the field. POIs appear as bright
