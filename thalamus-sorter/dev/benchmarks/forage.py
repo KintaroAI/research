@@ -143,20 +143,24 @@ def make_signal(w, h, args):
         is_sparse = t >= phase_ticks
 
         # Motor control: 8 columns, each drives one fiber per direction.
-        # Column c: out[0]→dx+ fiber c, out[1]→dx- fiber c,
-        #           out[2]→dy+ fiber c, out[3]→dy- fiber c
-        motor_forces = np.zeros(4, dtype=np.float32)  # dx+, dx-, dy+, dy-
+        # Force below threshold → no movement, no tiredness (idle).
+        # Force above threshold → contributes to movement (scaled by
+        # 1-tiredness) AND tires the fiber. Pushing all directions
+        # at once exhausts the fiber completely.
+        motor_forces = np.zeros(4, dtype=np.float32)
+        per_fiber_force = np.zeros((4, n_fibers), dtype=np.float32)
         col_mgr = _refs['column_mgr']
         if col_mgr is not None and len(motor_columns) > 0:
             all_out = col_mgr.get_outputs()
-            m = all_out.shape[0]
-            for i, mc in enumerate(motor_columns):
-                if mc < m:
-                    out = all_out[mc]
-                    motor_forces[0] += out[0] * motor_scale  # dx+
-                    motor_forces[1] += out[1] * motor_scale  # dx-
-                    motor_forces[2] += out[2] * motor_scale  # dy+
-                    motor_forces[3] += out[3] * motor_scale  # dy-
+            m_cols = all_out.shape[0]
+            for f, mc in enumerate(motor_columns):
+                if f < n_fibers and mc < m_cols:
+                    for d in range(4):
+                        force = all_out[mc, d] * motor_scale
+                        per_fiber_force[d, f] = force
+                        if force >= move_threshold:
+                            # Above gate: contributes to movement, scaled by tiredness
+                            motor_forces[d] += force * (1.0 - tiredness[d, f])
 
         # Per-fiber muscle spasms: each of 8 fibers per direction
         # independently gets restless and spasms. Total force = sum/n_fibers.
@@ -183,26 +187,15 @@ def make_signal(w, h, args):
         pos[0] = (pos[0] + total_dx) % field_size
         pos[1] = (pos[1] + total_dy) % field_size
 
-        # Per-fiber muscle feedback: each fiber tires from its OWN force.
-        # Fiber f gets force from motor column f's output + its own spasms.
-        per_fiber_force = np.zeros((4, n_fibers), dtype=np.float32)
-        # Motor contribution per fiber
-        if col_mgr is not None and len(motor_columns) > 0:
-            all_out = col_mgr.get_outputs()
-            m_cols = all_out.shape[0]
-            for f, mc in enumerate(motor_columns):
-                if f < n_fibers and mc < m_cols:
-                    for d in range(4):
-                        per_fiber_force[d, f] += all_out[mc, d] * motor_scale
-        # Spasm contribution per fiber (already tracked per direction, not per fiber)
-        # Distribute spasm evenly as a rough estimate
+        # Per-fiber tiredness update: uses per_fiber_force from motor above
+        # Add spasm contribution
         for d in range(4):
             if spasm_forces[d] > 0:
                 per_fiber_force[d, :] += spasm_forces[d] / n_fibers
 
         for d in range(4):
             for f in range(n_fibers):
-                if per_fiber_force[d, f] > move_threshold:
+                if per_fiber_force[d, f] >= move_threshold:
                     restlessness[d, f] = 0.0
                     tiredness[d, f] = min(1.0, tiredness[d, f] + tire_rate)
                 else:
