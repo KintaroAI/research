@@ -419,6 +419,25 @@ with the same K=6. Embedding-space neighbors are much more meaningful than
 index-based neighbors — they represent clusters that are actually similar
 in the learned representation.
 
-The gap to 10% mask (0.66 vs 0.79) is expected — K=6 has 3× fewer
-connections. But the scaling advantage is massive: K=6 is O(M) while
-10% mask is O(M²). At M=10000, K=6 uses 60K edges vs 10M for 10% mask.
+### Typed streaming eviction
+
+Each lateral slot is typed: near (knn2) or far (random). When a slot's
+weight magnitude drops below threshold, it gets replaced with the same
+type:
+- **Near** slot evicted → replace with next knn2 neighbor (stay local)
+- **Far** slot evicted → replace with random non-connected column (explore)
+
+This preserves the small-world structure: near connections track embedding
+proximity, far connections discover cross-region features like XOR.
+
+| Wiring | K/column | XOR max\|r\| |
+|--------|----------|-------------|
+| None | 0 | 0.22 |
+| Small-world random K=6 | 6 | 0.42 |
+| knn2 sync K=6 | 6 | 0.66 |
+| **knn2 + typed eviction K=6** | **6** | **0.77** |
+| 10% random mask | 17 | 0.79 |
+
+K=6 with typed eviction nearly matches 10% mask (0.77 vs 0.79) with
+3× fewer connections. The scaling advantage is massive: K=6 is O(M)
+while 10% mask is O(M²). At M=10000, K=6 uses 60K edges vs 10M.
