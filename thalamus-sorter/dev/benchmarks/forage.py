@@ -59,8 +59,11 @@ def pulsate(value, t, period):
     carrier = abs(np.sin(t * 2.0 * np.pi / period))
     return float(carrier * value)
 
-N_SENSE = 26  # 14 base + 4 dir_split + 4 restless + 4 tired
-# 2×pos + 2×target + 4×dir(+/-) + 2×hunger + 4×restless + 4×tired = 26
+N_SENSE = 144  # 8 neurons per signal × 18 signals
+# 8×(pos_x, pos_y, target_x, target_y, dir_xp, dir_xn, dir_yp, dir_yn,
+#    hunger, proximity, rest_dx+, rest_dx-, rest_dy+, rest_dy-,
+#    tire_dx+, tire_dx-, tire_dy+, tire_dy-) = 144
+NEURONS_PER_SIGNAL = 8
 
 
 def add_args(parser):
@@ -101,13 +104,15 @@ def make_signal(w, h, args):
     pos = np.array([field_size / 2, field_size / 2], dtype=np.float32)
     prev_pos = pos.copy()
     hunger = np.float32(0.0)
-    # Muscle feedback: 4 directions (dx+, dx-, dy+, dy-)
-    restlessness = np.zeros(4, dtype=np.float32)  # ramps when muscle idle
-    tiredness = np.zeros(4, dtype=np.float32)      # ramps when muscle active
-    rest_rate = 0.01    # restlessness ramp per idle tick
-    tire_rate = 0.005   # tiredness ramp per active tick
-    recovery_rate = 0.002  # tiredness decay per idle tick
-    move_threshold = 0.5  # minimum movement to count as "active"
+    # Muscle feedback: 4 directions × 8 muscle fibers each
+    # Each fiber has independent restlessness, tiredness, and spasms
+    n_fibers = NEURONS_PER_SIGNAL  # 8 fibers per direction
+    restlessness = np.zeros((4, n_fibers), dtype=np.float32)
+    tiredness = np.zeros((4, n_fibers), dtype=np.float32)
+    rest_rate = 0.01
+    tire_rate = 0.005
+    recovery_rate = 0.002
+    move_threshold = 0.3
     score = [0]
     phase_scores = [0, 0]
     _refs = {'column_mgr': None, 'renderer': None, 'dsolver': None}
@@ -118,26 +123,17 @@ def make_signal(w, h, args):
     # POIs
     pois = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
 
-    # Sensory neuron indices (first N_SENSE neurons)
-    idx = {
-        'pos_x': [0, 1],
-        'pos_y': [2, 3],
-        'target_x': [4, 5],
-        'target_y': [6, 7],
-        # Direction split into +/- channels (0 to 1 each)
-        'dir_xp': [8],     # target is to the right
-        'dir_xn': [9],     # target is to the left
-        'dir_yp': [10],    # target is below
-        'dir_yn': [11],    # target is above
-        'hunger': [12, 13],
-        # Muscle feedback: dx+, dx-, dy+, dy-
-        'restless': [14, 15, 16, 17],
-        'tired': [18, 19, 20, 21],
-        # Extra: distance to target (0=far, 1=close)
-        'proximity': [22, 23],
-        # Spare for alignment with motor outputs
-        'spare': [24, 25],
-    }
+    # Sensory neuron indices: 8 neurons per signal, 18 signals = 144
+    S = NEURONS_PER_SIGNAL
+    idx = {}
+    offset = 0
+    for name in ['pos_x', 'pos_y', 'target_x', 'target_y',
+                  'dir_xp', 'dir_xn', 'dir_yp', 'dir_yn',
+                  'hunger', 'proximity',
+                  'rest_dxp', 'rest_dxn', 'rest_dyp', 'rest_dyn',
+                  'tire_dxp', 'tire_dxn', 'tire_dyp', 'tire_dyn']:
+        idx[name] = list(range(offset, offset + S))
+        offset += S
 
     feature_log = []
 
@@ -153,55 +149,43 @@ def make_signal(w, h, args):
             motor_dx = (out[0] - out[1]) * motor_scale
             motor_dy = (out[2] - out[3]) * motor_scale
 
-        # Muscle spasms: restless muscles fire involuntarily.
-        # Probability of spasm proportional to restlessness.
-        # This IS the "random walk" — driven by muscle state.
-        spasm_dx, spasm_dy = 0.0, 0.0
-        for i in range(4):
-            if rng.rand() < restlessness[i] * 0.3:
-                spasm_strength = walk_step * (0.5 + rng.rand() * 0.5)
-                if i == 0: spasm_dx += spasm_strength
-                elif i == 1: spasm_dx -= spasm_strength
-                elif i == 2: spasm_dy += spasm_strength
-                elif i == 3: spasm_dy -= spasm_strength
+        # Per-fiber muscle spasms: each of 8 fibers per direction
+        # independently gets restless and spasms. Total force = sum/n_fibers.
+        spasm_forces = np.zeros(4, dtype=np.float32)
+        for d in range(4):
+            for f in range(n_fibers):
+                if rng.rand() < restlessness[d, f] * 0.3:
+                    spasm_forces[d] += walk_step * (0.5 + rng.rand() * 0.5)
 
-        # Apply tiredness: tired muscles produce less force.
-        # Continuous use in one direction → full halt.
-        # dx = dx+ force - dx- force, each scaled by (1 - tiredness)
-        total_dx = 0.0
-        total_dy = 0.0
-        # dx+ component (motor + spasm positive x)
-        dx_pos = max(0, motor_dx) + max(0, spasm_dx)
-        dx_neg = max(0, -motor_dx) + max(0, -spasm_dx)
-        dy_pos = max(0, motor_dy) + max(0, spasm_dy)
-        dy_neg = max(0, -motor_dy) + max(0, -spasm_dy)
-        # Scale each direction by (1 - tiredness)
-        total_dx = dx_pos * (1.0 - tiredness[0]) - dx_neg * (1.0 - tiredness[1])
-        total_dy = dy_pos * (1.0 - tiredness[2]) - dy_neg * (1.0 - tiredness[3])
+        # Combine motor + spasm forces per direction
+        raw_forces = np.zeros(4, dtype=np.float32)
+        raw_forces[0] = max(0, motor_dx) + spasm_forces[0]   # dx+
+        raw_forces[1] = max(0, -motor_dx) + spasm_forces[1]  # dx-
+        raw_forces[2] = max(0, motor_dy) + spasm_forces[2]   # dy+
+        raw_forces[3] = max(0, -motor_dy) + spasm_forces[3]  # dy-
+
+        # Apply tiredness: average across fibers, tired fibers weaken force
+        mean_tiredness = tiredness.mean(axis=1)  # (4,)
+        effective = raw_forces * (1.0 - mean_tiredness)
+
+        total_dx = effective[0] - effective[1]
+        total_dy = effective[2] - effective[3]
 
         # Move
         prev_pos[:] = pos
         pos[0] = np.clip(pos[0] + total_dx, 0, field_size)
         pos[1] = np.clip(pos[1] + total_dy, 0, field_size)
 
-        # Muscle feedback based on FORCE applied, not actual displacement.
-        # Pushing against a wall still tires the muscle — it's straining
-        # even if position doesn't change.
-        forces = [
-            dx_pos,    # dx+ force (motor + spasm, before tiredness scaling)
-            dx_neg,    # dx-
-            dy_pos,    # dy+
-            dy_neg,    # dy-
-        ]
-        for i in range(4):
-            if forces[i] > move_threshold:
-                # Muscle straining: tiredness ramps, restlessness resets
-                restlessness[i] = 0.0
-                tiredness[i] = min(1.0, tiredness[i] + tire_rate)
-            else:
-                # Muscle idle: restlessness ramps, tiredness recovers
-                restlessness[i] = min(1.0, restlessness[i] + rest_rate)
-                tiredness[i] = max(0.0, tiredness[i] - recovery_rate)
+        # Per-fiber muscle feedback based on force applied
+        for d in range(4):
+            for f in range(n_fibers):
+                fiber_force = raw_forces[d] / max(1, n_fibers)
+                if fiber_force > move_threshold or spasm_forces[d] > 0:
+                    restlessness[d, f] = 0.0
+                    tiredness[d, f] = min(1.0, tiredness[d, f] + tire_rate)
+                else:
+                    restlessness[d, f] = min(1.0, restlessness[d, f] + rest_rate)
+                    tiredness[d, f] = max(0.0, tiredness[d, f] - recovery_rate)
 
         # Find nearest POI
         if len(pois) > 0:
@@ -219,7 +203,7 @@ def make_signal(w, h, args):
                 phase_idx = 1 if is_sparse else 0
                 phase_scores[phase_idx] += 1
                 hunger = 0.0
-                tiredness[:] = 0.0  # reward: muscles refreshed
+                tiredness[:, :] = 0.0  # reward: all fibers refreshed
                 # Remove collected POI
                 pois_list = list(range(len(pois)))
                 pois_list.remove(nearest_idx)
@@ -280,47 +264,40 @@ def make_signal(w, h, args):
         norm_pos = pos / field_size
         norm_target = nearest_pos / field_size
 
-        # Override neurons. Fast-changing signals (direction, position)
-        # get raw values — they already have natural temporal variance.
-        # Slow signals (hunger, tiredness, restlessness) get pulsation.
-        for i in idx['pos_x']:
-            sig[i] = norm_pos[0]
-        for i in idx['pos_y']:
-            sig[i] = norm_pos[1]
-        for i in idx['target_x']:
-            sig[i] = norm_target[0]
-        for i in idx['target_y']:
-            sig[i] = norm_target[1]
-        # Direction: raw — changes naturally with movement
-        for i in idx['dir_xp']:
-            sig[i] = max(0.0, direction[0])
-        for i in idx['dir_xn']:
-            sig[i] = max(0.0, -direction[0])
-        for i in idx['dir_yp']:
-            sig[i] = max(0.0, direction[1])
-        for i in idx['dir_yn']:
-            sig[i] = max(0.0, -direction[1])
-        # Proximity: closer = higher (inverse distance, capped)
+        # Override neurons: 8 per signal.
+        # Fast signals: raw. Slow signals: pulsated.
+        for i in idx['pos_x']:     sig[i] = norm_pos[0]
+        for i in idx['pos_y']:     sig[i] = norm_pos[1]
+        for i in idx['target_x']:  sig[i] = norm_target[0]
+        for i in idx['target_y']:  sig[i] = norm_target[1]
+        for i in idx['dir_xp']:    sig[i] = max(0.0, direction[0])
+        for i in idx['dir_xn']:    sig[i] = max(0.0, -direction[0])
+        for i in idx['dir_yp']:    sig[i] = max(0.0, direction[1])
+        for i in idx['dir_yn']:    sig[i] = max(0.0, -direction[1])
+        # Proximity
         if len(pois) > 0:
             prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
         else:
             prox = 0.0
-        for i in idx['proximity']:
-            sig[i] = pulsate(prox, t, 15)
-        for i in idx['hunger']:
-            sig[i] = pulsate(hunger, t, 17)
-        # Muscle feedback signals — each direction gets its own period
+        for i in idx['proximity']: sig[i] = pulsate(prox, t, 15)
+        for i in idx['hunger']:    sig[i] = pulsate(hunger, t, 17)
+        # Per-fiber restlessness and tiredness signals
+        rest_names = ['rest_dxp', 'rest_dxn', 'rest_dyp', 'rest_dyn']
+        tire_names = ['tire_dxp', 'tire_dxn', 'tire_dyp', 'tire_dyn']
         rest_periods = [19, 21, 23, 25]
         tire_periods = [27, 29, 31, 33]
-        for i in range(4):
-            sig[idx['restless'][i]] = pulsate(restlessness[i], t, rest_periods[i])
-            sig[idx['tired'][i]] = pulsate(tiredness[i], t, tire_periods[i])
+        for d in range(4):
+            for f in range(n_fibers):
+                sig[idx[rest_names[d]][f]] = pulsate(restlessness[d, f], t, rest_periods[d])
+                sig[idx[tire_names[d]][f]] = pulsate(tiredness[d, f], t, tire_periods[d])
 
         feature_log.append((t, norm_pos[0], norm_pos[1],
                             norm_target[0], norm_target[1],
                             max(0, direction[0]), max(0, -direction[0]),
                             max(0, direction[1]), max(0, -direction[1]),
-                            hunger, prox, float(is_sparse)))
+                            hunger, prox,
+                            restlessness.mean(), tiredness.mean(),
+                            float(is_sparse)))
 
         # Save field visualization
         renderer = _refs.get('renderer')
@@ -415,7 +392,8 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     n_ticks, m, n_out = all_outputs.shape
     feature_names = ['pos_x', 'pos_y', 'target_x', 'target_y',
                      'dir_xp', 'dir_xn', 'dir_yp', 'dir_yn',
-                     'hunger', 'proximity', 'is_sparse']
+                     'hunger', 'proximity', 'restless', 'tired',
+                     'is_sparse']
 
     best = {}
     for fi, fname in enumerate(feature_names):
