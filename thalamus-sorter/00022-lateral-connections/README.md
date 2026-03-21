@@ -588,6 +588,14 @@ infant motor learning: spasms first, then voluntary control.
 **Field visualization:** `field_NNNNNN.png` saved every 100 ticks via
 render server. Agent (red), POIs (green), collection radius shown.
 
+**Run 031: 6×6, 10M ticks, hunger-modulated lr**
+
+182 collections (176 sparse) over 10M ticks. Column 33 output 5 becomes
+a "grandmother cell" — one output tracks everything: pos r=0.91,
+target r=0.86, direction r=0.71-0.86. Both cluster 0 (motor) and
+cluster 33 are pure feedback. All world knowledge flows through
+lateral connections from 9 sensory clusters to feedback processing.
+
 **Run 029: hunger-modulated lr — breakthrough**
 
 Hunger scales column learning rate: just ate → full lr, starving → 1%.
