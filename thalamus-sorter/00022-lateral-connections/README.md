@@ -508,11 +508,38 @@ signal against lateral consensus.
 First result at 10k: odd_idx r=0.36. Promising — the system can partially
 detect which region deviates from the majority.
 
+### FORAGE — sensorimotor navigation
+
+`--signal-source forage`
+
+Virtual field with agent + points of interest. 14 sensory neurons encode:
+- Position x,y (2+2 neurons, normalized 0-1)
+- Nearest target x,y (2+2 neurons)
+- Direction to target dx,dy (2+2 neurons, signed unit vector)
+- Hunger (2 neurons, ramps at 0.01/tick, resets on collection)
+
+Agent does random walk. When within `collect_radius` of a POI, it's
+collected (score +1, hunger resets, POI respawns). Dense phase (20 POIs)
+transitions to sparse phase (3 POIs) at `phase_ticks`.
+
+First results at 10k:
+- **43 POIs collected** (26 dense, 17 sparse)
+- Position tracking: **r=0.85** — strong self-localization
+- Direction to target: **r=0.50-0.56** — columns detect where to go
+- Hunger: **r=0.51** — drive state is represented
+- Target position: r=0.31-0.85 — partial target tracking
+
+The system learns to represent position, direction, and hunger purely
+from signal correlations — no explicit training signal. The direction
+correlation (r=0.56) suggests motor control could use this to navigate
+toward POIs rather than random walking.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
 |-----------|---------|------------|--------------|
 | XOR | A^B | 2-input non-linear | **0.77** |
+| FORAGE | direction to POI | sensorimotor | **0.56** |
 | MAJORITY | maj(A,B,C) | 3-input non-linear | **0.40** |
 | ODDBALL | which is odd | consensus comparison | **0.36** |
 | SEQUENCE | A_prev & B_now | temporal memory | **0.26** |
