@@ -113,7 +113,7 @@ def make_signal(w, h, args):
     rest_rate = 0.01
     tire_rate = 0.005
     recovery_rate = 0.002
-    move_threshold = 0.3
+    move_threshold = 0.05  # per-fiber force threshold for "active"
     score = [0]
     phase_scores = [0, 0]
     _refs = {'column_mgr': None, 'renderer': None, 'dsolver': None}
