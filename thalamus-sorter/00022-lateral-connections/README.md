@@ -588,6 +588,22 @@ infant motor learning: spasms first, then voluntary control.
 **Field visualization:** `field_NNNNNN.png` saved every 100 ticks via
 render server. Agent (red), POIs (green), collection radius shown.
 
+**Run 029: hunger-modulated lr — breakthrough**
+
+Hunger scales column learning rate: just ate → full lr, starving → 1%.
+Like glucose: no food → no energy → no plasticity. System learns most
+right after collecting POI, then consolidates.
+
+| Run | Change | Collections | Sparse | dir_xp r |
+|-----|--------|-------------|--------|----------|
+| 027 | wall tiredness | 57 | 49 | — |
+| 028 | + dir split | 58 | 46 | 0.27 |
+| **029** | **+ hunger lr** | **96** | **86** | **0.81** |
+
+96 collections (86 sparse!) — reward-driven plasticity nearly doubled
+the count. Direction tracking jumped to r=0.81. Position r=0.94,
+target r=0.92. Agent stays near field center, not stuck at borders.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
