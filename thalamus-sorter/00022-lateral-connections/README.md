@@ -848,6 +848,60 @@ that drives column differentiation.
 (r=0.42) and reward (r=0.60) but can't map one to the other for
 directed action.
 
+### T=1000 foraging (runs 063-064)
+
+| | T=100 100k | T=1000 100k | T=1000 1M |
+|---|-----------|-------------|-----------|
+| dir_xp | 0.34 | **0.74** | 0.57 |
+| pos_x | 0.43 | **0.71** | 0.52 |
+| hunger | 0.39 | **0.63** | 0.42 |
+| Sparse coll | **85** | 18 | 25 |
+
+T=1000 gives much stronger representations at 100k but they degrade
+at 1M. Without spasms (decayed to zero), the agent stops moving →
+no signal variation → no new correlations → representations decay.
+
+**Key lesson:** The system needs persistent movement to maintain
+representations. Pure motor-driven movement hasn't emerged — the
+motor columns produce force but not directed navigation. Without
+spasms as a fallback, the system goes silent.
+
+## Conclusions
+
+### What works
+
+1. **Topographic map formation** — contiguity 0.98+, 98% spatial accuracy
+2. **Column differentiation** — 96% dominant with entropy-scaled lr
+3. **Lateral connections** — XOR detection r=0.77, K=2 sufficient
+4. **Predictive correlation** — causal chains emerge (motor→position)
+5. **Muscle proprioception** — tiredness r=0.99, position r=0.94
+6. **Action-consequence awareness** — MIRROR r=0.98
+7. **Hunger-modulated learning** — reward-driven plasticity bursts
+
+### What doesn't work (yet)
+
+1. **Goal-directed navigation** — the system knows where food is
+   (direction r=0.74) but doesn't navigate toward it
+2. **Operant conditioning** — LEVER: 0 presses, SEEK: random accuracy
+3. **Long-term stability** — representations decay without movement
+4. **Credit assignment** — no mechanism connects past actions to
+   future rewards across temporal gaps
+
+### The missing piece
+
+The system learns representations (perception) and tracks its own
+actions (MIRROR) but cannot learn POLICIES (which action to take).
+The credit assignment problem requires either:
+- **Eligibility traces** — retroactive strengthening of recently
+  active synapses on reward
+- **Predictive error** — learning from prediction failures
+- **Homeostatic drive** — hunger disruption shows promise (117
+  sparse collections) but doesn't create directed behavior
+
+The architecture is ready for these additions — the perception and
+motor infrastructure exists. The next experiment should focus on
+bridging perception to action through one of these mechanisms.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
