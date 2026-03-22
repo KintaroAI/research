@@ -223,7 +223,8 @@ def make_signal(w, h, args):
                 phase_idx = 1 if is_sparse else 0
                 phase_scores[phase_idx] += 1
                 hunger = 0.0
-                tiredness[:, :] = 0.0  # reward: all fibers refreshed
+                # tiredness NOT reset on collection — muscles stay tired
+                # Only hunger resets (reward signal for learning rate)
                 # Remove collected POI
                 pois_list = list(range(len(pois)))
                 pois_list.remove(nearest_idx)
