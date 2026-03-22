@@ -168,3 +168,27 @@ This IS visual hierarchy:
 3. Each category finds a different V2 cluster
 4. V2 clusters collect categories from multiple V1 regions
 5. V2 has 2-3× broader receptive fields than V1
+
+## SHAPES benchmark — visual + categorical association
+
+160×160 image with 8 distinct shapes (square, circle, cross, lines,
+checkerboard, diagonal). 16×16 saccade crop (256 pixels) + 64 label
+neurons (8 per shape, one-hot when crop overlaps that shape).
+
+Grid: 20×16 = 320 neurons total.
+
+### Results
+
+| Config | V1 | V2 | V3 | Shape detection | Label cohesion |
+|--------|----|----|----|----|---|
+| M=80, 10k | 45 | 31 | 4 | shape6 r=0.77 | scattered |
+| M=200, 100k | 47 | 50 | **59** | shape5 r=0.66 | **perfect (8/8)** |
+
+**V3 is the largest layer at M=200** — 59 clusters processing V2 output.
+Three-layer hierarchy confirmed. All 8 shape labels achieve perfect
+cohesion (one V1 cluster each).
+
+Shape detection is through V1 columns — the label neurons cluster with
+the pixels that co-activate when that shape is visible. V2 and V3
+process these associations further but the analysis currently only
+measures shape identity correlation, not hierarchical feature complexity.
