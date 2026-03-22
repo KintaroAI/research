@@ -59,10 +59,8 @@ def pulsate(value, t, period):
     carrier = abs(np.sin(t * 2.0 * np.pi / period))
     return float(carrier * value)
 
-N_SENSE = 144  # 8 neurons per signal × 18 signals
-# 8×(pos_x, pos_y, target_x, target_y, dir_xp, dir_xn, dir_yp, dir_yn,
-#    hunger, proximity, rest_dx+, rest_dx-, rest_dy+, rest_dy-,
-#    tire_dx+, tire_dx-, tire_dy+, tire_dy-) = 144
+N_SENSE = 176  # 144 base + 32 muscle contraction feedback
+# 8×18 signals + 8×4 muscle contraction = 176
 NEURONS_PER_SIGNAL = 8
 
 
@@ -133,6 +131,11 @@ def make_signal(w, h, args):
                   'hunger', 'proximity',
                   'rest_dxp', 'rest_dxn', 'rest_dyp', 'rest_dyn',
                   'tire_dxp', 'tire_dxn', 'tire_dyp', 'tire_dyn']:
+        idx[name] = list(range(offset, offset + S))
+        offset += S
+    # Muscle contraction feedback: 8 fibers × 4 directions
+    # Each fiber senses its own contraction (motor + spasm output)
+    for name in ['contract_dxp', 'contract_dxn', 'contract_dyp', 'contract_dyn']:
         idx[name] = list(range(offset, offset + S))
         offset += S
 
@@ -304,10 +307,14 @@ def make_signal(w, h, args):
         tire_names = ['tire_dxp', 'tire_dxn', 'tire_dyp', 'tire_dyn']
         rest_periods = [19, 21, 23, 25]
         tire_periods = [27, 29, 31, 33]
+        contract_names = ['contract_dxp', 'contract_dxn', 'contract_dyp', 'contract_dyn']
         for d in range(4):
             for f in range(n_fibers):
                 sig[idx[rest_names[d]][f]] = pulsate(restlessness[d, f], t, rest_periods[d])
                 sig[idx[tire_names[d]][f]] = pulsate(tiredness[d, f], t, tire_periods[d])
+                # Muscle contraction: raw fiber force normalized to 0-1
+                contraction = min(1.0, per_fiber_force[d, f] / max(motor_scale, 0.01))
+                sig[idx[contract_names[d]][f]] = contraction
 
         feature_log.append((t, norm_pos[0], norm_pos[1],
                             norm_target[0], norm_target[1],
