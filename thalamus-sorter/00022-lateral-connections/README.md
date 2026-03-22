@@ -758,7 +758,26 @@ co-occurrence misses. Standard correlation: "pos_x and target_x are both
 high right now." Predictive: "when motor_dx+ fired, pos_x increased."
 The second is causal understanding — the foundation for planning.
 
-*(run 055: warm-start +500k to see if structure continues developing)*
+### Predictive mix (--predictive-mix)
+
+Pure predictive (shift=1) works for foraging (smooth movement dynamics)
+but fails on natural images (large saccade jumps → no cross-frame
+correlation → almost no training pairs).
+
+Solution: mix spatial and predictive per tick. `--predictive-mix 0.1`
+means 90% standard co-occurrence + 10% causal prediction.
+
+| Mode | Garden 80×80 pairs (10k) |
+|------|-------------------------|
+| Standard (shift=0) | 11.6M |
+| Predictive (shift=1) | 47k |
+| **Mix 10%** | **9.8M** |
+
+Mix preserves 85% of training signal while injecting causal structure.
+Best of both worlds.
+
+*(run 055: predictive warm-start +500k pending)*
+*(run 059: foraging with 10% predictive mix pending)*
 
 ### Summary
 
