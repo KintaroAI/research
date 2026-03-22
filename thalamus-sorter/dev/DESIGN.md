@@ -355,6 +355,86 @@ path through feedback neurons (column → signal buffer → embedding → cluste
 column). This is critical for temporal coherence — by the time information
 flows through the feedback path, the input has changed.
 
+## Reward-driven learning (eligibility traces)
+
+The system learns representations (what correlates) and causal structure
+(what predicts what) but has no mechanism for goal-directed behavior.
+The credit assignment problem: when the agent collects food, which of the
+motor patterns from 50 ticks ago was responsible?
+
+### The problem with signal-based reward
+
+A "pleasure spike" after collection doesn't correlate with motor patterns
+BEFORE collection — they're sequential, not concurrent. Proximity
+derivative IS concurrent with motor activity during approach, but it's
+a weak signal among 176 neurons.
+
+### Eligibility traces (proposed)
+
+Two approaches, both biologically plausible:
+
+**Pair replay:** Store skip-gram pairs from the last ~50 ticks. On reward
+(POI collection), replay those pairs with boosted lr (10×). The pairs
+that formed during the approach get retroactively strengthened.
+
+```
+tick_buffer = deque(maxlen=50)
+each tick:
+    pairs = normal_correlation(...)
+    tick_buffer.append(pairs)
+    train(pairs, lr=normal)
+on POI collection:
+    for old_pairs in tick_buffer:
+        train(old_pairs, lr=normal * 10)
+    tick_buffer.clear()
+```
+
+Cost: ~50k pairs buffered. Risk: embeddings moved since pairs formed.
+
+**Activity trace (preferred):** Per-neuron EMA of recent activity. On
+reward, boost lr proportional to trace. No pair storage needed.
+
+```
+trace = zeros(n)  # decays each tick
+trace *= 0.95
+trace[active_neurons] += 1.0
+on reward:
+    per_neuron_lr = base_lr * (1 + trace * boost_factor)
+```
+
+Biological analogy: STDP marks synapses with eligibility tags. Dopamine
+(reward signal) converts tagged synapses to long-term changes. Without
+dopamine, tags decay. Without recent activity, no tags to convert.
+
+Key difference from current hunger-modulated lr: hunger lr is GLOBAL
+(everything learns equally). Eligibility traces are SELECTIVE (only
+recently active neurons benefit from the reward).
+
+## Predictive correlation
+
+`--predictive-shift N`: correlate anchor signal at time t with candidate
+signal at time t+N. Learns "what predicts what" (causation) instead of
+"what fires together" (co-occurrence).
+
+`--predictive-mix P`: probability P of using predictive shift per tick.
+`0.1` = 90% spatial + 10% causal. Pure predictive fails on natural images
+(large saccade jumps → no cross-frame correlation). Mix preserves spatial
+learning while adding causal structure.
+
+Benchmark results show predictive helps temporal tasks:
+- ODDBALL +39%, SEQUENCE +5%, XOR +5%
+- Hurts purely combinatorial tasks: MAJORITY -25%
+
+## Homeostatic drive (hunger disruption)
+
+Hunger adds noise to all signals: `sig += hunger * 0.5 * randn(n)`.
+Starving → noisy signals → can't form correlations → representations
+degrade. Eating restores clarity. The system can't think when hungry.
+
+Creates genuine motivation without explicit reward: the system learns
+that eating preserves its ability to learn. 117 sparse collections
+(best) with balanced representations (no grandmother cell).
+
 ## Open questions
 
 - Can we force cross-channel spatial structure (e.g., shared spatial dimensions + channel-specific dimensions)?
@@ -363,3 +443,5 @@ flows through the feedback path, the input has changed.
 - Optimal lr_decay / normalize_every for very long runs (millions of ticks)?
 - Lateral connection learning: fixed projections vs learned weights? What learning signal?
 - Lateral input scale: how to balance local neuron signals vs lateral column outputs?
+- Eligibility traces: pair replay vs activity trace? What boost factor?
+- Can predictive correlation + eligibility traces together produce goal-directed motor behavior?
