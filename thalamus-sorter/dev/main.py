@@ -993,6 +993,14 @@ def run_word2vec(args):
             print(f"Motor proprioception: neurons {proprio_idx}, "
                   f"urgency_rate={urgency_rate}")
 
+        # --- Predictive shift mixing ---
+        _pred_shift_base = getattr(args, 'predictive_shift', 0)
+        _pred_mix = getattr(args, 'predictive_mix', 0.0)
+        def _tick_predictive_shift():
+            if _pred_mix > 0 and _pred_shift_base > 0:
+                return _pred_shift_base if np.random.random() < _pred_mix else 0
+            return _pred_shift_base
+
         # --- Tick function ---
         if mode == "correlation":
             def do_tick():
@@ -1067,7 +1075,7 @@ def run_word2vec(args):
                     anchor_sample=anchor_sample,
                     fp16=getattr(args, 'fp16', False),
                     matmul_corr=getattr(args, 'matmul_corr', True),
-                    predictive_shift=getattr(args, 'predictive_shift', 0))
+                    predictive_shift=_tick_predictive_shift())
         else:
             def do_tick():
                 dsolver.tick_sentence(window=args.window)
@@ -1398,6 +1406,9 @@ def main():
     p_w2v.add_argument("--predictive-shift", type=int, default=0,
                        help="Predictive correlation: shift anchor signal by N ticks "
                             "(0=co-occurrence, 1=causal prediction)")
+    p_w2v.add_argument("--predictive-mix", type=float, default=0.0,
+                       help="Probability of using predictive shift per tick "
+                            "(0.0=always co-occurrence, 0.1=10%% predictive, 1.0=always predictive)")
     # live clustering
     p_w2v.add_argument("--cluster-m", type=int, default=0,
                        help="Number of clusters (0=disabled)")
