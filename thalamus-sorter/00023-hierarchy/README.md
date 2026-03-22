@@ -192,3 +192,49 @@ Shape detection is through V1 columns — the label neurons cluster with
 the pixels that co-activate when that shape is visible. V2 and V3
 process these associations further but the analysis currently only
 measures shape identity correlation, not hierarchical feature complexity.
+
+### Deep hierarchy: 6 layers at M=200
+
+Extended layer classification beyond V3 (tracing feedback→cluster→column
+chains iteratively) reveals **6 processing levels**:
+
+| Layer | Clusters | Role |
+|-------|----------|------|
+| V1 | 47 | Sensory (pixels + labels) |
+| V2 | 50 | Feedback from V1 columns |
+| V3 | 59 | Feedback from V2 columns (largest) |
+| V4 | 33 | Feedback from V3 columns |
+| V5 | 9 | Feedback from V4 columns |
+| V6 | 1 | Feedback from V5 columns |
+
+Total: 199/200 clusters classified. V3 remains the largest layer — the
+system allocates the most processing capacity at 3 levels of indirection
+from raw input.
+
+### Shape information trace through hierarchy
+
+Each shape's 8 label neurons achieve perfect cohesion in V1 (one cluster
+per shape). Tracing their column outputs through the feedback chain:
+
+1. **V1**: Each shape occupies one dedicated cluster. Column outputs (4 per
+   cluster) fan out to different V2 clusters.
+2. **V2**: Shape information spreads — each shape's V1 outputs reach 2-4
+   different V2 clusters. Multiple shapes' outputs converge in shared V2
+   clusters.
+3. **V3**: Further fan-out and convergence. V3 clusters receive from
+   multiple V2 sources, mixing shape representations.
+4. **V4**: Strongest convergence — shapes that were separate at V1 now
+   share processing clusters.
+
+### Convergence at higher layers
+
+Shapes that are spatially distinct at V1 converge at higher processing
+levels. Example: shape 1 (hollow square) and shape 5 (cross) share V2,
+V3, and V4 clusters — the system discovers that different visual patterns
+feed into shared higher-order representations.
+
+This convergence pattern mirrors biological visual hierarchy: V1 neurons
+are selective (one shape per cluster), while higher areas become
+increasingly invariant (multiple shapes sharing clusters). The system
+self-organizes this structure without any supervision — purely from
+temporal correlations in saccade-driven input.
