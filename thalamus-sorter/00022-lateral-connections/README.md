@@ -776,8 +776,36 @@ means 90% standard co-occurrence + 10% causal prediction.
 Mix preserves 85% of training signal while injecting causal structure.
 Best of both worlds.
 
-*(run 055: predictive warm-start +500k pending)*
-*(run 059: foraging with 10% predictive mix pending)*
+**Run 055: pure predictive, 600k total (warm-start chain)**
+
+| Total | Sparse | dir_xp | dir_yn | tired | hunger |
+|-------|--------|--------|--------|-------|--------|
+| 100k | 61 | 0.46 | 0.77 | 0.94 | 0.57 |
+| 600k | 118 | **0.60** | 0.71 | 0.85 | **0.65** |
+
+Sparse collections nearly doubled with more training. Direction x
+improved (0.46→0.60). The predictive system gets better over time —
+causal understanding accumulates.
+
+**Run 059: 90/10 mix forage, 100k**
+
+85 sparse collections. Tired r=0.91, pos_y r=0.88. Between standard
+and pure predictive in both collections and representation quality.
+
+**Benchmark comparison: standard vs 90/10 mix**
+
+| Benchmark | Standard | Mix 10% | Change |
+|-----------|----------|---------|--------|
+| XOR | 0.42 | **0.44** | +5% |
+| MAJORITY | **0.35** | 0.26 | -25% |
+| SEQUENCE | 0.40 | **0.42** | +5% |
+| MATCH | **0.24** | 0.23 | -4% |
+| ODDBALL | 0.28 | **0.39** | **+39%** |
+
+Predictive mix helps temporal/causal tasks (XOR +5%, SEQUENCE +5%,
+ODDBALL +39%). Hurts purely combinatorial tasks (MAJORITY -25%).
+ODDBALL is the biggest winner — detecting which region changed is
+inherently temporal.
 
 ### Summary
 
