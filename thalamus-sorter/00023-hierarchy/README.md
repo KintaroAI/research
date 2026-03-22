@@ -75,6 +75,45 @@ The system must form at least 2 processing levels.
 3. Measure receptive field size per layer
 4. Check if V2 columns track broader features than V1
 
+## LAYERS benchmark
+
+16×16 grid (256 neurons). 8 neurons per signal group:
+- L1: 8 groups (64 neurons) — independent binary signals
+- L2: 4 groups (32 neurons) — XOR of L1 pairs (L2_0 = L1_0^L1_1, etc.)
+- L3: 2 groups (16 neurons) — XOR of L2 pairs (L3_0 = L2_0^L2_1, etc.)
+- 144 zero neurons (unused)
+
+No spatial/visual field — purely abstract grouped signals. Each level
+requires combining information from the previous level. L1 can be
+detected locally. L2 requires cross-cluster combination (like XOR
+benchmark). L3 requires combining L2 outputs.
+
+Analysis classifies each cluster as V1 (contains sensory neurons),
+V2 (contains feedback from V1 columns), or V3 (feedback from V2
+columns). Then measures which layer detects which feature level.
+
 ## Results
 
-*(pending)*
+### Run 001: 10k ticks, T=1000, lateral K=2, mix 10%
+
+Config: `--signal-source layers --layers-hold 50 --column-lateral
+--predictive-shift 1 --predictive-mix 0.1 --lr 0.01 -f 10000`
+
+**Hierarchy formed:** V1=12 clusters, V2=30 clusters, V3=0 clusters.
+
+| Level | Features | Mean r | Detected by |
+|-------|----------|--------|-------------|
+| L1 | 8 binary | 0.32 | V1 and V2 |
+| L2 | 4 XOR | 0.35 | **V2 column detects L2_1 at r=0.45** |
+| L3 | 2 XOR² | 0.29 | V1 only (V3 not formed) |
+
+**Key finding:** V2 column 25 detects L2_1 (XOR of L1_2 and L1_3)
+at r=0.45 — a feedback column detecting a composite feature that
+no single V1 column can compute. This IS the visual hierarchy
+working: V1 processes raw signals → V2 processes V1 output →
+V2 detects combinations.
+
+L3 features detected by V1 columns (r=0.26-0.33) — likely partial
+correlation, not true hierarchical detection. V3 layer hasn't
+emerged — needs either more clusters, more training, or deeper
+feedback chains.
