@@ -187,10 +187,10 @@ def make_signal(w, h, args):
         total_dx = effective[0] - effective[1]
         total_dy = effective[2] - effective[3]
 
-        # Move (wrap around — teleport to opposite side at walls)
+        # Move (clip at walls)
         prev_pos[:] = pos
-        pos[0] = (pos[0] + total_dx) % field_size
-        pos[1] = (pos[1] + total_dy) % field_size
+        pos[0] = np.clip(pos[0] + total_dx, 0, field_size)
+        pos[1] = np.clip(pos[1] + total_dy, 0, field_size)
 
         # Per-fiber tiredness update: uses per_fiber_force from motor above
         # Add spasm contribution
