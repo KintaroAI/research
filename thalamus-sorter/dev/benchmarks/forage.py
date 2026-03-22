@@ -298,9 +298,8 @@ def make_signal(w, h, args):
                 contraction = min(1.0, per_fiber_force[d, f] / max(motor_scale, 0.01))
                 sig[idx[contract_names[d]][f]] = contraction
 
-        # Hunger disrupts signal clarity: starving → noisy signals →
-        # can't form correlations → representations degrade.
-        sig += hunger * 0.5 * rng.randn(n).astype(np.float32)
+        # Hunger disruption (disabled)
+        # sig += hunger * 0.5 * rng.randn(n).astype(np.float32)
 
         feature_log.append((t, norm_pos[0], norm_pos[1],
                             norm_target[0], norm_target[1],
