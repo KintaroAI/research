@@ -129,3 +129,42 @@ L3_1 AND zero neurons — a mixed soup, not a clean feature detector.
 **Root cause:** 144 zero neurons dominate clustering. 8 neurons per
 group can't form coherent clusters when competing with zeros. Need
 either smaller grid (no zeros) or more neurons per group.
+
+## EDGES benchmark — spatial visual hierarchy
+
+Synthetic image (128×128) with checkerboard, lines, rectangles, circles.
+16×16 saccade crops as signal. Tests whether V1→V2→V3 forms from
+real spatial edge correlations.
+
+### Hierarchy depth scales with M
+
+| M | V1 | V2 | V3 | V1 diam | V2 RF |
+|---|----|----|----|---------| ------|
+| 42 | 24 | 15 | 3 | 3.9 | 10.6 |
+| 80 | 35 | 35 | 10 | 4.6 | 8.7 |
+| 120 | 43 | 61 | 16 | 3.9 | 8.3 |
+| 200 | 69 | 110 | 27 | 10.4 | 10.9 |
+
+V3 grows with M: 3→10→16→27. No V4 formed — V3 feedback neurons
+get absorbed back into existing V1/V2 layers.
+
+### V1 output distribution (M=200)
+
+Each V1 column produces 4 outputs (SoftWTA). These 4 feedback neurons
+scatter into DIFFERENT V2 clusters:
+- **0/67** V1 clusters have all 4 outputs in the same V2 cluster
+- **49/67** (73%) have all 4 in different V2 clusters
+- Each output category carries different information → embeds differently
+
+### V2 combines multiple V1 sources
+
+- **62/106** (58%) V2 clusters receive feedback from 2-5 different V1 clusters
+- Spatial spread of V1 sources: 3-15 pixels (mean ~8-9, half the grid)
+- V2 therefore integrates information across broad spatial regions
+
+This IS visual hierarchy:
+1. V1 detects local edges (diameter ~4 pixels)
+2. V1 columns differentiate into 4 categories per cluster
+3. Each category finds a different V2 cluster
+4. V2 clusters collect categories from multiple V1 regions
+5. V2 has 2-3× broader receptive fields than V1
