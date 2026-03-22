@@ -113,7 +113,19 @@ no single V1 column can compute. This IS the visual hierarchy
 working: V1 processes raw signals → V2 processes V1 output →
 V2 detects combinations.
 
-L3 features detected by V1 columns (r=0.26-0.33) — likely partial
-correlation, not true hierarchical detection. V3 layer hasn't
-emerged — needs either more clusters, more training, or deeper
-feedback chains.
+L3 features detected by V2 in second run (r=0.30) — V2 columns
+detecting L3 composite features through lateral connections.
+
+### Cluster analysis: poor cohesion
+
+Each group of 8 identical neurons scatters across 5-8 clusters.
+Same-signal neurons don't cluster together — they get mixed with
+neurons from other groups and especially with 144 zero neurons
+(56% of grid is dead weight, diluting clusters).
+
+Example: cluster 4 contains L1_1, L1_3, L1_6, L2_0, L2_1, L2_3,
+L3_1 AND zero neurons — a mixed soup, not a clean feature detector.
+
+**Root cause:** 144 zero neurons dominate clustering. 8 neurons per
+group can't form coherent clusters when competing with zeros. Need
+either smaller grid (no zeros) or more neurons per group.

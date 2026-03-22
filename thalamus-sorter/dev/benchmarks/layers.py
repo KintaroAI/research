@@ -58,13 +58,19 @@ def make_signal(w, h, args):
         idx[f'L3_{i}'] = list(range(offset, offset + S))
         offset += S
 
-    state = {'L1': np.zeros(8, dtype=int), 'last_change': -hold}
+    # Stagger hold periods so groups change at DIFFERENT times.
+    # Without staggering, all groups flip simultaneously → all derivatives
+    # correlate → everything clusters together.
+    state = {'L1': rng.randint(0, 2, size=8),
+             'last_change': np.array([-hold * (i + 1) // 8 for i in range(8)])}
     feature_log = []
 
     def tick_fn(t):
-        if t - state['last_change'] >= hold:
-            state['L1'] = rng.randint(0, 2, size=8)
-            state['last_change'] = t
+        # Each L1 group changes independently on its own schedule
+        for i in range(8):
+            if t - state['last_change'][i] >= hold:
+                state['L1'][i] = rng.randint(0, 2)
+                state['last_change'][i] = t
 
         L1 = state['L1']
         # L2: XOR of consecutive L1 pairs
