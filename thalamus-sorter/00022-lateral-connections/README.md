@@ -733,7 +733,32 @@ Implementation: split the derivative signal into anchor (earlier
 frames) and candidate (later frames), normalize independently,
 matmul as before. One parameter change.
 
-*(run 054 pending — first test of predictive correlation on foraging)*
+**Run 054: predictive forage, 100k**
+
+| Feature | Standard (049) | Predictive (054) |
+|---------|---------------|-----------------|
+| pos_y | 0.14 | **0.91** |
+| target_y | 0.25 | **0.90** |
+| dir_yp | 0.47 | **0.78** |
+| dir_yn | 0.74 | **0.77** |
+| tired | 0.38 | **0.94** |
+| Sparse | **98** | 61 |
+
+Predictive mode produces much stronger representations — the system
+learns causal chains (motor → position change → direction update).
+Y-axis features particularly strong (0.78-0.91). Tiredness near-perfect
+(0.94). Fewer sparse collections (61 vs 98) — better representations
+but less active foraging.
+
+XOR benchmark confirms predictive doesn't hurt: standard 0.46, predictive
+0.50 — slightly better.
+
+**Key insight:** Predictive embeddings capture transition structure that
+co-occurrence misses. Standard correlation: "pos_x and target_x are both
+high right now." Predictive: "when motor_dx+ fired, pos_x increased."
+The second is causal understanding — the foundation for planning.
+
+*(run 055: warm-start +500k to see if structure continues developing)*
 
 ### Summary
 
