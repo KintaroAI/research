@@ -228,7 +228,7 @@ class DriftSolver:
                          use_mse=False, use_deriv_corr=False,
                          max_hit_ratio=None, batch_size=256,
                          anchor_sample=256, fp16=False,
-                         matmul_corr=True):
+                         matmul_corr=True, predictive_shift=0):
         """Skip-gram from correlation-based neighbor discovery.
 
         Instead of precomputed top-K, each tick:
@@ -264,6 +264,10 @@ class DriftSolver:
                 use matmul for O(n²) but fast correlation. If False, gather
                 candidate signals directly for O(batch*k_sample*T) with less
                 total work but slower random memory access.
+            predictive_shift: if >0, correlate anchor's signal at time t with
+                candidate's signal at time t+shift. Learns causal/predictive
+                structure ("X at t predicts Y at t+1") instead of co-occurrence.
+                0 = standard co-occurrence (default).
         """
         n = self.n
         compute_dtype = torch.float16 if fp16 else torch.float32
@@ -289,9 +293,23 @@ class DriftSolver:
             if use_deriv_corr:
                 sig = signals.to(compute_dtype)
                 deriv = sig[:, 1:] - sig[:, :-1]
-                centered = deriv - deriv.mean(dim=1, keepdim=True)
-                norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
-                sig_normed = centered / norms
+                if predictive_shift > 0:
+                    # Predictive: anchor uses earlier frames, candidates use
+                    # later frames. Correlation finds "X at t predicts Y at t+shift."
+                    s = predictive_shift
+                    anchor_deriv = deriv[:, :-s]
+                    cand_deriv = deriv[:, s:]
+                    # Normalize each independently
+                    a_c = anchor_deriv - anchor_deriv.mean(dim=1, keepdim=True)
+                    a_n = a_c.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                    sig_normed_anchor = a_c / a_n
+                    c_c = cand_deriv - cand_deriv.mean(dim=1, keepdim=True)
+                    c_n = c_c.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                    sig_normed = c_c / c_n  # candidates use shifted signal
+                else:
+                    centered = deriv - deriv.mean(dim=1, keepdim=True)
+                    norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                    sig_normed = centered / norms
             elif use_mse:
                 sig = signals.to(compute_dtype)
                 T_len = sig.shape[1]
@@ -331,7 +349,10 @@ class DriftSolver:
 
             if matmul_corr:
                 # Matmul path: (batch, T') @ (T', n) → (batch, n), then index
-                anchor_normed = sig_normed[anchors]
+                if predictive_shift > 0 and use_deriv_corr:
+                    anchor_normed = sig_normed_anchor[anchors]
+                else:
+                    anchor_normed = sig_normed[anchors]
 
                 if use_mse:
                     cross = (anchor_normed @ sig_normed.T) / T_len

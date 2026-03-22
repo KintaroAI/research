@@ -1066,7 +1066,8 @@ def run_word2vec(args):
                     batch_size=args.batch_size,
                     anchor_sample=anchor_sample,
                     fp16=getattr(args, 'fp16', False),
-                    matmul_corr=getattr(args, 'matmul_corr', True))
+                    matmul_corr=getattr(args, 'matmul_corr', True),
+                    predictive_shift=getattr(args, 'predictive_shift', 0))
         else:
             def do_tick():
                 dsolver.tick_sentence(window=args.window)
@@ -1394,6 +1395,9 @@ def main():
     p_w2v.add_argument("--matmul-corr", action=argparse.BooleanOptionalAction, default=True,
                        help="Use matmul for correlation (default: on). "
                             "--no-matmul-corr uses gather path (less memory, better on CPU)")
+    p_w2v.add_argument("--predictive-shift", type=int, default=0,
+                       help="Predictive correlation: shift anchor signal by N ticks "
+                            "(0=co-occurrence, 1=causal prediction)")
     # live clustering
     p_w2v.add_argument("--cluster-m", type=int, default=0,
                        help="Number of clusters (0=disabled)")
