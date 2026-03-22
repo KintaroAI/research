@@ -127,7 +127,7 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     feature_names = ['prev_out0', 'prev_out1', 'prev_out2', 'prev_out3',
                      'curr_out0', 'curr_out1', 'curr_out2', 'curr_out3',
                      'stimulus']
-    features = log[:n_ticks, 1:]
+    features = log[-n_ticks:, 1:]
 
     m, n_out = all_outputs.shape[1], all_outputs.shape[2]
     best = {}
