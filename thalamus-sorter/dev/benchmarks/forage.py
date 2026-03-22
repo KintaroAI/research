@@ -92,7 +92,7 @@ def make_signal(w, h, args):
     n_pois_sparse = getattr(args, 'forage_pois_sparse', 3)
     phase_ticks = getattr(args, 'forage_phase_ticks', 5000)
     collect_radius = getattr(args, 'forage_collect_radius', 5.0)
-    walk_step = getattr(args, 'forage_walk_step', 2.0)
+    walk_step = getattr(args, 'forage_walk_step', 0.5)
     hunger_rate = getattr(args, 'forage_hunger_rate', 0.01)
     motor_cols_str = getattr(args, 'forage_motor_columns', '0,1,2,3,4,5,6,7')
     motor_columns = [int(x) for x in motor_cols_str.split(',')]
