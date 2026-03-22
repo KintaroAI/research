@@ -807,6 +807,47 @@ ODDBALL +39%). Hurts purely combinatorial tasks (MAJORITY -25%).
 ODDBALL is the biggest winner — detecting which region changed is
 inherently temporal.
 
+### Signal buffer size (T=100 vs T=1000)
+
+| Benchmark | T=100 std | T=100 mix10% | T=1000 mix10% |
+|-----------|-----------|--------------|---------------|
+| XOR | 0.42 | 0.44 | **0.45** |
+| MAJORITY | **0.35** | 0.26 | **0.35** |
+| SEQUENCE | 0.40 | **0.42** | 0.29 |
+| MATCH | 0.24 | 0.23 | 0.23 |
+| ODDBALL | 0.28 | **0.39** | 0.37 |
+| ECHO voice | 0.29 | — | **0.47** |
+| MIRROR curr | **0.98** | — | 1.00 (trivial) |
+| SEEK reward | 0.42 | — | **0.60** |
+| SEEK hunger | 0.83 | — | **0.93** |
+
+T=1000 helps most benchmarks — more temporal context gives more
+reliable correlation estimates. ECHO voice jumped 0.29→0.47, SEEK
+reward 0.42→0.60. SEQUENCE is the exception — longer buffer dilutes
+sharp temporal transitions. The presets default to T=1000 for good
+reason.
+
+### Capability benchmarks (echo, mirror, lever, seek)
+
+| Benchmark | Tests | T=100 | T=1000 |
+|-----------|-------|-------|--------|
+| ECHO | temporal prediction | voice 0.29 | **0.47** |
+| MIRROR | action-consequence | curr_out **0.98** | 1.00 |
+| LEVER | operant conditioning | 0 presses | 0 presses |
+| SEEK | directional action | accuracy 28.6% | accuracy 21% |
+
+**MIRROR** is the standout — the system perfectly tracks its own
+motor output (r=0.98-1.0). It knows what it did. This is the
+foundation for learning action consequences.
+
+**LEVER** never fires — uniform softmax (0.25) never exceeds the
+0.5 press threshold. Needs either lower threshold or a mechanism
+that drives column differentiation.
+
+**SEEK** is at random chance — the system detects target direction
+(r=0.42) and reward (r=0.60) but can't map one to the other for
+directed action.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
