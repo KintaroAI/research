@@ -674,6 +674,31 @@ a reward to dismiss. Grandmother cell emerges (column 32).
 tracking (0.48→0.74). Silent neurons waste embedding capacity. Clean
 proprioceptive signals are more effective than noisy spatial vision.
 
+### Long training (runs 050-052, 400k total)
+
+Warm-start chain: 100k → +100k → +200k. No tiredness reset on POI
+collection — muscles recover only through rest.
+
+| Total ticks | Sparse collections | tired r | pos_y r | dir best |
+|-------------|-------------------|---------|---------|----------|
+| 100k | 73 | 0.93 | 0.90 | 0.55 |
+| 200k | 67 | 0.96 | 0.63 | 0.29 |
+| 400k | 92 | **0.99** | 0.85 | 0.39 |
+
+**Tiredness representation converges to near-perfect (r=0.99).** The
+system knows its muscle state better than any other feature. Position
+stable (~0.85). Direction plateaus at ~0.39 — moderate but not
+improving. Grandmother cells emerge at each stage (different column
+each time, concentrating features on 1-2 outputs).
+
+**The system is NOT learning to navigate.** Collections (~1 per 2000
+sparse ticks) are from random spasm exploration, not directed motor
+control. The motor columns produce movement but don't correlate it
+with direction-to-target. The missing link: no learning signal connects
+"moved toward food" with "food collected" — hunger-modulated lr
+rewards ALL learning equally after collection, not specifically the
+motor patterns that led to it.
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
