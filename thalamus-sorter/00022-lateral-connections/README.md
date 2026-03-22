@@ -634,10 +634,45 @@ Slow-changing signals (hunger, proximity) have near-zero derivative —
 invisible to derivative-correlation. Pulsation adds a carrier wave.
 Different prime periods per signal prevent carrier cross-correlation.
 
-89 collections. Proximity detection improved (0.42→0.65) — the
-pulsation made this slow signal visible. Direction y improved
-(0.34→0.43). But direction x dropped (0.81→0.52) — period=5 carrier
-may be too fast for already-varying direction signals.
+89 collections. Proximity detection improved (0.42→0.65). Direction y improved
+(0.34→0.43). But direction x dropped (0.81→0.52) — pulsation now
+only on slow signals (hunger, tiredness, restlessness, proximity).
+
+### 16×16 forage with full muscle system (runs 043-050)
+
+Scaled to 16×16 grid: 176 override neurons (8 per signal × 22 signals)
++ 80 zero-valued retina neurons. 8 motor columns (one per fiber).
+
+**Muscle physics refined:**
+- Force gated at 0.3 threshold: below = no movement, no tiredness
+- Per-fiber tiredness from own motor column's force
+- Per-fiber spasm tiredness scaling
+- Wrap-around field (toroidal, no walls)
+- Spasm starts at 6.25%, floors at 3.1% (never zero)
+- Walk step reduced to 0.5 (gentle movement)
+- Contraction feedback: 32 neurons sense actual muscle output
+- Tiredness NOT reset on POI collection (only hunger resets)
+
+| Run | Key change | Collections | Sparse | Best features |
+|-----|-----------|-------------|--------|---------------|
+| 043 | gated movement | 277 | 76 | rest 0.39, tired 0.38 |
+| 044 | 100k gated | 487 | 95 | tired 0.39 |
+| 045 | spasm floor | 356 | 47 | dir_yn 0.69 |
+| 046 | tiredness fix | 199 | 92 | restless 0.73 |
+| 047 | contraction fb | 473 | 81 | pos_y 0.90, tired 0.68 |
+| 048 | all fixes | 173 | 92 | dir_yn 0.48 (balanced) |
+| 049 | no retina | 175 | **98** | dir_yn **0.74** |
+| 050 | no tired reset | 92 | 73 | tired **0.93**, pos_y 0.90 |
+
+**Key finding:** Removing tiredness reset on collection (run 050) produces
+the strongest representations (tired r=0.93, pos r=0.90, hunger r=0.71)
+but fewer collections. The system develops deep understanding of its
+muscle state when tiredness is a persistent constraint to manage, not
+a reward to dismiss. Grandmother cell emerges (column 32).
+
+**Retina vs no retina:** Removing 80 retina neurons improved direction
+tracking (0.48→0.74). Silent neurons waste embedding capacity. Clean
+proprioceptive signals are more effective than noisy spatial vision.
 
 ### Summary
 
