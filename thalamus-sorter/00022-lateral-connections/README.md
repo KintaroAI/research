@@ -699,6 +699,42 @@ with direction-to-target. The missing link: no learning signal connects
 rewards ALL learning equally after collection, not specifically the
 motor patterns that led to it.
 
+### Motivation mechanisms
+
+**Run 053: Hunger disruption (homeostatic drive)**
+
+Hunger adds noise to ALL signals: `sig += hunger * 0.5 * randn(n)`.
+Starving → noisy signals → can't form correlations → representations
+degrade. Eating restores signal clarity. The system can't think
+straight when hungry — a biological glucose/energy model.
+
+**117 sparse collections — best ever.** No grandmother cell — features
+spread across many columns (all ~0.33-0.42). The disruption prevents
+any single column from dominating and creates genuine drive to eat.
+
+| Run | Disruption | Sparse collections | Grandmother cell? |
+|-----|-----------|-------------------|-------------------|
+| 049 | none | 98 | dir_yn 0.74 |
+| 050 | none | 73 | tired 0.93 |
+| **053** | **hunger noise** | **117** | **no (balanced)** |
+
+### Predictive correlation (--predictive-shift)
+
+Standard correlation learns "what fires together" (co-occurrence).
+Predictive correlation (`--predictive-shift 1`) learns "what at time
+t predicts what at time t+1" (causation). Anchor signal at t correlates
+with candidate signal at t+1.
+
+For foraging: if motor_dx+ at t predicts position_x increase at t+1,
+the embedding links motor → consequence. The system learns "when I
+do X, Y happens" — the causal chain missing from pure co-occurrence.
+
+Implementation: split the derivative signal into anchor (earlier
+frames) and candidate (later frames), normalize independently,
+matmul as before. One parameter change.
+
+*(run 054 pending — first test of predictive correlation on foraging)*
+
 ### Summary
 
 | Benchmark | Feature | Difficulty | Best max\|r\| |
