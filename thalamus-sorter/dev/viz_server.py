@@ -428,6 +428,9 @@ def run_viz(port=DEFAULT_PORT):
     dpg.create_context()
     dpg.create_viewport(title="Thalamus Graph", width=1200, height=800)
 
+    # Scale UI for high-DPI
+    dpg.set_global_font_scale(2.0)
+
     layout = ForceLayout()
     reset_flag = [False]
 
@@ -438,6 +441,7 @@ def run_viz(port=DEFAULT_PORT):
         with dpg.group(horizontal=True):
             dpg.add_text("Waiting for data...", tag="status_text")
             dpg.add_button(label="Rearrange", callback=_on_reset)
+            dpg.add_text("", tag="fps_text")
         dpg.add_drawlist(width=1180, height=700, tag="canvas")
 
     dpg.set_primary_window("main_window", True)
@@ -447,10 +451,21 @@ def run_viz(port=DEFAULT_PORT):
     # --- Render loop ---
     prev_tick = -1
     current_graph = None
+    frame_count = 0
+    fps_time = time.time()
     needs_render = False
 
     while dpg.is_dearpygui_running():
         dpg.render_dearpygui_frame()
+
+        # FPS counter
+        frame_count += 1
+        now = time.time()
+        if now - fps_time >= 1.0:
+            fps = frame_count / (now - fps_time)
+            dpg.set_value("fps_text", f"  FPS: {fps:.0f}")
+            frame_count = 0
+            fps_time = now
 
         # Resize canvas to match viewport
         vw = dpg.get_viewport_width() - 20
@@ -561,11 +576,11 @@ def _render_graph(dpg, graph, positions):
     y_leg = 10
     for lname in sorted(layers.keys()):
         color = _get_layer_color(lname)
-        dpg.draw_circle((20, y_leg + 8), 6, color=color, fill=color,
+        dpg.draw_circle((20, y_leg + 8), 8, color=color, fill=color,
                         parent="canvas")
-        dpg.draw_text((32, y_leg), f"{lname} ({len(layers[lname])})",
-                     size=14, color=(220, 220, 220), parent="canvas")
-        y_leg += 22
+        dpg.draw_text((36, y_leg), f"{lname} ({len(layers[lname])})",
+                     size=20, color=(220, 220, 220), parent="canvas")
+        y_leg += 28
 
 
 # ---------------------------------------------------------------------------
