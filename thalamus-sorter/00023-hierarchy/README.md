@@ -290,3 +290,26 @@ can't because both project identically onto a linear direction.
 
 A and B detection also jumps to r>0.9 with k-means — exact pattern matching
 vs variance direction gives much sharper linear feature detection too.
+
+### Full benchmark suite with k-means columns
+
+M=100, 10k ticks, k-means column mode, lateral connections, feedback loop.
+
+| Benchmark | Key metric | r | Notes |
+|-----------|-----------|---|-------|
+| echo | voice/echo detection | 0.84 | Delayed signal tracking |
+| edges | V1/V2/V3 hierarchy | 41/36/21 | V2 RF=7.5 vs V1 diam=3.3 (2.3×) |
+| layers | L1/L2/L3 features | 0.89/0.84/0.71 | All detected by V1 columns |
+| majority | MAJ(A,B,C) | 0.65 | Non-linear majority vote |
+| match | pattern EQ | 0.47 | Spatial pattern comparison |
+| mirror | self-tracking | **1.00** | Perfect action-consequence |
+| oddball | novelty detection | 0.50 | Odd-one-out identification |
+| sequence | temporal order | **0.71** | Detects A-then-B vs B-then-A |
+| xor | blind XOR | 0.58 | Non-linear (M=200) |
+| shapes | V2+ shape detect | 0.55 | Visual hierarchy + labels |
+| forage | collections | 88/100k | hunger r=0.96, direction r=0.83 |
+
+K-means mode is now default. Mirror is perfect (r=1.0) — k-means
+excels at tracking output patterns. Sequence (r=0.71) shows temporal
+order detection. Layers detects all 3 feature levels with L1 at r=0.89.
+Edges forms 3-layer hierarchy with V2 receptive fields 2.3× V1 diameter.
