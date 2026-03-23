@@ -103,6 +103,7 @@ def make_signal(w, h, args):
     pos = np.array([field_size / 2, field_size / 2], dtype=np.float32)
     prev_pos = pos.copy()
     hunger = np.float32(0.0)
+    state = {'prev_nearest_dist': None}  # for distance-based reward
     # Muscle feedback: 4 directions × 8 muscle fibers each
     # Each fiber has independent restlessness, tiredness, and spasms
     n_fibers = NEURONS_PER_SIGNAL  # 8 fibers per direction
@@ -215,14 +216,23 @@ def make_signal(w, h, args):
             dir_norm = max(np.sqrt((direction ** 2).sum()), 1e-8)
             direction = direction / dir_norm  # unit direction
 
+            # Distance-based reward: small positive when getting closer
+            col_mgr = _refs.get('column_mgr')
+            if col_mgr is not None and state['prev_nearest_dist'] is not None:
+                delta_dist = state['prev_nearest_dist'] - nearest_dist
+                if delta_dist > 0:
+                    # Getting closer — small reward scaled by progress
+                    col_mgr.set_reward(min(delta_dist / collect_radius, 0.5))
+            state['prev_nearest_dist'] = nearest_dist
+
             # Collection check
             if nearest_dist < collect_radius:
                 score[0] += 1
                 phase_idx = 1 if is_sparse else 0
                 phase_scores[phase_idx] += 1
                 hunger = 0.0
+                state['prev_nearest_dist'] = None  # reset after collection
                 # Deliver reward to column manager via eligibility traces
-                col_mgr = _refs.get('column_mgr')
                 if col_mgr is not None:
                     col_mgr.set_reward(1.0)
                 # tiredness NOT reset on collection — muscles stay tired
