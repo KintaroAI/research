@@ -165,6 +165,7 @@ class _ClusterManager:
                  column_lr=0.05, column_temperature=0.5,
                  column_match_threshold=0.1, column_streaming_decay=0.5,
                  column_lateral=False, lateral_k=6,
+                 eligibility=False, trace_decay=0.95,
                  n_sensory=None, embed_render=False, embed_method='pca',
                  column_n_outputs=0, renderer=None):
         import torch
@@ -224,7 +225,8 @@ class _ClusterManager:
                 window=column_window, temperature=column_temperature,
                 lr=column_lr, match_threshold=column_match_threshold,
                 streaming_decay=column_streaming_decay,
-                lateral=column_lateral, lateral_k=lateral_k)
+                lateral=column_lateral, lateral_k=lateral_k,
+                eligibility=eligibility, trace_decay=trace_decay)
 
     def set_signals(self, signals_t, sig_channels, T):
         """Store signal tensor reference for signal-based rendering."""
@@ -613,6 +615,8 @@ class _ClusterManager:
                     torch.zeros(self.m, self.column_mgr.n_outputs)))
                 if self.column_mgr.lateral and state.get('lateral_protos') is not None:
                     self.column_mgr.lateral_protos = _to_np(state['lateral_protos'])
+                if self.column_mgr.traces is not None and state.get('traces') is not None:
+                    self.column_mgr.traces = _to_np(state['traces'])
                 self.column_mgr.slot_map = np.load(slot_map_path)
                 n_wired = (self.column_mgr.slot_map >= 0).sum()
                 print(f"  Columns restored: {n_wired} wirings")
@@ -1111,6 +1115,8 @@ def run_word2vec(args):
                 column_streaming_decay=getattr(args, 'column_streaming_decay', 0.5),
                 column_lateral=getattr(args, 'column_lateral', False),
                 lateral_k=getattr(args, 'lateral_k', 6),
+                eligibility=getattr(args, 'eligibility', False),
+                trace_decay=getattr(args, 'trace_decay', 0.95),
                 n_sensory=n_sensory,
                 embed_render=embed_render_mode,
                 embed_method=render_method,
@@ -1460,6 +1466,10 @@ def main():
                        help="Lateral connections per column (default: 2)")
     p_w2v.add_argument("--lateral-sparsity", type=float, default=1.0,
                        help="Fraction of lateral connections to keep (1.0=full, 0.1=10%%)")
+    p_w2v.add_argument("--eligibility", action="store_true",
+                       help="Enable eligibility traces on columns (reward-gated learning)")
+    p_w2v.add_argument("--trace-decay", type=float, default=0.95,
+                       help="Eligibility trace decay per tick (default: 0.95, ~20 tick window)")
     p_w2v.add_argument("--cluster-neurons-per", type=int, default=0,
                        help="Target neurons per cluster (auto-computes M from formula)")
     p_w2v.add_argument("--motor-column", type=int, default=-1,

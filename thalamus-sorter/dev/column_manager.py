@@ -268,7 +268,8 @@ class ColumnManager:
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
                  temperature=0.2, lr=0.05, match_threshold=0.1,
-                 streaming_decay=0.5, lateral=False, lateral_k=6):
+                 streaming_decay=0.5, lateral=False, lateral_k=6,
+                 eligibility=False, trace_decay=0.95):
         self.m = m
         self.n_outputs = n_outputs
         self.max_inputs = max_inputs
@@ -279,6 +280,8 @@ class ColumnManager:
         self.usage_decay = 0.99
         self.streaming_decay = streaming_decay
         self.lateral = lateral
+        self.eligibility = eligibility
+        self.trace_decay = trace_decay
 
         # Batched state: all numpy for minimal overhead on small tensors
         rng = np.random.RandomState(42)
@@ -292,6 +295,14 @@ class ColumnManager:
         self.usage = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
         self.proj_mean = np.zeros((m, n_outputs), dtype=np.float32)
         self.proj_var = np.zeros((m, n_outputs), dtype=np.float32)
+
+        # Eligibility traces: deferred learning applied when reward arrives
+        # Eligibility traces: deferred learning applied when reward arrives
+        if eligibility:
+            self.traces = np.zeros_like(protos)  # (m, n_outputs, n_inputs)
+        else:
+            self.traces = None
+        self._pending_reward = 0.0
 
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
@@ -449,6 +460,10 @@ class ColumnManager:
         new_proto = w_proto + lr_eff[:, None] * (x_mean - w_proto)
         self.prototypes[ar, actual_winners] = new_proto
 
+    def set_reward(self, value):
+        """Set pending reward. Applied on next tick(), then reset to 0."""
+        self._pending_reward = value
+
     def tick(self, signal_window, knn2=None):
         """Batched forward + learn for all M columns. Pure numpy, no torch."""
         m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
@@ -508,6 +523,23 @@ class ColumnManager:
             self._update_kmeans(X, actual_winners, lr_eff)
         else:
             self._update_variance(X, actual_winners, lr_eff)
+
+        # --- Eligibility traces ---
+        if self.traces is not None:
+            x_mean = X.mean(axis=2)                       # (m, n_in)
+            w_proto = self.prototypes[ar, actual_winners]  # (m, n_in)
+            direction = x_mean - w_proto                   # (m, n_in)
+
+            # Decay all traces
+            self.traces *= self.trace_decay
+
+            # Accumulate winner's direction
+            self.traces[ar, actual_winners] += direction
+
+            # Apply when reward is pending
+            if self._pending_reward != 0.0:
+                self.prototypes += self.lr * self._pending_reward * self.traces
+                self._pending_reward = 0.0
 
         # Lateral weight update
         if self.lateral:
@@ -597,5 +629,8 @@ class ColumnManager:
             'lateral': self.lateral,
             'lateral_protos': _torch.from_numpy(self.lateral_protos) if self.lateral else None,
             'lateral_adj': _torch.from_numpy(self.lateral_adj) if self.lateral else None,
+            'eligibility': self.eligibility,
+            'trace_decay': self.trace_decay,
+            'traces': _torch.from_numpy(self.traces) if self.traces is not None else None,
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")

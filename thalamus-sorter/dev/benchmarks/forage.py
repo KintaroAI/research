@@ -221,6 +221,10 @@ def make_signal(w, h, args):
                 phase_idx = 1 if is_sparse else 0
                 phase_scores[phase_idx] += 1
                 hunger = 0.0
+                # Deliver reward to column manager via eligibility traces
+                col_mgr = _refs.get('column_mgr')
+                if col_mgr is not None:
+                    col_mgr.set_reward(1.0)
                 # tiredness NOT reset on collection — muscles stay tired
                 # Only hunger resets (reward signal for learning rate)
                 # Remove collected POI
