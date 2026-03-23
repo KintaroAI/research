@@ -570,6 +570,15 @@ class _ClusterManager:
                                      cluster_ids=most_recent,
                                      n_outputs=self.column_n_outputs,
                                      method=self.embed_method)
+            # Graph visualization relay
+            if self._renderer.viz_address and self.column_mgr:
+                lateral_adj = None
+                if self.column_mgr.lateral:
+                    lateral_adj = self.column_mgr.lateral_adj
+                self._renderer.graph(
+                    tick, most_recent, ns, self.column_n_outputs,
+                    lateral_adj=lateral_adj,
+                    column_outputs=self.column_mgr.get_outputs())
 
     def load_state(self, state_dir, embeddings_t):
         """Load saved cluster + column state for warm restart."""
@@ -858,8 +867,10 @@ def run_word2vec(args):
 
         # --- Create renderer ---
         from render_server import Renderer
+        viz_address = getattr(args, 'viz_address', None)
         renderer = Renderer(output_dir, render_w, render_h,
-                            sig_channels=sig_channels) if output_dir else None
+                            sig_channels=sig_channels,
+                            viz_address=viz_address) if output_dir else None
 
         # --- Create solver (imports torch/cuml in main process) ---
         if mode == "sentence":
@@ -1369,6 +1380,8 @@ def main():
                        default="grid",
                        help="'grid' (default), 'embed' saves additional embed_NNNNNN.png "
                             "scatter plots at cluster_report_every intervals")
+    p_w2v.add_argument("--viz-address", type=str, default=None,
+                       help="host:port for live graph visualization app (e.g., 192.168.1.5:9100)")
     p_w2v.add_argument("--align", action="store_true",
                        help="Procrustes-align rendered output to grid (fixes rotation/flip)")
     p_w2v.add_argument("--warm-start", type=str, default=None,

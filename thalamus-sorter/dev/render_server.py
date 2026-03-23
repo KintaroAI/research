@@ -199,6 +199,27 @@ def _render_heatmap(job):
     cv2.imwrite(job['output_path'], hist_img)
 
 
+def _relay_graph(job):
+    """Relay graph payload to visualization app via TCP. Fire-and-forget."""
+    viz_addr = job.get('viz_address')
+    if not viz_addr:
+        return {'status': 'ok', 'msg': 'no viz_address configured'}
+    try:
+        host, port = viz_addr.rsplit(':', 1)
+        port = int(port)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        sock.connect((host, port))
+        # Send the payload (minus viz_address and type)
+        payload = {k: v for k, v in job.items()
+                   if k not in ('type', 'output_path', 'viz_address')}
+        _send_msg(sock, payload)
+        sock.close()
+        return {'status': 'ok', 'msg': 'relayed to viz'}
+    except (ConnectionRefusedError, socket.timeout, OSError):
+        return {'status': 'ok', 'msg': 'viz not running, dropped'}
+
+
 HANDLERS = {
     'grid': _render_grid,
     'cluster': _render_cluster,
@@ -207,6 +228,7 @@ HANDLERS = {
     'field': _render_field,
     'embed': _render_embed,
     'heatmap': _render_heatmap,
+    'graph': _relay_graph,
 }
 
 
@@ -477,11 +499,13 @@ class Renderer:
     If server is unavailable, calls are silently dropped.
     """
 
-    def __init__(self, output_dir, w, h, sig_channels=1, n_workers=2):
+    def __init__(self, output_dir, w, h, sig_channels=1, n_workers=2,
+                 viz_address=None):
         self.output_dir = output_dir
         self.w = w
         self.h = h
         self.sig_channels = sig_channels
+        self.viz_address = viz_address  # 'host:port' for viz app relay
         self._client = None
         self._n_workers = n_workers
         if output_dir:
@@ -544,6 +568,20 @@ class Renderer:
         """Position heatmap (e.g., motor saccade positions)."""
         path = os.path.join(self.output_dir, f"{name}.png")
         self._submit('heatmap', path, positions=positions)
+
+    def graph(self, tick, most_recent, n_sensory, n_outputs,
+              lateral_adj=None, column_outputs=None):
+        """Send graph visualization payload to viz app via render server."""
+        if self._client is None or not self.viz_address:
+            return
+        self._submit('graph', '',  # no output file — relay only
+                     tick=tick,
+                     most_recent=most_recent,
+                     n_sensory=n_sensory,
+                     n_outputs=n_outputs,
+                     lateral_adj=lateral_adj,
+                     column_outputs=column_outputs,
+                     viz_address=self.viz_address)
 
 
 if __name__ == '__main__':
