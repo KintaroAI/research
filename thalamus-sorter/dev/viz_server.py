@@ -138,16 +138,19 @@ def analyze_graph(payload):
         clusters.append(info)
 
     # Feedback edges: feedback neuron f in cluster C2 came from column C1
-    # Count neurons per edge for weight
-    feedback_counts = {}
+    # Track which output indices flow on each edge
+    feedback_info = {}  # (src, dst) → set of output indices
     for f in range(n_sensory, n_total):
         src_col = (f - n_sensory) // n_outputs
+        out_idx = (f - n_sensory) % n_outputs
         dst_cluster = int(most_recent[f])
         if src_col != dst_cluster:
             edge = (int(src_col), dst_cluster)
-            feedback_counts[edge] = feedback_counts.get(edge, 0) + 1
-    feedback_edges = [(src, dst, count)
-                      for (src, dst), count in feedback_counts.items()]
+            if edge not in feedback_info:
+                feedback_info[edge] = set()
+            feedback_info[edge].add(out_idx)
+    feedback_edges = [(src, dst, sorted(outs))
+                      for (src, dst), outs in feedback_info.items()]
 
     # Lateral edges
     lateral_edges = []
@@ -523,24 +526,45 @@ def _render_graph(dpg, graph, positions):
 
     # Status
     layer_counts = {k: len(v) for k, v in layers.items()}
-    total_fb_neurons = sum(w for _, _, w in feedback_edges)
+    total_fb_neurons = sum(len(outs) for _, _, outs in feedback_edges)
     status = (f"Tick {tick} | Clusters: {len(clusters)} | "
               f"Layers: {layer_counts} | "
               f"Edges: {len(feedback_edges)} fb ({total_fb_neurons} neurons), "
               f"{len(lateral_edges)} lat")
     dpg.set_value("status_text", status)
 
+    # Build cluster output info for edge coloring
+    cluster_map = {cl['id']: cl for cl in clusters}
+    winner_colors = [(255, 80, 80), (80, 255, 80),
+                     (80, 80, 255), (255, 255, 80)]
+
     # Draw edges first (behind nodes)
-    # Feedback edges — thickness = neuron count on that edge
-    max_fb = max((w for _, _, w in feedback_edges), default=1)
-    for src, dst, weight in feedback_edges:
-        if src in positions and dst in positions:
-            x1, y1 = positions[src]
-            x2, y2 = positions[dst]
-            t = max(1, int(weight / max(max_fb, 1) * 5))  # 1-5px
-            alpha = min(255, 30 + weight * 20)
+    # Feedback edges — colored by winning output, thickness by probability
+    for src, dst, out_indices in feedback_edges:
+        if src not in positions or dst not in positions:
+            continue
+        x1, y1 = positions[src]
+        x2, y2 = positions[dst]
+        cl = cluster_map.get(src)
+        if cl and 'outputs' in cl:
+            winner = cl['winner']
+            prob = cl['outputs'][winner]
+            if winner in out_indices:
+                # Active edge — winner output flows here
+                color = winner_colors[winner % len(winner_colors)]
+                t = max(1, int(prob * 6))  # 1-6px by probability
+                alpha = min(255, int(80 + prob * 175))
+                dpg.draw_line((x1, y1), (x2, y2),
+                             color=(color[0], color[1], color[2], alpha),
+                             thickness=t, parent="canvas")
+            else:
+                # Inactive edge — winner doesn't flow here
+                dpg.draw_line((x1, y1), (x2, y2),
+                             color=(80, 80, 80, 25), thickness=1,
+                             parent="canvas")
+        else:
             dpg.draw_line((x1, y1), (x2, y2),
-                         color=(100, 150, 200, alpha), thickness=t,
+                         color=(80, 80, 80, 25), thickness=1,
                          parent="canvas")
 
     # Lateral edges
