@@ -238,3 +238,33 @@ are selective (one shape per cluster), while higher areas become
 increasingly invariant (multiple shapes sharing clusters). The system
 self-organizes this structure without any supervision — purely from
 temporal correlations in saccade-driven input.
+
+## XOR blind evaluation
+
+Previous XOR benchmark was circular: XOR value was in the signal during
+both training AND evaluation. A column sitting on XOR-quadrant neurons
+trivially reads the answer.
+
+**Fixed evaluation:** during analysis, XOR and AND quadrants are zeroed
+out. Only A and B are provided. "Blind" columns = those with NO
+XOR/AND sensory neurons.
+
+### M-sweep results (10k ticks each)
+
+| M | Blind cols | XOR blind r | AND blind r | A r | B r |
+|---|---|---|---|---|---|
+| 10 | 2/10 | 0.15 | 0.13 | 0.16 | 0.24 |
+| 42 | 18/42 | 0.19 | 0.36 | 0.24 | 0.30 |
+| 80 | 44/80 | 0.29 | 0.45 | 0.32 | 0.37 |
+| 150 | 108/150 | 0.39 | 0.42 | 0.34 | 0.40 |
+| 200 | 156/200 | 0.39 | 0.40 | 0.36 | 0.39 |
+| 300 | 243/300 | 0.36 | 0.46 | 0.35 | 0.39 |
+| 500 | 418/500 | 0.36 | 0.46 | 0.37 | 0.39 |
+
+XOR blind detection scales with M up to ~150, then **plateaus at r≈0.39**.
+AND (linear combination) reaches 0.46 and also plateaus. More clusters
+beyond M=150 doesn't help — the bottleneck is the learning rule, not
+capacity. Power iteration finds principal components of covariance
+(linear). XOR requires multiplicative interaction that covariance-based
+Hebbian learning can't directly compute. The ~0.39 likely comes from
+partial correlation via lateral connections between A and B clusters.

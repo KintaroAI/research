@@ -222,49 +222,78 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     most_recent = cluster_mgr.cluster_ids[
         np.arange(n_total), cluster_mgr.pointers]
 
-    # --- Layer classification ---
-    s_counts = np.zeros(m, dtype=int)
-    f_counts = np.zeros(m, dtype=int)
+    # --- Split sensory into V1 (pixels) and L1 (labels) ---
+    # All label neuron indices (256-319)
+    all_label_neurons = set()
+    for neurons in label_idx.values():
+        all_label_neurons.update(neurons)
+
+    # Per-cluster: count pixel neurons, label neurons, feedback neurons
+    pix_counts = np.zeros(m, dtype=int)
+    lab_counts = np.zeros(m, dtype=int)
+    fb_counts = np.zeros(m, dtype=int)
     for c in range(m):
         members = np.where(most_recent == c)[0]
-        s_counts[c] = (members < n_sensory).sum()
-        f_counts[c] = (members >= n_sensory).sum()
+        for idx in members:
+            if idx >= n_sensory:
+                fb_counts[c] += 1
+            elif idx in all_label_neurons:
+                lab_counts[c] += 1
+            else:
+                pix_counts[c] += 1
 
-    v1 = set(c for c in range(m) if s_counts[c] > 0)
-    v2 = set()
+    # V1 = clusters with pixel neurons (visual sensory)
+    # L1 = clusters with label neurons (categorical sensory)
+    # Some clusters may have both (mixed) — classify by majority
+    v1 = set()
+    l1 = set()
     for c in range(m):
-        if c in v1 or f_counts[c] == 0:
-            continue
-        fb = np.where((most_recent == c) & (np.arange(n_total) >= n_sensory))[0]
-        src = set((fb - n_sensory) // n_outputs)
-        if src & v1:
-            v2.add(c)
-    v3 = set()
-    for c in range(m):
-        if c in v1 or c in v2 or f_counts[c] == 0:
-            continue
-        fb = np.where((most_recent == c) & (np.arange(n_total) >= n_sensory))[0]
-        src = set((fb - n_sensory) // n_outputs)
-        if src & v2:
-            v3.add(c)
+        if pix_counts[c] > 0 and lab_counts[c] == 0:
+            v1.add(c)
+        elif lab_counts[c] > 0 and pix_counts[c] == 0:
+            l1.add(c)
+        elif pix_counts[c] > 0 and lab_counts[c] > 0:
+            # Mixed — count as V1 (it has visual neurons)
+            v1.add(c)
+            l1.add(c)  # also L1 since it has labels
 
-    print(f"  SHAPES hierarchy: V1={len(v1)}, V2={len(v2)}, V3={len(v3)}")
+    # Build visual hierarchy: V2 from V1, V3 from V2, etc.
+    assigned = v1 | l1
+    layers = [v1]  # layers[0] = V1
+    layer_names = ['V1']
+    for depth in range(10):  # up to V11
+        prev = layers[-1]
+        next_layer = set()
+        for c in range(m):
+            if c in assigned or fb_counts[c] == 0:
+                continue
+            fb = np.where((most_recent == c) & (np.arange(n_total) >= n_sensory))[0]
+            src = set((fb - n_sensory) // n_outputs)
+            if src & prev:
+                next_layer.add(c)
+        if not next_layer:
+            break
+        layers.append(next_layer)
+        assigned |= next_layer
+        layer_names.append(f'V{depth + 2}')
 
-    # --- Which clusters contain label neurons? ---
+    print(f"  SHAPES hierarchy (V1=visual, L1=labels):")
+    print(f"    V1 (pixels): {len(v1)} clusters")
+    print(f"    L1 (labels): {len(l1)} clusters")
+    for i, (name, layer) in enumerate(zip(layer_names[1:], layers[1:]), 1):
+        print(f"    {name} (from {layer_names[i-1]}): {len(layer)} clusters")
+
+    # --- Which L1 clusters per shape? ---
     label_clusters = {}
     for sid, neurons in label_idx.items():
-        clusters = set(most_recent[n] for n in neurons if n < n_total)
+        clusters = set(most_recent[ni] for ni in neurons if ni < n_total)
         label_clusters[sid] = clusters
-        layers = []
-        for c in clusters:
-            if c in v1: layers.append('V1')
-            elif c in v2: layers.append('V2')
-            elif c in v3: layers.append('V3')
-            else: layers.append('?')
-        print(f"    Shape {sid} labels → clusters {sorted(clusters)} "
-              f"(layers: {layers})")
+        in_l1 = [c for c in clusters if c in l1]
+        in_v1 = [c for c in clusters if c in v1 and c not in l1]
+        print(f"    Shape {sid} labels → L1 clusters {sorted(in_l1)}"
+              + (f", mixed V1 {sorted(in_v1)}" if in_v1 else ""))
 
-    # --- Correlate column outputs with shape identity ---
+    # --- Sample column outputs ---
     print("  SHAPES analysis: sampling 500 ticks...")
     tick_fn = metadata['_tick_fn']
     col_history = []
@@ -287,38 +316,107 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     all_outputs = all_outputs[:n_ticks]
     active_shapes = log[-n_ticks:, 3]  # shape id or -1
 
-    # Per-shape: best column correlation
-    print(f"  SHAPES column correlations ({n_ticks} ticks):")
+    # --- Correlate Vx column outputs with shape identity ---
+    # Search ONLY in visual hierarchy (V2+), not in L1 or V1
+    # V1 correlation is trivial (label neurons are sensory)
+    # We want: does the visual processing path learn shape identity?
+    all_visual = set()
+    for layer in layers:
+        all_visual |= layer
+
+    def _layer_of(c):
+        for name, layer in zip(layer_names, layers):
+            if c in layer:
+                return name
+        if c in l1:
+            return 'L1'
+        return '?'
+
+    print(f"\n  SHAPES: visual hierarchy correlations with shape identity ({n_ticks} ticks)")
+    print(f"  (searching V2+ only — V1/L1 correlations are trivial)")
+
     results = {}
     for sid in range(N_SHAPES):
         indicator = (active_shapes == sid).astype(np.float32)
         if indicator.std() < 1e-8:
-            results[f'shape_{sid}'] = {'max_abs_corr': 0, 'best_column': -1,
-                                       'best_output': -1, 'layer': '?'}
+            results[f'shape_{sid}'] = {
+                'best_v1': {'r': 0, 'col': -1, 'out': -1},
+                'best_vx': {'r': 0, 'col': -1, 'out': -1, 'layer': '?'},
+            }
             continue
-        max_corr, best_c, best_o = 0, 0, 0
+
+        # Best in V1 (for reference)
+        best_v1_r, best_v1_c, best_v1_o = 0, -1, -1
+        # Best in V2+ (the interesting result)
+        best_vx_r, best_vx_c, best_vx_o = 0, -1, -1
+
         for c in range(m):
             for o in range(n_outputs):
                 out = all_outputs[:, c, o]
                 if out.std() < 1e-8:
                     continue
                 r = np.corrcoef(indicator, out)[0, 1]
-                if not np.isnan(r) and abs(r) > max_corr:
-                    max_corr = abs(r)
-                    best_c, best_o = c, o
-        layer = 'V1' if best_c in v1 else 'V2' if best_c in v2 else 'V3' if best_c in v3 else '?'
+                if np.isnan(r):
+                    continue
+                ar = abs(r)
+                if c in v1 and c not in l1 and ar > best_v1_r:
+                    best_v1_r, best_v1_c, best_v1_o = ar, c, o
+                # V2+ only (not V1, not L1)
+                if c not in v1 and c not in l1 and ar > best_vx_r:
+                    best_vx_r, best_vx_c, best_vx_o = ar, c, o
+
+        vx_layer = _layer_of(best_vx_c) if best_vx_c >= 0 else '?'
         results[f'shape_{sid}'] = {
-            'max_abs_corr': round(max_corr, 4),
-            'best_column': best_c,
-            'best_output': best_o,
-            'layer': layer,
+            'best_v1': {'r': round(best_v1_r, 4), 'col': best_v1_c, 'out': best_v1_o},
+            'best_vx': {'r': round(best_vx_r, 4), 'col': best_vx_c,
+                        'out': best_vx_o, 'layer': vx_layer},
         }
-        print(f"    shape {sid}: r={max_corr:.3f} "
-              f"(col {best_c}/{layer}, out {best_o})")
+        print(f"    shape {sid}: V1 r={best_v1_r:.3f} (col {best_v1_c})"
+              f"  |  V2+ r={best_vx_r:.3f} (col {best_vx_c}/{vx_layer})")
+
+    # --- Cross-correlate L1 column outputs with Vx column outputs ---
+    print(f"\n  SHAPES: L1-to-Vx column output correlation")
+    print(f"  (do visual hierarchy columns track label columns?)")
+
+    # Get L1 cluster column output time series
+    l1_list = sorted(l1 - v1)  # pure L1 clusters (not mixed)
+    if l1_list:
+        for l1c in l1_list:
+            # Which shape does this L1 cluster represent?
+            shape_for_cluster = -1
+            for sid, clusters in label_clusters.items():
+                if l1c in clusters:
+                    shape_for_cluster = sid
+                    break
+
+            # Find best Vx correlation with each L1 column output
+            for l1o in range(n_outputs):
+                l1_ts = all_outputs[:, l1c, l1o]
+                if l1_ts.std() < 1e-8:
+                    continue
+                best_r, best_c, best_o = 0, -1, -1
+                for c in range(m):
+                    if c in v1 or c in l1:
+                        continue
+                    for o in range(n_outputs):
+                        vx_ts = all_outputs[:, c, o]
+                        if vx_ts.std() < 1e-8:
+                            continue
+                        r = np.corrcoef(l1_ts, vx_ts)[0, 1]
+                        if not np.isnan(r) and abs(r) > best_r:
+                            best_r, best_c, best_o = abs(r), c, o
+                if best_r > 0.2:
+                    layer = _layer_of(best_c)
+                    print(f"    L1 cluster {l1c} (shape {shape_for_cluster}) "
+                          f"out {l1o} → {layer} col {best_c} out {best_o} "
+                          f"r={best_r:.3f}")
 
     if output_dir:
         save_data = {
-            'hierarchy': {'V1': len(v1), 'V2': len(v2), 'V3': len(v3)},
+            'hierarchy': {
+                'V1': len(v1), 'L1': len(l1),
+                **{name: len(layer) for name, layer in zip(layer_names[1:], layers[1:])},
+            },
             'shape_correlations': results,
         }
         path = os.path.join(output_dir, "shapes_analysis.json")

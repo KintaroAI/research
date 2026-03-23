@@ -84,7 +84,12 @@ def make_signal(w, h, args):
 
 
 def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
-    """Post-training XOR analysis: correlate column outputs with features."""
+    """Post-training XOR analysis: correlate column outputs with features.
+
+    Blind eval: during analysis, XOR and AND quadrants are zeroed out.
+    Only A and B are provided as input. If any column output still
+    correlates with XOR, the network is computing it, not just reading it.
+    """
     import torch
 
     if cluster_mgr is None or not cluster_mgr.initialized:
@@ -92,15 +97,50 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     if cluster_mgr.column_mgr is None:
         return
 
-    print("  XOR analysis: sampling 500 ticks...")
+    n_sensory = metadata['n']
+    regions = metadata['regions']
+    xor_mask = regions['XOR']
+    and_mask = regions['AND']
+
+    # --- Classify columns by quadrant membership ---
+    n_total = cluster_mgr.n
+    n_outputs = cluster_mgr.column_mgr.n_outputs
+    m = cluster_mgr.m
+    most_recent = cluster_mgr.cluster_ids[
+        np.arange(n_total), cluster_mgr.pointers]
+
+    # For each cluster, which quadrants do its sensory neurons belong to?
+    cluster_quads = {}
+    for c in range(m):
+        members = np.where(most_recent == c)[0]
+        sensory = members[members < n_sensory]
+        quads = set()
+        for qname, qmask in regions.items():
+            if np.any(qmask[sensory]):
+                quads.add(qname)
+        cluster_quads[c] = quads
+
+    # Columns that contain NO XOR/AND sensory neurons (can't cheat)
+    blind_cols = set(c for c in range(m)
+                     if 'XOR' not in cluster_quads.get(c, set())
+                     and 'AND' not in cluster_quads.get(c, set()))
+
+    print(f"  XOR analysis: {len(blind_cols)}/{m} columns have no XOR/AND neurons")
+    print("  XOR analysis: sampling 500 ticks (XOR+AND quadrants ZEROED)...")
+
     tick_fn = metadata['_tick_fn']
     col_history = []
-    n_sensory = metadata['n']
+    feature_log_eval = []
 
     for t in range(500):
         sig_t = tick_fn(metadata['_total_ticks'] + T + t)
+        # Zero out XOR and AND quadrants — only A and B visible
+        sig_blind = sig_t.copy()
+        sig_blind[xor_mask] = 0.0
+        sig_blind[and_mask] = 0.0
+
         col_t = tick_counter[0] % T
-        signals[:n_sensory, col_t] = torch.from_numpy(sig_t).to(signals.device)
+        signals[:n_sensory, col_t] = torch.from_numpy(sig_blind).to(signals.device)
         tick_counter[0] += 1
         if cluster_mgr._signals is not None and cluster_mgr._signal_T > 0:
             cw = cluster_mgr.column_mgr.window
@@ -109,58 +149,65 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
             cluster_mgr.column_mgr.tick(sw)
             col_history.append((t, cluster_mgr.column_mgr.get_outputs()))
 
-    # Compute correlations
-    log = np.array(metadata['feature_log'])
-    if len(log) == 0 or len(col_history) == 0:
+        # Log ground truth (even though XOR/AND are zeroed in signal)
+        log = metadata['feature_log']
+        if log:
+            feature_log_eval.append(log[-1][1:])  # (A, B, XOR, AND)
+
+    if len(col_history) == 0 or len(feature_log_eval) == 0:
         return
 
-    log_ticks = set(log[:, 0].astype(int))
-    aligned = []
-    for tick, outputs in col_history:
-        if tick in log_ticks:
-            idx = np.searchsorted(log[:, 0], tick)
-            if idx < len(log) and int(log[idx, 0]) == tick:
-                aligned.append((log[idx, 1:], outputs))
-
-    if len(aligned) < 10:
-        print(f"  XOR: only {len(aligned)} aligned ticks, skipping")
-        return
-
-    features = np.array([a[0] for a in aligned])
-    all_outputs = np.array([a[1] for a in aligned])
-    n_ticks, m, n_out = all_outputs.shape
+    all_outputs = np.array([o for _, o in col_history])
+    features = np.array(feature_log_eval)
+    n_ticks = min(len(features), all_outputs.shape[0])
+    all_outputs = all_outputs[:n_ticks]
+    features = features[:n_ticks]
+    n_ticks, m_out, n_out = all_outputs.shape
     feature_names = ['A', 'B', 'XOR', 'AND']
 
-    results = np.zeros((m, n_out, 4))
-    for fi, fname in enumerate(feature_names):
-        feat = features[:, fi]
+    # Correlate — report both "all columns" and "blind columns only"
+    results_all = np.zeros((m_out, n_out, 4))
+    for fi in range(4):
+        feat = features[:, fi].astype(np.float32)
         if feat.std() < 1e-8:
             continue
-        for c in range(m):
+        for c in range(m_out):
             for o in range(n_out):
                 out = all_outputs[:, c, o]
                 if out.std() < 1e-8:
                     continue
                 r = np.corrcoef(feat, out)[0, 1]
                 if not np.isnan(r):
-                    results[c, o, fi] = r
+                    results_all[c, o, fi] = r
 
+    print(f"  XOR blind eval ({n_ticks} ticks, XOR+AND zeroed in signal):")
     best = {}
     for fi, fname in enumerate(feature_names):
-        abs_corr = np.abs(results[:, :, fi])
-        best_idx = np.unravel_index(abs_corr.argmax(), abs_corr.shape)
+        # Best across ALL columns
+        abs_all = np.abs(results_all[:, :, fi])
+        idx_all = np.unravel_index(abs_all.argmax(), abs_all.shape)
+
+        # Best across BLIND columns only (no XOR/AND neurons)
+        abs_blind = abs_all.copy()
+        for c in range(m_out):
+            if c not in blind_cols:
+                abs_blind[c, :] = 0
+        idx_blind = np.unravel_index(abs_blind.argmax(), abs_blind.shape)
+
         best[fname] = {
-            'max_abs_corr': float(abs_corr.max()),
-            'best_column': int(best_idx[0]),
-            'best_output': int(best_idx[1]),
-            'mean_abs_corr': float(abs_corr.mean()),
+            'all_max_r': round(float(abs_all.max()), 4),
+            'all_col': int(idx_all[0]),
+            'all_out': int(idx_all[1]),
+            'blind_max_r': round(float(abs_blind.max()), 4),
+            'blind_col': int(idx_blind[0]),
+            'blind_out': int(idx_blind[1]),
         }
 
-    print(f"  XOR results ({n_ticks} ticks):")
-    for fname, info in best.items():
-        print(f"    {fname:3s}: max|r|={info['max_abs_corr']:.3f} "
-              f"(col {info['best_column']}, out {info['best_output']}), "
-              f"mean|r|={info['mean_abs_corr']:.3f}")
+        quad_info = cluster_quads.get(idx_all[0], set())
+        print(f"    {fname:3s}: all max|r|={abs_all.max():.3f} "
+              f"(col {idx_all[0]} {quad_info})"
+              f"  blind max|r|={abs_blind.max():.3f} "
+              f"(col {idx_blind[0]})")
 
     if output_dir:
         xor_path = os.path.join(output_dir, "xor_analysis.json")
