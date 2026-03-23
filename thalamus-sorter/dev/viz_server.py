@@ -402,30 +402,36 @@ def run_viz(port=DEFAULT_PORT):
 
     # --- Render loop ---
     prev_tick = -1
+    current_graph = None
+    settling = 0  # remaining force steps to animate
 
     while dpg.is_dearpygui_running():
         dpg.render_dearpygui_frame()
 
         with latest_graph['lock']:
-            graph = latest_graph['data']
+            new_graph = latest_graph['data']
 
-        if graph is None:
-            continue
+        # New data arrived
+        if new_graph is not None and new_graph['tick'] != prev_tick:
+            current_graph = new_graph
+            prev_tick = new_graph['tick']
+            if len(layout.positions) == 0:
+                settling = 300  # first time — longer settle
+            else:
+                settling = 80   # update — shorter settle
 
         # Handle reset button
         if reset_flag[0]:
             layout.reset()
             reset_flag[0] = False
-            prev_tick = -1  # force re-render
+            settling = 300
 
-        if graph['tick'] == prev_tick:
-            continue
-
-        prev_tick = graph['tick']
-        # Run force layout (more steps on first frame or after reset, fewer on updates)
-        n_steps = 200 if len(layout.positions) == 0 else 50
-        positions = layout.update(graph, steps=n_steps)
-        _render_graph(dpg, graph, positions)
+        # Animate: run a few force steps per frame and re-render
+        if current_graph is not None and settling > 0:
+            steps_per_frame = 5
+            layout.update(current_graph, steps=steps_per_frame)
+            settling -= steps_per_frame
+            _render_graph(dpg, current_graph, layout.positions)
 
     dpg.destroy_context()
 
