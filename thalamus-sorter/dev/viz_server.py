@@ -229,13 +229,20 @@ class ForceLayout:
         alive = set(cl['id'] for cl in clusters)
         cx = (self.canvas_w) / 2
         cy = (self.canvas_h) / 2
+        m = self.margin
+
+        # Project centroids to 2D for initial positions
+        centroid_2d = self._project_centroids(graph, alive)
 
         # Init new nodes, remove dead ones
         for cid in alive:
             if cid not in self.positions:
-                self.positions[cid] = (
-                    cx + (np.random.rand() - 0.5) * (self.canvas_w - 2 * self.margin),
-                    cy + (np.random.rand() - 0.5) * (self.canvas_h - 2 * self.margin))
+                if cid in centroid_2d:
+                    self.positions[cid] = centroid_2d[cid]
+                else:
+                    self.positions[cid] = (
+                        cx + (np.random.rand() - 0.5) * (self.canvas_w - 2 * m),
+                        cy + (np.random.rand() - 0.5) * (self.canvas_h - 2 * m))
                 self.velocities[cid] = (0.0, 0.0)
         for cid in list(self.positions):
             if cid not in alive:
@@ -333,6 +340,38 @@ class ForceLayout:
                 self.positions[cid] = (px, py)
 
         return self.positions
+
+    def _project_centroids(self, graph, alive):
+        """Project D-dim centroids to 2D canvas positions via PCA."""
+        centroids = graph.get('centroids')
+        if centroids is None:
+            return {}
+
+        # Gather alive cluster centroids
+        ids = sorted(alive)
+        valid = [cid for cid in ids if cid < len(centroids)]
+        if len(valid) < 2:
+            return {}
+
+        pts = centroids[valid]  # (n_alive, D)
+
+        # PCA to 2D
+        mean = pts.mean(axis=0)
+        centered = pts - mean
+        cov = centered.T @ centered / max(len(centered) - 1, 1)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        # Top 2 components (eigenvalues sorted ascending)
+        proj = centered @ eigvecs[:, -2:]  # (n, 2)
+
+        # Scale to canvas
+        m = self.margin
+        for dim in range(2):
+            pmin, pmax = proj[:, dim].min(), proj[:, dim].max()
+            span = max(pmax - pmin, 1e-8)
+            proj[:, dim] = m + (proj[:, dim] - pmin) / span * (self.canvas_w - 2*m if dim == 0 else self.canvas_h - 2*m)
+
+        return {cid: (float(proj[i, 0]), float(proj[i, 1]))
+                for i, cid in enumerate(valid)}
 
     def reset(self):
         """Clear all positions — next update will reinitialize."""

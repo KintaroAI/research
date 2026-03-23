@@ -584,7 +584,8 @@ class _ClusterManager:
                     tick, most_recent, ns, self.column_n_outputs,
                     lateral_adj=lateral_adj,
                     column_outputs=self.column_mgr.get_outputs(),
-                    knn2=knn2_viz)
+                    knn2=knn2_viz,
+                    centroids=centroids_np)
 
     def load_state(self, state_dir, embeddings_t):
         """Load saved cluster + column state for warm restart."""
