@@ -138,15 +138,16 @@ def analyze_graph(payload):
         clusters.append(info)
 
     # Feedback edges: feedback neuron f in cluster C2 came from column C1
-    feedback_edges = []
-    seen = set()
+    # Count neurons per edge for weight
+    feedback_counts = {}
     for f in range(n_sensory, n_total):
         src_col = (f - n_sensory) // n_outputs
         dst_cluster = int(most_recent[f])
-        edge = (int(src_col), dst_cluster)
-        if edge not in seen and src_col != dst_cluster:
-            seen.add(edge)
-            feedback_edges.append(edge)
+        if src_col != dst_cluster:
+            edge = (int(src_col), dst_cluster)
+            feedback_counts[edge] = feedback_counts.get(edge, 0) + 1
+    feedback_edges = [(src, dst, count)
+                      for (src, dst), count in feedback_counts.items()]
 
     # Lateral edges
     lateral_edges = []
@@ -260,7 +261,8 @@ class ForceLayout:
         for a, b in knn_edges:
             if a in alive and b in alive:
                 edges_strong.add((a, b))
-        for src, dst in feedback_edges:
+        for edge in feedback_edges:
+            src, dst = edge[0], edge[1]
             if src in alive and dst in alive:
                 edges_weak.add((src, dst))
         for a, b in lateral_edges:
@@ -461,18 +463,19 @@ def run_viz(port=DEFAULT_PORT):
         with latest_graph['lock']:
             new_graph = latest_graph['data']
 
-        # New data arrived
+        # New data arrived — update visuals but keep positions
         if new_graph is not None and new_graph['tick'] != prev_tick:
             current_graph = new_graph
             prev_tick = new_graph['tick']
-            # PCA layout from centroids — pure projection, no force
-            alive = set(cl['id'] for cl in current_graph['clusters'])
-            positions = layout._project_centroids(current_graph, alive)
-            if positions:
-                layout.positions = positions
+            # First time: project from centroids
+            if not layout.positions:
+                alive = set(cl['id'] for cl in current_graph['clusters'])
+                positions = layout._project_centroids(current_graph, alive)
+                if positions:
+                    layout.positions = positions
             needs_render = True
 
-        # Handle reset button — re-project from centroids
+        # Rearrange button — re-project from current centroids
         if reset_flag[0]:
             reset_flag[0] = False
             if current_graph is not None:
@@ -505,26 +508,33 @@ def _render_graph(dpg, graph, positions):
 
     # Status
     layer_counts = {k: len(v) for k, v in layers.items()}
+    total_fb_neurons = sum(w for _, _, w in feedback_edges)
     status = (f"Tick {tick} | Clusters: {len(clusters)} | "
               f"Layers: {layer_counts} | "
-              f"Edges: {len(feedback_edges)} fb, {len(lateral_edges)} lat")
+              f"Edges: {len(feedback_edges)} fb ({total_fb_neurons} neurons), "
+              f"{len(lateral_edges)} lat")
     dpg.set_value("status_text", status)
 
     # Draw edges first (behind nodes)
-    for src, dst in feedback_edges:
+    # Feedback edges — thickness = neuron count on that edge
+    max_fb = max((w for _, _, w in feedback_edges), default=1)
+    for src, dst, weight in feedback_edges:
         if src in positions and dst in positions:
             x1, y1 = positions[src]
             x2, y2 = positions[dst]
+            t = max(1, int(weight / max(max_fb, 1) * 5))  # 1-5px
+            alpha = min(255, 30 + weight * 20)
             dpg.draw_line((x1, y1), (x2, y2),
-                         color=(100, 100, 100, 40), thickness=1,
+                         color=(100, 150, 200, alpha), thickness=t,
                          parent="canvas")
 
+    # Lateral edges
     for a, b in lateral_edges:
         if a in positions and b in positions:
             x1, y1 = positions[a]
             x2, y2 = positions[b]
             dpg.draw_line((x1, y1), (x2, y2),
-                         color=(200, 200, 50, 80), thickness=1,
+                         color=(200, 200, 50, 60), thickness=1,
                          parent="canvas")
 
     # Draw nodes
