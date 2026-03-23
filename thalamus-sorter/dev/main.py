@@ -575,10 +575,16 @@ class _ClusterManager:
                 lateral_adj = None
                 if self.column_mgr.lateral:
                     lateral_adj = self.column_mgr.lateral_adj
+                knn2_viz = None
+                if self.knn2_mode == 'knn':
+                    knn2_viz = self.knn2
+                else:
+                    knn2_viz = self.knn2_t.cpu().numpy()
                 self._renderer.graph(
                     tick, most_recent, ns, self.column_n_outputs,
                     lateral_adj=lateral_adj,
-                    column_outputs=self.column_mgr.get_outputs())
+                    column_outputs=self.column_mgr.get_outputs(),
+                    knn2=knn2_viz)
 
     def load_state(self, state_dir, embeddings_t):
         """Load saved cluster + column state for warm restart."""

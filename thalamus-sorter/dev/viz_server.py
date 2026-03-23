@@ -161,10 +161,25 @@ def analyze_graph(payload):
                         seen_lat.add(edge)
                         lateral_edges.append(edge)
 
+    # KNN edges (cluster-level nearest neighbors)
+    knn2 = payload.get('knn2')
+    knn_edges = []
+    if knn2 is not None:
+        seen_knn = set()
+        for c in range(min(m, len(knn2))):
+            for nb in knn2[c]:
+                nb = int(nb)
+                if nb >= 0 and nb != c:
+                    edge = (min(c, nb), max(c, nb))
+                    if edge not in seen_knn:
+                        seen_knn.add(edge)
+                        knn_edges.append(edge)
+
     return {
         'clusters': clusters,
         'feedback_edges': feedback_edges,
         'lateral_edges': lateral_edges,
+        'knn_edges': knn_edges,
         'layers': {k: sorted(v) for k, v in layers.items()},
         'tick': payload.get('tick', 0),
     }
@@ -230,14 +245,19 @@ class ForceLayout:
         if len(alive) < 2:
             return self.positions
 
-        # Build edge set for attraction
-        edges = set()
+        # Build edge set for attraction (knn = primary, feedback/lateral = secondary)
+        knn_edges = graph.get('knn_edges', [])
+        edges_strong = set()  # knn — strong attraction
+        edges_weak = set()    # feedback + lateral — weak attraction
+        for a, b in knn_edges:
+            if a in alive and b in alive:
+                edges_strong.add((a, b))
         for src, dst in feedback_edges:
             if src in alive and dst in alive:
-                edges.add((src, dst))
+                edges_weak.add((src, dst))
         for a, b in lateral_edges:
             if a in alive and b in alive:
-                edges.add((a, b))
+                edges_weak.add((a, b))
 
         # Simulation parameters
         repulsion = 5000.0
@@ -264,13 +284,26 @@ class ForceLayout:
                     forces[b][0] -= fx
                     forces[b][1] -= fy
 
-            # Attraction (edges)
-            for a, b in edges:
+            # Attraction — knn edges (strong)
+            for a, b in edges_strong:
                 ax, ay = self.positions[a]
                 bx, by = self.positions[b]
                 dx, dy = bx - ax, by - ay
                 dist = max((dx*dx + dy*dy) ** 0.5, 0.1)
                 f = attraction * dist
+                fx, fy = f * dx / dist, f * dy / dist
+                forces[a][0] += fx
+                forces[a][1] += fy
+                forces[b][0] -= fx
+                forces[b][1] -= fy
+
+            # Attraction — feedback/lateral edges (weaker)
+            for a, b in edges_weak:
+                ax, ay = self.positions[a]
+                bx, by = self.positions[b]
+                dx, dy = bx - ax, by - ay
+                dist = max((dx*dx + dy*dy) ** 0.5, 0.1)
+                f = attraction * 0.3 * dist
                 fx, fy = f * dx / dist, f * dy / dist
                 forces[a][0] += fx
                 forces[a][1] += fy
@@ -300,6 +333,11 @@ class ForceLayout:
                 self.positions[cid] = (px, py)
 
         return self.positions
+
+    def reset(self):
+        """Clear all positions — next update will reinitialize."""
+        self.positions.clear()
+        self.velocities.clear()
 
 
 def run_viz(port=DEFAULT_PORT):
@@ -346,16 +384,23 @@ def run_viz(port=DEFAULT_PORT):
     dpg.create_context()
     dpg.create_viewport(title="Thalamus Graph", width=1200, height=800)
 
+    layout = ForceLayout()
+    reset_flag = [False]
+
+    def _on_reset():
+        reset_flag[0] = True
+
     with dpg.window(label="Graph", tag="main_window"):
-        dpg.add_text("Waiting for data...", tag="status_text")
-        dpg.add_drawlist(width=1180, height=720, tag="canvas")
+        with dpg.group(horizontal=True):
+            dpg.add_text("Waiting for data...", tag="status_text")
+            dpg.add_button(label="Rearrange", callback=_on_reset)
+        dpg.add_drawlist(width=1180, height=700, tag="canvas")
 
     dpg.set_primary_window("main_window", True)
     dpg.setup_dearpygui()
     dpg.show_viewport()
 
     # --- Render loop ---
-    layout = ForceLayout()
     prev_tick = -1
 
     while dpg.is_dearpygui_running():
@@ -364,11 +409,20 @@ def run_viz(port=DEFAULT_PORT):
         with latest_graph['lock']:
             graph = latest_graph['data']
 
-        if graph is None or graph['tick'] == prev_tick:
+        if graph is None:
+            continue
+
+        # Handle reset button
+        if reset_flag[0]:
+            layout.reset()
+            reset_flag[0] = False
+            prev_tick = -1  # force re-render
+
+        if graph['tick'] == prev_tick:
             continue
 
         prev_tick = graph['tick']
-        # Run force layout (more steps on first frame, fewer on updates)
+        # Run force layout (more steps on first frame or after reset, fewer on updates)
         n_steps = 200 if len(layout.positions) == 0 else 50
         positions = layout.update(graph, steps=n_steps)
         _render_graph(dpg, graph, positions)

@@ -570,7 +570,7 @@ class Renderer:
         self._submit('heatmap', path, positions=positions)
 
     def graph(self, tick, most_recent, n_sensory, n_outputs,
-              lateral_adj=None, column_outputs=None):
+              lateral_adj=None, column_outputs=None, knn2=None):
         """Send graph visualization payload to viz app via render server."""
         if self._client is None or not self.viz_address:
             return
@@ -581,6 +581,7 @@ class Renderer:
                      n_outputs=n_outputs,
                      lateral_adj=lateral_adj,
                      column_outputs=column_outputs,
+                     knn2=knn2,
                      viz_address=self.viz_address)
 
 
