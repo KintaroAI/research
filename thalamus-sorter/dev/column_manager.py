@@ -297,12 +297,17 @@ class ColumnManager:
         self.proj_var = np.zeros((m, n_outputs), dtype=np.float32)
 
         # Eligibility traces: deferred learning applied when reward arrives
-        # Eligibility traces: deferred learning applied when reward arrives
         if eligibility:
             self.traces = np.zeros_like(protos)  # (m, n_outputs, n_inputs)
         else:
             self.traces = None
         self._pending_reward = 0.0
+
+        # Output tiredness: consecutive wins decay the output value,
+        # forcing exploration of other categories
+        self.output_tiredness = np.zeros((m, n_outputs), dtype=np.float32)
+        self.tiredness_rate = 0.02   # gain per tick as winner
+        self.tiredness_recovery = 0.005  # recovery per tick as loser
 
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
@@ -489,6 +494,12 @@ class ColumnManager:
             lat_sim = np.einsum('moi,mi->mo', self.lateral_protos, lat_input)
             sim = sim + lat_sim
 
+        # Apply tiredness penalty — tired outputs get suppressed
+        # Subtract penalty scaled by similarity magnitude so tired winners
+        # eventually lose to rested runners-up
+        sim_range = sim.max(axis=1, keepdims=True) - sim.min(axis=1, keepdims=True)
+        sim = sim - self.output_tiredness * sim_range.clip(1e-8)
+
         # Softmax
         sim_scaled = sim / self.temperature
         sim_scaled -= sim_scaled.max(axis=1, keepdims=True)
@@ -601,6 +612,13 @@ class ColumnManager:
         usage_target[ar, actual_winners] = 1.0
         self.usage = self.usage * self.usage_decay + usage_target * (1 - self.usage_decay)
 
+        # Output tiredness: winners get tired, losers recover
+        winner_mask = np.zeros((m, n_out), dtype=np.float32)
+        winner_mask[ar, actual_winners] = 1.0
+        self.output_tiredness += winner_mask * self.tiredness_rate
+        self.output_tiredness -= (1.0 - winner_mask) * self.tiredness_recovery
+        self.output_tiredness = self.output_tiredness.clip(0.0, 0.9)
+
         # Store outputs
         assert not np.any(np.isnan(probs)), "NaN in column outputs"
         self._outputs = probs.astype(np.float32)
@@ -632,5 +650,6 @@ class ColumnManager:
             'eligibility': self.eligibility,
             'trace_decay': self.trace_decay,
             'traces': _torch.from_numpy(self.traces) if self.traces is not None else None,
+            'output_tiredness': _torch.from_numpy(self.output_tiredness),
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")

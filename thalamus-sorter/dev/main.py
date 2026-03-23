@@ -617,6 +617,8 @@ class _ClusterManager:
                     self.column_mgr.lateral_protos = _to_np(state['lateral_protos'])
                 if self.column_mgr.traces is not None and state.get('traces') is not None:
                     self.column_mgr.traces = _to_np(state['traces'])
+                if state.get('output_tiredness') is not None:
+                    self.column_mgr.output_tiredness = _to_np(state['output_tiredness'])
                 self.column_mgr.slot_map = np.load(slot_map_path)
                 n_wired = (self.column_mgr.slot_map >= 0).sum()
                 print(f"  Columns restored: {n_wired} wirings")
