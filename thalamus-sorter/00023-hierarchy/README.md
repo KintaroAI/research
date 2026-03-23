@@ -313,3 +313,22 @@ K-means mode is now default. Mirror is perfect (r=1.0) — k-means
 excels at tracking output patterns. Sequence (r=0.71) shows temporal
 order detection. Layers detects all 3 feature levels with L1 at r=0.89.
 Edges forms 3-layer hierarchy with V2 receptive fields 2.3× V1 diameter.
+
+### Column mode experiments
+
+**Derivative inputs** (k-means on frame-to-frame diffs instead of means):
+Worse across the board. With hold=50, most frames within the window are
+identical → derivatives mostly zero → k-means matches noise. Mean state
+is the right representation for these benchmarks.
+
+**Window=1** (instantaneous, no averaging): Worse — hunger drops 0.96→0.67,
+collections 88→60. The 10-frame mean acts as a low-pass filter that
+helps k-means centroids converge.
+
+**Contrastive push** (pull winner + push losers away from input):
+XOR improves +15% (0.48→0.55) but echo -8%, mirror -1%. Push forces
+better differentiation but is unbounded — loser prototypes can diverge
+exponentially since `proto -= lr*(input - proto)` has a `(1+lr)` growth
+factor. Better winner distribution (33/21/22/24 vs 51/22/17/10) but
+less stable tracking. Reverted — needs bounded formulation before
+production use.
