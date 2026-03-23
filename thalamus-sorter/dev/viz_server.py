@@ -267,10 +267,12 @@ class ForceLayout:
                 edges_weak.add((a, b))
 
         # Simulation parameters
-        repulsion = 50000.0
-        attraction = 0.005
+        # With ~100 nodes and ~800 knn edges, attraction needs to be weak
+        # relative to repulsion to avoid clumping
+        repulsion = 100000.0
+        attraction = 0.002
         damping = 0.85
-        max_speed = 20.0
+        max_speed = 25.0
         ids = sorted(alive)
 
         for _ in range(steps):
@@ -446,6 +448,14 @@ def run_viz(port=DEFAULT_PORT):
 
     while dpg.is_dearpygui_running():
         dpg.render_dearpygui_frame()
+
+        # Resize canvas to match viewport
+        vw = dpg.get_viewport_width() - 20
+        vh = dpg.get_viewport_height() - 80
+        if vw > 100 and vh > 100:
+            dpg.configure_item("canvas", width=vw, height=vh)
+            layout.canvas_w = vw
+            layout.canvas_h = vh
 
         with latest_graph['lock']:
             new_graph = latest_graph['data']
