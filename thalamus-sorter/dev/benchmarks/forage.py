@@ -171,7 +171,8 @@ def make_signal(w, h, args):
         # Spasm probability decays over time: halves every 5000 ticks.
         # Spasm decays to zero — agent can fully stop if no motor output.
         spasm_base = 0.0625  # = 0.5^4, equivalent to old t=20k
-        spasm_decay = spasm_base * (0.5 ** (t / 20000.0))
+        spasm_floor = 0.01  # minimum spasm rate — always some random walk
+        spasm_decay = max(spasm_base * (0.5 ** (t / 20000.0)), spasm_floor)
         spasm_forces = np.zeros(4, dtype=np.float32)
         for d in range(4):
             for f in range(n_fibers):

@@ -332,3 +332,26 @@ exponentially since `proto -= lr*(input - proto)` has a `(1+lr)` growth
 factor. Better winner distribution (33/21/22/24 vs 51/22/17/10) but
 less stable tracking. Reverted — needs bounded formulation before
 production use.
+
+## Eligibility traces
+
+Deferred learning: columns accumulate traces every tick (decay + winner
+direction). When reward arrives, traces are applied to prototypes.
+Normal unsupervised pull continues every tick regardless.
+
+`set_reward(value)` called by benchmark → applied on next tick → reset.
+
+### Forage results with eligibility (M=100, trace_decay=0.99)
+
+| Config | Collections | Dense rate | Sparse rate | dir r |
+|--------|------------|------------|-------------|-------|
+| No eligibility (baseline) | 88/100k | 0.0116 | 0.0003 | 0.78-0.83 |
+| Collection reward only | 56/100k | 0.0038 | 0.0004 | 0.64-0.71 |
+| Collection + distance reward | 57/100k | 0.0072 | 0.0002 | 0.71-0.74 |
+| Distance reward 1M | 88/1M | 0.0028 | 0.0001 | 0.76-0.77 |
+
+Eligibility traces hurt overall throughput vs baseline — the reward
+updates are disruptive to ALL columns including V1 sensory. Distance-
+based reward (small positive when getting closer to nearest POI) helps
+vs collection-only reward. The mechanism works but needs tuning:
+reward lr scaling, per-layer gating, or trace magnitude limits.
