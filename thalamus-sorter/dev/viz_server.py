@@ -444,7 +444,7 @@ def run_viz(port=DEFAULT_PORT):
     # --- Render loop ---
     prev_tick = -1
     current_graph = None
-    settling = 0  # remaining force steps to animate
+    needs_render = False
 
     while dpg.is_dearpygui_running():
         dpg.render_dearpygui_frame()
@@ -464,13 +464,12 @@ def run_viz(port=DEFAULT_PORT):
         if new_graph is not None and new_graph['tick'] != prev_tick:
             current_graph = new_graph
             prev_tick = new_graph['tick']
-            # PCA layout from centroids
+            # PCA layout from centroids — pure projection, no force
             alive = set(cl['id'] for cl in current_graph['clusters'])
             positions = layout._project_centroids(current_graph, alive)
             if positions:
                 layout.positions = positions
-                layout.velocities = {k: (0.0, 0.0) for k in positions}
-            settling = 50  # light force refinement on top of PCA
+            needs_render = True
 
         # Handle reset button — re-project from centroids
         if reset_flag[0]:
@@ -480,19 +479,11 @@ def run_viz(port=DEFAULT_PORT):
                 positions = layout._project_centroids(current_graph, alive)
                 if positions:
                     layout.positions = positions
-                    layout.velocities = {k: (0.0, 0.0) for k in positions}
-                settling = 100
+                needs_render = True
 
-        # Animate: light force refinement after PCA placement
-        if current_graph is not None and settling > 0:
-            steps_per_frame = 3
-            layout.update(current_graph, steps=steps_per_frame)
-            settling -= steps_per_frame
+        if current_graph is not None and needs_render:
             _render_graph(dpg, current_graph, layout.positions)
-        elif current_graph is not None and settling == 0:
-            # Final render after settling
-            _render_graph(dpg, current_graph, layout.positions)
-            settling = -1  # done
+            needs_render = False
 
     dpg.destroy_context()
 
