@@ -190,6 +190,118 @@ def _get_layer_color(layer):
     return LAYER_COLORS.get(layer, (120, 120, 120))
 
 
+class ForceLayout:
+    """Force-directed graph layout with persistent positions.
+
+    Nodes repel each other (Coulomb), connected nodes attract (spring).
+    Positions persist across graph updates — new nodes get random initial
+    positions, removed nodes are forgotten.
+    """
+
+    def __init__(self, canvas_w=1180, canvas_h=720, margin=40):
+        self.canvas_w = canvas_w
+        self.canvas_h = canvas_h
+        self.margin = margin
+        self.positions = {}  # cluster_id → (x, y)
+        self.velocities = {}  # cluster_id → (vx, vy)
+
+    def update(self, graph, steps=50):
+        """Run force simulation for N steps, return {cluster_id: (x, y)}."""
+        clusters = graph['clusters']
+        feedback_edges = graph['feedback_edges']
+        lateral_edges = graph['lateral_edges']
+
+        alive = set(cl['id'] for cl in clusters)
+        cx = (self.canvas_w) / 2
+        cy = (self.canvas_h) / 2
+
+        # Init new nodes, remove dead ones
+        for cid in alive:
+            if cid not in self.positions:
+                self.positions[cid] = (
+                    cx + (np.random.rand() - 0.5) * (self.canvas_w - 2 * self.margin),
+                    cy + (np.random.rand() - 0.5) * (self.canvas_h - 2 * self.margin))
+                self.velocities[cid] = (0.0, 0.0)
+        for cid in list(self.positions):
+            if cid not in alive:
+                del self.positions[cid]
+                self.velocities.pop(cid, None)
+
+        if len(alive) < 2:
+            return self.positions
+
+        # Build edge set for attraction
+        edges = set()
+        for src, dst in feedback_edges:
+            if src in alive and dst in alive:
+                edges.add((src, dst))
+        for a, b in lateral_edges:
+            if a in alive and b in alive:
+                edges.add((a, b))
+
+        # Simulation parameters
+        repulsion = 5000.0
+        attraction = 0.01
+        damping = 0.85
+        max_speed = 15.0
+        ids = sorted(alive)
+
+        for _ in range(steps):
+            forces = {cid: [0.0, 0.0] for cid in ids}
+
+            # Repulsion (all pairs)
+            for i, a in enumerate(ids):
+                ax, ay = self.positions[a]
+                for b in ids[i+1:]:
+                    bx, by = self.positions[b]
+                    dx, dy = ax - bx, ay - by
+                    dist2 = max(dx*dx + dy*dy, 1.0)
+                    f = repulsion / dist2
+                    dist = dist2 ** 0.5
+                    fx, fy = f * dx / dist, f * dy / dist
+                    forces[a][0] += fx
+                    forces[a][1] += fy
+                    forces[b][0] -= fx
+                    forces[b][1] -= fy
+
+            # Attraction (edges)
+            for a, b in edges:
+                ax, ay = self.positions[a]
+                bx, by = self.positions[b]
+                dx, dy = bx - ax, by - ay
+                dist = max((dx*dx + dy*dy) ** 0.5, 0.1)
+                f = attraction * dist
+                fx, fy = f * dx / dist, f * dy / dist
+                forces[a][0] += fx
+                forces[a][1] += fy
+                forces[b][0] -= fx
+                forces[b][1] -= fy
+
+            # Center gravity (gentle pull toward center)
+            for cid in ids:
+                px, py = self.positions[cid]
+                forces[cid][0] += (cx - px) * 0.001
+                forces[cid][1] += (cy - py) * 0.001
+
+            # Update velocities and positions
+            m = self.margin
+            for cid in ids:
+                vx, vy = self.velocities[cid]
+                vx = (vx + forces[cid][0]) * damping
+                vy = (vy + forces[cid][1]) * damping
+                speed = (vx*vx + vy*vy) ** 0.5
+                if speed > max_speed:
+                    vx *= max_speed / speed
+                    vy *= max_speed / speed
+                self.velocities[cid] = (vx, vy)
+                px, py = self.positions[cid]
+                px = max(m, min(self.canvas_w - m, px + vx))
+                py = max(m, min(self.canvas_h - m, py + vy))
+                self.positions[cid] = (px, py)
+
+        return self.positions
+
+
 def run_viz(port=DEFAULT_PORT):
     """Main entry point: start TCP listener + DearPyGui window."""
     try:
@@ -243,6 +355,7 @@ def run_viz(port=DEFAULT_PORT):
     dpg.show_viewport()
 
     # --- Render loop ---
+    layout = ForceLayout()
     prev_tick = -1
 
     while dpg.is_dearpygui_running():
@@ -255,12 +368,15 @@ def run_viz(port=DEFAULT_PORT):
             continue
 
         prev_tick = graph['tick']
-        _render_graph(dpg, graph)
+        # Run force layout (more steps on first frame, fewer on updates)
+        n_steps = 200 if len(layout.positions) == 0 else 50
+        positions = layout.update(graph, steps=n_steps)
+        _render_graph(dpg, graph, positions)
 
     dpg.destroy_context()
 
 
-def _render_graph(dpg, graph):
+def _render_graph(dpg, graph, positions):
     """Render the graph onto the DearPyGui canvas."""
     clusters = graph['clusters']
     feedback_edges = graph['feedback_edges']
@@ -281,46 +397,19 @@ def _render_graph(dpg, graph):
               f"Edges: {len(feedback_edges)} fb, {len(lateral_edges)} lat")
     dpg.set_value("status_text", status)
 
-    # Layout: arrange by layer (left to right)
-    canvas_w, canvas_h = 1180, 720
-    margin = 60
-
-    layer_order = ['V1'] + [f'V{i}' for i in range(2, 20)] + ['?']
-    active_layers = [l for l in layer_order if l in layers and layers[l]]
-
-    if not active_layers:
-        return
-
-    # X position per layer
-    layer_x = {}
-    n_layers = len(active_layers)
-    for i, lname in enumerate(active_layers):
-        layer_x[lname] = margin + (canvas_w - 2 * margin) * i / max(n_layers - 1, 1)
-
-    # Y position: spread within layer
-    cluster_pos = {}
-    for lname in active_layers:
-        cids = sorted(layers[lname])
-        n = len(cids)
-        for j, cid in enumerate(cids):
-            y = margin + (canvas_h - 2 * margin) * (j + 0.5) / max(n, 1)
-            cluster_pos[cid] = (layer_x[lname], y)
-
     # Draw edges first (behind nodes)
-    # Feedback edges (directed, semi-transparent)
     for src, dst in feedback_edges:
-        if src in cluster_pos and dst in cluster_pos:
-            x1, y1 = cluster_pos[src]
-            x2, y2 = cluster_pos[dst]
+        if src in positions and dst in positions:
+            x1, y1 = positions[src]
+            x2, y2 = positions[dst]
             dpg.draw_line((x1, y1), (x2, y2),
                          color=(100, 100, 100, 40), thickness=1,
                          parent="canvas")
 
-    # Lateral edges (undirected, brighter)
     for a, b in lateral_edges:
-        if a in cluster_pos and b in cluster_pos:
-            x1, y1 = cluster_pos[a]
-            x2, y2 = cluster_pos[b]
+        if a in positions and b in positions:
+            x1, y1 = positions[a]
+            x2, y2 = positions[b]
             dpg.draw_line((x1, y1), (x2, y2),
                          color=(200, 200, 50, 80), thickness=1,
                          parent="canvas")
@@ -328,17 +417,16 @@ def _render_graph(dpg, graph):
     # Draw nodes
     for cl in clusters:
         cid = cl['id']
-        if cid not in cluster_pos:
+        if cid not in positions:
             continue
-        x, y = cluster_pos[cid]
+        x, y = positions[cid]
         radius = max(4, min(20, cl['size'] ** 0.5 * 2))
         color = _get_layer_color(cl['layer'])
 
-        # Node circle
         dpg.draw_circle((x, y), radius, color=color, fill=color,
                         parent="canvas")
 
-        # Winner indicator (small colored dot in center)
+        # Winner indicator
         if 'winner' in cl:
             winner_colors = [(255, 80, 80), (80, 255, 80),
                            (80, 80, 255), (255, 255, 80)]
@@ -346,11 +434,15 @@ def _render_graph(dpg, graph):
             dpg.draw_circle((x, y), max(2, radius * 0.4),
                           color=wc, fill=wc, parent="canvas")
 
-    # Layer labels
-    for lname in active_layers:
-        x = layer_x[lname]
-        dpg.draw_text((x - 10, 10), lname, size=16,
-                     color=(255, 255, 255), parent="canvas")
+    # Legend
+    y_leg = 10
+    for lname in sorted(layers.keys()):
+        color = _get_layer_color(lname)
+        dpg.draw_circle((20, y_leg + 8), 6, color=color, fill=color,
+                        parent="canvas")
+        dpg.draw_text((32, y_leg), f"{lname} ({len(layers[lname])})",
+                     size=14, color=(220, 220, 220), parent="canvas")
+        y_leg += 22
 
 
 # ---------------------------------------------------------------------------
