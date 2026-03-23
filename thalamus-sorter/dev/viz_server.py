@@ -267,10 +267,10 @@ class ForceLayout:
                 edges_weak.add((a, b))
 
         # Simulation parameters
-        repulsion = 5000.0
-        attraction = 0.01
+        repulsion = 50000.0
+        attraction = 0.005
         damping = 0.85
-        max_speed = 15.0
+        max_speed = 20.0
         ids = sorted(alive)
 
         for _ in range(steps):
