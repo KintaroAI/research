@@ -464,23 +464,35 @@ def run_viz(port=DEFAULT_PORT):
         if new_graph is not None and new_graph['tick'] != prev_tick:
             current_graph = new_graph
             prev_tick = new_graph['tick']
-            if len(layout.positions) == 0:
-                settling = 300  # first time — longer settle
-            else:
-                settling = 80   # update — shorter settle
+            # PCA layout from centroids
+            alive = set(cl['id'] for cl in current_graph['clusters'])
+            positions = layout._project_centroids(current_graph, alive)
+            if positions:
+                layout.positions = positions
+                layout.velocities = {k: (0.0, 0.0) for k in positions}
+            settling = 50  # light force refinement on top of PCA
 
-        # Handle reset button
+        # Handle reset button — re-project from centroids
         if reset_flag[0]:
-            layout.reset()
             reset_flag[0] = False
-            settling = 300
+            if current_graph is not None:
+                alive = set(cl['id'] for cl in current_graph['clusters'])
+                positions = layout._project_centroids(current_graph, alive)
+                if positions:
+                    layout.positions = positions
+                    layout.velocities = {k: (0.0, 0.0) for k in positions}
+                settling = 100
 
-        # Animate: run a few force steps per frame and re-render
+        # Animate: light force refinement after PCA placement
         if current_graph is not None and settling > 0:
-            steps_per_frame = 5
+            steps_per_frame = 3
             layout.update(current_graph, steps=steps_per_frame)
             settling -= steps_per_frame
             _render_graph(dpg, current_graph, layout.positions)
+        elif current_graph is not None and settling == 0:
+            # Final render after settling
+            _render_graph(dpg, current_graph, layout.positions)
+            settling = -1  # done
 
     dpg.destroy_context()
 
