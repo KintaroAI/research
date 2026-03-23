@@ -32,7 +32,7 @@ ENTROPY_SCALED_LR = True
 #                 (linear: finds principal components of signal covariance)
 #   'kmeans'    — negative squared distance to centroids + centroid nudge
 #                 (non-linear: partitions input space by nearest centroid)
-COLUMN_MODE = 'variance'
+COLUMN_MODE = 'kmeans'
 
 # Lateral learning mode:
 #   'contrastive' — winner pulls toward prev_outputs, losers push away
