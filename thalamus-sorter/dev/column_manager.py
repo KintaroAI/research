@@ -27,6 +27,13 @@ import torch.nn.functional as F
 # Set to False to use the original usage-only lr scaling.
 ENTROPY_SCALED_LR = True
 
+# Column similarity/learning mode:
+#   'variance'  — streaming variance of prototype projections + power iteration
+#                 (linear: finds principal components of signal covariance)
+#   'kmeans'    — negative squared distance to centroids + centroid nudge
+#                 (non-linear: partitions input space by nearest centroid)
+COLUMN_MODE = 'variance'
+
 # Lateral learning mode:
 #   'contrastive' — winner pulls toward prev_outputs, losers push away
 #                   (associative: memorizes co-occurring lateral patterns)
@@ -276,8 +283,12 @@ class ColumnManager:
         # Batched state: all numpy for minimal overhead on small tensors
         rng = np.random.RandomState(42)
         protos = rng.randn(m, n_outputs, max_inputs).astype(np.float32)
-        norms = np.linalg.norm(protos, axis=2, keepdims=True).clip(1e-8)
-        self.prototypes = protos / norms
+        if COLUMN_MODE == 'kmeans':
+            protos *= 0.1  # small random centroids in input space
+        else:
+            norms = np.linalg.norm(protos, axis=2, keepdims=True).clip(1e-8)
+            protos = protos / norms
+        self.prototypes = protos
         self.usage = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
         self.proj_mean = np.zeros((m, n_outputs), dtype=np.float32)
         self.proj_var = np.zeros((m, n_outputs), dtype=np.float32)
@@ -380,6 +391,64 @@ class ColumnManager:
         if len(matches) > 0:
             row[matches[0]] = -1
 
+    # ------------------------------------------------------------------
+    # Similarity + learning strategies (dispatched by COLUMN_MODE)
+    # ------------------------------------------------------------------
+
+    def _sim_variance(self, X):
+        """Streaming variance similarity: project input onto prototypes,
+        measure variance over time window. Linear — finds PCA directions."""
+        proj = self.prototypes @ X                    # (m, n_out, window)
+        proj_c = proj - proj.mean(axis=2, keepdims=True)
+        sim = (proj_c ** 2).mean(axis=2)              # (m, n_out)
+        d = self.streaming_decay
+        self.proj_mean = d * self.proj_mean + (1 - d) * proj.mean(axis=2)
+        self.proj_var = d * self.proj_var + (1 - d) * sim
+        return sim
+
+    def _sim_kmeans(self, X):
+        """K-means similarity: negative squared distance from mean input
+        pattern to each centroid. Non-linear — partitions by nearest."""
+        x_mean = X.mean(axis=2)                       # (m, n_in)
+        # prototypes (m, n_out, n_in), x_mean (m, n_in) → diff (m, n_out, n_in)
+        diff = self.prototypes - x_mean[:, None, :]
+        sim = -(diff ** 2).sum(axis=2)                # (m, n_out) negative distance
+        # Track in proj_var for match quality (use abs similarity)
+        d = self.streaming_decay
+        self.proj_var = d * self.proj_var + (1 - d) * (-sim)
+        return sim
+
+    def _update_variance(self, X, actual_winners, lr_eff):
+        """Power iteration: move winner prototype toward 1st eigenvector
+        of input covariance. Linear learning rule."""
+        m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
+        w = self.window
+        ar = self._arange_m
+
+        X_c = X - X.mean(axis=2, keepdims=True)       # (m, n_in, w)
+        w_proto = self.prototypes[ar, actual_winners]  # (m, n_in)
+        inner = np.einsum('miw,mi->mw', X_c, w_proto)
+        target = np.einsum('miw,mw->mi', X_c, inner)
+        target = target / max(w - 1, 1)
+        target_norm = np.linalg.norm(target, axis=1, keepdims=True).clip(1e-8)
+        target = target / target_norm
+
+        do_update = target_norm.squeeze(1) > 1e-8
+        new_proto = w_proto + lr_eff[:, None] * (target - w_proto)
+        norms = np.linalg.norm(new_proto, axis=1, keepdims=True).clip(1e-8)
+        new_proto = new_proto / norms
+        update_idx = ar[do_update]
+        self.prototypes[update_idx, actual_winners[do_update]] = new_proto[do_update]
+
+    def _update_kmeans(self, X, actual_winners, lr_eff):
+        """Centroid nudge: move winner prototype toward mean input pattern.
+        No normalization — centroids live in input space."""
+        ar = self._arange_m
+        x_mean = X.mean(axis=2)                       # (m, n_in)
+        w_proto = self.prototypes[ar, actual_winners]  # (m, n_in)
+        new_proto = w_proto + lr_eff[:, None] * (x_mean - w_proto)
+        self.prototypes[ar, actual_winners] = new_proto
+
     def tick(self, signal_window, knn2=None):
         """Batched forward + learn for all M columns. Pure numpy, no torch."""
         m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
@@ -392,15 +461,11 @@ class ColumnManager:
         X = signal_window[safe_sm]                    # (m, max_inputs, window)
         X[~valid] = 0.0
 
-        # --- Batched forward: streaming variance ---
-        proj = self.prototypes @ X                    # (m, n_out, window)
-        proj_c = proj - proj.mean(axis=2, keepdims=True)
-        sim = (proj_c ** 2).mean(axis=2)              # (m, n_out)
-
-        # EMA update
-        d = self.streaming_decay
-        self.proj_mean = d * self.proj_mean + (1 - d) * proj.mean(axis=2)
-        self.proj_var = d * self.proj_var + (1 - d) * sim
+        # --- Similarity (mode-dependent) ---
+        if COLUMN_MODE == 'kmeans':
+            sim = self._sim_kmeans(X)
+        else:
+            sim = self._sim_variance(X)
 
         # Lateral input: gather from K neighbors only
         if self.lateral:
@@ -438,22 +503,11 @@ class ColumnManager:
             H_max = np.log(n_out)
             lr_eff = lr_eff * (H / H_max)
 
-        # Power iteration targets
-        X_c = X - X.mean(axis=2, keepdims=True)       # (m, n_in, w)
-        w_proto = self.prototypes[ar, actual_winners]  # (m, n_in)
-        inner = np.einsum('miw,mi->mw', X_c, w_proto)
-        target = np.einsum('miw,mw->mi', X_c, inner)
-        target = target / max(w - 1, 1)
-        target_norm = np.linalg.norm(target, axis=1, keepdims=True).clip(1e-8)
-        target = target / target_norm
-
-        # Update winner prototypes
-        do_update = target_norm.squeeze(1) > 1e-8
-        new_proto = w_proto + lr_eff[:, None] * (target - w_proto)
-        norms = np.linalg.norm(new_proto, axis=1, keepdims=True).clip(1e-8)
-        new_proto = new_proto / norms
-        update_idx = ar[do_update]
-        self.prototypes[update_idx, actual_winners[do_update]] = new_proto[do_update]
+        # --- Update prototypes (mode-dependent) ---
+        if COLUMN_MODE == 'kmeans':
+            self._update_kmeans(X, actual_winners, lr_eff)
+        else:
+            self._update_variance(X, actual_winners, lr_eff)
 
         # Lateral weight update
         if self.lateral:

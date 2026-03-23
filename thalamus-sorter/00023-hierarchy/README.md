@@ -268,3 +268,25 @@ capacity. Power iteration finds principal components of covariance
 (linear). XOR requires multiplicative interaction that covariance-based
 Hebbian learning can't directly compute. The ~0.39 likely comes from
 partial correlation via lateral connections between A and B clusters.
+
+### K-means column mode
+
+Replaced power iteration (linear) with k-means centroids (non-linear
+partitioning). Similarity = negative squared distance to centroid.
+Learning = nudge winner centroid toward mean input pattern.
+
+| M | Variance XOR | **K-means XOR** | Variance AND | **K-means AND** |
+|---|---|---|---|---|
+| 10 | 0.15 | 0.15 | 0.13 | 0.16 |
+| 42 | 0.19 | **0.48** | 0.36 | 0.40 |
+| 80 | 0.29 | **0.47** | 0.45 | **0.56** |
+| 150 | 0.39 | **0.53** | 0.42 | **0.58** |
+| 200 | 0.39 | **0.58** | 0.40 | **0.59** |
+
+K-means blind XOR: **0.58 vs 0.39** at M=200. Still climbing (no plateau).
+K-means can distinguish [A=1,B=0] from [A=1,B=1] because they're different
+points in input space — different distances to centroids. Power iteration
+can't because both project identically onto a linear direction.
+
+A and B detection also jumps to r>0.9 with k-means — exact pattern matching
+vs variance direction gives much sharper linear feature detection too.
