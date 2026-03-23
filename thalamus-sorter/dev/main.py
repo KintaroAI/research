@@ -570,22 +570,6 @@ class _ClusterManager:
                                      cluster_ids=most_recent,
                                      n_outputs=self.column_n_outputs,
                                      method=self.embed_method)
-            # Graph visualization relay
-            if self._renderer.viz_address and self.column_mgr:
-                lateral_adj = None
-                if self.column_mgr.lateral:
-                    lateral_adj = self.column_mgr.lateral_adj
-                knn2_viz = None
-                if self.knn2_mode == 'knn':
-                    knn2_viz = self.knn2
-                else:
-                    knn2_viz = self.knn2_t.cpu().numpy()
-                self._renderer.graph(
-                    tick, most_recent, ns, self.column_n_outputs,
-                    lateral_adj=lateral_adj,
-                    column_outputs=self.column_mgr.get_outputs(),
-                    knn2=knn2_viz,
-                    centroids=centroids_np)
 
     def load_state(self, state_dir, embeddings_t):
         """Load saved cluster + column state for warm restart."""
@@ -711,6 +695,27 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
                 anchors_np = dsolver._last_anchors.cpu().numpy()
                 pairs = getattr(dsolver, '_last_pairs', None)
                 cluster_mgr.tick(dsolver.positions, anchors_np, pairs, tick)
+                # Send graph to viz app (independent of report/save)
+                viz_every = getattr(args, 'viz_every', 0)
+                if (viz_every > 0 and tick % viz_every == 0
+                        and cluster_mgr._renderer is not None
+                        and cluster_mgr._renderer.viz_address
+                        and cluster_mgr.column_mgr):
+                    most_recent = cluster_mgr.cluster_ids[
+                        np.arange(cluster_mgr.n), cluster_mgr.pointers]
+                    ns = cluster_mgr.n_sensory
+                    lateral_adj = None
+                    if cluster_mgr.column_mgr.lateral:
+                        lateral_adj = cluster_mgr.column_mgr.lateral_adj
+                    knn2_viz = (cluster_mgr.knn2 if cluster_mgr.knn2_mode == 'knn'
+                                else cluster_mgr.knn2_t.cpu().numpy())
+                    cluster_mgr._renderer.graph(
+                        tick, most_recent, ns, cluster_mgr.column_n_outputs,
+                        lateral_adj=lateral_adj,
+                        column_outputs=cluster_mgr.column_mgr.get_outputs(),
+                        knn2=knn2_viz,
+                        centroids=cluster_mgr.centroids_t.cpu().numpy())
+
                 if tick % cluster_report_every == 0:
                     # Refresh knn_lists for knn mode
                     if cluster_mgr.knn2_mode == 'knn' and dsolver.knn_k > 0:
@@ -1389,6 +1394,8 @@ def main():
                             "scatter plots at cluster_report_every intervals")
     p_w2v.add_argument("--viz-address", type=str, default=None,
                        help="host:port for live graph visualization app (e.g., 192.168.1.5:9100)")
+    p_w2v.add_argument("--viz-every", type=int, default=0,
+                       help="Send graph to viz app every N ticks (0=disabled, 1=every tick)")
     p_w2v.add_argument("--align", action="store_true",
                        help="Procrustes-align rendered output to grid (fixes rotation/flip)")
     p_w2v.add_argument("--warm-start", type=str, default=None,
