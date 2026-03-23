@@ -350,8 +350,22 @@ Normal unsupervised pull continues every tick regardless.
 | Collection + distance reward | 57/100k | 0.0072 | 0.0002 | 0.71-0.74 |
 | Distance reward 1M | 88/1M | 0.0028 | 0.0001 | 0.76-0.77 |
 
-Eligibility traces hurt overall throughput vs baseline — the reward
-updates are disruptive to ALL columns including V1 sensory. Distance-
+Eligibility traces hurt overall throughput vs baseline at 100k. Distance-
 based reward (small positive when getting closer to nearest POI) helps
-vs collection-only reward. The mechanism works but needs tuning:
-reward lr scaling, per-layer gating, or trace magnitude limits.
+vs collection-only reward.
+
+### Extended training with spasm floor
+
+Added spasm_floor=0.01 so agent always has baseline random walk.
+
+| Training | Collections | Dense rate | dir r | hunger r |
+|----------|------------|------------|-------|----------|
+| 100k (no elig) | 88 | 0.0116 | 0.78-0.83 | 0.96 |
+| 100k (elig+dist) | 57 | 0.0072 | 0.71-0.74 | 0.73 |
+| 1M (elig+dist) | 88 | 0.0028 | 0.76-0.77 | 0.69 |
+| 2M (elig+dist+floor) | **128** | 0.0031 | **0.80** | **0.90** |
+
+System continues improving with more training — no plateau at 2M.
+Spasm floor ensures continued exploration in sparse phase (97/128
+collections from sparse phase). Hunger tracking recovers to r=0.90
+with extended training.
