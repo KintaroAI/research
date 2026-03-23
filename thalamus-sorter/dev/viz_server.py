@@ -181,6 +181,7 @@ def analyze_graph(payload):
         'lateral_edges': lateral_edges,
         'knn_edges': knn_edges,
         'layers': {k: sorted(v) for k, v in layers.items()},
+        'centroids': payload.get('centroids'),
         'tick': payload.get('tick', 0),
     }
 
