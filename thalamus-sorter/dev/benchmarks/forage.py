@@ -267,25 +267,24 @@ def make_signal(w, h, args):
         hunger = min(1.0, hunger + hunger_rate)
         state['hunger'][0] = hunger
 
-        # LR decay: 0.01 → 0.001 over phase_ticks, then flat
-        col_mgr = _refs['column_mgr']
-        dsolver = _refs.get('dsolver')
-        if col_mgr is not None:
-            if base_column_lr[0] is None:
-                base_column_lr[0] = col_mgr.lr
-            if t < phase_ticks:
-                lr_frac = t / phase_ticks
-                col_mgr.lr = base_column_lr[0] * (1.0 - 0.9 * lr_frac)  # 1.0→0.1 of base
-            else:
-                col_mgr.lr = base_column_lr[0] * 0.1
-        if dsolver is not None:
-            if base_embed_lr[0] is None:
-                base_embed_lr[0] = dsolver.lr
-            if t < phase_ticks:
-                lr_frac = t / phase_ticks
-                dsolver.lr = base_embed_lr[0] * (1.0 - 0.9 * lr_frac)
-            else:
-                dsolver.lr = base_embed_lr[0] * 0.1
+        # LR decay disabled — use constant lr from CLI
+        # col_mgr = _refs['column_mgr']
+        # dsolver = _refs.get('dsolver')
+        # if col_mgr is not None:
+        #     if base_column_lr[0] is None:
+        #         base_column_lr[0] = col_mgr.lr
+        #     if t < phase_ticks:
+        #         lr_frac = t / phase_ticks
+        #         col_mgr.lr = base_column_lr[0] * (1.0 - 0.9 * lr_frac)
+        #     else:
+        #         col_mgr.lr = base_column_lr[0] * 0.1
+        # if dsolver is not None:
+        #     if base_embed_lr[0] is None:
+        #         base_embed_lr[0] = dsolver.lr
+        #     if t < phase_ticks:
+        #         dsolver.lr = base_embed_lr[0] * (1.0 - 0.9 * lr_frac)
+        #     else:
+        #         dsolver.lr = base_embed_lr[0] * 0.1
 
         # Retina neurons get zero for now (unused)
         sig = np.zeros(n, dtype=np.float32)
