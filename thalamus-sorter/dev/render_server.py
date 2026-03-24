@@ -521,6 +521,22 @@ class Renderer:
             return
         return self._client.submit(render_type, output_path, **kwargs)
 
+    def _submit_nowait(self, render_type, output_path, **kwargs):
+        """Fire-and-forget: send job but don't wait for server response."""
+        if self._client is None:
+            return
+        job = {'type': render_type, 'output_path': output_path}
+        job.update(kwargs)
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(0.1)
+            sock.connect(SOCK_PATH)
+            _send_msg(sock, job)
+            sock.close()
+        except (ConnectionRefusedError, FileNotFoundError,
+                OSError, socket.timeout):
+            pass
+
     def grid(self, tick, embeddings, pixel_values, method='pca',
              align=False, gpu=False):
         """Voronoi grid render of sensory embeddings."""
@@ -576,11 +592,11 @@ class Renderer:
         """Send field data to field viz app via render server."""
         if self._client is None or not self.field_address:
             return
-        self._submit('field_live', '',
-                     tick=tick, agent_pos=agent_pos, pois=pois,
-                     field_size=field_size, hunger=hunger,
-                     collect_radius=collect_radius, score=score,
-                     viz_address=self.field_address)
+        self._submit_nowait('field_live', '',
+                            tick=tick, agent_pos=agent_pos, pois=pois,
+                            field_size=field_size, hunger=hunger,
+                            collect_radius=collect_radius, score=score,
+                            viz_address=self.field_address)
 
     def graph(self, tick, most_recent, n_sensory, n_outputs,
               lateral_adj=None, column_outputs=None, knn2=None,
@@ -588,7 +604,7 @@ class Renderer:
         """Send graph visualization payload to viz app via render server."""
         if self._client is None or not self.viz_address:
             return
-        self._submit('graph', '',  # no output file — relay only
+        self._submit_nowait('graph', '',  # no output file — relay only
                      tick=tick,
                      most_recent=most_recent,
                      n_sensory=n_sensory,
