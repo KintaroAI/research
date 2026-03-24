@@ -494,18 +494,16 @@ class ColumnManager:
             lat_sim = np.einsum('moi,mi->mo', self.lateral_protos, lat_input)
             sim = sim + lat_sim
 
-        # Save pre-tiredness sim for lateral learning (avoid NaN from tiredness perturbation)
-        sim_for_lateral = sim.copy() if self.lateral else None
-
         # Apply tiredness penalty — tired outputs get suppressed
         sim_range = sim.max(axis=1, keepdims=True) - sim.min(axis=1, keepdims=True)
         sim = sim - self.output_tiredness * sim_range.clip(1e-8)
 
-        # Softmax
+        # Softmax (with underflow protection)
         sim_scaled = sim / self.temperature
         sim_scaled -= sim_scaled.max(axis=1, keepdims=True)
+        sim_scaled = sim_scaled.clip(-50.0)  # prevent exp underflow → all-zero
         e = np.exp(sim_scaled)
-        probs = e / e.sum(axis=1, keepdims=True)      # (m, n_out)
+        probs = e / e.sum(axis=1, keepdims=True).clip(1e-30)
 
         # --- Batched update ---
         original_winners = probs.argmax(axis=1)        # (m,)
@@ -565,17 +563,16 @@ class ColumnManager:
                 new_lat = self.lateral_protos + lr_eff[:, None, None] * sign[:, :, None] * delta
 
             elif LATERAL_LEARN_MODE == 'covariance':
-                sim_c = sim_for_lateral - sim_for_lateral.mean(axis=1, keepdims=True)
+                sim_c = sim - sim.mean(axis=1, keepdims=True)
                 lat_target = sim_c[:, :, None] * lat_in[:, None, :]
                 lat_target_norm = np.linalg.norm(lat_target, axis=2, keepdims=True).clip(1e-8)
                 lat_target = lat_target / lat_target_norm
                 new_lat = self.lateral_protos + lr_eff[:, None, None] * (lat_target - self.lateral_protos)
 
-            # Guard against NaN from numerical issues
-            if np.any(np.isnan(new_lat)):
-                new_lat = np.nan_to_num(new_lat, nan=0.0)
             lat_norms = np.linalg.norm(new_lat, axis=2, keepdims=True).clip(1e-8)
             self.lateral_protos = new_lat / lat_norms
+            assert not np.any(np.isnan(self.lateral_protos)), \
+                "NaN in lateral_protos after update"
 
             # Streaming eviction: one random column per tick.
             # Near slots (< K_near) rewire to knn2 neighbor.
