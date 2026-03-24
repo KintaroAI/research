@@ -103,7 +103,11 @@ def make_signal(w, h, args):
     pos = np.array([field_size / 2, field_size / 2], dtype=np.float32)
     prev_pos = pos.copy()
     hunger = np.float32(0.0)
-    state = {'prev_nearest_dist': None, 'hunger': [0.0]}  # mutable refs
+    state = {
+        'prev_nearest_dist': None,
+        'prev_nearest_idx': -1,   # track which POI we're approaching
+        'hunger': [0.0],
+    }
     # Muscle feedback: 4 directions × 8 muscle fibers each
     # Each fiber has independent restlessness, tiredness, and spasms
     n_fibers = NEURONS_PER_SIGNAL  # 8 fibers per direction
@@ -120,8 +124,8 @@ def make_signal(w, h, args):
     base_embed_lr = [None]   # captured from dsolver on first tick
     field_save_every = 100
 
-    # POIs
-    pois = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
+    # POIs — stored in state dict so tick_fn and metadata share the reference
+    state['pois'] = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
 
     # Sensory neuron indices: 8 neurons per signal, 18 signals = 144
     S = NEURONS_PER_SIGNAL
@@ -208,6 +212,7 @@ def make_signal(w, h, args):
                     tiredness[d, f] = max(0.0, tiredness[d, f] - recovery_rate)
 
         # Find nearest POI
+        pois = state['pois']
         if len(pois) > 0:
             dists = np.sqrt(((pois - pos) ** 2).sum(axis=1))
             nearest_idx = dists.argmin()
@@ -218,13 +223,17 @@ def make_signal(w, h, args):
             direction = direction / dir_norm  # unit direction
 
             # Distance-based reward: small positive when getting closer
+            # Only reward if tracking the SAME POI (avoid spurious reward
+            # when nearest POI identity changes)
             col_mgr = _refs.get('column_mgr')
-            if col_mgr is not None and state['prev_nearest_dist'] is not None:
+            if (col_mgr is not None
+                    and state['prev_nearest_dist'] is not None
+                    and state['prev_nearest_idx'] == nearest_idx):
                 delta_dist = state['prev_nearest_dist'] - nearest_dist
                 if delta_dist > 0:
-                    # Getting closer — small reward scaled by progress
                     col_mgr.set_reward(min(delta_dist / collect_radius, 0.5))
             state['prev_nearest_dist'] = nearest_dist
+            state['prev_nearest_idx'] = nearest_idx
 
             # Collection check
             if nearest_dist < collect_radius:
@@ -232,27 +241,22 @@ def make_signal(w, h, args):
                 phase_idx = 1 if is_sparse else 0
                 phase_scores[phase_idx] += 1
                 hunger = 0.0
-                state['prev_nearest_dist'] = None  # reset after collection
+                state['prev_nearest_dist'] = None
+                state['prev_nearest_idx'] = -1
                 # Deliver reward to column manager via eligibility traces
                 if col_mgr is not None:
                     col_mgr.set_reward(1.0)
                 # tiredness NOT reset on collection — muscles stay tired
                 # Only hunger resets (reward signal for learning rate)
-                # Remove collected POI
-                pois_list = list(range(len(pois)))
-                pois_list.remove(nearest_idx)
-                if len(pois_list) > 0:
-                    new_pois = pois[pois_list]
-                else:
-                    new_pois = np.empty((0, 2), dtype=np.float32)
-                # Respawn: add new POI at random location
+                # Remove collected POI, respawn to maintain count
+                keep = [i for i in range(len(pois)) if i != nearest_idx]
+                remaining = pois[keep] if keep else np.empty((0, 2), dtype=np.float32)
                 n_target = n_pois_sparse if is_sparse else n_pois_dense
-                while len(new_pois) < n_target:
-                    new_poi = rng.rand(1, 2).astype(np.float32) * field_size
-                    new_pois = np.vstack([new_pois, new_poi])
-                pois[:] = 0  # clear
-                pois.resize(len(new_pois), 2, refcheck=False)
-                pois[:] = new_pois
+                n_spawn = max(0, n_target - len(remaining))
+                if n_spawn > 0:
+                    spawned = rng.rand(n_spawn, 2).astype(np.float32) * field_size
+                    remaining = np.vstack([remaining, spawned]) if len(remaining) > 0 else spawned
+                state['pois'] = remaining
         else:
             nearest_pos = np.array([field_size / 2, field_size / 2])
             direction = np.array([0.0, 0.0])
@@ -262,9 +266,9 @@ def make_signal(w, h, args):
         state['hunger'][0] = hunger
 
         # Hunger modulates learning rates:
-        # Just ate (hunger=0) → full lr, starving (hunger=1) → lr * 0.01
-        # Like glucose: no food → no energy → no plasticity
-        lr_scale = max(0.01, 1.0 - hunger * 0.99)
+        # Just ate (hunger=0) → baseline lr, hungry (hunger=1) → 2× lr
+        # Hungry = alert, motivated — increased plasticity
+        lr_scale = 1.0 + hunger
         col_mgr = _refs['column_mgr']
         if col_mgr is not None:
             if base_column_lr[0] is None:
@@ -282,11 +286,11 @@ def make_signal(w, h, args):
         norm_target = nearest_pos / field_size
 
         # Override neurons: 8 per signal.
-        # Fast signals: raw. Slow signals: pulsated.
-        for i in idx['pos_x']:     sig[i] = norm_pos[0]
-        for i in idx['pos_y']:     sig[i] = norm_pos[1]
-        for i in idx['target_x']:  sig[i] = norm_target[0]
-        for i in idx['target_y']:  sig[i] = norm_target[1]
+        # All slow-changing signals pulsated with unique periods.
+        for i in idx['pos_x']:     sig[i] = pulsate(norm_pos[0], t, 11)
+        for i in idx['pos_y']:     sig[i] = pulsate(norm_pos[1], t, 13)
+        for i in idx['target_x']:  sig[i] = pulsate(norm_target[0], t, 37)
+        for i in idx['target_y']:  sig[i] = pulsate(norm_target[1], t, 41)
         for i in idx['dir_xp']:    sig[i] = max(0.0, direction[0])
         for i in idx['dir_xn']:    sig[i] = max(0.0, -direction[0])
         for i in idx['dir_yp']:    sig[i] = max(0.0, direction[1])
@@ -340,7 +344,7 @@ def make_signal(w, h, args):
         'score': score,
         'phase_scores': phase_scores,
         'pos': pos,
-        'pois': pois,
+        'state': state,  # state['pois'] — mutable ref, updated on collection
         'sensor_indices': idx,
         'phase_ticks': phase_ticks,
         'collect_radius': collect_radius,

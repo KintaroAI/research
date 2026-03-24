@@ -726,9 +726,11 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
                         and bench_metadata is not None
                         and 'pos' in bench_metadata):
                     bm = bench_metadata
-                    hunger_val = bm.get('state', {}).get('hunger', [0])[0]
+                    bm_state = bm.get('state', {})
+                    hunger_val = bm_state.get('hunger', [0])[0]
+                    pois_arr = bm_state.get('pois', np.empty((0, 2)))
                     cluster_mgr._renderer.field_live(
-                        tick, bm['pos'].copy(), bm['pois'].copy(),
+                        tick, bm['pos'].copy(), pois_arr.copy(),
                         bm['field_size'],
                         hunger=float(hunger_val),
                         collect_radius=bm.get('collect_radius', 5.0),
