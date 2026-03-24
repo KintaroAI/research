@@ -302,6 +302,7 @@ class ColumnManager:
         else:
             self.traces = None
         self._pending_reward = 0.0
+        self.reward_lr = 0.01  # fixed scale for reward updates, independent of lr
 
         # Output tiredness: consecutive wins decay the output value,
         # forcing exploration of other categories
@@ -545,9 +546,9 @@ class ColumnManager:
             # Accumulate winner's direction
             self.traces[ar, actual_winners] += direction
 
-            # Apply when reward is pending
+            # Apply when reward is pending (fixed scale, independent of lr)
             if self._pending_reward != 0.0:
-                self.prototypes += self.lr * self._pending_reward * self.traces
+                self.prototypes += self.reward_lr * self._pending_reward * self.traces
                 self._pending_reward = 0.0
 
         # Lateral weight update
