@@ -77,8 +77,8 @@ def add_args(parser):
                         help="Distance to collect a POI (default: 5.0)")
     parser.add_argument("--forage-walk-step", type=float, default=0.5,
                         help="Spasm step size per fiber (default: 0.5)")
-    parser.add_argument("--forage-hunger-rate", type=float, default=0.01,
-                        help="Hunger ramp per tick (default: 0.01, 100 ticks to 1.0)")
+    parser.add_argument("--forage-hunger-rate", type=float, default=0.001,
+                        help="Hunger ramp per tick (default: 0.001, 1000 ticks to 1.0)")
     parser.add_argument("--forage-motor-columns", type=str, default="0,1,2,3,4,5,6,7",
                         help="Comma-separated columns for motor (8 = one per fiber, default: 0,1,2,3,4,5,6,7)")
     parser.add_argument("--forage-motor-scale", type=float, default=0.5,
@@ -222,18 +222,23 @@ def make_signal(w, h, args):
             dir_norm = max(np.sqrt((direction ** 2).sum()), 1e-8)
             direction = direction / dir_norm  # unit direction
 
-            # Distance-based reward: small positive when getting closer
-            # Only reward if tracking the SAME POI (avoid spurious reward
-            # when nearest POI identity changes)
+            # Distance-based reward (disabled — too noisy)
+            # col_mgr = _refs.get('column_mgr')
+            # if (col_mgr is not None
+            #         and state['prev_nearest_dist'] is not None
+            #         and state['prev_nearest_idx'] == nearest_idx):
+            #     delta_dist = state['prev_nearest_dist'] - nearest_dist
+            #     if delta_dist > 0:
+            #         col_mgr.set_reward(min(delta_dist / collect_radius, 0.5))
+            # state['prev_nearest_dist'] = nearest_dist
+            # state['prev_nearest_idx'] = nearest_idx
+
             col_mgr = _refs.get('column_mgr')
-            if (col_mgr is not None
-                    and state['prev_nearest_dist'] is not None
-                    and state['prev_nearest_idx'] == nearest_idx):
-                delta_dist = state['prev_nearest_dist'] - nearest_dist
-                if delta_dist > 0:
-                    col_mgr.set_reward(min(delta_dist / collect_radius, 0.5))
-            state['prev_nearest_dist'] = nearest_dist
-            state['prev_nearest_idx'] = nearest_idx
+
+            # Hunger penalty: slight negative reward proportional to hunger
+            # Accumulates over time — nudges system to seek food
+            if col_mgr is not None and hunger > 0.5:
+                col_mgr.set_reward(-0.01 * hunger)
 
             # Collection check
             if nearest_dist < collect_radius:
@@ -241,9 +246,7 @@ def make_signal(w, h, args):
                 phase_idx = 1 if is_sparse else 0
                 phase_scores[phase_idx] += 1
                 hunger = 0.0
-                state['prev_nearest_dist'] = None
-                state['prev_nearest_idx'] = -1
-                # Deliver reward to column manager via eligibility traces
+                # Strong positive reward on collection
                 if col_mgr is not None:
                     col_mgr.set_reward(1.0)
                 # tiredness NOT reset on collection — muscles stay tired
@@ -261,24 +264,16 @@ def make_signal(w, h, args):
             nearest_pos = np.array([field_size / 2, field_size / 2])
             direction = np.array([0.0, 0.0])
 
-        # Hunger ramps
+        # Hunger ramps: 0.001/tick → 1k ticks to reach 1.0
         hunger = min(1.0, hunger + hunger_rate)
         state['hunger'][0] = hunger
 
-        # Hunger modulates learning rates:
-        # Just ate (hunger=0) → baseline lr, hungry (hunger=1) → 2× lr
-        # Hungry = alert, motivated — increased plasticity
-        lr_scale = 1.0 + hunger
-        col_mgr = _refs['column_mgr']
-        if col_mgr is not None:
-            if base_column_lr[0] is None:
-                base_column_lr[0] = col_mgr.lr
-            col_mgr.lr = base_column_lr[0] * lr_scale
-        dsolver = _refs.get('dsolver')
-        if dsolver is not None:
-            if base_embed_lr[0] is None:
-                base_embed_lr[0] = dsolver.lr
-            dsolver.lr = base_embed_lr[0] * lr_scale
+        # Hunger lr modulation disabled — use fixed lr
+        # col_mgr = _refs['column_mgr']
+        # if col_mgr is not None:
+        #     if base_column_lr[0] is None:
+        #         base_column_lr[0] = col_mgr.lr
+        #     col_mgr.lr = base_column_lr[0] * lr_scale
 
         # Retina neurons get zero for now (unused)
         sig = np.zeros(n, dtype=np.float32)
