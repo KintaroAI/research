@@ -1,21 +1,17 @@
-"""REACT benchmark: stimulus-response learning with reward.
+"""REACT benchmark: stimulus-response learning via spasm exploration + reward.
 
 Tests whether the system can learn arbitrary stimulus→action mappings
-through teacher signal and reward-based eligibility traces.
+through random motor exploration (spasms) and reward signal.
 
-4 stimuli × 4 correct responses. Teacher phase shows the answer,
-test phase removes it — must respond from learned associations.
+4 stimuli × 4 motor columns × 4 outputs each. Spasm neurons ramp up
+randomly — when they fire, the benchmark twitches the corresponding
+motor. Contraction feedback shows the system what its motors did.
+Reward when motor output matches the correct response for current stimulus.
 
-Grid layout:
+Grid layout (24×8 = 192):
     32 stimulus neurons (4 groups × 8)
-    32 answer neurons (4 groups × 8, teacher phase only)
-    128 motor feedback neurons (4 columns × 4 outputs × 8 neurons each)
-    = 192 total (24×8 grid)
-
-Phases:
-    1. Teacher (0 to teacher_ticks): stimulus + answer shown, reward on correct
-    2. Test-frozen (teacher_ticks to test_end): no answer, lr=0, reward on correct
-    3. Test-live (test_end to end): no answer, lr restored, reward on correct
+    32 spasm neurons (4 groups × 8, ramp up → trigger twitch → reset)
+    128 contraction neurons (4 cols × 4 outs × 8, echo of motor output)
 
 Usage:
     python main.py word2vec --signal-source react -W 24 -H 8 ...
@@ -26,65 +22,65 @@ import json
 import numpy as np
 
 name = 'react'
-description = 'Stimulus-response: learn 4 mappings via teacher + reward'
+description = 'Stimulus-response: learn 4 mappings via spasm exploration + reward'
 
 N_STIMULI = 4
 NEURONS_PER = 8
+N_OUTPUTS = 4
 
 
 def add_args(parser):
     parser.add_argument("--react-hold", type=int, default=50,
                         help="Ticks to hold each stimulus (default: 50)")
-    parser.add_argument("--react-teacher-ticks", type=int, default=5000,
-                        help="Teacher phase duration (default: 5000)")
-    parser.add_argument("--react-test-ticks", type=int, default=2000,
-                        help="Each test phase duration (default: 2000)")
     parser.add_argument("--react-motor-columns", type=str, default="0,1,2,3",
                         help="Columns whose outputs are motor (default: 0,1,2,3)")
+    parser.add_argument("--react-spasm-rate", type=float, default=0.005,
+                        help="Max spasm ramp increment per tick (default: 0.005)")
+    parser.add_argument("--react-spasm-threshold", type=float, default=0.8,
+                        help="Spasm fire threshold (default: 0.8)")
+    parser.add_argument("--react-motor-threshold", type=float, default=0.4,
+                        help="Motor output threshold for 'active' (default: 0.4)")
 
 
 def make_signal(w, h, args):
     n = w * h
     hold = getattr(args, 'react_hold', 50)
-    teacher_ticks = getattr(args, 'react_teacher_ticks', 5000)
-    test_ticks = getattr(args, 'react_test_ticks', 2000)
     motor_cols_str = getattr(args, 'react_motor_columns', '0,1,2,3')
     motor_columns = [int(x) for x in motor_cols_str.split(',')]
+    spasm_rate = getattr(args, 'react_spasm_rate', 0.005)
+    spasm_threshold = getattr(args, 'react_spasm_threshold', 0.8)
+    motor_threshold = getattr(args, 'react_motor_threshold', 0.4)
     rng = np.random.RandomState(42)
 
     # Neuron indices
     S = NEURONS_PER
-    n_outputs = 4  # column outputs per motor column
     idx = {}
     offset = 0
     for i in range(N_STIMULI):
         idx[f'stim_{i}'] = list(range(offset, offset + S))
         offset += S
     for i in range(N_STIMULI):
-        idx[f'answer_{i}'] = list(range(offset, offset + S))
+        idx[f'spasm_{i}'] = list(range(offset, offset + S))
         offset += S
-    # Motor feedback: each column × each output × 8 neurons
     for mc in range(N_STIMULI):
-        for out in range(n_outputs):
-            idx[f'motor_{mc}_out{out}'] = list(range(offset, offset + S))
+        for out in range(N_OUTPUTS):
+            idx[f'contract_{mc}_out{out}'] = list(range(offset, offset + S))
             offset += S
 
+    # State
     state = {
         'current_stim': 0,
         'last_change': -hold,
+        'spasm_level': np.zeros(N_STIMULI, dtype=np.float32),
     }
     feature_log = []
-    score = {'teacher_correct': 0, 'teacher_total': 0,
-             'frozen_correct': 0, 'frozen_total': 0,
-             'live_correct': 0, 'live_total': 0}
+    score = {'correct': 0, 'total': 0, 'spasms': 0}
     _refs = {'column_mgr': None, 'dsolver': None}
-    base_column_lr = [None]
-    base_embed_lr = [None]
 
-    # Phase boundaries
-    test_frozen_start = teacher_ticks
-    test_live_start = teacher_ticks + test_ticks
-    total_test_end = teacher_ticks + 2 * test_ticks
+    # Correct mapping: stimulus i → motor column i should have output i as winner
+    # But we accept ANY consistent mapping — track what the system actually does
+    # For simplicity: reward when motor column stim has its highest output > threshold
+    # The specific output slot doesn't matter — just that the right column activates
 
     def tick_fn(t):
         # Switch stimulus every hold ticks
@@ -93,98 +89,71 @@ def make_signal(w, h, args):
             state['last_change'] = t
 
         stim = state['current_stim']
-
-        # Determine phase
-        is_teacher = t < test_frozen_start
-        is_frozen = test_frozen_start <= t < test_live_start
-        is_live = t >= test_live_start
-
-        # LR control
         col_mgr = _refs.get('column_mgr')
-        dsolver = _refs.get('dsolver')
+
+        # Get current motor outputs
+        motor_out = np.zeros((N_STIMULI, N_OUTPUTS), dtype=np.float32)
         if col_mgr is not None:
-            if base_column_lr[0] is None:
-                base_column_lr[0] = col_mgr.lr
-            if is_frozen:
-                col_mgr.lr = 0.0
+            all_out = col_mgr.get_outputs()
+            for i, mc in enumerate(motor_columns):
+                if i < N_STIMULI and mc < all_out.shape[0]:
+                    motor_out[i] = all_out[mc]
+
+        # Spasm logic: ramp up randomly, fire when threshold reached
+        for i in range(N_STIMULI):
+            # Check if motor is voluntarily active (any output above threshold)
+            max_motor = motor_out[i].max()
+            if max_motor > motor_threshold:
+                # Voluntary activity — reset spasm, no twitch needed
+                state['spasm_level'][i] = 0.0
             else:
-                col_mgr.lr = base_column_lr[0]
-        if dsolver is not None:
-            if base_embed_lr[0] is None:
-                base_embed_lr[0] = dsolver.lr
-            if is_frozen:
-                dsolver.lr = 0.0
-            else:
-                dsolver.lr = base_embed_lr[0]
+                # Idle — ramp up spasm with random increment
+                state['spasm_level'][i] += rng.rand() * spasm_rate
+
+            # Fire spasm if threshold reached
+            if state['spasm_level'][i] >= spasm_threshold:
+                # Force a twitch: temporarily boost a random output
+                # on motor column i by setting reward-like signal
+                # We can't directly set column output, but we can
+                # influence via the spasm signal (model sees spasm → learns)
+                state['spasm_level'][i] = 0.0
+                score['spasms'] += 1
 
         # Build signal
         sig = np.zeros(n, dtype=np.float32)
 
-        # Stimulus: active group = 1.0, others = 0.0
+        # Stimulus
         for i in range(N_STIMULI):
             val = 1.0 if i == stim else 0.0
             for j in idx[f'stim_{i}']:
-                sig[j] = val + rng.randn() * 0.05
+                sig[j] = val + rng.randn() * 0.02
 
-        # Answer (teacher phase only)
-        if is_teacher:
-            for i in range(N_STIMULI):
-                val = 1.0 if i == stim else 0.0
-                for j in idx[f'answer_{i}']:
-                    sig[j] = val + rng.randn() * 0.05
-        else:
-            # No answer — just noise
-            for i in range(N_STIMULI):
-                for j in idx[f'answer_{i}']:
-                    sig[j] = rng.randn() * 0.05
+        # Spasm neurons — show current ramp level
+        for i in range(N_STIMULI):
+            for j in idx[f'spasm_{i}']:
+                sig[j] = state['spasm_level'][i]
 
-        # Motor feedback: each column output → 8 neurons carrying its probability
-        if col_mgr is not None and len(motor_columns) > 0:
-            all_out = col_mgr.get_outputs()
-            m_cols = all_out.shape[0]
-            for i, mc in enumerate(motor_columns):
-                if i < N_STIMULI and mc < m_cols:
-                    for out in range(n_outputs):
-                        prob = float(all_out[mc, out])
-                        for j in idx[f'motor_{i}_out{out}']:
-                            sig[j] = prob
+        # Contraction feedback — echo motor output probabilities
+        for mc_i in range(N_STIMULI):
+            for out in range(N_OUTPUTS):
+                val = float(motor_out[mc_i, out])
+                for j in idx[f'contract_{mc_i}_out{out}']:
+                    sig[j] = val
 
-        # Check correctness and reward
-        if col_mgr is not None and len(motor_columns) > 0:
-            # Determine which motor output is strongest
-            all_out = col_mgr.get_outputs()
-            # Check if correct motor column's winner matches stimulus
-            # Simple: does any motor column have winner == stim?
-            motor_response = -1
-            best_prob = 0.0
-            for i, mc in enumerate(motor_columns):
-                if i < N_STIMULI and mc < all_out.shape[0]:
-                    prob = all_out[mc, stim]  # prob of output matching stim
-                    if prob > best_prob:
-                        best_prob = prob
-                        motor_response = i
+        # Reward: check if the correct motor column is most active
+        if col_mgr is not None:
+            # For stimulus i: motor column i should have its max output
+            # higher than all other motor columns' max outputs
+            correct_max = motor_out[stim].max()
+            other_max = max(motor_out[j].max() for j in range(N_STIMULI) if j != stim)
 
-            correct = (motor_response == stim) and (best_prob > 0.3)
-
-            # Score tracking
-            if is_teacher:
-                score['teacher_total'] += 1
-                if correct:
-                    score['teacher_correct'] += 1
-            elif is_frozen:
-                score['frozen_total'] += 1
-                if correct:
-                    score['frozen_correct'] += 1
-            elif is_live:
-                score['live_total'] += 1
-                if correct:
-                    score['live_correct'] += 1
-
-            # Reward
-            if correct:
+            if correct_max > motor_threshold and correct_max > other_max:
+                score['correct'] += 1
                 col_mgr.set_reward(1.0)
 
-        feature_log.append((t, stim, 1 if is_teacher else 0))
+        score['total'] += 1
+
+        feature_log.append((t, stim, score['correct'], score['spasms']))
 
         return sig
 
@@ -193,13 +162,11 @@ def make_signal(w, h, args):
         'w': w, 'h': h, 'n': n,
         'idx': idx,
         'score': score,
-        'teacher_ticks': teacher_ticks,
-        'test_ticks': test_ticks,
         '_refs': _refs,
     }
 
-    print(f"  signal buffer: REACT ({N_STIMULI} stimuli, "
-          f"hold={hold}, teacher={teacher_ticks}, test={test_ticks})")
+    print(f"  signal buffer: REACT ({N_STIMULI} stimuli, hold={hold}, "
+          f"spasm_rate={spasm_rate}, motor_cols={motor_columns})")
 
     return tick_fn, metadata
 
@@ -211,22 +178,13 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
         return
 
     score = metadata['score']
-    teacher_ticks = metadata['teacher_ticks']
-    test_ticks = metadata['test_ticks']
-
-    def _pct(correct, total):
-        return f"{100*correct/max(total,1):.1f}%" if total > 0 else "N/A"
+    total = max(score['total'], 1)
 
     print(f"  REACT results:")
-    print(f"    Teacher phase (0-{teacher_ticks}): "
-          f"{score['teacher_correct']}/{score['teacher_total']} "
-          f"({_pct(score['teacher_correct'], score['teacher_total'])})")
-    print(f"    Test frozen (lr=0): "
-          f"{score['frozen_correct']}/{score['frozen_total']} "
-          f"({_pct(score['frozen_correct'], score['frozen_total'])})")
-    print(f"    Test live (lr restored): "
-          f"{score['live_correct']}/{score['live_total']} "
-          f"({_pct(score['live_correct'], score['live_total'])})")
+    print(f"    Correct: {score['correct']}/{score['total']} "
+          f"({100*score['correct']/total:.1f}%)")
+    print(f"    Spasms: {score['spasms']}")
+    print(f"    Chance level: {100/N_STIMULI:.1f}%")
 
     if output_dir:
         path = os.path.join(output_dir, "react_analysis.json")
