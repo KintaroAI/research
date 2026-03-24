@@ -421,3 +421,37 @@ System continues improving with more training — no plateau at 2M.
 Spasm floor ensures continued exploration in sparse phase (97/128
 collections from sparse phase). Hunger tracking recovers to r=0.90
 with extended training.
+
+### Forage M=300 with lr decay (1M from scratch)
+
+M=300, lr 0.01→0.001 over 50k, 22×8 grid (no silent neurons), 4 anchor
+batches. Best result: **1017 collections** (837 dense, 180 sparse),
+hunger r=0.998, restless r=0.993.
+
+## REACT benchmark — stimulus-response learning
+
+4 stimuli × 4 motor columns. Spasm neurons ramp up randomly, trigger
+motor twitches when idle. Contraction feedback (4 cols × 4 outs × 8
+neurons = 128) echoes motor output probabilities back as sensory input.
+Reward when correct motor column is most active for current stimulus.
+
+### Results (50k ticks, M=100)
+
+| Spasm rate | Spasms | Rewards | Correct % |
+|-----------|--------|---------|-----------|
+| 0.005 | 14 | — | 0.5% |
+| 0.02 | 1247 | 97 | 0.2% |
+| 0.1 | 5589 | 327 | 0.6% |
+
+System is not learning stimulus→motor mappings. Rewards are sparse
+(~1 per 150 ticks) and uncorrelated with intentional actions. Key
+issues:
+1. Reward criterion assumes motor column i maps to stimulus i — but
+   this assignment is arbitrary, system has no way to discover it
+2. Eligibility traces decay before reward arrives (0.99^150 ≈ 0.22)
+3. Spasms create sensory signal but don't directly move motor outputs
+   — they ramp the spasm neuron, but the column decides its own output
+
+Needs rethinking: either accept any consistent mapping (not identity),
+or provide a mechanism for the system to discover which column→stimulus
+pairing works.
