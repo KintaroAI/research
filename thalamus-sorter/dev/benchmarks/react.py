@@ -9,8 +9,8 @@ test phase removes it — must respond from learned associations.
 Grid layout:
     32 stimulus neurons (4 groups × 8)
     32 answer neurons (4 groups × 8, teacher phase only)
-    32 motor feedback neurons (4 groups × 8, echo of column outputs)
-    = 96 total (12×8 grid)
+    128 motor feedback neurons (4 columns × 4 outputs × 8 neurons each)
+    = 192 total (24×8 grid)
 
 Phases:
     1. Teacher (0 to teacher_ticks): stimulus + answer shown, reward on correct
@@ -18,7 +18,7 @@ Phases:
     3. Test-live (test_end to end): no answer, lr restored, reward on correct
 
 Usage:
-    python main.py word2vec --signal-source react -W 12 -H 8 ...
+    python main.py word2vec --signal-source react -W 24 -H 8 ...
 """
 
 import os
@@ -54,6 +54,7 @@ def make_signal(w, h, args):
 
     # Neuron indices
     S = NEURONS_PER
+    n_outputs = 4  # column outputs per motor column
     idx = {}
     offset = 0
     for i in range(N_STIMULI):
@@ -62,9 +63,11 @@ def make_signal(w, h, args):
     for i in range(N_STIMULI):
         idx[f'answer_{i}'] = list(range(offset, offset + S))
         offset += S
-    for i in range(N_STIMULI):
-        idx[f'motor_{i}'] = list(range(offset, offset + S))
-        offset += S
+    # Motor feedback: each column × each output × 8 neurons
+    for mc in range(N_STIMULI):
+        for out in range(n_outputs):
+            idx[f'motor_{mc}_out{out}'] = list(range(offset, offset + S))
+            offset += S
 
     state = {
         'current_stim': 0,
@@ -135,16 +138,16 @@ def make_signal(w, h, args):
                 for j in idx[f'answer_{i}']:
                     sig[j] = rng.randn() * 0.05
 
-        # Motor feedback: echo column outputs from motor columns
+        # Motor feedback: each column output → 8 neurons carrying its probability
         if col_mgr is not None and len(motor_columns) > 0:
             all_out = col_mgr.get_outputs()
             m_cols = all_out.shape[0]
             for i, mc in enumerate(motor_columns):
                 if i < N_STIMULI and mc < m_cols:
-                    # Map column's winner to motor group activation
-                    winner = int(all_out[mc].argmax())
-                    for j in range(S):
-                        sig[idx[f'motor_{i}'][j]] = 1.0 if winner == i else 0.0
+                    for out in range(n_outputs):
+                        prob = float(all_out[mc, out])
+                        for j in idx[f'motor_{i}_out{out}']:
+                            sig[j] = prob
 
         # Check correctness and reward
         if col_mgr is not None and len(motor_columns) > 0:
