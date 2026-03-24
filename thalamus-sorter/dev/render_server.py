@@ -229,6 +229,7 @@ HANDLERS = {
     'embed': _render_embed,
     'heatmap': _render_heatmap,
     'graph': _relay_graph,
+    'field_live': _relay_graph,  # same relay mechanism, different address
 }
 
 
@@ -500,12 +501,13 @@ class Renderer:
     """
 
     def __init__(self, output_dir, w, h, sig_channels=1, n_workers=2,
-                 viz_address=None):
+                 viz_address=None, field_address=None):
         self.output_dir = output_dir
         self.w = w
         self.h = h
         self.sig_channels = sig_channels
-        self.viz_address = viz_address  # 'host:port' for viz app relay
+        self.viz_address = viz_address    # 'host:port' for graph viz relay
+        self.field_address = field_address  # 'host:port' for field viz relay
         self._client = None
         self._n_workers = n_workers
         if output_dir:
@@ -568,6 +570,17 @@ class Renderer:
         """Position heatmap (e.g., motor saccade positions)."""
         path = os.path.join(self.output_dir, f"{name}.png")
         self._submit('heatmap', path, positions=positions)
+
+    def field_live(self, tick, agent_pos, pois, field_size,
+                   hunger=0.0, collect_radius=5.0, score=0):
+        """Send field data to field viz app via render server."""
+        if self._client is None or not self.field_address:
+            return
+        self._submit('field_live', '',
+                     tick=tick, agent_pos=agent_pos, pois=pois,
+                     field_size=field_size, hunger=hunger,
+                     collect_radius=collect_radius, score=score,
+                     viz_address=self.field_address)
 
     def graph(self, tick, most_recent, n_sensory, n_outputs,
               lateral_adj=None, column_outputs=None, knn2=None,

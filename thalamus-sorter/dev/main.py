@@ -656,7 +656,8 @@ class _ClusterManager:
 
 def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
                        on_save=None, on_display=None, can_break=None,
-                       cluster_mgr=None, n_sensory=None):
+                       cluster_mgr=None, n_sensory=None,
+                       bench_metadata=None):
     """Shared training loop for async and sync render paths.
 
     Callbacks:
@@ -717,6 +718,21 @@ def _run_training_loop(do_tick, dsolver, args, n, w, sig_channels, wlog,
                         column_outputs=cluster_mgr.column_mgr.get_outputs(),
                         knn2=knn2_viz,
                         centroids=cluster_mgr.centroids_t.cpu().numpy())
+
+                # Send field data to field viz
+                if (viz_every > 0 and tick % viz_every == 0
+                        and cluster_mgr._renderer is not None
+                        and cluster_mgr._renderer.field_address
+                        and bench_metadata is not None
+                        and 'pos' in bench_metadata):
+                    bm = bench_metadata
+                    hunger_val = bm.get('state', {}).get('hunger', [0])[0]
+                    cluster_mgr._renderer.field_live(
+                        tick, bm['pos'].copy(), bm['pois'].copy(),
+                        bm['field_size'],
+                        hunger=float(hunger_val),
+                        collect_radius=bm.get('collect_radius', 5.0),
+                        score=int(bm.get('score', [0])[0]))
 
                 if tick % cluster_report_every == 0:
                     # Refresh knn_lists for knn mode
@@ -882,9 +898,11 @@ def run_word2vec(args):
         # --- Create renderer ---
         from render_server import Renderer
         viz_address = getattr(args, 'viz_address', None)
+        field_address = getattr(args, 'field_address', None)
         renderer = Renderer(output_dir, render_w, render_h,
                             sig_channels=sig_channels,
-                            viz_address=viz_address) if output_dir else None
+                            viz_address=viz_address,
+                            field_address=field_address) if output_dir else None
 
         # --- Create solver (imports torch/cuml in main process) ---
         if mode == "sentence":
@@ -1182,7 +1200,8 @@ def run_word2vec(args):
             do_tick, dsolver, args, n, w, sig_channels, wlog,
             on_save=on_save if output_dir else None,
             can_break=poll_quit, cluster_mgr=cluster_mgr,
-            n_sensory=n_sensory if K > 0 else None)
+            n_sensory=n_sensory if K > 0 else None,
+            bench_metadata=bench_metadata)
 
         elapsed = time.time() - t0
         s = dsolver.stats()
@@ -1398,6 +1417,8 @@ def main():
                        help="host:port for live graph visualization app (e.g., 192.168.1.5:9100)")
     p_w2v.add_argument("--viz-every", type=int, default=0,
                        help="Send graph to viz app every N ticks (0=disabled, 1=every tick)")
+    p_w2v.add_argument("--field-address", type=str, default=None,
+                       help="host:port for live field visualization (e.g., 192.168.1.5:9101)")
     p_w2v.add_argument("--align", action="store_true",
                        help="Procrustes-align rendered output to grid (fixes rotation/flip)")
     p_w2v.add_argument("--warm-start", type=str, default=None,

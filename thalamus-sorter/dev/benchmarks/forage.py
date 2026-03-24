@@ -103,7 +103,7 @@ def make_signal(w, h, args):
     pos = np.array([field_size / 2, field_size / 2], dtype=np.float32)
     prev_pos = pos.copy()
     hunger = np.float32(0.0)
-    state = {'prev_nearest_dist': None}  # for distance-based reward
+    state = {'prev_nearest_dist': None, 'hunger': [0.0]}  # mutable refs
     # Muscle feedback: 4 directions × 8 muscle fibers each
     # Each fiber has independent restlessness, tiredness, and spasms
     n_fibers = NEURONS_PER_SIGNAL  # 8 fibers per direction
@@ -259,6 +259,7 @@ def make_signal(w, h, args):
 
         # Hunger ramps
         hunger = min(1.0, hunger + hunger_rate)
+        state['hunger'][0] = hunger
 
         # Hunger modulates learning rates:
         # Just ate (hunger=0) → full lr, starving (hunger=1) → lr * 0.01
@@ -343,6 +344,7 @@ def make_signal(w, h, args):
         'sensor_indices': idx,
         'phase_ticks': phase_ticks,
         'collect_radius': collect_radius,
+        'state': state,  # mutable: hunger, prev_nearest_dist
         '_refs': _refs,  # main.py sets _refs['column_mgr'] after cluster init
     }
 
