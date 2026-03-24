@@ -34,8 +34,8 @@ def add_args(parser):
                         help="Ticks to hold each stimulus (default: 50)")
     parser.add_argument("--react-motor-columns", type=str, default="0,1,2,3",
                         help="Columns whose outputs are motor (default: 0,1,2,3)")
-    parser.add_argument("--react-spasm-rate", type=float, default=0.02,
-                        help="Max spasm ramp increment per tick (default: 0.02, ~100 ticks to fire)")
+    parser.add_argument("--react-spasm-rate", type=float, default=0.1,
+                        help="Max spasm ramp increment per tick (default: 0.1, ~20 ticks to fire)")
     parser.add_argument("--react-spasm-threshold", type=float, default=0.8,
                         help="Spasm fire threshold (default: 0.8)")
     parser.add_argument("--react-motor-threshold", type=float, default=0.8,
