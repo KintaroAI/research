@@ -372,6 +372,19 @@ too disruptive, centroids can't stabilize. 1k ticks matches the signal
 buffer length (T=1000), so each output gets ~one full buffer of
 dominance before yielding.
 
+### Cluster split frequency sweep (XOR blind, 10k ticks)
+
+| split_every | Blind XOR r | Blind AND r |
+|---|---|---|
+| 1 | 0.74 | 0.65 |
+| 10 (old default) | 0.66 | 0.81 |
+| 50 | 0.76 | 0.77 |
+| **100 (new default)** | **0.80** | **0.86** |
+
+Slower splits = better. Less frequent splits give clusters and columns
+more time to stabilize and learn meaningful patterns before being
+disrupted by membership changes. Default changed from 10 to 100.
+
 ## Eligibility traces
 
 Deferred learning: columns accumulate traces every tick (decay + winner
