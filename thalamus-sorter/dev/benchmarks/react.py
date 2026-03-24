@@ -74,7 +74,7 @@ def make_signal(w, h, args):
         'spasm_level': np.zeros(N_STIMULI, dtype=np.float32),
     }
     feature_log = []
-    score = {'correct': 0, 'total': 0, 'spasms': 0}
+    score = {'correct': 0, 'total': 0, 'spasms': 0, 'rewards': 0}
     _refs = {'column_mgr': None, 'dsolver': None}
 
     # Correct mapping: stimulus i → motor column i should have output i as winner
@@ -141,14 +141,14 @@ def make_signal(w, h, args):
                     sig[j] = val
 
         # Reward: check if the correct motor column is most active
+        reward_threshold = 0.65
         if col_mgr is not None:
-            # For stimulus i: motor column i should have its max output
-            # higher than all other motor columns' max outputs
             correct_max = motor_out[stim].max()
             other_max = max(motor_out[j].max() for j in range(N_STIMULI) if j != stim)
 
-            if correct_max > motor_threshold and correct_max > other_max:
+            if correct_max > reward_threshold and correct_max > other_max:
                 score['correct'] += 1
+                score['rewards'] += 1
                 col_mgr.set_reward(1.0)
 
         score['total'] += 1
@@ -183,6 +183,7 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     print(f"  REACT results:")
     print(f"    Correct: {score['correct']}/{score['total']} "
           f"({100*score['correct']/total:.1f}%)")
+    print(f"    Rewards issued: {score['rewards']}")
     print(f"    Spasms: {score['spasms']}")
     print(f"    Chance level: {100/N_STIMULI:.1f}%")
 
