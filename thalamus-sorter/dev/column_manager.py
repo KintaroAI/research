@@ -306,8 +306,8 @@ class ColumnManager:
         # Output tiredness: consecutive wins decay the output value,
         # forcing exploration of other categories
         self.output_tiredness = np.zeros((m, n_outputs), dtype=np.float32)
-        self.tiredness_rate = 0.02   # gain per tick as winner
-        self.tiredness_recovery = 0.005  # recovery per tick as loser
+        self.tiredness_rate = 0.001    # gain per tick as winner (~1k to tire)
+        self.tiredness_recovery = 0.0005  # recovery per tick as loser
 
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)

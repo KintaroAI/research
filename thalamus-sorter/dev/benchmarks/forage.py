@@ -321,11 +321,11 @@ def make_signal(w, h, args):
                             restlessness.mean(), tiredness.mean(),
                             float(is_sparse)))
 
-        # Save field visualization
-        renderer = _refs.get('renderer')
-        if renderer is not None and t % field_save_every == 0:
-            renderer.field(t, pos.copy(), pois.copy(), field_size,
-                           collect_radius=collect_radius)
+        # Field visualization (disabled — use --field-address for live streaming)
+        # renderer = _refs.get('renderer')
+        # if renderer is not None and t % field_save_every == 0:
+        #     renderer.field(t, pos.copy(), state['pois'].copy(), field_size,
+        #                    collect_radius=collect_radius)
 
         return sig
 
