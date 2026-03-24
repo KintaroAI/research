@@ -365,6 +365,7 @@ rotation creates richer temporal dynamics for the embedding system.
 | 0.005 | 200 | 0.58 | 0.69 |
 | 0.01 | 100 | 0.49 | 0.60 |
 | 0.05 | 20 | 0.47 | 0.78 |
+| 0.1 | 10 | 0.44 | 0.58 |
 
 Clear peak at 0.001. Too slow (0.0001) = no effect, too fast (0.01+) =
 too disruptive, centroids can't stabilize. 1k ticks matches the signal
