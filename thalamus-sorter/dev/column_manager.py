@@ -494,9 +494,10 @@ class ColumnManager:
             lat_sim = np.einsum('moi,mi->mo', self.lateral_protos, lat_input)
             sim = sim + lat_sim
 
+        # Save pre-tiredness sim for lateral learning (avoid NaN from tiredness perturbation)
+        sim_for_lateral = sim.copy() if self.lateral else None
+
         # Apply tiredness penalty — tired outputs get suppressed
-        # Subtract penalty scaled by similarity magnitude so tired winners
-        # eventually lose to rested runners-up
         sim_range = sim.max(axis=1, keepdims=True) - sim.min(axis=1, keepdims=True)
         sim = sim - self.output_tiredness * sim_range.clip(1e-8)
 
@@ -564,7 +565,7 @@ class ColumnManager:
                 new_lat = self.lateral_protos + lr_eff[:, None, None] * sign[:, :, None] * delta
 
             elif LATERAL_LEARN_MODE == 'covariance':
-                sim_c = sim - sim.mean(axis=1, keepdims=True)
+                sim_c = sim_for_lateral - sim_for_lateral.mean(axis=1, keepdims=True)
                 lat_target = sim_c[:, :, None] * lat_in[:, None, :]
                 lat_target_norm = np.linalg.norm(lat_target, axis=2, keepdims=True).clip(1e-8)
                 lat_target = lat_target / lat_target_norm
