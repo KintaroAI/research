@@ -354,6 +354,23 @@ non-linear and temporal benchmarks (XOR, sequence, oddball) while
 linear tracking (mirror, echo, layers) holds steady. The winner
 rotation creates richer temporal dynamics for the embedding system.
 
+### Tiredness rate sweep (XOR blind, 10k ticks)
+
+| Rate | ~ticks to tire | XOR blind r | AND blind r |
+|------|---------------|-------------|-------------|
+| 0 (off) | ∞ | 0.58 | 0.59 |
+| 0.0001 | 10k | 0.51 | 0.56 |
+| 0.0005 | 2k | 0.51 | 0.62 |
+| **0.001** | **1k** | **0.66** | **0.84** |
+| 0.005 | 200 | 0.58 | 0.69 |
+| 0.01 | 100 | 0.49 | 0.60 |
+| 0.05 | 20 | 0.47 | 0.78 |
+
+Clear peak at 0.001. Too slow (0.0001) = no effect, too fast (0.01+) =
+too disruptive, centroids can't stabilize. 1k ticks matches the signal
+buffer length (T=1000), so each output gets ~one full buffer of
+dominance before yielding.
+
 ## Eligibility traces
 
 Deferred learning: columns accumulate traces every tick (decay + winner
