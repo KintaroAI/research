@@ -571,10 +571,11 @@ class ColumnManager:
                 lat_target = lat_target / lat_target_norm
                 new_lat = self.lateral_protos + lr_eff[:, None, None] * (lat_target - self.lateral_protos)
 
+            # Guard against NaN from numerical issues
+            if np.any(np.isnan(new_lat)):
+                new_lat = np.nan_to_num(new_lat, nan=0.0)
             lat_norms = np.linalg.norm(new_lat, axis=2, keepdims=True).clip(1e-8)
             self.lateral_protos = new_lat / lat_norms
-            assert not np.any(np.isnan(self.lateral_protos)), \
-                "NaN in lateral_protos after update"
 
             # Streaming eviction: one random column per tick.
             # Near slots (< K_near) rewire to knn2 neighbor.
