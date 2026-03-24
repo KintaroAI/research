@@ -333,6 +333,27 @@ factor. Better winner distribution (33/21/22/24 vs 51/22/17/10) but
 less stable tracking. Reverted — needs bounded formulation before
 production use.
 
+**Output tiredness** (rate=0.001, ~1k ticks to fatigue):
+Winners accumulate tiredness, losers recover. Tired winners get
+suppressed → eventually yield to rested runners-up. Forces category
+exploration and creates temporal dynamics visible to embeddings.
+
+| Benchmark | Key metric | No tiredness | **With tiredness** |
+|-----------|-----------|-------------|-------------------|
+| xor | blind XOR r | 0.48 | **0.66** (+38%) |
+| echo | voice r | 0.84 | **0.85** |
+| layers | L1 r | 0.89 | 0.88 |
+| majority | MAJ r | 0.65 | **0.71** (+9%) |
+| match | EQ r | 0.47 | **0.49** |
+| mirror | stimulus r | 0.83 | 0.82 |
+| oddball | odd_val r | 0.50 | **0.66** (+32%) |
+| sequence | SEQ r | 0.71 | **0.83** (+17%) |
+
+Tiredness is a clear win across the board. Big improvements on
+non-linear and temporal benchmarks (XOR, sequence, oddball) while
+linear tracking (mirror, echo, layers) holds steady. The winner
+rotation creates richer temporal dynamics for the embedding system.
+
 ## Eligibility traces
 
 Deferred learning: columns accumulate traces every tick (decay + winner
