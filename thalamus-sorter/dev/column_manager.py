@@ -498,12 +498,11 @@ class ColumnManager:
         sim_range = sim.max(axis=1, keepdims=True) - sim.min(axis=1, keepdims=True)
         sim = sim - self.output_tiredness * sim_range.clip(1e-8)
 
-        # Softmax (with underflow protection)
+        # Softmax
         sim_scaled = sim / self.temperature
         sim_scaled -= sim_scaled.max(axis=1, keepdims=True)
-        sim_scaled = sim_scaled.clip(-50.0)  # prevent exp underflow → all-zero
         e = np.exp(sim_scaled)
-        probs = e / e.sum(axis=1, keepdims=True).clip(1e-30)
+        probs = e / e.sum(axis=1, keepdims=True)      # (m, n_out)
 
         # --- Batched update ---
         original_winners = probs.argmax(axis=1)        # (m,)

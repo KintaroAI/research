@@ -235,10 +235,9 @@ def make_signal(w, h, args):
 
             col_mgr = _refs.get('column_mgr')
 
-            # Hunger penalty: slight negative reward proportional to hunger
-            # Accumulates over time — nudges system to seek food
-            if col_mgr is not None and hunger > 0.5:
-                col_mgr.set_reward(-0.01 * hunger)
+            # Hunger penalty (disabled — positive reward only for now)
+            # if col_mgr is not None and hunger > 0.5:
+            #     col_mgr.set_reward(-0.01 * hunger)
 
             # Collection check
             if nearest_dist < collect_radius:
