@@ -40,6 +40,11 @@ COLUMN_MODE = 'kmeans'
 #   'covariance'  — power iteration on cross-covariance between lateral
 #                   input and local projection (variance-based: finds which
 #                   lateral direction correlates with local state changes)
+# Confidence gating: scale column outputs by match quality.
+# When True, outputs are suppressed when the input is far from all centroids.
+# When False, softmax always sums to 1 (original behavior).
+CONFIDENCE_GATING = False
+
 LATERAL_LEARN_MODE = 'covariance'
 
 # ---------------------------------------------------------------------------
@@ -504,6 +509,14 @@ class ColumnManager:
         sim_scaled -= sim_scaled.max(axis=1, keepdims=True)
         e = np.exp(sim_scaled)
         probs = e / e.sum(axis=1, keepdims=True)      # (m, n_out)
+
+        # Confidence gating: scale outputs by how peaked the distribution is.
+        # confidence = 1 - H/H_max (1 = one clear winner, 0 = uniform/unsure)
+        if CONFIDENCE_GATING:
+            H = -(probs * np.log(probs + 1e-10)).sum(axis=1)  # (m,)
+            H_max = np.log(n_out)
+            confidence = (1.0 - H / H_max).clip(0.0, 1.0)    # (m,)
+            probs = probs * confidence[:, None]
 
         # --- Batched update ---
         original_winners = probs.argmax(axis=1)        # (m,)
