@@ -478,3 +478,41 @@ Two different gating signals for different purposes:
 
 Current: both output and trace gated by confidence. Future: learning
 gated by input variance instead.
+
+### Confidence gating benchmark comparison (M=100, 4 anchor batches)
+
+| Benchmark | Key metric | Gating ON | Gating OFF |
+|-----------|-----------|-----------|------------|
+| xor | blind XOR r | 0.64 | 0.64 |
+| echo | voice r | 0.81 | **0.85** |
+| majority | MAJ r | **0.70** | 0.60 |
+| match | EQ r | 0.58 | **0.69** |
+| oddball | odd_val r | **0.66** | 0.54 |
+| sequence | SEQ r | 0.78 | 0.80 |
+
+At M=200: gating OFF wins XOR (0.77 vs 0.59) — many small clusters
+have low confidence → too much suppression. Forage M=300: gating
+dropped collections from 1157 to 169. Gating helps majority/oddball
+consistently but hurts at high M with small clusters.
+
+### Zero-learning baseline (lr=0)
+
+| Benchmark | Key metric | Both lr=0 | Embed lr=0 | Normal |
+|-----------|-----------|-----------|------------|--------|
+| xor | blind XOR r | 0.67 | 0.70 | 0.64 |
+| echo | voice r | **0.90** | 0.86 | 0.85 |
+| majority | MAJ r | 0.47 | 0.57 | **0.70** |
+| match | EQ r | 0.62 | 0.49 | **0.69** |
+| mirror | stimulus r | 0.93 | 1.00 | 1.00 |
+| oddball | odd_val r | 0.53 | 0.57 | **0.66** |
+| sequence | SEQ r | 0.77 | **0.86** | 0.80 |
+
+Random clusters + random prototypes + no learning still gets XOR 0.67,
+echo 0.90, sequence 0.77. The k-means column forward pass acts as a
+random feature detector that captures structure without any training.
+
+**Implication:** most benchmarks are too easy — the column's distance-
+to-centroid similarity is powerful enough that learning barely helps.
+Only majority (0.47→0.70) and oddball (0.53→0.66) clearly require
+learned representations. Need harder benchmarks that test genuine
+learning vs lucky random projections.
