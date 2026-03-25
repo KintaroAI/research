@@ -541,6 +541,14 @@ class ColumnManager:
             H_max = np.log(n_out)
             lr_eff = lr_eff * (H / H_max)
 
+        # Gate learning by input variance: dead inputs → no learning
+        if CONFIDENCE_GATING:
+            # Per-column input variance: mean variance across neurons and time
+            input_var = X.var(axis=2).mean(axis=1)             # (m,)
+            # Normalize to 0-1 range using sigmoid-like scaling
+            var_gate = (input_var / (input_var + 0.01)).clip(0.0, 1.0)  # (m,)
+            lr_eff = lr_eff * var_gate
+
         # --- Update prototypes (mode-dependent) ---
         if COLUMN_MODE == 'kmeans':
             self._update_kmeans(X, actual_winners, lr_eff)
