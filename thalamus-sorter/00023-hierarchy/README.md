@@ -455,3 +455,26 @@ issues:
 Needs rethinking: either accept any consistent mapping (not identity),
 or provide a mechanism for the system to discover which column→stimulus
 pairing works.
+
+## Confidence gating
+
+Column outputs scaled by confidence = `1 - H/H_max` (entropy-based).
+Clear winner → confidence ≈ 1 → full output. Uniform/unsure →
+confidence ≈ 0 → column goes silent. Eligibility traces also scaled
+by confidence — uncertain columns don't accumulate trace.
+
+Tiredness interaction: winner tires → softmax becomes uniform →
+confidence drops → brief silent period during winner transition →
+new winner takes over with fresh tiredness → confidence recovers.
+
+### Design notes (not yet implemented)
+
+Two different gating signals for different purposes:
+- **Confidence** (entropy of softmax) → gate **output**. "I can't
+  decide" → don't broadcast noise to downstream columns.
+- **Input variance** (signal activity) → gate **learning**. "My neurons
+  are dead" → nothing to learn from. But active-but-uncategorizable
+  input should still drive learning (exploration of new categories).
+
+Current: both output and trace gated by confidence. Future: learning
+gated by input variance instead.
