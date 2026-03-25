@@ -511,11 +511,14 @@ class ColumnManager:
         probs = e / e.sum(axis=1, keepdims=True)      # (m, n_out)
 
         # Confidence gating: scale outputs by how peaked the distribution is.
-        # confidence = 1 - H/H_max (1 = one clear winner, 0 = uniform/unsure)
+        # confidence = floor + (1-floor) * (1 - H/H_max)
+        # floor=0.3 ensures columns always output some signal even when unsure
         if CONFIDENCE_GATING:
             H = -(probs * np.log(probs + 1e-10)).sum(axis=1)  # (m,)
             H_max = np.log(n_out)
-            confidence = (1.0 - H / H_max).clip(0.0, 1.0)    # (m,)
+            conf_floor = 0.3
+            raw_conf = (1.0 - H / H_max).clip(0.0, 1.0)      # (m,)
+            confidence = conf_floor + (1.0 - conf_floor) * raw_conf
             probs = probs * confidence[:, None]
 
         # --- Batched update ---
