@@ -43,7 +43,7 @@ COLUMN_MODE = 'kmeans'
 # Confidence gating: scale column outputs by match quality.
 # When True, outputs are suppressed when the input is far from all centroids.
 # When False, softmax always sums to 1 (original behavior).
-CONFIDENCE_GATING = False
+CONFIDENCE_GATING = True
 
 LATERAL_LEARN_MODE = 'covariance'
 
@@ -556,8 +556,11 @@ class ColumnManager:
             # Decay all traces
             self.traces *= self.trace_decay
 
-            # Accumulate winner's direction
-            self.traces[ar, actual_winners] += direction
+            # Accumulate winner's direction, scaled by confidence if gating enabled
+            if CONFIDENCE_GATING:
+                self.traces[ar, actual_winners] += confidence[:, None] * direction
+            else:
+                self.traces[ar, actual_winners] += direction
 
             # Apply when reward is pending (fixed scale, independent of lr)
             if self._pending_reward != 0.0:
