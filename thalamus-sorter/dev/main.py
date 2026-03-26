@@ -1488,7 +1488,7 @@ def main():
                        choices=['exact', 'nudge'],
                        help="Centroid update: 'nudge' (lr-based drift toward member mean, default) "
                             "or 'exact' (incremental arithmetic, immediate — causes churn)")
-    p_w2v.add_argument("--cluster-max-k", type=int, default=1,
+    p_w2v.add_argument("--cluster-max-k", type=int, default=2,
                        help="Ring buffer depth for multi-cluster membership (default: 1)")
     p_w2v.add_argument("--cluster-track-history", action="store_true",
                        help="Save per-neuron cluster ID at each report interval")
