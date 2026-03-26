@@ -1476,7 +1476,7 @@ def main():
                        help="Centroid nudge learning rate (default: 1.0)")
     p_w2v.add_argument("--cluster-report-every", type=int, default=1000,
                        help="Save cluster visualization every N ticks (default: 1000)")
-    p_w2v.add_argument("--cluster-split-every", type=int, default=100,
+    p_w2v.add_argument("--cluster-split-every", type=int, default=10,
                        help="Attempt dead cluster recovery every N ticks (default: 10)")
     p_w2v.add_argument("--cluster-hysteresis", type=float, default=0.0,
                        help="Reassignment resistance: neuron must be (1-h)*dist closer to jump (default: 0.0)")
