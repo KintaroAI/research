@@ -22,38 +22,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-# Entropy-scaled learning rate: columns with uniform outputs learn faster,
-# differentiated columns learn slower (stable but can re-learn gradually).
-# Set to False to use the original usage-only lr scaling.
-ENTROPY_SCALED_LR = True
-
-# Column similarity/learning mode:
-#   'variance'  — streaming variance of prototype projections + power iteration
-#                 (linear: finds principal components of signal covariance)
-#   'kmeans'    — negative squared distance to centroids + centroid nudge
-#                 (non-linear: partitions input space by nearest centroid)
-COLUMN_MODE = 'kmeans'
-
-# Lateral learning mode:
-#   'contrastive' — winner pulls toward prev_outputs, losers push away
-#                   (associative: memorizes co-occurring lateral patterns)
-#   'covariance'  — power iteration on cross-covariance between lateral
-#                   input and local projection (variance-based: finds which
-#                   lateral direction correlates with local state changes)
-# Confidence gating: scale column outputs by match quality.
-# When True, outputs are suppressed when the input is far from all centroids.
-# When False, softmax always sums to 1 (original behavior).
-CONFIDENCE_GATING = False
-
-# Output tiredness rate: winners fatigue and yield to rested runners-up.
-# 0.001 = ~1k ticks to tire (matches signal buffer T=1000).
-# Set to 0.0 to disable tiredness.
-# TIREDNESS_RATE = 0.001  # tested value (~1k ticks to tire)
-TIREDNESS_RATE = 0.0
-TIREDNESS_RECOVERY = 0.0005
-
-LATERAL_LEARN_MODE = 'covariance'
-
 # ---------------------------------------------------------------------------
 # SoftWTACell — from column/dev/column.py, instantaneous + streaming modes
 # (kept for standalone use and benchmarks; ColumnManager uses batched ops)
@@ -281,7 +249,15 @@ class ColumnManager:
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
                  temperature=0.2, lr=0.05, match_threshold=0.1,
                  streaming_decay=0.5, lateral=False, lateral_k=6,
-                 eligibility=False, trace_decay=0.95):
+                 eligibility=False, trace_decay=0.95,
+                 mode='kmeans',
+                 confidence_gating=False,
+                 confidence_floor=0.3,
+                 tiredness_rate=0.0,
+                 tiredness_recovery=0.0005,
+                 entropy_scaled_lr=True,
+                 lateral_mode='covariance',
+                 reward_lr=0.01):
         self.m = m
         self.n_outputs = n_outputs
         self.max_inputs = max_inputs
@@ -294,11 +270,18 @@ class ColumnManager:
         self.lateral = lateral
         self.eligibility = eligibility
         self.trace_decay = trace_decay
+        self.mode = mode
+        self.confidence_gating = confidence_gating
+        self.confidence_floor = confidence_floor
+        self.tiredness_rate = tiredness_rate
+        self.tiredness_recovery = tiredness_recovery
+        self.entropy_scaled_lr = entropy_scaled_lr
+        self.lateral_mode = lateral_mode
 
         # Batched state: all numpy for minimal overhead on small tensors
         rng = np.random.RandomState(42)
         protos = rng.randn(m, n_outputs, max_inputs).astype(np.float32)
-        if COLUMN_MODE == 'kmeans':
+        if self.mode == 'kmeans':
             protos *= 0.1  # small random centroids in input space
         else:
             norms = np.linalg.norm(protos, axis=2, keepdims=True).clip(1e-8)
@@ -314,13 +297,11 @@ class ColumnManager:
         else:
             self.traces = None
         self._pending_reward = 0.0
-        self.reward_lr = 0.01  # fixed scale for reward updates, independent of lr
+        self.reward_lr = reward_lr
 
         # Output tiredness: consecutive wins decay the output value,
         # forcing exploration of other categories
         self.output_tiredness = np.zeros((m, n_outputs), dtype=np.float32)
-        self.tiredness_rate = TIREDNESS_RATE
-        self.tiredness_recovery = TIREDNESS_RECOVERY
 
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
@@ -421,7 +402,7 @@ class ColumnManager:
             row[matches[0]] = -1
 
     # ------------------------------------------------------------------
-    # Similarity + learning strategies (dispatched by COLUMN_MODE)
+    # Similarity + learning strategies (dispatched by self.mode)
     # ------------------------------------------------------------------
 
     def _sim_variance(self, X):
@@ -495,7 +476,7 @@ class ColumnManager:
         X[~valid] = 0.0
 
         # --- Similarity (mode-dependent) ---
-        if COLUMN_MODE == 'kmeans':
+        if self.mode == 'kmeans':
             sim = self._sim_kmeans(X)
         else:
             sim = self._sim_variance(X)
@@ -519,13 +500,12 @@ class ColumnManager:
 
         # Confidence gating: scale outputs by how peaked the distribution is.
         # confidence = floor + (1-floor) * (1 - H/H_max)
-        # floor=0.3 ensures columns always output some signal even when unsure
-        if CONFIDENCE_GATING:
+        # floor ensures columns always output some signal even when unsure
+        if self.confidence_gating:
             H = -(probs * np.log(probs + 1e-10)).sum(axis=1)  # (m,)
             H_max = np.log(n_out)
-            conf_floor = 0.3
             raw_conf = (1.0 - H / H_max).clip(0.0, 1.0)      # (m,)
-            confidence = conf_floor + (1.0 - conf_floor) * raw_conf
+            confidence = self.confidence_floor + (1.0 - self.confidence_floor) * raw_conf
             probs = probs * confidence[:, None]
 
         # --- Batched update ---
@@ -546,7 +526,7 @@ class ColumnManager:
         lr_eff = np.where(needs_reassign, self.lr, lr_normal)
 
         # Entropy-scaled lr
-        if ENTROPY_SCALED_LR:
+        if self.entropy_scaled_lr:
             H = -(probs * np.log(probs + 1e-10)).sum(axis=1)
             H_max = np.log(n_out)
             lr_eff = lr_eff * (H / H_max)
@@ -558,7 +538,7 @@ class ColumnManager:
         #     lr_eff = lr_eff * var_gate
 
         # --- Update prototypes (mode-dependent) ---
-        if COLUMN_MODE == 'kmeans':
+        if self.mode == 'kmeans':
             self._update_kmeans(X, actual_winners, lr_eff)
         else:
             self._update_variance(X, actual_winners, lr_eff)
@@ -573,7 +553,7 @@ class ColumnManager:
             self.traces *= self.trace_decay
 
             # Accumulate winner's direction, scaled by confidence if gating enabled
-            if CONFIDENCE_GATING:
+            if self.confidence_gating:
                 self.traces[ar, actual_winners] += confidence[:, None] * direction
             else:
                 self.traces[ar, actual_winners] += direction
@@ -588,13 +568,13 @@ class ColumnManager:
             neighbor_out = self._prev_outputs[self.lateral_adj]  # (m, K, n_out)
             lat_in = neighbor_out.reshape(m, -1)                 # (m, K*n_out)
 
-            if LATERAL_LEARN_MODE == 'contrastive':
+            if self.lateral_mode == 'contrastive':
                 sign = np.full((m, n_out), -1.0 / (n_out - 1), dtype=np.float32)
                 sign[ar, actual_winners] = 1.0
                 delta = lat_in[:, None, :] - self.lateral_protos
                 new_lat = self.lateral_protos + lr_eff[:, None, None] * sign[:, :, None] * delta
 
-            elif LATERAL_LEARN_MODE == 'covariance':
+            elif self.lateral_mode == 'covariance':
                 sim_c = sim - sim.mean(axis=1, keepdims=True)
                 lat_target = sim_c[:, :, None] * lat_in[:, None, :]
                 lat_target_norm = np.linalg.norm(lat_target, axis=2, keepdims=True).clip(1e-8)
