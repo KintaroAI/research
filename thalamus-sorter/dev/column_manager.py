@@ -43,7 +43,7 @@ COLUMN_MODE = 'kmeans'
 # Confidence gating: scale column outputs by match quality.
 # When True, outputs are suppressed when the input is far from all centroids.
 # When False, softmax always sums to 1 (original behavior).
-CONFIDENCE_GATING = True
+CONFIDENCE_GATING = False
 
 LATERAL_LEARN_MODE = 'covariance'
 
