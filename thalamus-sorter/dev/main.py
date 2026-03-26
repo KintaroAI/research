@@ -1348,10 +1348,10 @@ def main():
                        help="Random peers per neuron per tick (similarity mode, default: 10)")
     p_w2v.add_argument("--sigma", type=float, default=5.0,
                        help="Gaussian RBF kernel width (similarity mode, default: 5.0)")
-    p_w2v.add_argument("--threshold", type=float, default=0.0,
+    p_w2v.add_argument("--threshold", type=float, default=0.5,
                        help="Similarity/correlation threshold (default: 0.0)")
     # correlation mode args
-    p_w2v.add_argument("--k-sample", type=int, default=50,
+    p_w2v.add_argument("--k-sample", type=int, default=200,
                        help="Random candidates to check per neuron (correlation mode, default: 50)")
     p_w2v.add_argument("--batch-size", type=int, default=256,
                        help="GPU batch size for anchor processing (default: 256)")
@@ -1360,7 +1360,7 @@ def main():
                        help="Total unique anchor neurons per tick (split into batch_size chunks)")
     anchor_group.add_argument("--anchor-batches", type=int, default=None,
                        help="Number of batches per tick (anchor_sample = anchor_batches * batch_size)")
-    p_w2v.add_argument("--signal-T", type=int, default=100,
+    p_w2v.add_argument("--signal-T", type=int, default=1000,
                        help="Temporal signal buffer length (correlation mode, default: 100)")
     p_w2v.add_argument("--signal-sigma", type=float, default=3.0,
                        help="Gaussian smoothing sigma for signal generation (correlation mode, default: 3.0)")
@@ -1382,7 +1382,7 @@ def main():
     p_w2v.add_argument("--use-mse", action="store_true",
                        help="Use MSE as distance metric (lower=more similar). "
                             "No per-frame global mean needed. Threshold ~0.02.")
-    p_w2v.add_argument("--use-deriv-corr", action="store_true",
+    p_w2v.add_argument("--use-deriv-corr", action=argparse.BooleanOptionalAction, default=True,
                        help="Pearson correlation on temporal derivatives. "
                             "Dead neurons get score=0 (no variance gate needed). "
                             "Threshold ~0.3-0.5 (higher=more similar).")
@@ -1440,10 +1440,10 @@ def main():
     p_w2v.add_argument("--save-model-path", type=str, default=None,
                        help="Path for saved model (default: output_dir/model.npy)")
     # common args
-    p_w2v.add_argument("--lr", type=float, default=0.05,
-                       help="Learning rate (default: 0.05)")
-    p_w2v.add_argument("--dims", type=int, default=2,
-                       help="Position vector dimensionality (default: 2)")
+    p_w2v.add_argument("--lr", type=float, default=0.001,
+                       help="Learning rate (default: 0.001)")
+    p_w2v.add_argument("--dims", type=int, default=8,
+                       help="Position vector dimensionality (default: 8)")
     p_w2v.add_argument("--image", "-i", type=str, default=None,
                        help="Input image to scramble and reconstruct")
     p_w2v.add_argument("--frames", "-f", type=int, default=0,
@@ -1496,7 +1496,7 @@ def main():
                        choices=['color', 'signal', 'both'],
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # column wiring (thalamus-to-cortex)
-    p_w2v.add_argument("--column-outputs", type=int, default=0,
+    p_w2v.add_argument("--column-outputs", type=int, default=4,
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
                        help="Pre-allocated input slots per column (default: 20)")
