@@ -45,6 +45,12 @@ COLUMN_MODE = 'kmeans'
 # When False, softmax always sums to 1 (original behavior).
 CONFIDENCE_GATING = False
 
+# Output tiredness rate: winners fatigue and yield to rested runners-up.
+# 0.001 = ~1k ticks to tire (matches signal buffer T=1000).
+# Set to 0.0 to disable tiredness.
+TIREDNESS_RATE = 0.001
+TIREDNESS_RECOVERY = 0.0005
+
 LATERAL_LEARN_MODE = 'covariance'
 
 # ---------------------------------------------------------------------------
@@ -312,8 +318,8 @@ class ColumnManager:
         # Output tiredness: consecutive wins decay the output value,
         # forcing exploration of other categories
         self.output_tiredness = np.zeros((m, n_outputs), dtype=np.float32)
-        self.tiredness_rate = 0.001    # gain per tick as winner (~1k to tire)
-        self.tiredness_recovery = 0.0005  # recovery per tick as loser
+        self.tiredness_rate = TIREDNESS_RATE
+        self.tiredness_recovery = TIREDNESS_RECOVERY
 
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
