@@ -954,12 +954,13 @@ def run_word2vec(args):
             bench_metadata = None
             if bench is not None:
                 bench_signal, bench_metadata = bench.make_signal(w, h, args)
-                if '_refs' in bench_metadata and renderer is not None:
-                    bench_metadata['_refs']['renderer'] = renderer
-                for t in range(T):
-                    signals_np[:n_sensory, t] = bench_signal(t)
+                if bench_signal is not None:
+                    if '_refs' in bench_metadata and renderer is not None:
+                        bench_metadata['_refs']['renderer'] = renderer
+                    for t in range(T):
+                        signals_np[:n_sensory, t] = bench_signal(t)
 
-            elif args.signal_source:
+            if (bench is None or bench_signal is None) and args.signal_source:
                 if args.signal_source.endswith('.png') or args.signal_source.endswith('.jpg'):
                     img_bgr = cv2.imread(args.signal_source)
                     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
