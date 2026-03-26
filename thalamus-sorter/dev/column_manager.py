@@ -48,7 +48,7 @@ CONFIDENCE_GATING = False
 # Output tiredness rate: winners fatigue and yield to rested runners-up.
 # 0.001 = ~1k ticks to tire (matches signal buffer T=1000).
 # Set to 0.0 to disable tiredness.
-# TIREDNESS_RATE = 0.001  # optimal for XOR benchmark (~1k ticks to tire)
+# TIREDNESS_RATE = 0.001  # tested value (~1k ticks to tire)
 TIREDNESS_RATE = 0.0
 TIREDNESS_RECOVERY = 0.0005
 
