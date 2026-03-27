@@ -182,6 +182,17 @@ Conscience columns hit ~30% dominance (near-perfect 25% uniformity) regardless o
 
 Conscience fixes column collapse and the model separates outputs better (spread 3.69 vs 2.77). But the model's contiguity dropped to 0.28 and skip-gram pairs are 15× lower — the rotating winner signal has more temporal variation, making it harder for the embedding algorithm to find stable correlations. May need `threshold` or `k_sample` tuning.
 
+### 100k ticks: stability over longer training
+
+| Metric | Conscience 10k | Conscience 100k | Default 10k | Default 100k |
+|---|---|---|---|---|
+| All-4-different | 49/64 | 41/64 | 1/64 | 1/64 |
+| Mean spread | 3.75 | 3.59 | 2.62 | 2.41 |
+| Dominant % | 37.5% | 30.8% | 99.2% | 44.0% |
+| Global win % | 26/25/25/24 | 24/26/25/25 | 28/20/34/17 | 22/26/26/26 |
+
+Conscience spread drops slightly (3.75→3.59) but winner balance improves (30.8%, near-perfect). Default dominance drops (99.2%→44.0%) — columns slowly become less collapsed, but the model still can't separate them (spread 2.41, only 1/64 all-different). The gap in what matters (model spread) persists at 100k.
+
 ### Typical conscience output (single column, 20 ticks post-training)
 
 ```
