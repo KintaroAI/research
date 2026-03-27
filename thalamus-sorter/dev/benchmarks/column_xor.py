@@ -45,75 +45,100 @@ def make_column(n_inputs, n_outputs, column_type, window, lr, temperature, alpha
     return cm
 
 
-def eval_function(cm1, cm2, ring1, ring2, target_fn, n_eval, noise, rng, window):
-    """Evaluate a column chain on a boolean function.
+def eval_outputs(cm1, cm2, ring1, ring2, n_eval, noise, rng):
+    """Run eval ticks, collect per-output mean values for each input combo.
 
-    Returns per-input-combo accuracy and overall accuracy.
+    Returns:
+        combo_means: dict (a,b) → (n_outputs,) mean output values
+        combo_raw: dict (a,b) → list of (n_outputs,) arrays per tick
     """
     combos = [(0, 0), (0, 1), (1, 0), (1, 1)]
-    correct = 0
-    total = 0
-    per_combo = {}
-
-    # First, determine which output maps to which target value
-    # by majority vote over eval ticks
-    combo_outputs = {c: [] for c in combos}
+    combo_sums = {c: None for c in combos}
+    combo_counts = {c: 0 for c in combos}
+    combo_raw = {c: [] for c in combos}
 
     for _ in range(n_eval):
         for a, b in combos:
-            # Feed input through chain
             sig1 = np.array([float(a), float(b)], dtype=np.float32)
             sig1 += rng.randn(2).astype(np.float32) * noise
             ring1[:, :-1] = ring1[:, 1:]
             ring1[:, -1] = sig1
             cm1.tick(ring1)
-            out1 = cm1.get_outputs()[0]  # (4,)
+            out1 = cm1.get_outputs()[0]
 
             if cm2 is not None:
                 ring2[:, :-1] = ring2[:, 1:]
                 ring2[:, -1] = out1
                 cm2.tick(ring2)
-                final_out = cm2.get_outputs()[0]  # (2,)
+                final_out = cm2.get_outputs()[0].copy()
             else:
-                final_out = out1
+                final_out = out1.copy()
 
-            winner = final_out.argmax()
-            combo_outputs[(a, b)].append(winner)
+            if combo_sums[(a, b)] is None:
+                combo_sums[(a, b)] = np.zeros_like(final_out)
+            combo_sums[(a, b)] += final_out
+            combo_counts[(a, b)] += 1
+            combo_raw[(a, b)].append(final_out)
 
-    # Determine output-to-target mapping by majority
-    # Group combos by target value
-    target_groups = {}
+    combo_means = {}
     for c in combos:
-        tv = target_fn(c[0], c[1])
-        if tv not in target_groups:
-            target_groups[tv] = []
-        target_groups[tv].append(c)
+        combo_means[c] = combo_sums[c] / combo_counts[c]
 
-    # For each target value, find most common output across its combos
-    output_to_target = {}
-    target_to_output = {}
-    n_target_vals = len(target_groups)
+    return combo_means, combo_raw
 
-    # Count output frequencies per target group
-    for tv, group_combos in target_groups.items():
-        out_counts = {}
-        for c in group_combos:
-            for o in combo_outputs[c]:
-                out_counts[o] = out_counts.get(o, 0) + 1
-        best_out = max(out_counts, key=out_counts.get)
-        target_to_output[tv] = best_out
 
-    # Now compute accuracy using this mapping
+def score_function(combo_means, target_fn):
+    """Find which single output best tracks a boolean function.
+
+    For each output, compute how well it separates target=0 vs target=1
+    by comparing mean values. Returns best output index and separation score.
+    """
+    combos = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    n_outputs = len(combo_means[(0, 0)])
+
+    best_output = -1
+    best_sep = 0.0
+    best_inverted = False
+
+    for o in range(n_outputs):
+        # Mean output value when target=0 vs target=1
+        vals_0 = [combo_means[c][o] for c in combos if target_fn(c[0], c[1]) == 0]
+        vals_1 = [combo_means[c][o] for c in combos if target_fn(c[0], c[1]) == 1]
+        mean_0 = np.mean(vals_0)
+        mean_1 = np.mean(vals_1)
+        sep = abs(mean_1 - mean_0)
+        if sep > best_sep:
+            best_sep = sep
+            best_output = o
+            best_inverted = mean_0 > mean_1
+
+    # Compute accuracy: for each combo, does the best output correctly
+    # predict the target? (threshold at midpoint)
+    vals_0 = [combo_means[c][best_output] for c in combos if target_fn(c[0], c[1]) == 0]
+    vals_1 = [combo_means[c][best_output] for c in combos if target_fn(c[0], c[1]) == 1]
+    threshold = (np.mean(vals_0) + np.mean(vals_1)) / 2
+
+    per_combo = {}
     for c in combos:
         target = target_fn(c[0], c[1])
-        expected_out = target_to_output[target]
-        outputs = combo_outputs[c]
-        n_correct = sum(1 for o in outputs if o == expected_out)
-        per_combo[c] = n_correct / len(outputs)
-        correct += n_correct
-        total += len(outputs)
+        val = combo_means[c][best_output]
+        if best_inverted:
+            pred = 0 if val > threshold else 1
+        else:
+            pred = 1 if val > threshold else 0
+        per_combo[c] = float(pred == target)
 
-    return correct / total, per_combo, target_to_output
+    acc = np.mean(list(per_combo.values()))
+
+    return {
+        'best_output': best_output,
+        'separation': float(best_sep),
+        'accuracy': float(acc),
+        'per_combo': per_combo,
+        'inverted': best_inverted,
+        'mean_when_0': float(np.mean(vals_0)),
+        'mean_when_1': float(np.mean(vals_1)),
+    }
 
 
 def run_test(column_type, n_train, n_eval, noise, window, lr, temperature,
@@ -125,9 +150,9 @@ def run_test(column_type, n_train, n_eval, noise, window, lr, temperature,
     cm_single = make_column(2, 2, column_type, window, lr, temperature, alpha)
     ring_single = np.zeros((2, window), dtype=np.float32)
 
-    # --- Two-column chain (2 → 4 → 2) ---
+    # --- Two-column chain (2 → 4 → 4) ---
     cm1 = make_column(2, 4, column_type, window, lr, temperature, alpha)
-    cm2 = make_column(4, 2, column_type, window, lr, temperature, alpha)
+    cm2 = make_column(4, 4, column_type, window, lr, temperature, alpha)
     ring1 = np.zeros((2, window), dtype=np.float32)
     ring2 = np.zeros((4, window), dtype=np.float32)
 
@@ -162,7 +187,16 @@ def run_test(column_type, n_train, n_eval, noise, window, lr, temperature,
         ring2[:, -1] = out1
         cm2.tick(ring2)
 
-    # Evaluation
+    # Evaluation: collect mean output values per input combo
+    ring_s_eval = np.zeros((2, window), dtype=np.float32)
+    single_means, _ = eval_outputs(cm_single, None, ring_s_eval, None,
+                                    n_eval, noise, rng)
+
+    ring1_eval = np.zeros((2, window), dtype=np.float32)
+    ring2_eval = np.zeros((4, window), dtype=np.float32)
+    chain_means, _ = eval_outputs(cm1, cm2, ring1_eval, ring2_eval,
+                                   n_eval, noise, rng)
+
     fns = {
         'AND': lambda a, b: a & b,
         'OR':  lambda a, b: a | b,
@@ -171,25 +205,14 @@ def run_test(column_type, n_train, n_eval, noise, window, lr, temperature,
 
     results = {}
     for fn_name, fn in fns.items():
-        # Single column
-        ring_s_eval = np.zeros((2, window), dtype=np.float32)
-        acc_s, per_s, map_s = eval_function(
-            cm_single, None, ring_s_eval, None, fn, n_eval, noise, rng, window)
-
-        # Chain
-        ring1_eval = np.zeros((2, window), dtype=np.float32)
-        ring2_eval = np.zeros((4, window), dtype=np.float32)
-        acc_c, per_c, map_c = eval_function(
-            cm1, cm2, ring1_eval, ring2_eval, fn, n_eval, noise, rng, window)
-
         results[fn_name] = {
-            'single_acc': acc_s,
-            'single_per_combo': per_s,
-            'single_mapping': map_s,
-            'chain_acc': acc_c,
-            'chain_per_combo': per_c,
-            'chain_mapping': map_c,
+            'single': score_function(single_means, fn),
+            'chain': score_function(chain_means, fn),
         }
+
+    # Also report raw combo means for chain
+    results['_chain_means'] = {str(c): chain_means[c].tolist() for c in chain_means}
+    results['_single_means'] = {str(c): single_means[c].tolist() for c in single_means}
 
     return results
 
@@ -216,33 +239,44 @@ def main():
                        args.window, args.lr, args.temperature, args.alpha,
                        args.hold)
 
-    print(f"{'function':>8} {'single':>8} {'chain':>8}  per-combo (chain)")
-    print("-" * 60)
+    print(f"{'function':>8} {'single':>20} {'chain':>20}")
+    print(f"{'':>8} {'out  sep   acc':>20} {'out  sep   acc':>20}")
+    print("-" * 52)
     for fn_name in ['AND', 'OR', 'XOR']:
-        r = results[fn_name]
-        combo_str = '  '.join(
-            f'{c}:{r["chain_per_combo"][c]:.0%}'
-            for c in [(0,0), (0,1), (1,0), (1,1)])
-        single_mark = 'ok' if r['single_acc'] > 0.8 else 'FAIL'
-        chain_mark = 'ok' if r['chain_acc'] > 0.8 else 'FAIL'
-        print(f"{fn_name:>8} {r['single_acc']:>6.0%} {single_mark:>2}  "
-              f"{r['chain_acc']:>5.0%} {chain_mark:>2}   {combo_str}")
+        s = results[fn_name]['single']
+        c = results[fn_name]['chain']
+        s_mark = 'ok' if s['accuracy'] >= 1.0 else '--'
+        c_mark = 'ok' if c['accuracy'] >= 1.0 else '--'
+        print(f"{fn_name:>8}   "
+              f"o{s['best_output']} {s['separation']:.3f} {s['accuracy']:.0%} {s_mark:>2}   "
+              f"o{c['best_output']} {c['separation']:.3f} {c['accuracy']:.0%} {c_mark:>2}")
+
+    # Detailed chain output values per combo
+    print(f"\nChain output means per input combo:")
+    combos = [(0,0), (0,1), (1,0), (1,1)]
+    cm = results['_chain_means']
+    n_out = len(cm[str(combos[0])])
+    header = '  '.join(f'out{o}' for o in range(n_out))
+    print(f"  {'input':>7}  {header}   XOR")
+    for c in combos:
+        vals = cm[str(c)]
+        xor_val = c[0] ^ c[1]
+        val_str = '  '.join(f'{v:.3f}' for v in vals)
+        print(f"  {str(c):>7}  {val_str}    {xor_val}")
 
     print()
-    xor = results['XOR']
-    if xor['chain_acc'] > 0.8 and xor['single_acc'] < 0.7:
-        print("SUCCESS: chain solves XOR where single column fails!")
-    elif xor['chain_acc'] > 0.8:
-        print("Chain solves XOR (but single column also does — unexpected)")
-    elif xor['single_acc'] > 0.8:
-        print("Single column solves XOR?! (unexpected — check noise level)")
+    xor_c = results['XOR']['chain']
+    xor_s = results['XOR']['single']
+    if xor_c['accuracy'] >= 1.0 and xor_s['accuracy'] < 1.0:
+        print(f"SUCCESS: chain output {xor_c['best_output']} computes XOR "
+              f"(sep={xor_c['separation']:.3f}), single column can't")
+    elif xor_c['accuracy'] >= 1.0:
+        print(f"Chain output {xor_c['best_output']} computes XOR "
+              f"(sep={xor_c['separation']:.3f})")
     else:
-        print(f"Neither solves XOR reliably. Chain={xor['chain_acc']:.0%}, "
-              f"Single={xor['single_acc']:.0%}")
-
-    # Show column 1 categorization
-    print(f"\nColumn 1 output mapping ({args.column_type}):")
-    print(f"  target→output: {xor['chain_mapping']}")
+        print(f"XOR not cleanly separated. "
+              f"Best chain output {xor_c['best_output']} sep={xor_c['separation']:.3f}, "
+              f"acc={xor_c['accuracy']:.0%}")
 
 
 if __name__ == '__main__':
