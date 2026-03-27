@@ -298,6 +298,10 @@ class ColumnBase:
         X[~valid] = 0.0
         return X
 
+    def set_reward(self, value):
+        """Set pending reward (no-op in base; subclasses may use for eligibility)."""
+        pass
+
     def tick(self, signal_window, knn2=None):
         raise NotImplementedError
 
