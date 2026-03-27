@@ -230,10 +230,18 @@ class ClusterManager:
             if pairs is not None:
                 self._update_knn2_gpu(pairs)
 
-        # Column wiring: process stream update events before splits
+        # Column wiring: ensure each neuron is wired to its current primary.
+        # Events report (neuron, evicted_cluster, new_cluster), but after
+        # in-ring switches the neuron may still be wired to a stale primary.
+        # Unwire from all ring entries except new_c, then wire to new_c.
         if self.column_mgr and wiring_events:
             for neuron, old_c, new_c in wiring_events:
-                if old_c >= 0:
+                # Unwire from evicted cluster and any other stale wiring
+                ring = self.cluster_ids[neuron]
+                for cid in ring:
+                    if cid >= 0 and cid != new_c:
+                        self.column_mgr.unwire(int(cid), neuron)
+                if old_c >= 0 and old_c not in ring:
                     self.column_mgr.unwire(old_c, neuron)
                 self.column_mgr.wire(new_c, neuron)
 
