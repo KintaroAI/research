@@ -194,8 +194,50 @@ tick  out0   out1   out2   out3   winner
 
 Per-tick output is peaked (winner ~0.5-0.7), but winner rotates across ticks. All 4 outputs take turns winning.
 
+### Temporal stability: replay drift test
+
+Created `benchmarks/patch_drift.py` — replays the exact same saccade sequence to measure true prototype drift (vs input variation). Method:
+
+1. Train 10k ticks (first 5k warmup, last 5k recorded)
+2. Replay those 5k saccade positions while columns keep learning
+3. Compare per-tick winners: same input → same output = stable
+
+```bash
+python benchmarks/patch_drift.py --column-type conscience
+python benchmarks/patch_drift.py --column-type default
+```
+
+Results (7×7 patches, 10k train, 5k replay):
+
+| Metric | Default | Conscience |
+|---|---|---|
+| Same-input match rate | 65.7% | 63.4% |
+| Stable patches (>90% match) | 0/121 | 12/121 |
+| Drifting patches (<50% match) | 10/121 | 39/121 |
+| Per-output match range | 61-72% | 60-67% |
+
+Both types show ~35% drift over 5k continued learning ticks — prototypes haven't converged, they're still moving. This is not conscience-specific; it's that columns are still actively learning. Conscience has more uniformly distributed drift (all outputs ~63%), while default has output 0 more stable (72%) due to collapse bias.
+
+To address later: learning rate decay, prototype freezing after convergence, or stability-gated learning.
+
+### Performance: vectorized streaming update
+
+Vectorized `streaming_update_v3_gpu` in `cluster_experiments.py` — batch distance computation for all anchors in one `(n_anchors, 1+k2, dims)` operation instead of per-anchor Python loop. Thin apply loop over ~5-20 actual movers handles sequential size mutations.
+
+| | Before | After |
+|---|---|---|
+| ms/tick (forage 22×8, m=100) | 9.8 | 4.4 |
+| Stream update cost | ~7ms (69%) | ~1.5ms |
+| 1M run time | ~2.7h | ~1.2h |
+
+Verified identical outputs to scalar reference over 500 ticks. Ref version kept as `streaming_update_v3_gpu_ref`.
+
+### Bug fix: column wiring inconsistency
+
+Fixed stale wiring on in-ring cluster switches. When a neuron switches primary via in-ring swap (both clusters in ring buffer), no wiring event fires. Later LRU eviction of the non-primary slot emits `(neuron, evicted, new)` but the neuron is wired to the old primary, not the evicted cluster — causing stale wiring. Fix: on wiring events, unwire from all ring entries except new primary.
+
 ## Next Steps
 
-- Run conscience columns in full saccade pipeline (long run, 1M+ ticks) to evaluate embedding quality
+- Address prototype drift: learning rate decay or stability-gated learning
 - Tune embedding parameters (`threshold`, `k_sample`) for conscience signal characteristics
 - Explore whether conscience columns produce meaningful visual prototypes (edge detectors, etc.)
