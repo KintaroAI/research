@@ -77,15 +77,43 @@ Output 2 dominates: 22/64 patches
 Output 3 dominates: 11/64 patches
 ```
 
+### Patch sweep: collapse vs patch size (10k train, last 500 eval)
+
+Created `benchmarks/patch_sweep.py` — standalone sweep script that trains columns for N ticks then evaluates winner distribution over the last 500 ticks only (no cumulative dilution from warmup).
+
+```
+patch inputs  grid patches dom_mean     dom_range   >90%   >75% H_norm
+---------------------------------------------------------------------------
+  2x2      4  40x40    1600    0.510  [0.446,0.566]      0      0  0.806
+  3x3      9  26x26     676    0.582  [0.502,0.638]      0      0  0.770
+  4x4     16  20x20     400    0.636  [0.548,0.696]      0      0  0.717
+  5x5     25  16x16     256    0.673  [0.586,0.748]      0      0  0.677
+  6x6     36  13x13     169    0.701  [0.620,0.780]      0      7  0.641
+  7x7     49  11x11     121    0.723  [0.646,0.814]      0     22  0.605
+  8x8     64  10x10     100    0.739  [0.664,0.830]      0     33  0.586
+  9x9     81   8x8       64    0.762  [0.712,0.844]      0     42  0.552
+ 10x10   100   8x8       64    0.781  [0.732,0.860]      0     56  0.528
+```
+
+```bash
+python benchmarks/patch_sweep.py                        # defaults: 10k train, 500 eval
+python benchmarks/patch_sweep.py --ticks 20000          # longer training
+python benchmarks/patch_sweep.py --patches 5,7,9        # subset
+```
+
+Key observation: smooth monotonic trend — every extra input pushes columns further toward collapse. At 9×9, 66% of patches have >75% single-winner dominance. No patch size is immune; it's a matter of speed.
+
+Note: earlier runs that averaged over all ticks (including warmup) showed artificially low dominance — 20k even looked *better* than 10k because the early uniform period diluted the average. The eval-window approach captures the true post-training state.
+
 ## Findings
 
 ### 1. Columns collapse to a single winner
 
-After training, each column's dominant output wins ~99% of ticks. The other 3 outputs are permanently near-zero. This is winner-take-all collapse driven by softmax competitive dynamics with Hebbian learning.
+After training, each column's dominant output wins ~76% of ticks (9×9 patches, 500-tick eval window). With the full model pipeline (patch_column benchmark, 500-tick post-training sample), collapse reaches ~99%. This is winner-take-all collapse driven by softmax competitive dynamics with Hebbian learning.
 
 ### 2. More inputs → sharper collapse
 
-With 9 inputs (3×3 patches), columns can't differentiate — entropy stays near-random at 0.93. With 49+ inputs, columns fully collapse (entropy <0.1). The sweet spot around 25 inputs (5×5) gives moderate differentiation but still trends toward collapse with more training.
+Smooth monotonic: 2×2 (51% dominant) → 10×10 (78% dominant) at 10k ticks. No threshold or phase transition — just a steady gradient. Columns with more inputs find stronger patterns, which amplifies the winner-take-all feedback loop.
 
 ### 3. The embedding algorithm groups silent outputs
 
