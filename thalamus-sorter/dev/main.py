@@ -514,11 +514,14 @@ def run_word2vec(args):
             cluster_max_k = getattr(args, 'cluster_max_k', 1)
             column_outputs = getattr(args, 'column_outputs', 0)
             column_config = {
+                'type': getattr(args, 'column_type', 'default'),
                 'n_outputs': column_outputs,
                 'max_inputs': getattr(args, 'column_max_inputs', 20),
                 'window': getattr(args, 'column_window', 4),
                 'lr': getattr(args, 'column_lr', 0.05),
                 'temperature': getattr(args, 'column_temperature', 0.5),
+                'alpha': getattr(args, 'column_alpha', 0.01),
+                'reseed_after': getattr(args, 'column_reseed_after', 1000),
                 'match_threshold': getattr(args, 'column_match_threshold', 0.1),
                 'streaming_decay': getattr(args, 'column_streaming_decay', 0.5),
                 'lateral': getattr(args, 'column_lateral', False),
@@ -878,6 +881,8 @@ def main():
                        choices=['color', 'signal', 'both'],
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # column wiring (thalamus-to-cortex)
+    p_w2v.add_argument("--column-type", type=str, default="default",
+                       help="Column type: 'default' (softmax WTA) or 'conscience' (hard WTA + homeostatic)")
     p_w2v.add_argument("--column-outputs", type=int, default=4,
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
@@ -892,6 +897,10 @@ def main():
                        help="Column match threshold for dormant reassignment (default: 0.1)")
     p_w2v.add_argument("--column-streaming-decay", type=float, default=0.8,
                        help="Column streaming EMA decay (default: 0.8, rule of thumb: 1-2/window)")
+    p_w2v.add_argument("--column-alpha", type=float, default=0.01,
+                       help="Conscience threshold learning rate (default: 0.01)")
+    p_w2v.add_argument("--column-reseed-after", type=int, default=1000,
+                       help="Reseed dead units after N ticks without winning (default: 1000)")
     p_w2v.add_argument("--column-feedback", action="store_true",
                        help="Feed column outputs back as signal for feedback neurons")
     p_w2v.add_argument("--column-lateral", action="store_true",

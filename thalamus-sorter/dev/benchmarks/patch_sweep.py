@@ -17,21 +17,29 @@ import os
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from column_manager import ColumnManager
+from column_manager import ColumnManager, ConscienceColumn
 
 
-def make_columns(patch_sz, retina, n_outputs, window, temperature, lr):
-    """Create a wired ColumnManager for a given patch size on the retina."""
+def make_columns(patch_sz, retina, n_outputs, window, temperature, lr,
+                 column_type='default', alpha=0.01, reseed_after=1000):
+    """Create a wired column manager for a given patch size on the retina."""
     grid_n = retina // patch_sz
     n_patches = grid_n * grid_n
     n_inputs = patch_sz * patch_sz
     retina_n = retina * retina
 
-    cm = ColumnManager(
-        m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
-        window=window, temperature=temperature, lr=lr,
-        mode='kmeans', entropy_scaled_lr=True,
-    )
+    if column_type == 'conscience':
+        cm = ConscienceColumn(
+            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=window, temperature=temperature, lr=lr,
+            alpha=alpha, reseed_after=reseed_after,
+        )
+    else:
+        cm = ColumnManager(
+            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=window, temperature=temperature, lr=lr,
+            mode='kmeans', entropy_scaled_lr=True,
+        )
 
     for py in range(grid_n):
         for px in range(grid_n):
@@ -48,10 +56,12 @@ def make_columns(patch_sz, retina, n_outputs, window, temperature, lr):
 
 
 def run_one(source, patch_sz, retina, n_outputs, n_ticks, n_eval, step,
-            window, temperature, lr):
+            window, temperature, lr, column_type='default',
+            alpha=0.01, reseed_after=1000):
     """Run one patch size: train for n_ticks, evaluate on last n_eval ticks."""
     cm, ring, grid_n, n_patches = make_columns(
-        patch_sz, retina, n_outputs, window, temperature, lr)
+        patch_sz, retina, n_outputs, window, temperature, lr,
+        column_type=column_type, alpha=alpha, reseed_after=reseed_after)
 
     src_h, src_w = source.shape
     max_dy = src_h - retina
@@ -123,6 +133,12 @@ def main():
                         help='Column learning rate (default: 0.05)')
     parser.add_argument('--patches', type=str, default='2,3,4,5,6,7,8,9,10',
                         help='Comma-separated patch sizes (default: 2,3,4,5,6,7,8,9,10)')
+    parser.add_argument('--column-type', type=str, default='default',
+                        help="Column type: 'default' or 'conscience' (default: default)")
+    parser.add_argument('--alpha', type=float, default=0.01,
+                        help='Conscience threshold learning rate (default: 0.01)')
+    parser.add_argument('--reseed-after', type=int, default=1000,
+                        help='Reseed dead units after N ticks (default: 1000)')
     args = parser.parse_args()
 
     # Load source
@@ -137,9 +153,12 @@ def main():
 
     patch_sizes = [int(x) for x in args.patches.split(',')]
 
+    col_type = getattr(args, 'column_type', 'default')
     print(f"Patch sweep: retina={args.retina}, ticks={args.ticks}, "
           f"eval={args.eval}, step={args.step}, outputs={args.outputs}, "
-          f"window={args.window}, temp={args.temperature}, lr={args.lr}")
+          f"window={args.window}, temp={args.temperature}, lr={args.lr}, "
+          f"type={col_type}"
+          + (f", alpha={args.alpha}" if col_type == 'conscience' else ""))
     print(f"Source: {args.source} ({source.shape[1]}x{source.shape[0]})")
     print()
 
@@ -152,7 +171,8 @@ def main():
         t0 = time.time()
         r = run_one(source, P, args.retina, args.outputs, args.ticks,
                     args.eval, args.step, args.window, args.temperature,
-                    args.lr)
+                    args.lr, column_type=col_type,
+                    alpha=args.alpha, reseed_after=args.reseed_after)
         elapsed = time.time() - t0
         results.append(r)
         print(f"  {P}x{P} ({r['n_inputs']:>3d} in, {r['n_patches']:>4d} patches): "

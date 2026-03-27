@@ -68,29 +68,42 @@ class ClusterManager:
         # Column wiring
         self.column_mgr = None
         if column_config is not None and column_config.get('n_outputs', 0) > 0:
-            from column_manager import ColumnManager
             self.column_n_outputs = column_config['n_outputs']
-            self.column_mgr = ColumnManager(
-                m,
-                n_outputs=column_config.get('n_outputs', 4),
-                max_inputs=column_config.get('max_inputs', 20),
-                window=column_config.get('window', 4),
-                temperature=column_config.get('temperature', 0.5),
-                lr=column_config.get('lr', 0.05),
-                match_threshold=column_config.get('match_threshold', 0.1),
-                streaming_decay=column_config.get('streaming_decay', 0.5),
-                lateral=column_config.get('lateral', False),
-                lateral_k=column_config.get('lateral_k', 6),
-                eligibility=column_config.get('eligibility', False),
-                trace_decay=column_config.get('trace_decay', 0.95),
-                mode=column_config.get('mode', 'kmeans'),
-                confidence_gating=column_config.get('confidence_gating', False),
-                confidence_floor=column_config.get('confidence_floor', 0.3),
-                tiredness_rate=column_config.get('tiredness_rate', 0.0),
-                tiredness_recovery=column_config.get('tiredness_recovery', 0.0005),
-                entropy_scaled_lr=column_config.get('entropy_scaled_lr', True),
-                lateral_mode=column_config.get('lateral_mode', 'covariance'),
-                reward_lr=column_config.get('reward_lr', 0.01))
+            column_type = column_config.get('type', 'default')
+            if column_type == 'conscience':
+                from column_manager import ConscienceColumn
+                self.column_mgr = ConscienceColumn(
+                    m,
+                    n_outputs=column_config.get('n_outputs', 4),
+                    max_inputs=column_config.get('max_inputs', 20),
+                    window=column_config.get('window', 4),
+                    lr=column_config.get('lr', 0.05),
+                    alpha=column_config.get('alpha', 0.01),
+                    temperature=column_config.get('temperature', 0.5),
+                    reseed_after=column_config.get('reseed_after', 1000))
+            else:
+                from column_manager import ColumnManager
+                self.column_mgr = ColumnManager(
+                    m,
+                    n_outputs=column_config.get('n_outputs', 4),
+                    max_inputs=column_config.get('max_inputs', 20),
+                    window=column_config.get('window', 4),
+                    temperature=column_config.get('temperature', 0.5),
+                    lr=column_config.get('lr', 0.05),
+                    match_threshold=column_config.get('match_threshold', 0.1),
+                    streaming_decay=column_config.get('streaming_decay', 0.5),
+                    lateral=column_config.get('lateral', False),
+                    lateral_k=column_config.get('lateral_k', 6),
+                    eligibility=column_config.get('eligibility', False),
+                    trace_decay=column_config.get('trace_decay', 0.95),
+                    mode=column_config.get('mode', 'kmeans'),
+                    confidence_gating=column_config.get('confidence_gating', False),
+                    confidence_floor=column_config.get('confidence_floor', 0.3),
+                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
+                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0005),
+                    entropy_scaled_lr=column_config.get('entropy_scaled_lr', True),
+                    lateral_mode=column_config.get('lateral_mode', 'covariance'),
+                    reward_lr=column_config.get('reward_lr', 0.01))
 
     def set_signals(self, signals_t, sig_channels, T):
         """Store signal tensor reference for signal-based rendering."""
@@ -469,21 +482,8 @@ class ClusterManager:
             slot_map_path = os.path.join(state_dir, "column_slot_map.npy")
             if os.path.exists(col_state_path) and os.path.exists(slot_map_path):
                 state = torch.load(col_state_path, weights_only=True)
-                def _to_np(t):
-                    return t.numpy() if hasattr(t, 'numpy') else np.array(t)
-                self.column_mgr.prototypes = _to_np(state['prototypes'])
-                self.column_mgr.usage = _to_np(state['usage'])
-                self.column_mgr.proj_mean = _to_np(state.get('proj_mean',
-                    torch.zeros(self.m, self.column_mgr.n_outputs)))
-                self.column_mgr.proj_var = _to_np(state.get('proj_var',
-                    torch.zeros(self.m, self.column_mgr.n_outputs)))
-                if self.column_mgr.lateral and state.get('lateral_protos') is not None:
-                    self.column_mgr.lateral_protos = _to_np(state['lateral_protos'])
-                if self.column_mgr.traces is not None and state.get('traces') is not None:
-                    self.column_mgr.traces = _to_np(state['traces'])
-                if state.get('output_tiredness') is not None:
-                    self.column_mgr.output_tiredness = _to_np(state['output_tiredness'])
-                self.column_mgr.slot_map = np.load(slot_map_path)
+                slot_map = np.load(slot_map_path)
+                self.column_mgr.load_state(state, slot_map)
                 n_wired = (self.column_mgr.slot_map >= 0).sum()
                 print(f"  Columns restored: {n_wired} wirings")
 

@@ -1,17 +1,25 @@
-"""Column wiring: thalamus-to-cortex connection via SoftWTACell columns.
+"""Column wiring: thalamus-to-cortex connection via competitive learning columns.
 
-Each cluster gets its own SoftWTACell column. Neurons wire/unwire to
-their cluster's column as they enter/leave clusters via the ring buffer.
-The column's input is a sliding window of raw signal (grayscale pixel
-intensity) of each wired neuron, processed in streaming variance mode.
+Each cluster gets its own column. Neurons wire/unwire to their cluster's
+column as they enter/leave clusters via the ring buffer. The column's input
+is a sliding window of raw signal of each wired neuron.
+
+Column types (selected via `type` key in column_config):
+    'default'    — ColumnManager: softmax WTA with kmeans/variance similarity,
+                   optional lateral connections, eligibility traces, tiredness.
+    'conscience' — ConscienceColumn: hard WTA with homeostatic threshold that
+                   prevents winner collapse. Normalized inputs, dead-unit reseeding.
+
+All column types inherit from ColumnBase which provides:
+    wire/unwire, slot_map, get_outputs, save/load interface.
 
 Architecture:
     saccade crop -> N neurons -> M clusters
-        each cluster -> 1 SoftWTACell(n_inputs=max_inputs, n_outputs=configurable)
+        each cluster -> 1 column(n_inputs=max_inputs, n_outputs=configurable)
             input = (max_inputs, window) signal trace of wired neurons
-            output = soft-WTA probabilities (streaming variance similarity)
+            output = competitive category probabilities
 
-Rule of thumb: streaming_decay ≈ 1 - 2/window
+Rule of thumb for streaming_decay ≈ 1 - 2/window:
     window=4  -> decay=0.5
     window=8  -> decay=0.75
     window=16 -> decay=0.875
@@ -230,20 +238,86 @@ class SoftWTACell:
 
 
 # ---------------------------------------------------------------------------
+# ColumnBase — shared interface for all column types
+# ---------------------------------------------------------------------------
+
+class ColumnBase:
+    """Base class for column managers.
+
+    Owns wiring state (slot_map), output buffer, and common parameters.
+    Subclasses implement tick() with their learning algorithm.
+
+    Interface used by ClusterManager:
+        wire(cluster_id, neuron_id)
+        unwire(cluster_id, neuron_id)
+        tick(signal_window, knn2=None)
+        get_outputs() -> (m, n_outputs) float32
+        save(output_dir)
+        load_state(state_dict, slot_map)
+
+    Attributes accessed by ClusterManager:
+        m, n_outputs, max_inputs, window, lateral, slot_map, prototypes, usage
+    """
+
+    def __init__(self, m, n_outputs=4, max_inputs=20, window=4, lr=0.05):
+        self.m = m
+        self.n_outputs = n_outputs
+        self.max_inputs = max_inputs
+        self.window = window
+        self.lr = lr
+        self.lateral = False  # subclass overrides if supported
+
+        self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
+        self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
+        self._arange_m = np.arange(m)
+
+    def wire(self, cluster_id, neuron_id):
+        """Wire a neuron to a cluster's column (lowest empty slot)."""
+        row = self.slot_map[cluster_id]
+        empty = np.where(row == -1)[0]
+        if len(empty) == 0:
+            return
+        row[empty[0]] = neuron_id
+
+    def unwire(self, cluster_id, neuron_id):
+        """Unwire a neuron from a cluster's column."""
+        row = self.slot_map[cluster_id]
+        matches = np.where(row == neuron_id)[0]
+        if len(matches) > 0:
+            row[matches[0]] = -1
+
+    def get_outputs(self):
+        """Return (m, n_outputs) array of all column outputs."""
+        return self._outputs.copy()
+
+    def _gather_input(self, signal_window):
+        """Gather batched input (m, max_inputs, window) from signal buffer."""
+        safe_sm = np.clip(self.slot_map, 0, None)
+        valid = self.slot_map >= 0
+        X = signal_window[safe_sm]                    # (m, max_inputs, window)
+        X[~valid] = 0.0
+        return X
+
+    def tick(self, signal_window, knn2=None):
+        raise NotImplementedError
+
+    def save(self, output_dir):
+        raise NotImplementedError
+
+    def load_state(self, state, slot_map):
+        raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
 # ColumnManager — batched tensor ops, no per-column Python loop
 # ---------------------------------------------------------------------------
 
-class ColumnManager:
-    """Manages M SoftWTACell columns, one per cluster.
+class ColumnManager(ColumnBase):
+    """Softmax WTA columns with kmeans/variance similarity.
 
     All M columns are stored as batched tensors and processed in a single
-    forward+update pass (one bmm instead of M matmuls).
-
-    Wiring map: slot_map[cluster_c, slot_s] = neuron_id (-1 = empty).
-    Pre-allocates max_inputs per column (fixed size, no resizing).
-
-    Each tick receives a sliding window of signal frames (n, window) from the
-    circular signal buffer. Column 0 = most recent frame.
+    forward+update pass (one bmm instead of M matmuls). Supports optional
+    lateral connections, eligibility traces, confidence gating, and tiredness.
     """
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
@@ -258,12 +332,8 @@ class ColumnManager:
                  entropy_scaled_lr=True,
                  lateral_mode='covariance',
                  reward_lr=0.01):
-        self.m = m
-        self.n_outputs = n_outputs
-        self.max_inputs = max_inputs
-        self.window = window
+        super().__init__(m, n_outputs, max_inputs, window, lr)
         self.temperature = temperature
-        self.lr = lr
         self.match_threshold = match_threshold
         self.usage_decay = 0.99
         self.streaming_decay = streaming_decay
@@ -386,21 +456,6 @@ class ColumnManager:
                     n_synced += 1
         return n_synced
 
-    def wire(self, cluster_id, neuron_id):
-        """Wire a neuron to a cluster's column (lowest empty slot)."""
-        row = self.slot_map[cluster_id]
-        empty = np.where(row == -1)[0]
-        if len(empty) == 0:
-            return  # cluster full
-        row[empty[0]] = neuron_id
-
-    def unwire(self, cluster_id, neuron_id):
-        """Unwire a neuron from a cluster's column."""
-        row = self.slot_map[cluster_id]
-        matches = np.where(row == neuron_id)[0]
-        if len(matches) > 0:
-            row[matches[0]] = -1
-
     # ------------------------------------------------------------------
     # Similarity + learning strategies (dispatched by self.mode)
     # ------------------------------------------------------------------
@@ -470,10 +525,7 @@ class ColumnManager:
         ar = self._arange_m
 
         # --- Build batched input (m, max_inputs, window) via gather ---
-        safe_sm = np.clip(self.slot_map, 0, None)
-        valid = self.slot_map >= 0                    # (m, max_inputs)
-        X = signal_window[safe_sm]                    # (m, max_inputs, window)
-        X[~valid] = 0.0
+        X = self._gather_input(signal_window)
 
         # --- Similarity (mode-dependent) ---
         if self.mode == 'kmeans':
@@ -634,10 +686,6 @@ class ColumnManager:
         assert not np.any(np.isnan(probs)), "NaN in column outputs"
         self._outputs = probs.astype(np.float32)
 
-    def get_outputs(self):
-        """Return (m, n_outputs) array of all column outputs."""
-        return self._outputs.copy()
-
     def save(self, output_dir):
         """Save slot_map + batched column state."""
         import torch as _torch
@@ -664,3 +712,164 @@ class ColumnManager:
             'output_tiredness': _torch.from_numpy(self.output_tiredness),
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")
+
+    def load_state(self, state, slot_map):
+        """Restore column state from saved dict + slot_map array."""
+        def _to_np(t):
+            return t.numpy() if hasattr(t, 'numpy') else np.array(t)
+        self.prototypes = _to_np(state['prototypes'])
+        self.usage = _to_np(state['usage'])
+        self.proj_mean = _to_np(state.get('proj_mean',
+            torch.zeros(self.m, self.n_outputs)))
+        self.proj_var = _to_np(state.get('proj_var',
+            torch.zeros(self.m, self.n_outputs)))
+        if self.lateral and state.get('lateral_protos') is not None:
+            self.lateral_protos = _to_np(state['lateral_protos'])
+        if self.traces is not None and state.get('traces') is not None:
+            self.traces = _to_np(state['traces'])
+        if state.get('output_tiredness') is not None:
+            self.output_tiredness = _to_np(state['output_tiredness'])
+        self.slot_map = slot_map
+
+
+# ---------------------------------------------------------------------------
+# ConscienceColumn — hard WTA with homeostatic threshold
+# ---------------------------------------------------------------------------
+
+class ConscienceColumn(ColumnBase):
+    """Hard WTA columns with conscience mechanism to prevent collapse.
+
+    Each column has m prototypes competing for inputs. Instead of softmax,
+    uses hard winner-take-all with an adaptive threshold (conscience) that
+    penalizes frequent winners and helps dormant units recover.
+
+    Key differences from ColumnManager:
+        - Input normalization: mean-subtract + L2 normalize (pattern, not brightness)
+        - Hard WTA: argmax of (similarity - theta), not softmax
+        - Conscience threshold: theta_k += alpha * (y_k - 1/n_outputs)
+        - Dead-unit reseeding: replace units that haven't won in reseed_after ticks
+        - Output: softmax of raw similarities (for pipeline compatibility)
+    """
+
+    def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
+                 lr=0.05, alpha=0.01, temperature=0.5,
+                 reseed_after=1000, **kwargs):
+        super().__init__(m, n_outputs, max_inputs, window, lr)
+        self.alpha = alpha
+        self.temperature = temperature
+        self.reseed_after = reseed_after
+
+        # Prototypes: unit-normalized random vectors
+        rng = np.random.RandomState(42)
+        protos = rng.randn(m, n_outputs, max_inputs).astype(np.float32)
+        norms = np.linalg.norm(protos, axis=2, keepdims=True).clip(1e-8)
+        self.prototypes = protos / norms
+
+        self.usage = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
+
+        # Conscience thresholds: one per output per column
+        self.theta = np.zeros((m, n_outputs), dtype=np.float32)
+
+        # Dead-unit tracking
+        self.last_won = np.zeros((m, n_outputs), dtype=np.int64)
+        self._tick_count = 0
+
+    def _normalize_input(self, X):
+        """Mean-subtract and L2-normalize the temporal mean of each column's input.
+
+        Args:
+            X: (m, max_inputs, window) raw signal window
+
+        Returns:
+            x: (m, max_inputs) normalized input pattern
+        """
+        x = X.mean(axis=2)                                     # (m, max_inputs)
+        x = x - x.mean(axis=1, keepdims=True)                  # mean-subtract
+        norms = np.linalg.norm(x, axis=1, keepdims=True).clip(1e-8)
+        return x / norms                                        # L2-normalize
+
+    def tick(self, signal_window, knn2=None):
+        """Hard WTA with conscience. Pure numpy."""
+        m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
+        ar = self._arange_m
+        self._tick_count += 1
+
+        # --- Gather and normalize input ---
+        X = self._gather_input(signal_window)
+        x = self._normalize_input(X)                           # (m, n_in)
+
+        # --- Similarity: cosine (protos are unit-norm) ---
+        sim = np.einsum('moi,mi->mo', self.prototypes, x)     # (m, n_out)
+
+        # --- Hard WTA with conscience threshold ---
+        scores = sim - self.theta
+        winners = scores.argmax(axis=1)                        # (m,)
+
+        # --- Winner prototype update: pull toward input, renormalize ---
+        w_proto = self.prototypes[ar, winners]                 # (m, n_in)
+        new_proto = (1.0 - self.lr) * w_proto + self.lr * x
+        norms = np.linalg.norm(new_proto, axis=1, keepdims=True).clip(1e-8)
+        self.prototypes[ar, winners] = new_proto / norms
+
+        # --- Conscience threshold: push toward 1/n_out usage ---
+        y = np.zeros((m, n_out), dtype=np.float32)
+        y[ar, winners] = 1.0
+        self.theta += self.alpha * (y - 1.0 / n_out)
+
+        # --- Usage EMA ---
+        self.usage = self.usage * 0.99 + y * 0.01
+
+        # --- Dead-unit reseeding ---
+        self.last_won[ar, winners] = self._tick_count
+        if self.reseed_after > 0:
+            dead_ticks = self._tick_count - self.last_won
+            dead_cols, dead_outs = np.where(dead_ticks > self.reseed_after)
+            if len(dead_cols) > 0:
+                for c, o in zip(dead_cols, dead_outs):
+                    self.prototypes[c, o] = x[c]
+                    self.theta[c, o] = 0.0
+                    self.last_won[c, o] = self._tick_count
+
+        # --- Output: softmax of raw similarities (pipeline compatibility) ---
+        sim_scaled = sim / self.temperature
+        sim_scaled -= sim_scaled.max(axis=1, keepdims=True)
+        e = np.exp(sim_scaled)
+        probs = e / e.sum(axis=1, keepdims=True)
+
+        self._outputs = probs.astype(np.float32)
+
+    def save(self, output_dir):
+        """Save column state."""
+        import torch as _torch
+        np.save(os.path.join(output_dir, "column_slot_map.npy"), self.slot_map)
+        _torch.save({
+            'type': 'conscience',
+            'prototypes': _torch.from_numpy(self.prototypes),
+            'usage': _torch.from_numpy(self.usage),
+            'theta': _torch.from_numpy(self.theta),
+            'last_won': _torch.from_numpy(self.last_won.astype(np.float32)),
+            'tick_count': self._tick_count,
+            'm': self.m,
+            'n_outputs': self.n_outputs,
+            'max_inputs': self.max_inputs,
+            'window': self.window,
+            'lr': self.lr,
+            'alpha': self.alpha,
+            'temperature': self.temperature,
+            'reseed_after': self.reseed_after,
+        }, os.path.join(output_dir, "column_states.pt"))
+        print(f"  conscience column state saved to {output_dir}")
+
+    def load_state(self, state, slot_map):
+        """Restore column state."""
+        def _to_np(t):
+            return t.numpy() if hasattr(t, 'numpy') else np.array(t)
+        self.prototypes = _to_np(state['prototypes'])
+        self.usage = _to_np(state['usage'])
+        if 'theta' in state:
+            self.theta = _to_np(state['theta'])
+        if 'last_won' in state:
+            self.last_won = _to_np(state['last_won']).astype(np.int64)
+        if 'tick_count' in state:
+            self._tick_count = int(state['tick_count'])
+        self.slot_map = slot_map

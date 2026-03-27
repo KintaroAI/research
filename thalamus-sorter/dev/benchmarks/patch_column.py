@@ -17,7 +17,7 @@ import os
 import json
 import numpy as np
 
-from column_manager import ColumnManager
+from column_manager import ColumnManager, ConscienceColumn
 
 name = 'patch_column'
 description = 'Hardcoded 9x9 patch first layer → model clustering diagnostic'
@@ -36,6 +36,10 @@ def add_args(parser):
                         help="Temporal window (default: 10)")
     parser.add_argument("--patch-column-temperature", type=float, default=0.2,
                         help="Softmax temperature (default: 0.2)")
+    parser.add_argument("--patch-column-type", type=str, default="default",
+                        help="Column type: 'default' or 'conscience' (default: default)")
+    parser.add_argument("--patch-column-alpha", type=float, default=0.01,
+                        help="Conscience threshold lr (default: 0.01)")
 
 
 def make_signal(w, h, args):
@@ -76,12 +80,21 @@ def make_signal(w, h, args):
     assert src_h >= retina and src_w >= retina, \
         f"Source {src_w}x{src_h} too small for {retina}x{retina} retina"
 
-    # Create first-layer ColumnManager: 64 columns, 4 outputs, 81 inputs each
-    first_layer_cm = ColumnManager(
-        m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
-        window=col_window, temperature=col_temp, lr=col_lr,
-        mode='kmeans', entropy_scaled_lr=True,
-    )
+    # Create first-layer columns
+    col_type = getattr(args, 'patch_column_type', 'default')
+    col_alpha = getattr(args, 'patch_column_alpha', 0.01)
+    if col_type == 'conscience':
+        first_layer_cm = ConscienceColumn(
+            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=col_window, temperature=col_temp, lr=col_lr,
+            alpha=col_alpha,
+        )
+    else:
+        first_layer_cm = ColumnManager(
+            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=col_window, temperature=col_temp, lr=col_lr,
+            mode='kmeans', entropy_scaled_lr=True,
+        )
 
     # Pre-wire: patch (px, py) gets neurons at retina positions
     retina_n = retina * retina  # 6400

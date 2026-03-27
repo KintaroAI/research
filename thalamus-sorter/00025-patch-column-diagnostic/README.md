@@ -137,10 +137,65 @@ Outputs 0 and 2 win disproportionately (28-34%) vs outputs 1 and 3 (17-21%). Thi
 
 2. **Embedding blindness to silence**: DriftSolver correlation treats "both near-zero" as "both similar." It can't distinguish shared silence from shared signal.
 
+## ConscienceColumn: the fix
+
+Implemented `ConscienceColumn` (inherits from new `ColumnBase`) based on conscience competitive learning. Key differences from default `ColumnManager`:
+
+- **Hard WTA** with adaptive homeostatic threshold: `theta_k += alpha * (y_k - 1/n_outputs)`. Winners get penalized, losers get helped. Pushes each output toward winning exactly 1/n_outputs of the time.
+- **Input normalization**: mean-subtract + L2-normalize. Columns detect shape/pattern, not brightness.
+- **Dead-unit reseeding**: if an output hasn't won in `reseed_after` ticks, reinitialize its prototype from current input.
+- **Output**: softmax of raw similarities (without theta) for pipeline compatibility. Per-tick output is still peaked, but the winner rotates.
+
+### Architecture refactor
+
+```
+ColumnBase          — wire/unwire, slot_map, get_outputs, _gather_input
+├── ColumnManager   — softmax WTA, kmeans/variance, lateral, eligibility, tiredness
+└── ConscienceColumn — hard WTA, conscience threshold, input normalization, reseeding
+```
+
+Selection via `column_config['type']`: `'default'` or `'conscience'`.
+
+### Patch sweep: conscience vs default (10k train, last 500 eval)
+
+```
+                  DEFAULT                          CONSCIENCE
+patch  dom_mean  >75%  H_norm     dom_mean  >75%  H_norm
+  5x5    0.673     0   0.677        0.300     0   0.990
+  7x7    0.723    22   0.605        0.302     0   0.989
+  9x9    0.762    42   0.552        0.302     0   0.990
+```
+
+Conscience columns hit ~30% dominance (near-perfect 25% uniformity) regardless of patch size. Zero collapse.
+
+### Full model pipeline: default vs conscience (7×7, 10k ticks)
+
+| Metric | Default | Conscience |
+|---|---|---|
+| Spread (of 4.0) | 2.77 | **3.69** |
+| Entropy (normalized) | 0.094 | **0.424** |
+| Inter-output correlation | -0.024 | **-0.321** |
+| Global win % | 28/20/34/17 | **26/25/25/24** |
+| Dominant winner % | 99.2% | **37.5%** |
+| Model contiguity | 0.635 | 0.283 |
+| Total skip-gram pairs | 15M | 0.9M |
+
+Conscience fixes column collapse and the model separates outputs better (spread 3.69 vs 2.77). But the model's contiguity dropped to 0.28 and skip-gram pairs are 15× lower — the rotating winner signal has more temporal variation, making it harder for the embedding algorithm to find stable correlations. May need `threshold` or `k_sample` tuning.
+
+### Typical conscience output (single column, 20 ticks post-training)
+
+```
+tick  out0   out1   out2   out3   winner
+   0  0.034  0.192  0.587  0.187   [2]
+   4  0.179  0.148  0.309  0.364   [3]
+   7  0.554  0.131  0.067  0.249   [0]
+  18  0.274  0.543  0.095  0.088   [1]
+```
+
+Per-tick output is peaked (winner ~0.5-0.7), but winner rotates across ticks. All 4 outputs take turns winning.
+
 ## Next Steps
 
-ts-00026: tune column parameters to prevent collapse:
-- **tiredness_rate**: penalize consecutive wins, force output rotation
-- **temperature scheduling**: start hot, cool down
-- **usage_decay**: slower decay keeps dormant outputs alive longer
-- **Explore derivative-correlation for column outputs**: may help embedding distinguish silent vs active
+- Run conscience columns in full saccade pipeline (long run, 1M+ ticks) to evaluate embedding quality
+- Tune embedding parameters (`threshold`, `k_sample`) for conscience signal characteristics
+- Explore whether conscience columns produce meaningful visual prototypes (edge detectors, etc.)
