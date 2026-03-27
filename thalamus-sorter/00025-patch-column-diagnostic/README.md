@@ -236,8 +236,60 @@ Verified identical outputs to scalar reference over 500 ticks. Ref version kept 
 
 Fixed stale wiring on in-ring cluster switches. When a neuron switches primary via in-ring swap (both clusters in ring buffer), no wiring event fires. Later LRU eviction of the non-primary slot emits `(neuron, evicted, new)` but the neuron is wired to the old primary, not the evicted cluster — causing stale wiring. Fix: on wiring events, unwire from all ring entries except new primary.
 
+### Column logic benchmarks: pattern classification + XOR chain
+
+Two standalone tests proving columns can learn to compute, not just categorize.
+
+#### Pattern classifier (`benchmarks/column_pattern.py`)
+
+Single column (9 inputs = 3×3 patch, 4 outputs) classifies 4 spatial patterns: vertical line, horizontal line, diagonal, cross. Noisy input, random cycling with hold periods.
+
+```bash
+python benchmarks/column_pattern.py --column-type conscience --train 20000 --noise 0.02 --hold 50
+```
+
+| Pattern | Default output | Conscience output |
+|---|---|---|
+| vertical | 3 (99%) | 2 (56%) |
+| horizontal | 3 (99%) | 3 (79%) |
+| diagonal | 3 (99%) | 1 (70%) |
+| cross | 3 (99%) | 0 (75%) |
+| **Unique outputs** | **1/4 (collapsed)** | **4/4 PASS** |
+
+Default collapses all patterns to one output. Conscience assigns each to a different output — it actually classifies.
+
+#### XOR chain (`benchmarks/column_xor.py`)
+
+Two-column chain: Column 1 (2 inputs → 4 outputs) creates a representation, Column 2 (4 inputs → 2 or 4 outputs) finds a single output that tracks XOR. XOR is not linearly separable — a single column can't solve it, but a chain can.
+
+```bash
+python benchmarks/column_xor.py --column-type conscience --train 20000 --noise 0.02 --hold 50
+```
+
+Results with 2 outputs in Column 2 (4→2 chain):
+
+| | Conscience | Default |
+|---|---|---|
+| XOR separation | **0.260** | 0.001 |
+| XOR accuracy | **100%** | 100% (noise) |
+| AND accuracy | 75% | 75% |
+| OR accuracy | 75% | 75% |
+
+Conscience chain output means — clean XOR computation:
+```
+(0,0): out0=0.255  out1=0.745   XOR=0
+(0,1): out0=0.000  out1=1.000   XOR=1
+(1,0): out0=0.000  out1=1.000   XOR=1
+(1,1): out0=0.265  out1=0.735   XOR=0
+```
+
+Output 1 encodes XOR: saturates to 1.0 when XOR=1, drops to 0.74 when XOR=0. Default chain shows 0.001 separation (all outputs ~0.5 — collapsed, no real signal).
+
+Key insight: conscience is necessary for both tasks. Default columns collapse, destroying the information columns are supposed to extract. The tradeoff from earlier (conscience drifts more) is worth it — without conscience, columns can't compute at all.
+
 ## Next Steps
 
 - Address prototype drift: learning rate decay or stability-gated learning
 - Tune embedding parameters (`threshold`, `k_sample`) for conscience signal characteristics
 - Explore whether conscience columns produce meaningful visual prototypes (edge detectors, etc.)
+- Scale XOR chain test: deeper chains (3+ columns), more complex functions

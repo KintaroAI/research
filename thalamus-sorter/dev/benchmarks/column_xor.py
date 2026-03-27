@@ -150,9 +150,9 @@ def run_test(column_type, n_train, n_eval, noise, window, lr, temperature,
     cm_single = make_column(2, 2, column_type, window, lr, temperature, alpha)
     ring_single = np.zeros((2, window), dtype=np.float32)
 
-    # --- Two-column chain (2 → 4 → 4) ---
+    # --- Two-column chain (2 → 4 → 2) ---
     cm1 = make_column(2, 4, column_type, window, lr, temperature, alpha)
-    cm2 = make_column(4, 4, column_type, window, lr, temperature, alpha)
+    cm2 = make_column(4, 2, column_type, window, lr, temperature, alpha)
     ring1 = np.zeros((2, window), dtype=np.float32)
     ring2 = np.zeros((4, window), dtype=np.float32)
 
