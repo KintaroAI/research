@@ -130,7 +130,8 @@ def make_signal(w, h, args):
     move_threshold = 0.3  # per-fiber force for "straining" (tires muscle)
     score = [0]
     phase_scores = [0, 0]
-    _refs = {'column_mgr': None, 'renderer': None, 'dsolver': None}
+    _refs = {'column_mgr': None, 'renderer': None, 'dsolver': None,
+             'field_address': getattr(args, 'field_address', None)}
     base_column_lr = [None]  # captured from column_mgr on first tick
     base_embed_lr = [None]   # captured from dsolver on first tick
     field_save_every = 100
@@ -291,19 +292,26 @@ def make_signal(w, h, args):
         #         base_embed_lr[0] = dsolver.lr
         #     dsolver.lr = base_embed_lr[0] * (1.0 - 0.9 * hunger)
 
-        # Live LR control from field viz (reads /tmp/forage_controls.json)
-        if t % 100 == 0:  # check every 100 ticks, not every tick
+        # Live LR control from field viz (polls TCP controls port)
+        if t % 100 == 0 and _refs.get('field_address'):
             try:
                 import json as _json
-                with open('/tmp/forage_controls.json', 'r') as _f:
-                    _ctrl = _json.load(_f)
+                import socket as _socket
+                host, port = _refs['field_address'].rsplit(':', 1)
+                ctrl_port = int(port) + 1  # controls on port+1
+                s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+                s.settimeout(0.1)
+                s.connect((host, ctrl_port))
+                data = s.recv(1024)
+                s.close()
+                _ctrl = _json.loads(data.decode())
                 col_mgr = _refs.get('column_mgr')
                 dsolver = _refs.get('dsolver')
                 if col_mgr is not None and 'column_lr' in _ctrl:
                     col_mgr.lr = float(_ctrl['column_lr'])
                 if dsolver is not None and 'lr' in _ctrl:
                     dsolver.lr = float(_ctrl['lr'])
-            except (FileNotFoundError, ValueError, _json.JSONDecodeError):
+            except Exception:
                 pass
 
         # Retina neurons get zero for now (unused)

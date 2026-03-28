@@ -81,17 +81,41 @@ def run_field_viz(port=DEFAULT_PORT):
     dpg.create_viewport(title="Foraging Field", width=800, height=800)
     dpg.set_global_font_scale(2.0)
 
-    # --- Controls file for live parameter tuning ---
-    controls_path = '/tmp/forage_controls.json'
+    # --- Controls server for live parameter tuning ---
     import json as _json
+    controls = {'lr': 0.001, 'column_lr': 0.05}
+    controls_lock = threading.Lock()
+    controls_port = port + 1  # 9102 by default
 
-    def _write_controls():
-        vals = {
-            'lr': dpg.get_value("ctrl_lr"),
-            'column_lr': dpg.get_value("ctrl_col_lr"),
-        }
-        with open(controls_path, 'w') as f:
-            _json.dump(vals, f)
+    def _update_controls():
+        with controls_lock:
+            controls['lr'] = dpg.get_value("ctrl_lr")
+            controls['column_lr'] = dpg.get_value("ctrl_col_lr")
+
+    def controls_thread():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('0.0.0.0', controls_port))
+        srv.listen(4)
+        srv.settimeout(1.0)
+        print(f"Controls server listening on port {controls_port}")
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                with controls_lock:
+                    data = _json.dumps(controls).encode()
+                conn.sendall(data)
+                conn.close()
+            except Exception:
+                pass
+
+    ctl_thread = threading.Thread(target=controls_thread, daemon=True)
+    ctl_thread.start()
 
     with dpg.window(label="Field", tag="field_window"):
         dpg.add_text("Waiting for data...", tag="field_status")
@@ -101,12 +125,12 @@ def run_field_viz(port=DEFAULT_PORT):
             dpg.add_text("embed lr:")
             dpg.add_slider_float(tag="ctrl_lr", default_value=0.001,
                                  min_value=0.0, max_value=0.01,
-                                 width=200, callback=lambda: _write_controls())
+                                 width=200, callback=lambda: _update_controls())
         with dpg.group(horizontal=True):
             dpg.add_text("col lr:  ")
             dpg.add_slider_float(tag="ctrl_col_lr", default_value=0.05,
                                  min_value=0.0, max_value=0.5,
-                                 width=200, callback=lambda: _write_controls())
+                                 width=200, callback=lambda: _update_controls())
 
         dpg.add_drawlist(width=760, height=660, tag="field_canvas")
 
