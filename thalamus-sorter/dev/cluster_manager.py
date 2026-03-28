@@ -80,7 +80,9 @@ class ClusterManager:
                     lr=column_config.get('lr', 0.05),
                     alpha=column_config.get('alpha', 0.01),
                     temperature=column_config.get('temperature', 0.5),
-                    reseed_after=column_config.get('reseed_after', 1000))
+                    reseed_after=column_config.get('reseed_after', 1000),
+                    lateral_inputs=column_config.get('lateral_inputs', False),
+                    lateral_input_k=column_config.get('lateral_input_k', 4))
             else:
                 from column_manager import ColumnManager
                 self.column_mgr = ColumnManager(
@@ -103,7 +105,9 @@ class ClusterManager:
                     tiredness_recovery=column_config.get('tiredness_recovery', 0.0005),
                     entropy_scaled_lr=column_config.get('entropy_scaled_lr', True),
                     lateral_mode=column_config.get('lateral_mode', 'covariance'),
-                    reward_lr=column_config.get('reward_lr', 0.01))
+                    reward_lr=column_config.get('reward_lr', 0.01),
+                    lateral_inputs=column_config.get('lateral_inputs', False),
+                    lateral_input_k=column_config.get('lateral_input_k', 4))
 
     def set_signals(self, signals_t, sig_channels, T):
         """Store signal tensor reference for signal-based rendering."""
@@ -160,6 +164,12 @@ class ClusterManager:
                         self.column_mgr.wire(c, neuron)
             n_wired = (self.column_mgr.slot_map >= 0).sum()
             print(f"  Columns: {n_wired} initial wirings across {self.m} columns")
+            # Lateral input wiring (permanent column-to-column connections)
+            if getattr(self.column_mgr, '_lateral_inputs', False):
+                lateral_k = self.column_mgr._lateral_input_k
+                edges = self._generate_lateral_edges(lateral_k)
+                self.column_mgr.init_lateral_wiring(
+                    edges, self.n_sensory, self.column_n_outputs)
             # Sync lateral connections with knn2
             if self.column_mgr.lateral and self.knn2_mode != 'knn':
                 knn2_np = self.knn2_t.cpu().numpy()
@@ -360,6 +370,19 @@ class ClusterManager:
         d[~valid] = float('inf')
         self.knn2_dists_t[rows_t] = d
 
+    def _generate_lateral_edges(self, lateral_k):
+        """Generate small-world lateral topology: each column sends lateral_k outputs."""
+        edges = []
+        rng = np.random.RandomState(42)
+        for src_col in range(self.m):
+            others = [c for c in range(self.m) if c != src_col]
+            dst_cols = rng.choice(others, size=min(lateral_k, len(others)),
+                                  replace=False)
+            for dst_col in dst_cols:
+                src_out = rng.randint(0, self.column_n_outputs)
+                edges.append((int(src_col), int(src_out), int(dst_col)))
+        return edges
+
     def report(self, tick):
         """Print cluster metrics and save visualization."""
         if not self.initialized:
@@ -413,6 +436,8 @@ class ClusterManager:
                 for s in range(self.column_mgr.max_inputs):
                     neuron = int(slot_map[c, s])
                     if neuron >= 0:
+                        if self.column_mgr._reserved_mask[c, s]:
+                            continue  # lateral reserved slot, skip check
                         if c not in self.cluster_ids[neuron]:
                             n_stale += 1
             assert n_stale == 0, (

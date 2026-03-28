@@ -526,6 +526,8 @@ def run_word2vec(args):
                 'streaming_decay': getattr(args, 'column_streaming_decay', 0.5),
                 'lateral': getattr(args, 'column_lateral', False),
                 'lateral_k': getattr(args, 'lateral_k', 6),
+                'lateral_inputs': getattr(args, 'lateral_inputs', False),
+                'lateral_input_k': getattr(args, 'lateral_input_k', 4),
                 'eligibility': getattr(args, 'eligibility', False),
                 'trace_decay': getattr(args, 'trace_decay', 0.95),
             } if column_outputs > 0 else None
@@ -909,6 +911,10 @@ def main():
                        help="Lateral connections per column (default: 2)")
     p_w2v.add_argument("--lateral-sparsity", type=float, default=1.0,
                        help="Fraction of lateral connections to keep (1.0=full, 0.1=10%%)")
+    p_w2v.add_argument("--lateral-inputs", action="store_true",
+                       help="Enable lateral input connections between columns")
+    p_w2v.add_argument("--lateral-input-k", type=int, default=4,
+                       help="Lateral input connections per column (default: 4)")
     p_w2v.add_argument("--eligibility", action="store_true",
                        help="Enable eligibility traces on columns (reward-gated learning)")
     p_w2v.add_argument("--trace-decay", type=float, default=0.95,

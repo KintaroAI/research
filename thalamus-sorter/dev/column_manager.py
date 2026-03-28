@@ -268,23 +268,51 @@ class ColumnBase:
         self.lateral = False  # subclass overrides if supported
 
         self.slot_map = np.full((m, max_inputs), -1, dtype=np.int64)
+        self._reserved_mask = np.zeros((m, max_inputs), dtype=bool)
         self._outputs = np.zeros((m, n_outputs), dtype=np.float32)
         self._arange_m = np.arange(m)
 
     def wire(self, cluster_id, neuron_id):
-        """Wire a neuron to a cluster's column (lowest empty slot)."""
+        """Wire a neuron to a cluster's column (lowest empty unreserved slot)."""
         row = self.slot_map[cluster_id]
-        empty = np.where(row == -1)[0]
+        empty = np.where((row == -1) & ~self._reserved_mask[cluster_id])[0]
         if len(empty) == 0:
             return
         row[empty[0]] = neuron_id
 
     def unwire(self, cluster_id, neuron_id):
-        """Unwire a neuron from a cluster's column."""
+        """Unwire a neuron from a cluster's column (skip reserved slots)."""
         row = self.slot_map[cluster_id]
-        matches = np.where(row == neuron_id)[0]
+        matches = np.where((row == neuron_id) & ~self._reserved_mask[cluster_id])[0]
         if len(matches) > 0:
             row[matches[0]] = -1
+
+    def init_lateral_wiring(self, edges, n_sensory, n_outputs):
+        """Wire lateral connections permanently into reserved slots.
+
+        Args:
+            edges: list of (src_col, src_out, dst_col)
+            n_sensory: number of sensory neurons (to compute feedback neuron IDs)
+            n_outputs: outputs per column
+        """
+        n_wired = 0
+        n_dropped = 0
+        for src_col, src_out, dst_col in edges:
+            fb_neuron = n_sensory + src_col * n_outputs + src_out
+            row = self.slot_map[dst_col]
+            wired = False
+            for s in range(self.max_inputs - 1, -1, -1):
+                if row[s] == -1 and not self._reserved_mask[dst_col, s]:
+                    row[s] = fb_neuron
+                    self._reserved_mask[dst_col, s] = True
+                    wired = True
+                    n_wired += 1
+                    break
+            if not wired:
+                n_dropped += 1
+        print(f"  Lateral wiring: {n_wired} permanent connections")
+        if n_dropped > 0:
+            print(f"  WARNING: {n_dropped} lateral connections dropped (no free slots)")
 
     def get_outputs(self):
         """Return (m, n_outputs) array of all column outputs."""
@@ -335,7 +363,12 @@ class ColumnManager(ColumnBase):
                  tiredness_recovery=0.0005,
                  entropy_scaled_lr=True,
                  lateral_mode='covariance',
-                 reward_lr=0.01):
+                 reward_lr=0.01,
+                 lateral_inputs=False, lateral_input_k=4):
+        self._lateral_inputs = lateral_inputs
+        self._lateral_input_k = lateral_input_k
+        if lateral_inputs:
+            max_inputs = max_inputs + lateral_input_k * 2
         super().__init__(m, n_outputs, max_inputs, window, lr)
         self.temperature = temperature
         self.match_threshold = match_threshold
@@ -714,6 +747,7 @@ class ColumnManager(ColumnBase):
             'trace_decay': self.trace_decay,
             'traces': _torch.from_numpy(self.traces) if self.traces is not None else None,
             'output_tiredness': _torch.from_numpy(self.output_tiredness),
+            '_reserved_mask': _torch.from_numpy(self._reserved_mask.astype(np.uint8)),
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  column state saved to {output_dir}")
 
@@ -733,6 +767,8 @@ class ColumnManager(ColumnBase):
             self.traces = _to_np(state['traces'])
         if state.get('output_tiredness') is not None:
             self.output_tiredness = _to_np(state['output_tiredness'])
+        if state.get('_reserved_mask') is not None:
+            self._reserved_mask = _to_np(state['_reserved_mask']).astype(bool)
         self.slot_map = slot_map
 
 
@@ -758,6 +794,10 @@ class ConscienceColumn(ColumnBase):
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
                  lr=0.05, alpha=0.01, temperature=0.5,
                  reseed_after=1000, **kwargs):
+        self._lateral_inputs = kwargs.pop('lateral_inputs', False)
+        self._lateral_input_k = kwargs.pop('lateral_input_k', 4)
+        if self._lateral_inputs:
+            max_inputs = max_inputs + self._lateral_input_k * 2
         super().__init__(m, n_outputs, max_inputs, window, lr)
         self.alpha = alpha
         self.temperature = temperature
@@ -861,6 +901,7 @@ class ConscienceColumn(ColumnBase):
             'alpha': self.alpha,
             'temperature': self.temperature,
             'reseed_after': self.reseed_after,
+            '_reserved_mask': _torch.from_numpy(self._reserved_mask.astype(np.uint8)),
         }, os.path.join(output_dir, "column_states.pt"))
         print(f"  conscience column state saved to {output_dir}")
 
@@ -876,4 +917,6 @@ class ConscienceColumn(ColumnBase):
             self.last_won = _to_np(state['last_won']).astype(np.int64)
         if 'tick_count' in state:
             self._tick_count = int(state['tick_count'])
+        if state.get('_reserved_mask') is not None:
+            self._reserved_mask = _to_np(state['_reserved_mask']).astype(bool)
         self.slot_map = slot_map
