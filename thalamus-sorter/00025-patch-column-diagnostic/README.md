@@ -298,9 +298,26 @@ Output 1 encodes XOR: saturates to 1.0 when XOR=1, drops to 0.74 when XOR=0. Def
 
 Key insight: conscience is necessary for both tasks. Default columns collapse, destroying the information columns are supposed to extract. The tradeoff from earlier (conscience drifts more) is worth it — without conscience, columns can't compute at all.
 
+### Forage benchmark observations (1M tick runs, conscience, 22×8 grid)
+
+Live foraging with motor output → POI collection → hunger drive. No backpropagation, no explicit target — only embedding sorting (skip-gram) and column competitive learning.
+
+**Embedding LR sensitivity.** At lr=0.002 the embedding structure changes frequently, causing connection rewiring storms. The model bounces between alternating behaviors — either collecting POIs or wandering aimlessly. At lower LR the model can fall into a low-activity state and barely move, visible as flat periods on the thalamus activity graph. There may be value in regulating signal activity through coordinated embedding and column learning rates.
+
+**Emergent collection bias.** Despite having no reward signal (ConscienceColumn ignores `set_reward`), no memory, and no backpropagation — at certain moments the model starts biasing toward collecting POIs. The only learning is unsupervised: embedding sorting discovers temporal correlations, columns competitively categorize their inputs. Somehow this is enough to occasionally produce goal-directed behavior.
+
+**Temporal modulation gap.** The model has no time reference. Adding a modulation signal (e.g. oscillator at known period) could help columns orient in time and distinguish otherwise identical spatial configurations that occur at different phases.
+
+**Embedding + clustering are coupled.** Embedding sorting and column clustering work as one learning process. Freezing either one causes collapse — the embedding needs column output variation to maintain meaningful correlations, and columns need stable embeddings to form consistent categories. Neither subsystem is self-sufficient.
+
+**Lateral input connections prevent stagnation.** Without lateral inputs, the model converges to a stable state and stops performing — columns settle into fixed patterns, activity drops, behavior freezes. Random lateral connections (bypassing thalamus sorting) inject enough cross-column signal to prevent this convergence. The permanent wiring acts as a source of ongoing perturbation that keeps the system exploring.
+
 ## Next Steps
 
 - Address prototype drift: learning rate decay or stability-gated learning
 - Tune embedding parameters (`threshold`, `k_sample`) for conscience signal characteristics
 - Explore whether conscience columns produce meaningful visual prototypes (edge detectors, etc.)
 - Scale XOR chain test: deeper chains (3+ columns), more complex functions
+- Coordinated LR regulation: activity-dependent embedding/column learning rate scaling
+- Temporal modulation signal for time-awareness
+- Memory mechanism for retaining successful behavioral patterns
