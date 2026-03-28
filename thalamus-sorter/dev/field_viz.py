@@ -81,9 +81,34 @@ def run_field_viz(port=DEFAULT_PORT):
     dpg.create_viewport(title="Foraging Field", width=800, height=800)
     dpg.set_global_font_scale(2.0)
 
+    # --- Controls file for live parameter tuning ---
+    controls_path = '/tmp/forage_controls.json'
+    import json as _json
+
+    def _write_controls():
+        vals = {
+            'lr': dpg.get_value("ctrl_lr"),
+            'column_lr': dpg.get_value("ctrl_col_lr"),
+        }
+        with open(controls_path, 'w') as f:
+            _json.dump(vals, f)
+
     with dpg.window(label="Field", tag="field_window"):
         dpg.add_text("Waiting for data...", tag="field_status")
-        dpg.add_drawlist(width=760, height=700, tag="field_canvas")
+
+        # LR controls
+        with dpg.group(horizontal=True):
+            dpg.add_text("embed lr:")
+            dpg.add_slider_float(tag="ctrl_lr", default_value=0.001,
+                                 min_value=0.0, max_value=0.01,
+                                 width=200, callback=lambda: _write_controls())
+        with dpg.group(horizontal=True):
+            dpg.add_text("col lr:  ")
+            dpg.add_slider_float(tag="ctrl_col_lr", default_value=0.05,
+                                 min_value=0.0, max_value=0.5,
+                                 width=200, callback=lambda: _write_controls())
+
+        dpg.add_drawlist(width=760, height=660, tag="field_canvas")
 
     dpg.set_primary_window("field_window", True)
     dpg.setup_dearpygui()

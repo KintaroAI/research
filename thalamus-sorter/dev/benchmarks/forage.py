@@ -59,9 +59,10 @@ def pulsate(value, t, period):
     carrier = abs(np.sin(t * 2.0 * np.pi / period))
     return float(carrier * value)
 
-N_SENSE = 176  # 144 base + 32 muscle contraction feedback
+N_SENSE_DEFAULT = 176  # 144 base + 32 muscle contraction feedback
 # 8×18 signals + 8×4 muscle contraction = 176
-NEURONS_PER_SIGNAL = 8
+NEURONS_PER_SIGNAL_DEFAULT = 8
+N_SIGNAL_TYPES = 22  # 18 base + 4 muscle contraction
 
 
 def add_args(parser):
@@ -83,6 +84,8 @@ def add_args(parser):
                         help="Comma-separated columns for motor (8 = one per fiber, default: 0,1,2,3,4,5,6,7)")
     parser.add_argument("--forage-motor-scale", type=float, default=0.5,
                         help="Motor output scale in field units (default: 0.5)")
+    parser.add_argument("--forage-neurons-per-signal", type=int, default=8,
+                        help="Neurons per signal type (default: 8, use higher for larger grids)")
 
 
 def make_signal(w, h, args):
@@ -108,9 +111,17 @@ def make_signal(w, h, args):
         'prev_nearest_idx': -1,   # track which POI we're approaching
         'hunger': [0.0],
     }
-    # Muscle feedback: 4 directions × 8 muscle fibers each
+    # Neurons per signal (configurable for larger grids)
+    S = getattr(args, 'forage_neurons_per_signal', NEURONS_PER_SIGNAL_DEFAULT)
+    N_SENSE = S * N_SIGNAL_TYPES
+    assert n >= N_SENSE, (
+        f"Grid {w}x{h}={n} too small for {N_SENSE} sensory neurons "
+        f"({S} per signal × {N_SIGNAL_TYPES} signals). "
+        f"Need at least {N_SENSE} neurons, e.g. -W {int(N_SENSE**0.5)+1} -H {int(N_SENSE**0.5)+1}")
+
+    # Muscle feedback: 4 directions × S muscle fibers each
     # Each fiber has independent restlessness, tiredness, and spasms
-    n_fibers = NEURONS_PER_SIGNAL  # 8 fibers per direction
+    n_fibers = S  # fibers per direction
     restlessness = np.zeros((4, n_fibers), dtype=np.float32)
     tiredness = np.zeros((4, n_fibers), dtype=np.float32)
     rest_rate = 0.01
@@ -127,8 +138,7 @@ def make_signal(w, h, args):
     # POIs — stored in state dict so tick_fn and metadata share the reference
     state['pois'] = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
 
-    # Sensory neuron indices: 8 neurons per signal, 18 signals = 144
-    S = NEURONS_PER_SIGNAL
+    # Sensory neuron indices: S neurons per signal
     idx = {}
     offset = 0
     for name in ['pos_x', 'pos_y', 'target_x', 'target_y',
@@ -267,24 +277,34 @@ def make_signal(w, h, args):
         hunger = min(1.0, hunger + hunger_rate)
         state['hunger'][0] = hunger
 
-        # LR decay disabled — use constant lr from CLI
+        # LR modulation: hunger scales down learning rate (disabled)
+        # High hunger → low lr (stop changing, focus on acting)
+        # Low hunger (just collected) → full lr (consolidate learning)
         # col_mgr = _refs['column_mgr']
         # dsolver = _refs.get('dsolver')
         # if col_mgr is not None:
         #     if base_column_lr[0] is None:
         #         base_column_lr[0] = col_mgr.lr
-        #     if t < phase_ticks:
-        #         lr_frac = t / phase_ticks
-        #         col_mgr.lr = base_column_lr[0] * (1.0 - 0.9 * lr_frac)
-        #     else:
-        #         col_mgr.lr = base_column_lr[0] * 0.1
+        #     col_mgr.lr = base_column_lr[0] * (1.0 - 0.9 * hunger)
         # if dsolver is not None:
         #     if base_embed_lr[0] is None:
         #         base_embed_lr[0] = dsolver.lr
-        #     if t < phase_ticks:
-        #         dsolver.lr = base_embed_lr[0] * (1.0 - 0.9 * lr_frac)
-        #     else:
-        #         dsolver.lr = base_embed_lr[0] * 0.1
+        #     dsolver.lr = base_embed_lr[0] * (1.0 - 0.9 * hunger)
+
+        # Live LR control from field viz (reads /tmp/forage_controls.json)
+        if t % 100 == 0:  # check every 100 ticks, not every tick
+            try:
+                import json as _json
+                with open('/tmp/forage_controls.json', 'r') as _f:
+                    _ctrl = _json.load(_f)
+                col_mgr = _refs.get('column_mgr')
+                dsolver = _refs.get('dsolver')
+                if col_mgr is not None and 'column_lr' in _ctrl:
+                    col_mgr.lr = float(_ctrl['column_lr'])
+                if dsolver is not None and 'lr' in _ctrl:
+                    dsolver.lr = float(_ctrl['lr'])
+            except (FileNotFoundError, ValueError, _json.JSONDecodeError):
+                pass
 
         # Retina neurons get zero for now (unused)
         sig = np.zeros(n, dtype=np.float32)
@@ -360,7 +380,8 @@ def make_signal(w, h, args):
 
     print(f"  signal buffer: FORAGE synthetic "
           f"(field={field_size}, dense={n_pois_dense}, sparse={n_pois_sparse}, "
-          f"phase={phase_ticks}, radius={collect_radius})")
+          f"phase={phase_ticks}, radius={collect_radius}, "
+          f"neurons/signal={S}, sensory={N_SENSE})")
 
     return tick_fn, metadata
 
