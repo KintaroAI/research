@@ -80,6 +80,7 @@ python main.py word2vec --preset gray_80x80_saccades -f 50000
 | `--cluster-report-every` | 1000 | Save cluster viz + metrics every N ticks |
 | `--cluster-render-mode` | color | `color`, `signal`, or `both` |
 | `--cluster-track-history` | false | Save per-neuron cluster ID history |
+| `--cluster-max-size` | 0 | Max neurons per cluster (0=unlimited). Full clusters swap worst-fit member. |
 
 ### Column wiring flags
 
@@ -92,6 +93,19 @@ python main.py word2vec --preset gray_80x80_saccades -f 50000
 | `--column-temperature` | 0.2 | Softmax temperature (lower=peakier) |
 | `--column-match-threshold` | 0.1 | Dormant reassignment threshold |
 | `--column-streaming-decay` | 0.8 | EMA decay (rule of thumb: 1-2/window) |
+
+### Lateral input connections
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lateral-inputs` | false | Enable permanent column-to-column wiring via feedback neurons |
+| `--lateral-input-k` | 4 | Lateral connections sent per column (small-world topology) |
+
+Each column sends `lateral-input-k` outputs to random destination columns,
+permanently wired into reserved input slots (bypassing thalamus). The same
+feedback neuron signal flows through both the normal thalamus path and the
+lateral path. Reserved slots are protected from wire/unwire eviction.
+`max_inputs` is expanded by `lateral_input_k * 2` to avoid reducing normal capacity.
 
 ### Feedback loop flags
 
