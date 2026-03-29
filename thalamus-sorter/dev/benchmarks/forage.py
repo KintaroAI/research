@@ -88,8 +88,8 @@ def add_args(parser):
                         help="Neurons per signal type (default: 8, use higher for larger grids)")
     parser.add_argument("--forage-blocks", type=int, default=0,
                         help="Number of random obstacle blocks (default: 0)")
-    parser.add_argument("--forage-poi-signals", action="store_true",
-                        help="Enable proximity and target_x/target_y sensory signals (default: off)")
+    parser.add_argument("--no-forage-poi-signals", action="store_true",
+                        help="Disable proximity and target_x/target_y sensory signals")
     parser.add_argument("--forage-visual-field", action="store_true",
                         help="Feed model a grayscale rendering of the foraging field")
     parser.add_argument("--forage-visual-res", type=int, default=32,
@@ -103,7 +103,7 @@ def make_signal(w, h, args):
     n_pois_sparse = getattr(args, 'forage_pois_sparse', 3)
     phase_ticks = getattr(args, 'forage_phase_ticks', 5000)
     collect_radius = getattr(args, 'forage_collect_radius', 5.0)
-    poi_signals = getattr(args, 'forage_poi_signals', False)
+    poi_signals = not getattr(args, 'no_forage_poi_signals', False)
     walk_step = getattr(args, 'forage_walk_step', 0.5)
     hunger_rate = getattr(args, 'forage_hunger_rate', 0.01)
     motor_cols_str = getattr(args, 'forage_motor_columns', '0,1,2,3,4,5,6,7')
