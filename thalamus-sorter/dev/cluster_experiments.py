@@ -280,7 +280,8 @@ if HAS_TORCH:
                                 centroid_mode='nudge', pointers=None,
                                 last_used=None, tick=0,
                                 jump_counts=None,
-                                max_cluster_size=0):
+                                max_cluster_size=0,
+                                cluster_swap=True):
         """Vectorized streaming update: batch distance computation, thin apply loop.
 
         Same interface and results as streaming_update_v3_gpu_ref but ~10x faster
@@ -412,8 +413,11 @@ if HAS_TORCH:
                         break
 
             if not in_ring:
-                # Cluster size cap with swap
+                # Cluster size cap
                 if max_cluster_size > 0 and sizes[best] >= max_cluster_size:
+                    if not cluster_swap:
+                        n_blocked += 1
+                        continue
                     mr = cluster_ids[np.arange(n), pointers]
                     members_best = np.where(mr == best)[0]
                     if len(members_best) == 0:
