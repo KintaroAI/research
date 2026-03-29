@@ -86,6 +86,8 @@ def add_args(parser):
                         help="Motor output scale in field units (default: 0.5)")
     parser.add_argument("--forage-neurons-per-signal", type=int, default=8,
                         help="Neurons per signal type (default: 8, use higher for larger grids)")
+    parser.add_argument("--forage-poi-signals", action="store_true",
+                        help="Enable proximity and target_x/target_y sensory signals (default: off)")
     parser.add_argument("--forage-visual-field", action="store_true",
                         help="Feed model a grayscale rendering of the foraging field")
     parser.add_argument("--forage-visual-res", type=int, default=32,
@@ -99,6 +101,7 @@ def make_signal(w, h, args):
     n_pois_sparse = getattr(args, 'forage_pois_sparse', 3)
     phase_ticks = getattr(args, 'forage_phase_ticks', 5000)
     collect_radius = getattr(args, 'forage_collect_radius', 5.0)
+    poi_signals = getattr(args, 'forage_poi_signals', False)
     walk_step = getattr(args, 'forage_walk_step', 0.5)
     hunger_rate = getattr(args, 'forage_hunger_rate', 0.01)
     motor_cols_str = getattr(args, 'forage_motor_columns', '0,1,2,3,4,5,6,7')
@@ -348,18 +351,19 @@ def make_signal(w, h, args):
         # All slow-changing signals pulsated with unique periods.
         for i in idx['pos_x']:     sig[i] = pulsate(norm_pos[0], t, 11)
         for i in idx['pos_y']:     sig[i] = pulsate(norm_pos[1], t, 13)
-        for i in idx['target_x']:  sig[i] = pulsate(norm_target[0], t, 37)
-        for i in idx['target_y']:  sig[i] = pulsate(norm_target[1], t, 41)
+        if poi_signals:
+            for i in idx['target_x']:  sig[i] = pulsate(norm_target[0], t, 37)
+            for i in idx['target_y']:  sig[i] = pulsate(norm_target[1], t, 41)
         for i in idx['dir_xp']:    sig[i] = max(0.0, direction[0])
         for i in idx['dir_xn']:    sig[i] = max(0.0, -direction[0])
         for i in idx['dir_yp']:    sig[i] = max(0.0, direction[1])
         for i in idx['dir_yn']:    sig[i] = max(0.0, -direction[1])
-        # Proximity
-        if len(pois) > 0:
-            prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
-        else:
-            prox = 0.0
-        for i in idx['proximity']: sig[i] = pulsate(prox, t, 15)
+        if poi_signals:
+            if len(pois) > 0:
+                prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
+            else:
+                prox = 0.0
+            for i in idx['proximity']: sig[i] = pulsate(prox, t, 15)
         for i in idx['hunger']:    sig[i] = pulsate(hunger, t, 17)
         # Per-fiber restlessness and tiredness signals
         rest_names = ['rest_dxp', 'rest_dxn', 'rest_dyp', 'rest_dyn']
