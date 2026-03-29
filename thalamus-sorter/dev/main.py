@@ -546,7 +546,8 @@ def run_word2vec(args):
                 embed_method=render_method,
                 column_config=column_config,
                 renderer=renderer,
-                output_dir=output_dir, wlog=wlog)
+                output_dir=output_dir, wlog=wlog,
+                max_cluster_size=getattr(args, 'cluster_max_size', 0))
             render_mode = getattr(args, 'cluster_render_mode', 'color')
             if render_mode in ('signal', 'both') or column_outputs > 0:
                 cluster_mgr.set_signals(signals, sig_channels, T)
@@ -877,6 +878,8 @@ def main():
                             "or 'exact' (incremental arithmetic, immediate — causes churn)")
     p_w2v.add_argument("--cluster-max-k", type=int, default=2,
                        help="Ring buffer depth for multi-cluster membership (default: 2)")
+    p_w2v.add_argument("--cluster-max-size", type=int, default=0,
+                       help="Max neurons per cluster (0=unlimited). Full clusters swap worst-fit member instead of growing.")
     p_w2v.add_argument("--cluster-track-history", action="store_true",
                        help="Save per-neuron cluster ID at each report interval")
     p_w2v.add_argument("--cluster-render-mode", type=str, default='color',

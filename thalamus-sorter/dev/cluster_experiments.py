@@ -279,12 +279,17 @@ if HAS_TORCH:
                                 hysteresis=0.0, knn2_is_neurons=False,
                                 centroid_mode='nudge', pointers=None,
                                 last_used=None, tick=0,
-                                jump_counts=None):
+                                jump_counts=None,
+                                max_cluster_size=0):
         """Vectorized streaming update: batch distance computation, thin apply loop.
 
         Same interface and results as streaming_update_v3_gpu_ref but ~10x faster
         by computing all distances in one (n_anchors, n_candidates, dims) operation
         instead of looping per-anchor in Python.
+
+        max_cluster_size: if >0, cap cluster membership. When a neuron wants to
+        join a full cluster, try to swap with the member closest to the source
+        cluster's centroid. If no good swap exists, reject the migration.
         """
         m = centroids_t.shape[0]
         n = embeddings_t.shape[0]
@@ -373,6 +378,10 @@ if HAS_TORCH:
             primary_dists = dists[:, 0]  # primary is always slot 0
             active &= (best_dists < primary_dists * hysteresis_mult)
 
+        # Prefetch all embeddings for swap candidate search
+        if max_cluster_size > 0:
+            all_embs_cpu = embeddings_t.cpu().numpy()
+
         # --- Apply phase: thin loop over movers only ---
         movers = np.where(active)[0]
         for idx in movers:
@@ -398,6 +407,44 @@ if HAS_TORCH:
                         break
 
             if not in_ring:
+                # Cluster size cap with swap
+                if max_cluster_size > 0 and sizes[best] >= max_cluster_size:
+                    mr = cluster_ids[np.arange(n), pointers]
+                    members_best = np.where(mr == best)[0]
+                    if len(members_best) == 0:
+                        n_blocked += 1
+                        continue
+                    # Find member of target closest to source centroid
+                    member_embs = all_embs_cpu[members_best]
+                    dists_to_src = ((member_embs - centroids_cpu[primary]) ** 2).sum(axis=1)
+                    dist_x_to_src = ((anchor_embs[idx] - centroids_cpu[primary]) ** 2).sum()
+                    best_swap_local = int(dists_to_src.argmin())
+                    if dists_to_src[best_swap_local] >= dist_x_to_src:
+                        # No good swap candidate — reject migration
+                        n_blocked += 1
+                        continue
+                    # Swap: Y goes to source, X continues to target
+                    swap_neuron = int(members_best[best_swap_local])
+                    if centroid_mode == 'exact':
+                        os_b = sizes[best]
+                        if os_b > 1:
+                            centroids_cpu[best] = (centroids_cpu[best] * os_b - all_embs_cpu[swap_neuron]) / (os_b - 1)
+                        os_p = sizes[primary]
+                        centroids_cpu[primary] = (centroids_cpu[primary] * os_p + all_embs_cpu[swap_neuron]) / (os_p + 1)
+                    lru_slot_y = int(last_used[swap_neuron].argmin())
+                    evicted_y = int(cluster_ids[swap_neuron, lru_slot_y])
+                    cluster_ids[swap_neuron, lru_slot_y] = primary
+                    last_used[swap_neuron, lru_slot_y] = tick
+                    pointers[swap_neuron] = lru_slot_y
+                    wiring_events.append((swap_neuron, evicted_y, primary))
+                    sizes[best] -= 1
+                    sizes[primary] += 1
+                    affected.add(best)
+                    affected.add(primary)
+                    n_reassigned += 1
+                    if jump_counts is not None:
+                        jump_counts[swap_neuron] += 1
+
                 if centroid_mode == 'exact':
                     old_size = sizes[primary]
                     if old_size > 1:

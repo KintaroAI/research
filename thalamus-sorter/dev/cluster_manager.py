@@ -16,7 +16,8 @@ class ClusterManager:
                  hysteresis=0.0, track_history=False, render_mode='color',
                  n_sensory=None, embed_render=False, embed_method='pca',
                  column_config=None, renderer=None,
-                 output_dir=None, wlog=None):
+                 output_dir=None, wlog=None,
+                 max_cluster_size=0):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -32,6 +33,7 @@ class ClusterManager:
         self._pixel_values = None
         self._renderer = renderer
         self.k2, self.lr, self.split_every = k2, lr, split_every
+        self.max_cluster_size = max_cluster_size
         self.max_k = max_k
         self.output_dir = output_dir
         self.initialized = False
@@ -196,7 +198,8 @@ class ClusterManager:
                 rng=self.rng, hysteresis=self.hysteresis,
                 knn2_is_neurons=True, centroid_mode=self.centroid_mode,
                 pointers=self.pointers, last_used=self.last_used,
-                tick=global_tick, jump_counts=self._jump_counts)
+                tick=global_tick, jump_counts=self._jump_counts,
+                max_cluster_size=self.max_cluster_size)
             self.total_reassigned += n_reassigned
             self.total_switches += n_switches
             # Patch knn2 for affected clusters from neuron-level KNN
@@ -229,7 +232,8 @@ class ClusterManager:
                 rng=self.rng, hysteresis=self.hysteresis,
                 centroid_mode=self.centroid_mode,
                 pointers=self.pointers, last_used=self.last_used,
-                tick=global_tick, jump_counts=self._jump_counts)
+                tick=global_tick, jump_counts=self._jump_counts,
+                max_cluster_size=self.max_cluster_size)
             self.total_reassigned += n_reassigned
             self.total_switches += n_switches
             if affected:
