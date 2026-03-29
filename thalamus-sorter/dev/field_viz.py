@@ -206,6 +206,28 @@ def run_field_viz(port=DEFAULT_PORT):
                           color=(40, 40, 40), fill=(20, 20, 20),
                           parent="field_canvas")
 
+        # Blocks
+        blocked = data.get('blocked')
+        if blocked is not None:
+            # Find contiguous block rectangles (row spans)
+            by, bx = np.where(blocked)
+            if len(bx) > 0:
+                # Draw individual pixels as small rects (fast enough for ~15 blocks)
+                # Group by row for fewer draw calls
+                for row in np.unique(by):
+                    cols = bx[by == row]
+                    # Find contiguous runs
+                    diffs = np.diff(cols)
+                    breaks = np.where(diffs > 1)[0]
+                    starts = np.concatenate([[0], breaks + 1])
+                    ends = np.concatenate([breaks, [len(cols) - 1]])
+                    for s, e in zip(starts, ends):
+                        x1, y1 = to_canvas(float(cols[s]), float(row))
+                        x2, y2 = to_canvas(float(cols[e] + 1), float(row + 1))
+                        dpg.draw_rectangle((x1, y1), (x2, y2),
+                                          color=(80, 80, 80, 0), fill=(60, 60, 60),
+                                          parent="field_canvas")
+
         # Trail (fading)
         for i in range(1, len(trail)):
             alpha = int(40 + 160 * i / len(trail))
@@ -237,6 +259,41 @@ def run_field_viz(port=DEFAULT_PORT):
         dpg.draw_circle((ax, ay), 3,
                        color=(255, 255, 255), fill=(255, 255, 255),
                        parent="field_canvas")
+
+        # Visual field inset (what the model sees)
+        vf = data.get('visual_field')
+        if vf is not None:
+            vf_res = vf.shape[0]
+            inset_size = min(200, canvas_size // 3)
+            px_size = inset_size / vf_res
+            ix0 = margin + canvas_size - inset_size - 5
+            iy0 = margin + 5
+            # Border
+            dpg.draw_rectangle((ix0 - 1, iy0 - 1),
+                              (ix0 + inset_size + 1, iy0 + inset_size + 1),
+                              color=(255, 255, 255, 100),
+                              parent="field_canvas")
+            # Draw non-zero pixels
+            for py in range(vf_res):
+                for px in range(vf_res):
+                    v = float(vf[py, px])
+                    if v > 0.01:
+                        g = int(v * 255)
+                        x1 = ix0 + px * px_size
+                        y1 = iy0 + py * px_size
+                        dpg.draw_rectangle(
+                            (x1, y1), (x1 + px_size, y1 + px_size),
+                            color=(g, g, g, 0), fill=(g, g, g),
+                            parent="field_canvas")
+            # Center crosshair (agent position)
+            cx_i = ix0 + inset_size / 2
+            cy_i = iy0 + inset_size / 2
+            dpg.draw_line((cx_i - 4, cy_i), (cx_i + 4, cy_i),
+                         color=(255, 100, 100, 150), thickness=1,
+                         parent="field_canvas")
+            dpg.draw_line((cx_i, cy_i - 4), (cx_i, cy_i + 4),
+                         color=(255, 100, 100, 150), thickness=1,
+                         parent="field_canvas")
 
     dpg.destroy_context()
 
