@@ -150,17 +150,19 @@ def make_signal(w, h, args):
     # POIs — stored in state dict so tick_fn and metadata share the reference
     state['pois'] = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
 
-    # Visual field rendering: precompute coordinate grid
+    # Visual field rendering: egocentric viewport, 1:1 pixel = 1 field unit
     if visual_field:
         _vf_yy, _vf_xx = np.mgrid[:visual_res, :visual_res]
         _vf_xx = _vf_xx.astype(np.float32)
         _vf_yy = _vf_yy.astype(np.float32)
-        _vf_scale = visual_res / field_size
-        # Pixel radii: agent ~3px, POI contact circle ~3px, POI center ~1px
-        _vf_agent_r = max(2.0, visual_res * 0.03)
-        _vf_poi_r = max(3.0, collect_radius * _vf_scale)
-        _vf_poi_center_r = max(1.0, _vf_poi_r * 0.3)
-        _vf_visual_offset = N_SENSE - n_visual  # where visual neurons start in sig
+        _vf_half = visual_res / 2.0
+        # At 1:1 scale, radii in pixels = radii in field units
+        _vf_poi_r = collect_radius
+        _vf_poi_center_r = 1.5
+        _vf_visual_offset = N_SENSE - n_visual
+        # Boundary pattern: 2x2 checkerboard at low intensity
+        _vf_border = ((_vf_xx.astype(int) // 2 + _vf_yy.astype(int) // 2)
+                      % 2).astype(np.float32) * 0.15
 
     # Sensory neuron indices: S neurons per signal
     idx = {}
@@ -384,20 +386,32 @@ def make_signal(w, h, args):
                             restlessness.mean(), tiredness.mean(),
                             float(is_sparse)))
 
-        # Visual field: render and write to signal buffer
+        # Visual field: egocentric viewport centered on agent, 1:1 scale
         if visual_field:
             vf = np.zeros((visual_res, visual_res), dtype=np.float32)
-            pois_px = pois * _vf_scale
-            ax, ay = pos[0] * _vf_scale, pos[1] * _vf_scale
-            # POIs: gray contact circle + white center
-            for p in range(len(pois_px)):
-                dist = np.sqrt((_vf_xx - pois_px[p, 0]) ** 2 +
-                               (_vf_yy - pois_px[p, 1]) ** 2)
+            # Viewport origin in field coordinates
+            vf_ox = pos[0] - _vf_half
+            vf_oy = pos[1] - _vf_half
+            # Field coords for each pixel
+            fx = _vf_xx + vf_ox
+            fy = _vf_yy + vf_oy
+            # Out-of-bounds: checkerboard pattern
+            oob = (fx < 0) | (fx >= field_size) | (fy < 0) | (fy >= field_size)
+            vf[oob] = _vf_border[oob]
+            # POIs in viewport: contact circle + white center
+            for p in range(len(pois)):
+                px = pois[p, 0] - vf_ox
+                py = pois[p, 1] - vf_oy
+                margin = _vf_poi_r + 1
+                if px < -margin or px >= visual_res + margin:
+                    continue
+                if py < -margin or py >= visual_res + margin:
+                    continue
+                dist = np.sqrt((_vf_xx - px) ** 2 + (_vf_yy - py) ** 2)
                 vf = np.maximum(vf, np.where(dist < _vf_poi_r, 0.3, 0.0))
                 vf = np.maximum(vf, np.where(dist < _vf_poi_center_r, 1.0, 0.0))
-            # Agent: gray circle
-            dist_a = np.sqrt((_vf_xx - ax) ** 2 + (_vf_yy - ay) ** 2)
-            vf = np.maximum(vf, np.where(dist_a < _vf_agent_r, 0.5, 0.0))
+            # Re-apply border over any POI bleed past field edge
+            vf[oob] = _vf_border[oob]
             sig[_vf_visual_offset:_vf_visual_offset + n_visual] = vf.ravel()
 
         return sig
