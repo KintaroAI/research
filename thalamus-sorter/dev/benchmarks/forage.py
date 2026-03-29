@@ -30,6 +30,8 @@ Usage:
 
 import os
 import json
+import threading
+import time
 import numpy as np
 
 name = 'forage'
@@ -151,6 +153,35 @@ def make_signal(w, h, args):
     base_column_lr = [None]  # captured from column_mgr on first tick
     base_embed_lr = [None]   # captured from dsolver on first tick
     field_save_every = 100
+
+    # Background thread for live LR control polling (non-blocking)
+    _ctrl_values = {}  # shared dict, updated by background thread
+    _ctrl_lock = threading.Lock()
+    def _ctrl_poll_thread():
+        import json as _json
+        import socket as _socket
+        while True:
+            addr = _refs.get('field_address')
+            if not addr:
+                time.sleep(1.0)
+                continue
+            try:
+                host, port = addr.rsplit(':', 1)
+                ctrl_port = int(port) + 1
+                s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+                s.settimeout(0.2)
+                s.connect((host, ctrl_port))
+                data = s.recv(1024)
+                s.close()
+                with _ctrl_lock:
+                    _ctrl_values.update(_json.loads(data.decode()))
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    if getattr(args, 'field_address', None):
+        _ctrl_thread = threading.Thread(target=_ctrl_poll_thread, daemon=True)
+        _ctrl_thread.start()
 
     # Obstacle blocks: boolean grid, True = blocked
     n_blocks = getattr(args, 'forage_blocks', 0)
@@ -361,27 +392,16 @@ def make_signal(w, h, args):
         #         base_embed_lr[0] = dsolver.lr
         #     dsolver.lr = base_embed_lr[0] * (1.0 - 0.9 * hunger)
 
-        # Live LR control from field viz (polls TCP controls port)
-        if t % 100 == 0 and _refs.get('field_address'):
-            try:
-                import json as _json
-                import socket as _socket
-                host, port = _refs['field_address'].rsplit(':', 1)
-                ctrl_port = int(port) + 1  # controls on port+1
-                s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-                s.settimeout(0.1)
-                s.connect((host, ctrl_port))
-                data = s.recv(1024)
-                s.close()
-                _ctrl = _json.loads(data.decode())
-                col_mgr = _refs.get('column_mgr')
-                dsolver = _refs.get('dsolver')
-                if col_mgr is not None and 'column_lr' in _ctrl:
-                    col_mgr.lr = float(_ctrl['column_lr'])
-                if dsolver is not None and 'lr' in _ctrl:
-                    dsolver.lr = float(_ctrl['lr'])
-            except Exception:
-                pass
+        # Live LR control from field viz (background thread polls, we just read)
+        if t % 100 == 0 and _ctrl_values:
+            with _ctrl_lock:
+                _ctrl = dict(_ctrl_values)
+            col_mgr = _refs.get('column_mgr')
+            dsolver = _refs.get('dsolver')
+            if col_mgr is not None and 'column_lr' in _ctrl:
+                col_mgr.lr = float(_ctrl['column_lr'])
+            if dsolver is not None and 'lr' in _ctrl:
+                dsolver.lr = float(_ctrl['lr'])
 
         # Retina neurons get zero for now (unused)
         sig = np.zeros(n, dtype=np.float32)
