@@ -188,6 +188,11 @@ class ClusterManager:
         if not self.initialized:
             return
 
+        _dt = os.environ.get('DEBUG_TICK_TIMING')
+        if _dt:
+            import time as _time
+            _t0 = _time.perf_counter()
+
         effective_lr = self.lr
 
         if self.knn2_mode == 'knn':
@@ -244,6 +249,9 @@ class ClusterManager:
             if pairs is not None:
                 self._update_knn2_gpu(pairs)
 
+        if _dt:
+            _t_stream = _time.perf_counter()
+
         # Periodic split recovery (before wiring reconciliation)
         split_events = []
         if (self.split_every > 0 and global_tick > 0 and
@@ -270,21 +278,31 @@ class ClusterManager:
                     # Note: lateral knn2 sync happens at report intervals,
                     # not every split (too disruptive to learned weights)
 
+        if _dt:
+            _t_split = _time.perf_counter()
+
         # Unified column wiring reconciliation: process all streaming + split
         # events together using final cluster_ids state. Dedup per neuron,
-        # then verify slot_map consistency for all affected neurons.
+        # then verify slot_map consistency for affected neurons only.
         if self.column_mgr and (wiring_events or split_events):
             neuron_evicted = {}
+            affected_cols = set()
             for neuron, old_c, new_c in wiring_events:
                 if neuron not in neuron_evicted:
                     neuron_evicted[neuron] = set()
                 if old_c >= 0:
                     neuron_evicted[neuron].add(old_c)
+                    affected_cols.add(old_c)
+                if new_c >= 0:
+                    affected_cols.add(new_c)
             for neuron, old_c, new_c in split_events:
                 if neuron not in neuron_evicted:
                     neuron_evicted[neuron] = set()
                 if old_c >= 0:
                     neuron_evicted[neuron].add(old_c)
+                    affected_cols.add(old_c)
+                if new_c >= 0:
+                    affected_cols.add(new_c)
             for neuron, evicted_set in neuron_evicted.items():
                 primary = int(self.cluster_ids[neuron, self.pointers[neuron]])
                 ring = self.cluster_ids[neuron]
@@ -295,16 +313,20 @@ class ClusterManager:
                     if old_c not in ring and old_c != primary:
                         self.column_mgr.unwire(int(old_c), neuron)
                 self.column_mgr.wire(primary, neuron)
-            # Scan slot_map for stale entries from swap race conditions
+            # Scan only affected columns for stale entries from swap races
             slot_map = self.column_mgr.slot_map
-            for c in range(self.m):
+            reserved = self.column_mgr._reserved_mask
+            for c in affected_cols:
                 for s in range(self.column_mgr.max_inputs):
-                    if self.column_mgr._reserved_mask[c, s]:
+                    if reserved[c, s]:
                         continue
                     neuron = int(slot_map[c, s])
                     if neuron >= 0 and neuron in neuron_evicted:
                         if c not in self.cluster_ids[neuron]:
                             slot_map[c, s] = -1
+
+        if _dt:
+            _t_wiring = _time.perf_counter()
 
         # Column tick (after all wiring is settled)
         if self.column_mgr:
@@ -324,6 +346,16 @@ class ClusterManager:
                         outputs.ravel().astype(np.float32)).to(self._signals.device)
                     next_col = (global_tick + 1) % self._signal_T
                     self._signals[self.n_sensory:, next_col] = fb
+
+        if _dt:
+            _t_col = _time.perf_counter()
+            _total = (_t_col - _t0) * 1000
+            if _total > 15.0:
+                print(f"    cluster_tick {global_tick}: {_total:.1f}ms "
+                      f"stream={(_t_stream-_t0)*1000:.1f} "
+                      f"split={(_t_split-_t_stream)*1000:.1f} "
+                      f"wiring={(_t_wiring-_t_split)*1000:.1f} "
+                      f"column={(_t_col-_t_wiring)*1000:.1f}")
 
     def _update_knn2_gpu(self, pairs):
         """Update knn2 from skip-gram pairs — fully vectorized on GPU."""
