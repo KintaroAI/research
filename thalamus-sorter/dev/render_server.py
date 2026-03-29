@@ -556,6 +556,13 @@ class Renderer:
             self._send_slots[render_type] = job
         self._send_event.set()
 
+    def _send_busy(self):
+        """Check if sender thread still has unsent jobs (skip data prep)."""
+        if not hasattr(self, '_send_lock'):
+            return False
+        with self._send_lock:
+            return len(self._send_slots) > 0
+
     def grid(self, tick, embeddings, pixel_values, method='pca',
              align=False, gpu=False):
         """Voronoi grid render of sensory embeddings."""

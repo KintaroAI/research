@@ -66,44 +66,38 @@ def run_training_loop(do_tick, dsolver, max_frames, sig_channels, wlog,
                 anchors_np = dsolver._last_anchors.cpu().numpy()
                 pairs = getattr(dsolver, '_last_pairs', None)
                 cluster_mgr.tick(dsolver.positions, anchors_np, pairs, tick)
-                # Send graph to viz app (independent of report/save)
+                # Send graph + field to viz (non-blocking, skips if busy)
                 if (viz_every > 0 and tick % viz_every == 0
                         and cluster_mgr._renderer is not None
-                        and cluster_mgr._renderer.viz_address
-                        and cluster_mgr.column_mgr):
-                    most_recent = cluster_mgr.cluster_ids[
-                        np.arange(cluster_mgr.n), cluster_mgr.pointers]
-                    ns = cluster_mgr.n_sensory
-                    lateral_adj = None
-                    if cluster_mgr.column_mgr.lateral:
-                        lateral_adj = cluster_mgr.column_mgr.lateral_adj
-                    knn2_viz = (cluster_mgr.knn2 if cluster_mgr.knn2_mode == 'knn'
-                                else cluster_mgr.knn2_t.cpu().numpy())
-                    cluster_mgr._renderer.graph(
-                        tick, most_recent, ns, cluster_mgr.column_n_outputs,
-                        lateral_adj=lateral_adj,
-                        column_outputs=cluster_mgr.column_mgr.get_outputs(),
-                        knn2=knn2_viz,
-                        centroids=cluster_mgr.centroids_t.cpu().numpy())
-
-                # Send field data to field viz
-                if (viz_every > 0 and tick % viz_every == 0
-                        and cluster_mgr._renderer is not None
-                        and cluster_mgr._renderer.field_address
-                        and bench_metadata is not None
-                        and 'pos' in bench_metadata):
-                    bm = bench_metadata
-                    bm_state = bm.get('state', {})
-                    hunger_val = bm_state.get('hunger', [0])[0]
-                    pois_arr = bm_state.get('pois', np.empty((0, 2)))
-                    cluster_mgr._renderer.field_live(
-                        tick, bm['pos'].copy(), pois_arr.copy(),
-                        bm['field_size'],
-                        hunger=float(hunger_val),
-                        collect_radius=bm.get('collect_radius', 5.0),
-                        score=int(bm.get('score', [0])[0]),
-                        visual_field=bm_state.get('_visual_field'),
-                        blocked=bm.get('blocked'))
+                        and not cluster_mgr._renderer._send_busy()):
+                    r = cluster_mgr._renderer
+                    if r.viz_address and cluster_mgr.column_mgr:
+                        most_recent = cluster_mgr.cluster_ids[
+                            np.arange(cluster_mgr.n), cluster_mgr.pointers]
+                        lateral_adj = (cluster_mgr.column_mgr.lateral_adj
+                                       if cluster_mgr.column_mgr.lateral else None)
+                        knn2_viz = (cluster_mgr.knn2 if cluster_mgr.knn2_mode == 'knn'
+                                    else cluster_mgr.knn2_t.cpu().numpy())
+                        r.graph(tick, most_recent,
+                                cluster_mgr.n_sensory,
+                                cluster_mgr.column_n_outputs,
+                                lateral_adj=lateral_adj,
+                                column_outputs=cluster_mgr.column_mgr.get_outputs(),
+                                knn2=knn2_viz,
+                                centroids=cluster_mgr.centroids_t.cpu().numpy())
+                    if (r.field_address and bench_metadata is not None
+                            and 'pos' in bench_metadata):
+                        bm = bench_metadata
+                        bm_state = bm.get('state', {})
+                        r.field_live(
+                            tick, bm['pos'].copy(),
+                            bm_state.get('pois', np.empty((0, 2))).copy(),
+                            bm['field_size'],
+                            hunger=float(bm_state.get('hunger', [0])[0]),
+                            collect_radius=bm.get('collect_radius', 5.0),
+                            score=int(bm.get('score', [0])[0]),
+                            visual_field=bm_state.get('_visual_field'),
+                            blocked=bm.get('blocked'))
 
                 if tick % cluster_report_every == 0:
                     # Refresh knn_lists for knn mode
