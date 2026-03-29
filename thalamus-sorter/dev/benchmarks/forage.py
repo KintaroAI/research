@@ -245,8 +245,13 @@ def make_signal(w, h, args):
 
     feature_log = []
 
+    _dt_forage = os.environ.get('DEBUG_TICK_TIMING')
+    _forage_threshold_ms = 3.0
+
     def tick_fn(t):
         nonlocal hunger
+        if _dt_forage:
+            _ft0 = time.perf_counter()
         is_sparse = t >= phase_ticks
 
         # Motor control: 8 columns, each drives one fiber per direction.
@@ -289,6 +294,9 @@ def make_signal(w, h, args):
 
         total_dx = effective[0] - effective[1]
         total_dy = effective[2] - effective[3]
+
+        if _dt_forage:
+            _ft_motor = time.perf_counter()
 
         # Move (clip at walls, block collision)
         prev_pos[:] = pos
@@ -451,6 +459,9 @@ def make_signal(w, h, args):
                             restlessness.mean(), tiredness.mean(),
                             float(is_sparse)))
 
+        if _dt_forage:
+            _ft_signals = time.perf_counter()
+
         # Visual field: egocentric viewport centered on agent, 1:1 scale
         if visual_field:
             vf = np.zeros((visual_res, visual_res), dtype=np.float32)
@@ -483,6 +494,15 @@ def make_signal(w, h, args):
             vf[oob] = _vf_border[oob]
             sig[_vf_visual_offset:_vf_visual_offset + n_visual] = vf.ravel()
             state['_visual_field'] = vf
+
+        if _dt_forage:
+            _ft_end = time.perf_counter()
+            _ft_total = (_ft_end - _ft0) * 1000
+            if _ft_total > _forage_threshold_ms:
+                print(f"    forage tick {t}: {_ft_total:.1f}ms "
+                      f"motor={(_ft_motor-_ft0)*1000:.1f} "
+                      f"signals={(_ft_signals-_ft_motor)*1000:.1f} "
+                      f"visual={(_ft_end-_ft_signals)*1000:.1f}")
 
         return sig
 

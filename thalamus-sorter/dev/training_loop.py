@@ -4,6 +4,7 @@ Extracted from main.py — pure loop logic with no CLI dependencies.
 All configuration passed as explicit parameters.
 """
 
+import os
 import time
 import numpy as np
 
@@ -45,8 +46,17 @@ def run_training_loop(do_tick, dsolver, max_frames, sig_channels, wlog,
     prev_pairs = 0
     t_log = t0
 
+    _debug_timing = os.environ.get('DEBUG_TICK_TIMING')
+    _tick_threshold_ms = 20.0  # only print ticks slower than this
+
     for tick in range(1, max_frames + 1):
+        if _debug_timing:
+            _t0_tick = time.perf_counter()
+
         total_pairs += do_tick()
+
+        if _debug_timing:
+            _t_dotick = time.perf_counter()
 
         # Live cluster maintenance
         if cluster_mgr is not None:
@@ -66,6 +76,10 @@ def run_training_loop(do_tick, dsolver, max_frames, sig_channels, wlog,
                 anchors_np = dsolver._last_anchors.cpu().numpy()
                 pairs = getattr(dsolver, '_last_pairs', None)
                 cluster_mgr.tick(dsolver.positions, anchors_np, pairs, tick)
+
+                if _debug_timing:
+                    _t_cluster = time.perf_counter()
+
                 # Send graph + field to viz (non-blocking, skips if busy)
                 if (viz_every > 0 and tick % viz_every == 0
                         and cluster_mgr._renderer is not None
@@ -98,6 +112,17 @@ def run_training_loop(do_tick, dsolver, max_frames, sig_channels, wlog,
                             score=int(bm.get('score', [0])[0]),
                             visual_field=bm_state.get('_visual_field'),
                             blocked=bm.get('blocked'))
+
+                if _debug_timing:
+                    _t_viz = time.perf_counter()
+                    _total_ms = (_t_viz - _t0_tick) * 1000
+                    if _total_ms > _tick_threshold_ms:
+                        _dotick_ms = (_t_dotick - _t0_tick) * 1000
+                        _cluster_ms = (_t_cluster - _t_dotick) * 1000
+                        _viz_ms = (_t_viz - _t_cluster) * 1000
+                        print(f"  SLOW tick {tick}: {_total_ms:.1f}ms "
+                              f"(signal={_dotick_ms:.1f} cluster={_cluster_ms:.1f} "
+                              f"viz={_viz_ms:.1f})")
 
                 if tick % cluster_report_every == 0:
                     # Refresh knn_lists for knn mode
