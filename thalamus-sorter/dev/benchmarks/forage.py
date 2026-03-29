@@ -86,6 +86,10 @@ def add_args(parser):
                         help="Motor output scale in field units (default: 0.5)")
     parser.add_argument("--forage-neurons-per-signal", type=int, default=8,
                         help="Neurons per signal type (default: 8, use higher for larger grids)")
+    parser.add_argument("--forage-visual-field", action="store_true",
+                        help="Feed model a grayscale rendering of the foraging field")
+    parser.add_argument("--forage-visual-res", type=int, default=32,
+                        help="Visual field resolution in pixels (default: 32 → 1024 neurons)")
 
 
 def make_signal(w, h, args):
@@ -114,9 +118,16 @@ def make_signal(w, h, args):
     # Neurons per signal (configurable for larger grids)
     S = getattr(args, 'forage_neurons_per_signal', NEURONS_PER_SIGNAL_DEFAULT)
     N_SENSE = S * N_SIGNAL_TYPES
+    # Visual field: render foraging field as grayscale image fed as neurons
+    visual_field = getattr(args, 'forage_visual_field', False)
+    visual_res = getattr(args, 'forage_visual_res', 32)
+    n_visual = visual_res * visual_res if visual_field else 0
+    N_SENSE = N_SENSE + n_visual
+
     assert n >= N_SENSE, (
         f"Grid {w}x{h}={n} too small for {N_SENSE} sensory neurons "
-        f"({S} per signal × {N_SIGNAL_TYPES} signals). "
+        f"({S} per signal × {N_SIGNAL_TYPES} signals"
+        f"{f' + {visual_res}x{visual_res} visual' if visual_field else ''}). "
         f"Need at least {N_SENSE} neurons, e.g. -W {int(N_SENSE**0.5)+1} -H {int(N_SENSE**0.5)+1}")
 
     # Muscle feedback: 4 directions × S muscle fibers each
@@ -138,6 +149,18 @@ def make_signal(w, h, args):
 
     # POIs — stored in state dict so tick_fn and metadata share the reference
     state['pois'] = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
+
+    # Visual field rendering: precompute coordinate grid
+    if visual_field:
+        _vf_yy, _vf_xx = np.mgrid[:visual_res, :visual_res]
+        _vf_xx = _vf_xx.astype(np.float32)
+        _vf_yy = _vf_yy.astype(np.float32)
+        _vf_scale = visual_res / field_size
+        # Pixel radii: agent ~3px, POI contact circle ~3px, POI center ~1px
+        _vf_agent_r = max(2.0, visual_res * 0.03)
+        _vf_poi_r = max(3.0, collect_radius * _vf_scale)
+        _vf_poi_center_r = max(1.0, _vf_poi_r * 0.3)
+        _vf_visual_offset = N_SENSE - n_visual  # where visual neurons start in sig
 
     # Sensory neuron indices: S neurons per signal
     idx = {}
@@ -361,11 +384,21 @@ def make_signal(w, h, args):
                             restlessness.mean(), tiredness.mean(),
                             float(is_sparse)))
 
-        # Field visualization (disabled — use --field-address for live streaming)
-        # renderer = _refs.get('renderer')
-        # if renderer is not None and t % field_save_every == 0:
-        #     renderer.field(t, pos.copy(), state['pois'].copy(), field_size,
-        #                    collect_radius=collect_radius)
+        # Visual field: render and write to signal buffer
+        if visual_field:
+            vf = np.zeros((visual_res, visual_res), dtype=np.float32)
+            pois_px = pois * _vf_scale
+            ax, ay = pos[0] * _vf_scale, pos[1] * _vf_scale
+            # POIs: gray contact circle + white center
+            for p in range(len(pois_px)):
+                dist = np.sqrt((_vf_xx - pois_px[p, 0]) ** 2 +
+                               (_vf_yy - pois_px[p, 1]) ** 2)
+                vf = np.maximum(vf, np.where(dist < _vf_poi_r, 0.3, 0.0))
+                vf = np.maximum(vf, np.where(dist < _vf_poi_center_r, 1.0, 0.0))
+            # Agent: gray circle
+            dist_a = np.sqrt((_vf_xx - ax) ** 2 + (_vf_yy - ay) ** 2)
+            vf = np.maximum(vf, np.where(dist_a < _vf_agent_r, 0.5, 0.0))
+            sig[_vf_visual_offset:_vf_visual_offset + n_visual] = vf.ravel()
 
         return sig
 
@@ -386,10 +419,11 @@ def make_signal(w, h, args):
         '_refs': _refs,  # main.py sets _refs['column_mgr'] after cluster init
     }
 
+    vf_str = f", visual={visual_res}x{visual_res}" if visual_field else ""
     print(f"  signal buffer: FORAGE synthetic "
           f"(field={field_size}, dense={n_pois_dense}, sparse={n_pois_sparse}, "
           f"phase={phase_ticks}, radius={collect_radius}, "
-          f"neurons/signal={S}, sensory={N_SENSE})")
+          f"neurons/signal={S}, sensory={N_SENSE}{vf_str})")
 
     return tick_fn, metadata
 
