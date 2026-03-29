@@ -588,7 +588,8 @@ class Renderer:
         self._submit('heatmap', path, positions=positions)
 
     def field_live(self, tick, agent_pos, pois, field_size,
-                   hunger=0.0, collect_radius=5.0, score=0):
+                   hunger=0.0, collect_radius=5.0, score=0,
+                   visual_field=None, blocked=None):
         """Send field data to field viz app via render server."""
         if self._client is None or not self.field_address:
             return
@@ -596,6 +597,7 @@ class Renderer:
                             tick=tick, agent_pos=agent_pos, pois=pois,
                             field_size=field_size, hunger=hunger,
                             collect_radius=collect_radius, score=score,
+                            visual_field=visual_field, blocked=blocked,
                             viz_address=self.field_address)
 
     def graph(self, tick, most_recent, n_sensory, n_outputs,

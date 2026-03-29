@@ -462,6 +462,7 @@ def make_signal(w, h, args):
             # Re-apply border over any POI bleed past field edge
             vf[oob] = _vf_border[oob]
             sig[_vf_visual_offset:_vf_visual_offset + n_visual] = vf.ravel()
+            state['_visual_field'] = vf
 
         return sig
 
@@ -478,8 +479,9 @@ def make_signal(w, h, args):
         'sensor_indices': idx,
         'phase_ticks': phase_ticks,
         'collect_radius': collect_radius,
-        'state': state,  # mutable: hunger, prev_nearest_dist
+        'state': state,  # mutable: hunger, prev_nearest_dist, _visual_field
         '_refs': _refs,  # main.py sets _refs['column_mgr'] after cluster init
+        'blocked': blocked if n_blocks > 0 else None,
     }
 
     vf_str = f", visual={visual_res}x{visual_res}" if visual_field else ""

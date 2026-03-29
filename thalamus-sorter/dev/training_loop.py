@@ -101,7 +101,9 @@ def run_training_loop(do_tick, dsolver, max_frames, sig_channels, wlog,
                         bm['field_size'],
                         hunger=float(hunger_val),
                         collect_radius=bm.get('collect_radius', 5.0),
-                        score=int(bm.get('score', [0])[0]))
+                        score=int(bm.get('score', [0])[0]),
+                        visual_field=bm_state.get('_visual_field'),
+                        blocked=bm.get('blocked'))
 
                 if tick % cluster_report_every == 0:
                     # Refresh knn_lists for knn mode
