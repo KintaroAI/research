@@ -237,8 +237,18 @@ def run_field_viz(port=DEFAULT_PORT):
                          color=(100, 100, 255, alpha), thickness=1,
                          parent="field_canvas")
 
-        # POIs
+        # POIs + line to nearest
         if pois is not None and len(pois) > 0:
+            # Find nearest POI
+            dists = np.sqrt(((pois - agent_pos) ** 2).sum(axis=1))
+            nearest_idx = int(dists.argmin())
+            nx, ny = to_canvas(float(pois[nearest_idx, 0]),
+                               float(pois[nearest_idx, 1]))
+            ax_l, ay_l = to_canvas(float(agent_pos[0]), float(agent_pos[1]))
+            dpg.draw_line((ax_l, ay_l), (nx, ny),
+                         color=(255, 200, 50, 100), thickness=1,
+                         parent="field_canvas")
+
             for px, py in pois:
                 cx, cy = to_canvas(float(px), float(py))
                 r = collect_radius * scale
