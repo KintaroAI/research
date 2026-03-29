@@ -522,20 +522,39 @@ class Renderer:
         return self._client.submit(render_type, output_path, **kwargs)
 
     def _submit_nowait(self, render_type, output_path, **kwargs):
-        """Fire-and-forget: send job but don't wait for server response."""
+        """Fire-and-forget via background thread. Latest job per type wins."""
         if self._client is None:
             return
         job = {'type': render_type, 'output_path': output_path}
         job.update(kwargs)
-        try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(0.1)
-            sock.connect(SOCK_PATH)
-            _send_msg(sock, job)
-            sock.close()
-        except (ConnectionRefusedError, FileNotFoundError,
-                OSError, socket.timeout):
-            pass
+        # Start sender thread on first use
+        if not hasattr(self, '_send_thread'):
+            import threading
+            self._send_slots = {}  # render_type -> latest job
+            self._send_lock = threading.Lock()
+            self._send_event = threading.Event()
+            def _sender():
+                while True:
+                    self._send_event.wait()
+                    self._send_event.clear()
+                    with self._send_lock:
+                        jobs = list(self._send_slots.values())
+                        self._send_slots.clear()
+                    for j in jobs:
+                        try:
+                            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                            sock.settimeout(0.5)
+                            sock.connect(SOCK_PATH)
+                            _send_msg(sock, j)
+                            sock.close()
+                        except (ConnectionRefusedError, FileNotFoundError,
+                                OSError, socket.timeout):
+                            pass
+            self._send_thread = threading.Thread(target=_sender, daemon=True)
+            self._send_thread.start()
+        with self._send_lock:
+            self._send_slots[render_type] = job
+        self._send_event.set()
 
     def grid(self, tick, embeddings, pixel_values, method='pca',
              align=False, gpu=False):
