@@ -395,10 +395,11 @@ def run_viz(port=DEFAULT_PORT):
         print("ERROR: dearpygui not installed. Run: pip install dearpygui")
         sys.exit(1)
 
-    # Shared state between network thread and render thread
+    # Shared state: raw payload (TCP thread) → analyzed graph (analysis thread)
+    latest_payload = {'data': None, 'lock': threading.Lock()}
     latest_graph = {'data': None, 'lock': threading.Lock()}
 
-    # --- TCP listener thread ---
+    # --- TCP listener thread (fast: just receive and store) ---
     def listen_thread():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -418,14 +419,29 @@ def run_viz(port=DEFAULT_PORT):
                 payload = _recv_msg(conn)
                 conn.close()
                 if payload is not None:
-                    graph = analyze_graph(payload)
-                    with latest_graph['lock']:
-                        latest_graph['data'] = graph
+                    with latest_payload['lock']:
+                        latest_payload['data'] = payload
             except Exception as e:
                 print(f"Viz recv error: {e}")
 
     listener = threading.Thread(target=listen_thread, daemon=True)
     listener.start()
+
+    # --- Analysis thread (picks up latest payload, skips if busy) ---
+    def analysis_thread():
+        prev_tick = -1
+        while True:
+            with latest_payload['lock']:
+                payload = latest_payload['data']
+            if payload is not None and payload.get('tick', 0) != prev_tick:
+                prev_tick = payload.get('tick', 0)
+                graph = analyze_graph(payload)
+                with latest_graph['lock']:
+                    latest_graph['data'] = graph
+            time.sleep(0.005)
+
+    analyzer = threading.Thread(target=analysis_thread, daemon=True)
+    analyzer.start()
 
     # --- DearPyGui setup ---
     dpg.create_context()
