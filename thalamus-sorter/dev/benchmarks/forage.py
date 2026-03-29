@@ -86,6 +86,8 @@ def add_args(parser):
                         help="Motor output scale in field units (default: 0.5)")
     parser.add_argument("--forage-neurons-per-signal", type=int, default=8,
                         help="Neurons per signal type (default: 8, use higher for larger grids)")
+    parser.add_argument("--forage-blocks", type=int, default=0,
+                        help="Number of random obstacle blocks (default: 0)")
     parser.add_argument("--forage-poi-signals", action="store_true",
                         help="Enable proximity and target_x/target_y sensory signals (default: off)")
     parser.add_argument("--forage-visual-field", action="store_true",
@@ -150,8 +152,35 @@ def make_signal(w, h, args):
     base_embed_lr = [None]   # captured from dsolver on first tick
     field_save_every = 100
 
+    # Obstacle blocks: boolean grid, True = blocked
+    n_blocks = getattr(args, 'forage_blocks', 0)
+    blocked = np.zeros((field_size, field_size), dtype=bool)
+    if n_blocks > 0:
+        for _ in range(n_blocks):
+            bw = rng.randint(3, 9)
+            bh = rng.randint(3, 9)
+            bx = rng.randint(0, field_size - bw)
+            by = rng.randint(0, field_size - bh)
+            blocked[by:by+bh, bx:bx+bw] = True
+        # Clear around agent spawn
+        cx, cy = field_size // 2, field_size // 2
+        blocked[max(0,cy-5):cy+6, max(0,cx-5):cx+6] = False
+
+    def _spawn_pois(count):
+        """Spawn POIs avoiding blocked cells."""
+        pts = []
+        while len(pts) < count:
+            batch = rng.rand(count * 2, 2).astype(np.float32) * field_size
+            for p in batch:
+                ix, iy = int(np.clip(p[0], 0, field_size-1)), int(np.clip(p[1], 0, field_size-1))
+                if not blocked[iy, ix]:
+                    pts.append(p)
+                    if len(pts) >= count:
+                        break
+        return np.array(pts, dtype=np.float32)
+
     # POIs — stored in state dict so tick_fn and metadata share the reference
-    state['pois'] = rng.rand(n_pois_dense, 2).astype(np.float32) * field_size
+    state['pois'] = _spawn_pois(n_pois_dense)
 
     # Visual field rendering: egocentric viewport, 1:1 pixel = 1 field unit
     if visual_field:
@@ -230,10 +259,22 @@ def make_signal(w, h, args):
         total_dx = effective[0] - effective[1]
         total_dy = effective[2] - effective[3]
 
-        # Move (clip at walls)
+        # Move (clip at walls, block collision)
         prev_pos[:] = pos
-        pos[0] = np.clip(pos[0] + total_dx, 0, field_size)
-        pos[1] = np.clip(pos[1] + total_dy, 0, field_size)
+        new_x = np.clip(pos[0] + total_dx, 0, field_size - 1)
+        new_y = np.clip(pos[1] + total_dy, 0, field_size - 1)
+        ix, iy = int(new_x), int(new_y)
+        if not blocked[iy, ix]:
+            pos[0] = new_x
+            pos[1] = new_y
+        else:
+            # Try axes independently (slide along walls)
+            sx = np.clip(pos[0] + total_dx, 0, field_size - 1)
+            if not blocked[int(pos[1]), int(sx)]:
+                pos[0] = sx
+            sy = np.clip(pos[1] + total_dy, 0, field_size - 1)
+            if not blocked[int(sy), int(pos[0])]:
+                pos[1] = sy
 
         # Per-fiber tiredness update: uses per_fiber_force from motor above
         # Add spasm contribution
@@ -295,7 +336,7 @@ def make_signal(w, h, args):
                 n_target = n_pois_sparse if is_sparse else n_pois_dense
                 n_spawn = max(0, n_target - len(remaining))
                 if n_spawn > 0:
-                    spawned = rng.rand(n_spawn, 2).astype(np.float32) * field_size
+                    spawned = _spawn_pois(n_spawn)
                     remaining = np.vstack([remaining, spawned]) if len(remaining) > 0 else spawned
                 state['pois'] = remaining
         else:
@@ -399,8 +440,12 @@ def make_signal(w, h, args):
             # Field coords for each pixel
             fx = _vf_xx + vf_ox
             fy = _vf_yy + vf_oy
-            # Out-of-bounds: checkerboard pattern
+            # Out-of-bounds + blocks: checkerboard pattern
             oob = (fx < 0) | (fx >= field_size) | (fy < 0) | (fy >= field_size)
+            if n_blocks > 0:
+                fix = np.clip(fx.astype(int), 0, field_size - 1)
+                fiy = np.clip(fy.astype(int), 0, field_size - 1)
+                oob = oob | blocked[fiy, fix]
             vf[oob] = _vf_border[oob]
             # POIs in viewport: contact circle + white center
             for p in range(len(pois)):
@@ -438,10 +483,11 @@ def make_signal(w, h, args):
     }
 
     vf_str = f", visual={visual_res}x{visual_res}" if visual_field else ""
+    blk_str = f", blocks={n_blocks}" if n_blocks > 0 else ""
     print(f"  signal buffer: FORAGE synthetic "
           f"(field={field_size}, dense={n_pois_dense}, sparse={n_pois_sparse}, "
           f"phase={phase_ticks}, radius={collect_radius}, "
-          f"neurons/signal={S}, sensory={N_SENSE}{vf_str})")
+          f"neurons/signal={S}, sensory={N_SENSE}{vf_str}{blk_str})")
 
     return tick_fn, metadata
 
