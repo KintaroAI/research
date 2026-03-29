@@ -93,6 +93,17 @@ python main.py word2vec --preset gray_80x80_saccades -f 50000
 | `--column-temperature` | 0.2 | Softmax temperature (lower=peakier) |
 | `--column-match-threshold` | 0.1 | Dormant reassignment threshold |
 | `--column-streaming-decay` | 0.8 | EMA decay (rule of thumb: 1-2/window) |
+| `--column-alpha` | 0.01 | Conscience threshold rate (conscience columns only) |
+| `--column-reseed-after` | 1000 | Reseed dead outputs after N ticks (conscience only) |
+| `--column-type` | default | `default` (softmax WTA) or `conscience` (hard WTA with homeostasis) |
+
+**Conscience columns** (`--column-type conscience`): hard WTA with adaptive threshold
+`theta[k] += alpha * (y[k] - 1/n_outputs)`. Winners accumulate penalty, losers
+recover — forces each output to win ~1/n_outputs of the time. Prevents collapse
+but causes winner rotation. `--column-alpha` controls rotation speed:
+- `0.001` — slow rotation, winners hold for many ticks (stable motor output)
+- `0.01` — default, moderate rotation
+- `0.1` — fast rotation, winners change almost every tick
 
 ### Lateral input connections
 
@@ -123,6 +134,16 @@ feedback).
 `--render-mode embed` saves `embed_NNNNNN.png` at each `cluster_report_every`:
 PCA scatter of all neurons — sensory (gray dots) and feedback (colored by
 column hue). Does not affect normal frame rendering.
+
+### Forage benchmark flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--forage-visual-field` | false | Feed model egocentric grayscale viewport of the field |
+| `--forage-visual-res` | 32 | Visual field resolution (32 → 1024 neurons) |
+| `--forage-blocks` | 0 | Number of random obstacle blocks on the field |
+| `--no-forage-poi-signals` | false | Disable proximity/target sensory signals |
+| `--no-cluster-swap` | false | Disable swap on full clusters (just reject) |
 
 ### Column learning dynamics
 
