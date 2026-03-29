@@ -358,11 +358,11 @@ def make_signal(w, h, args):
         for i in idx['dir_xn']:    sig[i] = max(0.0, -direction[0])
         for i in idx['dir_yp']:    sig[i] = max(0.0, direction[1])
         for i in idx['dir_yn']:    sig[i] = max(0.0, -direction[1])
+        if len(pois) > 0:
+            prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
+        else:
+            prox = 0.0
         if poi_signals:
-            if len(pois) > 0:
-                prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
-            else:
-                prox = 0.0
             for i in idx['proximity']: sig[i] = pulsate(prox, t, 15)
         for i in idx['hunger']:    sig[i] = pulsate(hunger, t, 17)
         # Per-fiber restlessness and tiredness signals
