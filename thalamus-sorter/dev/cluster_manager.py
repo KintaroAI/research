@@ -244,22 +244,8 @@ class ClusterManager:
             if pairs is not None:
                 self._update_knn2_gpu(pairs)
 
-        # Column wiring: ensure each neuron is wired to its current primary.
-        # Events report (neuron, evicted_cluster, new_cluster), but after
-        # in-ring switches the neuron may still be wired to a stale primary.
-        # Unwire from all ring entries except new_c, then wire to new_c.
-        if self.column_mgr and wiring_events:
-            for neuron, old_c, new_c in wiring_events:
-                # Unwire from evicted cluster and any other stale wiring
-                ring = self.cluster_ids[neuron]
-                for cid in ring:
-                    if cid >= 0 and cid != new_c:
-                        self.column_mgr.unwire(int(cid), neuron)
-                if old_c >= 0 and old_c not in ring:
-                    self.column_mgr.unwire(old_c, neuron)
-                self.column_mgr.wire(new_c, neuron)
-
-        # Periodic split recovery
+        # Periodic split recovery (before wiring reconciliation)
+        split_events = []
         if (self.split_every > 0 and global_tick > 0 and
                 global_tick % self.split_every == 0):
             n_empty = (self.sizes == 0).sum()
@@ -272,11 +258,6 @@ class ClusterManager:
                     pointers=self.pointers, last_used=self.last_used,
                     tick=global_tick)
                 self.total_splits += n_splits
-                # Process split wiring events
-                if self.column_mgr and split_events:
-                    for neuron, old_c, new_c in split_events:
-                        self.column_mgr.unwire(old_c, neuron)
-                        self.column_mgr.wire(new_c, neuron)
                 if n_splits > 0:
                     most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
                     if self.knn2_mode == 'knn' and self.knn_lists is not None:
@@ -288,6 +269,42 @@ class ClusterManager:
                         self._recompute_knn2_dists()
                     # Note: lateral knn2 sync happens at report intervals,
                     # not every split (too disruptive to learned weights)
+
+        # Unified column wiring reconciliation: process all streaming + split
+        # events together using final cluster_ids state. Dedup per neuron,
+        # then verify slot_map consistency for all affected neurons.
+        if self.column_mgr and (wiring_events or split_events):
+            neuron_evicted = {}
+            for neuron, old_c, new_c in wiring_events:
+                if neuron not in neuron_evicted:
+                    neuron_evicted[neuron] = set()
+                if old_c >= 0:
+                    neuron_evicted[neuron].add(old_c)
+            for neuron, old_c, new_c in split_events:
+                if neuron not in neuron_evicted:
+                    neuron_evicted[neuron] = set()
+                if old_c >= 0:
+                    neuron_evicted[neuron].add(old_c)
+            for neuron, evicted_set in neuron_evicted.items():
+                primary = int(self.cluster_ids[neuron, self.pointers[neuron]])
+                ring = self.cluster_ids[neuron]
+                for cid in ring:
+                    if cid >= 0 and cid != primary:
+                        self.column_mgr.unwire(int(cid), neuron)
+                for old_c in evicted_set:
+                    if old_c not in ring and old_c != primary:
+                        self.column_mgr.unwire(int(old_c), neuron)
+                self.column_mgr.wire(primary, neuron)
+            # Scan slot_map for stale entries from swap race conditions
+            slot_map = self.column_mgr.slot_map
+            for c in range(self.m):
+                for s in range(self.column_mgr.max_inputs):
+                    if self.column_mgr._reserved_mask[c, s]:
+                        continue
+                    neuron = int(slot_map[c, s])
+                    if neuron >= 0 and neuron in neuron_evicted:
+                        if c not in self.cluster_ids[neuron]:
+                            slot_map[c, s] = -1
 
         # Column tick (after all wiring is settled)
         if self.column_mgr:

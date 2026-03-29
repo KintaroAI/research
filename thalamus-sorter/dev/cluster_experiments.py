@@ -379,6 +379,7 @@ if HAS_TORCH:
             active &= (best_dists < primary_dists * hysteresis_mult)
 
         # Prefetch all embeddings for swap candidate search
+        swapped = set()  # neurons moved by swap — skip if they appear as movers
         if max_cluster_size > 0:
             all_embs_cpu = embeddings_t.cpu().numpy()
 
@@ -388,6 +389,10 @@ if HAS_TORCH:
             anchor = int(anchors[idx])
             primary = int(primaries[idx])
             best = int(best_cid[idx])
+
+            # Skip if this anchor was already moved by a swap
+            if anchor in swapped:
+                continue
 
             # min_size guard (sequential — sizes mutated by prior movers)
             if sizes[primary] <= min_size:
@@ -425,6 +430,7 @@ if HAS_TORCH:
                         continue
                     # Swap: Y goes to source, X continues to target
                     swap_neuron = int(members_best[best_swap_local])
+                    swapped.add(swap_neuron)
                     if centroid_mode == 'exact':
                         os_b = sizes[best]
                         if os_b > 1:
