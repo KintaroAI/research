@@ -915,6 +915,11 @@ class ConscienceColumn(ColumnBase):
         self.last_won = np.zeros((m, n_outputs), dtype=np.int64)
         self._tick_count = 0
 
+        # GPU path available but CPU is faster at current scales (transfer overhead)
+        self._device = torch.device('cpu')
+        self._protos_gpu = None
+        self._theta_gpu = None
+
     def _normalize_input(self, X):
         """Mean-subtract and L2-normalize the temporal mean of each column's input.
 
@@ -930,10 +935,68 @@ class ConscienceColumn(ColumnBase):
         return x / norms                                        # L2-normalize
 
     def tick(self, signal_window, knn2=None):
-        """Hard WTA with conscience. Pure numpy."""
+        """Hard WTA with conscience. GPU-accelerated if available."""
+        self._tick_count += 1
+
+        if self._device.type == 'cuda':
+            self._tick_gpu(signal_window)
+        else:
+            self._tick_cpu(signal_window)
+
+    def _tick_gpu(self, signal_window):
+        """GPU path: gather on CPU, everything else on GPU."""
+        m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
+        dev = self._device
+
+        # Gather + normalize (CPU — slot_map indexing is irregular)
+        X = self._gather_input(signal_window)
+        x_np = self._normalize_input(X)
+        x = torch.from_numpy(x_np).to(dev)
+
+        # Cosine similarity: (m, n_out, n_in) @ (m, n_in, 1) -> (m, n_out)
+        sim = torch.bmm(self._protos_gpu, x.unsqueeze(2)).squeeze(2)
+
+        # Hard WTA with conscience
+        scores = sim - self._theta_gpu
+        winners = scores.argmax(dim=1)  # (m,)
+
+        # Winner prototype update
+        ar = torch.arange(m, device=dev)
+        w_proto = self._protos_gpu[ar, winners]  # (m, n_in)
+        new_proto = (1.0 - self.lr) * w_proto + self.lr * x
+        new_proto = new_proto / new_proto.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        self._protos_gpu[ar, winners] = new_proto
+
+        # Conscience threshold
+        y = torch.zeros(m, n_out, device=dev)
+        y[ar, winners] = 1.0
+        self._theta_gpu += self.alpha * (y - 1.0 / n_out)
+
+        # Dead-unit reseeding (CPU — rare, branchy)
+        winners_np = winners.cpu().numpy()
+        self.last_won[self._arange_m, winners_np] = self._tick_count
+        if self.reseed_after > 0:
+            dead_ticks = self._tick_count - self.last_won
+            dead_cols, dead_outs = np.where(dead_ticks > self.reseed_after)
+            if len(dead_cols) > 0:
+                for c, o in zip(dead_cols, dead_outs):
+                    self._protos_gpu[c, o] = x[c]
+                    self._theta_gpu[c, o] = 0.0
+                    self.last_won[c, o] = self._tick_count
+
+        # Output softmax
+        sim_scaled = sim / self.temperature
+        sim_scaled -= sim_scaled.max(dim=1, keepdim=True).values
+        probs = torch.softmax(sim_scaled, dim=1)
+
+        # Usage EMA + output (minimal CPU sync)
+        self.usage = self.usage * 0.99 + y.cpu().numpy() * 0.01
+        self._outputs = self.apply_wta(probs.cpu().numpy().astype(np.float32))
+
+    def _tick_cpu(self, signal_window):
+        """Original numpy path."""
         m, n_out, n_in = self.m, self.n_outputs, self.max_inputs
         ar = self._arange_m
-        self._tick_count += 1
 
         # --- Gather and normalize input ---
         X = self._gather_input(signal_window)
@@ -979,8 +1042,15 @@ class ConscienceColumn(ColumnBase):
 
         self._outputs = self.apply_wta(probs.astype(np.float32))
 
+    def _sync_from_gpu(self):
+        """Sync GPU state back to numpy arrays."""
+        if self._device.type == 'cuda':
+            self.prototypes = self._protos_gpu.cpu().numpy()
+            self.theta = self._theta_gpu.cpu().numpy()
+
     def save(self, output_dir):
         """Save column state."""
+        self._sync_from_gpu()
         import torch as _torch
         np.save(os.path.join(output_dir, "column_slot_map.npy"), self.slot_map)
         _torch.save({
@@ -1017,6 +1087,10 @@ class ConscienceColumn(ColumnBase):
         if state.get('_reserved_mask') is not None:
             self._reserved_mask = _to_np(state['_reserved_mask']).astype(bool)
         self.slot_map = slot_map
+        # Re-upload to GPU
+        if self._device.type == 'cuda':
+            self._protos_gpu = torch.from_numpy(self.prototypes).to(self._device)
+            self._theta_gpu = torch.from_numpy(self.theta).to(self._device)
 
 
 # ---------------------------------------------------------------------------

@@ -157,39 +157,57 @@ class ClusterManager:
         self._signal_T = T
 
     def init_clusters(self, embeddings_t, knn_lists_np=None):
-        """Initialize clusters via GPU k-means on current embeddings."""
+        """Initialize clusters — fast random assignment (O(n), no k-means)."""
         import torch
         self.device = embeddings_t.device
-        ids_np, centroids_np = self._kmeans(embeddings_t, self.m, seed=42)
+        n = embeddings_t.shape[0]
+
+        # Random assignment: neuron i → cluster i % m
+        ids_np = (np.arange(n) % self.m).astype(np.int64)
+        self.rng.shuffle(ids_np)  # shuffle so spatial neighbors aren't in same cluster
         self.cluster_ids = np.full((self.n, self.max_k), -1, dtype=np.int64)
         self.cluster_ids[:, 0] = ids_np
         self.pointers = np.zeros(self.n, dtype=np.int64)
         self.last_used = np.zeros((self.n, self.max_k), dtype=np.int64)
         self.cluster_ids_t = torch.from_numpy(ids_np.astype(np.int64)).to(self.device)
-        self.centroids_t = torch.from_numpy(centroids_np).to(self.device)
         self.sizes = np.bincount(ids_np, minlength=self.m)
 
+        # Centroids: pick a random member as initial centroid (O(n), no per-cluster loop)
+        emb_np = embeddings_t.cpu().numpy()
+        dims = emb_np.shape[1]
+        centroids_np = np.zeros((self.m, dims), dtype=np.float32)
+        # First member per cluster as centroid (streaming update will refine)
+        first_seen = np.full(self.m, -1, dtype=np.int64)
+        for i in range(n):
+            c = ids_np[i]
+            if first_seen[c] < 0:
+                first_seen[c] = i
+                centroids_np[c] = emb_np[i]
+        self.centroids_t = torch.from_numpy(centroids_np).to(self.device)
+
         if self.knn2_mode == 'knn':
-            # Build knn2 from neuron-level KNN lists
             self.knn_lists = knn_lists_np
             self.knn2, _ = self._freq_knn(knn_lists_np, ids_np,
                                           self.m, self.k2)
         else:
-            # Init knn2 with random cluster indices + infinity distances (GPU)
-            knn2_np = np.full((self.m, self.k2), -1, dtype=np.int64)
+            # Random knn2 neighbors — O(m * k2), no O(m²) inner loop
+            k = min(self.k2, self.m - 1)
+            # Each cluster gets k random neighbors (may include self, fixed below)
+            knn2_np = self.rng.randint(0, self.m, size=(self.m, k)).astype(np.int64)
+            # Fix self-references: replace with (c+1) % m
+            for j in range(k):
+                self_ref = knn2_np[np.arange(self.m), j] == np.arange(self.m)
+                knn2_np[self_ref, j] = (np.where(self_ref)[0] + 1) % self.m
+            # Pad to k2 columns if k < k2
+            if k < self.k2:
+                pad = np.full((self.m, self.k2 - k), -1, dtype=np.int64)
+                knn2_np = np.concatenate([knn2_np, pad], axis=1)
+            # Batch distances
             knn2_dists_np = np.full((self.m, self.k2), np.inf, dtype=np.float32)
-            for c in range(self.m):
-                if self.sizes[c] == 0:
-                    continue
-                others = [i for i in range(self.m) if i != c and self.sizes[i] > 0]
-                if len(others) == 0:
-                    continue
-                k = min(self.k2, len(others))
-                chosen = self.rng.choice(others, size=k, replace=False)
-                knn2_np[c, :k] = chosen
-                for j in range(k):
-                    diff = centroids_np[c] - centroids_np[chosen[j]]
-                    knn2_dists_np[c, j] = np.dot(diff, diff)
+            for j in range(k):
+                valid = knn2_np[:, j] >= 0
+                diffs = centroids_np - centroids_np[knn2_np[:, j]]
+                knn2_dists_np[:, j] = np.where(valid, (diffs * diffs).sum(axis=1), np.inf)
             self.knn2_t = torch.from_numpy(knn2_np).to(self.device)
             self.knn2_dists_t = torch.from_numpy(knn2_dists_np).to(self.device)
 
