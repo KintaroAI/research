@@ -214,22 +214,15 @@ class ClusterManager:
         if self.track_history:
             self._jump_counts = np.zeros(self.n, dtype=np.int64)
         self.initialized = True
-        # Wire all neurons to their initial cluster columns
+        # Skip initial neuron wiring — random clusters are meaningless,
+        # streaming updates will wire neurons as they settle into real clusters.
+        # Only set up lateral connections (permanent, topology-based).
         if self.column_mgr:
-            for neuron in range(self.n):
-                for s in range(self.max_k):
-                    c = self.cluster_ids[neuron, s]
-                    if c >= 0:
-                        self.column_mgr.wire(c, neuron)
-            n_wired = (self.column_mgr.slot_map >= 0).sum()
-            print(f"  Columns: {n_wired} initial wirings across {self.m} columns")
-            # Lateral input wiring (permanent column-to-column connections)
             if getattr(self.column_mgr, '_lateral_inputs', False):
                 lateral_k = self.column_mgr._lateral_input_k
                 edges = self._generate_lateral_edges(lateral_k)
                 self.column_mgr.init_lateral_wiring(
                     edges, self.n_sensory, self.column_n_outputs)
-            # Sync lateral connections with knn2
             if self.column_mgr.lateral and self.knn2_mode != 'knn':
                 knn2_np = self.knn2_t.cpu().numpy()
                 self.column_mgr.sync_lateral_knn2(knn2_np)
