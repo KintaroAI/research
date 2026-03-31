@@ -16,7 +16,7 @@ import os
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from column_manager import ColumnManager, ConscienceColumn
+from column_manager import ColumnManager, ConscienceColumn, PredictiveColumn, ReconColumn
 
 # 4 canonical 3x3 patterns
 PATTERNS = {
@@ -55,6 +55,16 @@ def run_test(column_type, n_train, n_eval, noise, window, lr, temperature,
         cm = ConscienceColumn(
             m=1, n_outputs=n_outputs, max_inputs=n_inputs,
             window=window, temperature=temperature, lr=lr, alpha=alpha)
+    elif column_type == 'predictive':
+        cm = PredictiveColumn(
+            m=1, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=window, temperature=temperature, lr=lr, alpha=alpha,
+            n_heads=1)
+    elif column_type == 'recon':
+        cm = ReconColumn(
+            m=1, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=window, temperature=temperature, lr=lr, alpha=alpha,
+            n_heads=1)
     else:
         cm = ColumnManager(
             m=1, n_outputs=n_outputs, max_inputs=n_inputs,

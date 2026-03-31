@@ -518,10 +518,17 @@ def run_word2vec(args):
                 'n_outputs': column_outputs,
                 'max_inputs': getattr(args, 'column_max_inputs', 20),
                 'window': getattr(args, 'column_window', 4),
-                'lr': getattr(args, 'column_lr', 0.05),
+                'lr': getattr(args, 'column_lr', None) or (0.001 if getattr(args, 'column_type', 'default') in ('predictive', 'recon') else 0.05),
                 'temperature': getattr(args, 'column_temperature', 0.5),
                 'alpha': getattr(args, 'column_alpha', 0.01),
                 'reseed_after': getattr(args, 'column_reseed_after', 1000),
+                'n_heads': getattr(args, 'column_n_heads', 2),
+                'lambda_sharp': getattr(args, 'column_lambda_sharp', 0.01),
+                'lambda_balance': getattr(args, 'column_lambda_balance', 0.1),
+                'train_every': getattr(args, 'column_train_every', 10),
+                'wta_mode': getattr(args, 'column_wta', 'none'),
+                'tiredness_rate': getattr(args, 'column_tiredness_rate', 0.0),
+                'tiredness_recovery': getattr(args, 'column_tiredness_recovery', 0.0),
                 'match_threshold': getattr(args, 'column_match_threshold', 0.1),
                 'streaming_decay': getattr(args, 'column_streaming_decay', 0.5),
                 'lateral': getattr(args, 'column_lateral', False),
@@ -890,15 +897,15 @@ def main():
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # column wiring (thalamus-to-cortex)
     p_w2v.add_argument("--column-type", type=str, default="default",
-                       help="Column type: 'default' (softmax WTA) or 'conscience' (hard WTA + homeostatic)")
+                       help="Column type: 'default' (softmax WTA), 'conscience' (hard WTA), 'predictive' (temporal encoder), 'recon' (spatial reconstruction)")
     p_w2v.add_argument("--column-outputs", type=int, default=4,
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
                        help="Pre-allocated input slots per column (default: 20)")
     p_w2v.add_argument("--column-window", type=int, default=10,
                        help="Sliding window size for streaming columns (default: 10)")
-    p_w2v.add_argument("--column-lr", type=float, default=0.05,
-                       help="Column learning rate (default: 0.05)")
+    p_w2v.add_argument("--column-lr", type=float, default=None,
+                       help="Column learning rate (default: 0.001 for predictive, 0.05 for others)")
     p_w2v.add_argument("--column-temperature", type=float, default=0.2,
                        help="Column softmax temperature (default: 0.2)")
     p_w2v.add_argument("--column-match-threshold", type=float, default=0.1,
@@ -909,6 +916,21 @@ def main():
                        help="Conscience threshold learning rate (default: 0.01)")
     p_w2v.add_argument("--column-reseed-after", type=int, default=1000,
                        help="Reseed dead units after N ticks without winning (default: 1000)")
+    p_w2v.add_argument("--column-n-heads", type=int, default=2,
+                       help="Attention heads for predictive column (default: 2)")
+    p_w2v.add_argument("--column-lambda-sharp", type=float, default=0.01,
+                       help="Sharpness loss weight for predictive column (default: 0.01)")
+    p_w2v.add_argument("--column-lambda-balance", type=float, default=0.1,
+                       help="Balance loss weight for predictive column (default: 0.1)")
+    p_w2v.add_argument("--column-train-every", type=int, default=10,
+                       help="Train predictive column every N ticks (default: 10, inference-only otherwise)")
+    p_w2v.add_argument("--column-wta", type=str, default="none",
+                       choices=["none", "soft", "hard", "confidence"],
+                       help="Column WTA mode: 'none' (raw softmax), 'soft' (sharpened), 'hard' (one-hot), 'confidence' (scaled by decisiveness)")
+    p_w2v.add_argument("--column-tiredness-rate", type=float, default=0.0,
+                       help="Output tiredness per win (0=disabled, 0.001=tired in ~1k ticks)")
+    p_w2v.add_argument("--column-tiredness-recovery", type=float, default=0.0,
+                       help="Output tiredness recovery per non-win (0=disabled, 0.00045=rest in ~2k ticks)")
     p_w2v.add_argument("--column-feedback", action="store_true",
                        help="Feed column outputs back as signal for feedback neurons")
     p_w2v.add_argument("--column-lateral", action="store_true",

@@ -93,17 +93,41 @@ python main.py word2vec --preset gray_80x80_saccades -f 50000
 | `--column-temperature` | 0.2 | Softmax temperature (lower=peakier) |
 | `--column-match-threshold` | 0.1 | Dormant reassignment threshold |
 | `--column-streaming-decay` | 0.8 | EMA decay (rule of thumb: 1-2/window) |
-| `--column-alpha` | 0.01 | Conscience threshold rate (conscience columns only) |
 | `--column-reseed-after` | 1000 | Reseed dead outputs after N ticks (conscience only) |
-| `--column-type` | default | `default` (softmax WTA) or `conscience` (hard WTA with homeostasis) |
+| `--column-type` | default | `default`, `conscience`, `predictive` (temporal), `recon` (spatial reconstruction) |
+| `--column-n-heads` | 2 | Attention heads (predictive/recon) |
+| `--column-lambda-sharp` | 0.01 | Sharpness loss weight (predictive/recon) |
+| `--column-lambda-balance` | 0.1 | Balance loss weight (predictive/recon) |
+| `--column-train-every` | 10 | Train every N ticks (predictive only, currently unused) |
+| `--column-alpha` | 0 | Conscience threshold rate (0=disabled). All column types. |
+| `--column-wta` | none | Output WTA mode: `none` (raw softmax), `soft` (sharpened), `hard` (one-hot). All column types. |
+| `--column-tiredness-rate` | 0 | Output tiredness accumulation per win (0=disabled). All column types. |
+| `--column-tiredness-recovery` | 0 | Output tiredness recovery per non-win (0=disabled). All column types. |
 
-**Conscience columns** (`--column-type conscience`): hard WTA with adaptive threshold
-`theta[k] += alpha * (y[k] - 1/n_outputs)`. Winners accumulate penalty, losers
-recover — forces each output to win ~1/n_outputs of the time. Prevents collapse
-but causes winner rotation. `--column-alpha` controls rotation speed:
-- `0.001` — slow rotation, winners hold for many ticks (stable motor output)
-- `0.01` — default, moderate rotation
-- `0.1` — fast rotation, winners change almost every tick
+**Conscience columns** (`--column-type conscience`): hard WTA with adaptive threshold.
+Normalized input → cosine similarity → hard argmax → Hebbian prototype pull.
+No backprop. ~2ms/tick at m=300.
+
+**Predictive columns** (`--column-type predictive`): 1-layer causal transformer.
+Learns temporal patterns via next-frame prediction through category bottleneck.
+Hidden state at each position predicts the next frame (T-1 targets per tick).
+GPU auto-detected, numpy CPU fallback. ~6ms/tick on RTX 4090.
+
+**Recon columns** (`--column-type recon`): same transformer encoder, but trained
+on spatial reconstruction instead of temporal prediction. Reconstructs the current
+input frame from the category bottleneck. Doesn't degrade on static signals.
+Better at spatial pattern classification than predictive. ~6ms/tick on RTX 4090.
+
+Both learned column types share:
+- `--column-lr` — Adam learning rate (default 0.001 for predictive/recon)
+- `--column-temperature` — softmax sharpness (default 0.2)
+- `--column-lambda-sharp` / `--column-lambda-balance` — entropy regularization
+- `--column-alpha` — conscience rotation (0=off, shared with all types)
+- `--column-wta` — output mode: none/soft/hard (shared with all types)
+- `--column-tiredness-rate` / `--column-tiredness-recovery` — output tiredness (shared)
+- Hunger-modulated learning in forage benchmark (learn_prob = 1 - hunger)
+
+~12K params per column at max_inputs=30. 300 columns = ~3.7M params.
 
 ### Lateral input connections
 

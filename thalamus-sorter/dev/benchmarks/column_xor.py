@@ -27,7 +27,7 @@ import os
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from column_manager import ColumnManager, ConscienceColumn
+from column_manager import ColumnManager, ConscienceColumn, PredictiveColumn, ReconColumn
 
 
 def make_column(n_inputs, n_outputs, column_type, window, lr, temperature, alpha):
@@ -35,6 +35,16 @@ def make_column(n_inputs, n_outputs, column_type, window, lr, temperature, alpha
         cm = ConscienceColumn(
             m=1, n_outputs=n_outputs, max_inputs=n_inputs,
             window=window, temperature=temperature, lr=lr, alpha=alpha)
+    elif column_type == 'predictive':
+        cm = PredictiveColumn(
+            m=1, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=window, temperature=temperature, lr=lr, alpha=alpha,
+            n_heads=1)
+    elif column_type == 'recon':
+        cm = ReconColumn(
+            m=1, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=window, temperature=temperature, lr=lr, alpha=alpha,
+            n_heads=1)
     else:
         cm = ColumnManager(
             m=1, n_outputs=n_outputs, max_inputs=n_inputs,

@@ -96,6 +96,8 @@ def add_args(parser):
                         help="Feed model a grayscale rendering of the foraging field")
     parser.add_argument("--forage-visual-res", type=int, default=32,
                         help="Visual field resolution in pixels (default: 32 → 1024 neurons)")
+    parser.add_argument("--forage-clocks", action="store_true",
+                        help="Fill unused sensory neurons with clock oscillators (periods 10/50/100/1000)")
 
 
 def make_signal(w, h, args):
@@ -128,6 +130,7 @@ def make_signal(w, h, args):
     # Visual field: render foraging field as grayscale image fed as neurons
     visual_field = getattr(args, 'forage_visual_field', False)
     visual_res = getattr(args, 'forage_visual_res', 32)
+    use_clocks = getattr(args, 'forage_clocks', False)
     n_visual = visual_res * visual_res if visual_field else 0
     N_SENSE = N_SENSE + n_visual
 
@@ -152,6 +155,7 @@ def make_signal(w, h, args):
              'field_address': getattr(args, 'field_address', None)}
     base_column_lr = [None]  # captured from column_mgr on first tick
     base_embed_lr = [None]   # captured from dsolver on first tick
+    base_alpha = [None]      # captured from column_mgr on first tick
     field_save_every = 100
 
     # Background thread for live LR control polling (non-blocking)
@@ -226,6 +230,10 @@ def make_signal(w, h, args):
         # Boundary pattern: 2x2 checkerboard at low intensity
         _vf_border = ((_vf_xx.astype(int) // 2 + _vf_yy.astype(int) // 2)
                       % 2).astype(np.float32) * 0.15
+        # Permanent random ground texture: gives visual neurons something to learn
+        # as agent moves. Low intensity (0-0.15) so POIs (0.3/1.0) still stand out.
+        _ground_rng = np.random.RandomState(123)
+        _ground_texture = _ground_rng.rand(field_size, field_size).astype(np.float32) * 0.15
 
     # Sensory neuron indices: S neurons per signal
     idx = {}
@@ -386,6 +394,14 @@ def make_signal(w, h, args):
         hunger = min(1.0, hunger + hunger_rate)
         state['hunger'][0] = hunger
 
+        # Hunger-modulated alpha (disabled — reduces food collection 23%)
+        # col_mgr = _refs.get('column_mgr')
+        # if col_mgr is not None:
+        #     if base_alpha[0] is None:
+        #         base_alpha[0] = col_mgr.alpha
+        #     if base_alpha[0] > 0:
+        #         col_mgr.alpha = base_alpha[0] * hunger
+
         # LR modulation: hunger scales down learning rate (disabled)
         # High hunger → low lr (stop changing, focus on acting)
         # Low hunger (just collected) → full lr (consolidate learning)
@@ -411,8 +427,21 @@ def make_signal(w, h, args):
             if dsolver is not None and 'lr' in _ctrl:
                 dsolver.lr = float(_ctrl['lr'])
 
-        # Retina neurons get zero for now (unused)
         sig = np.zeros(n, dtype=np.float32)
+
+        # Clock neurons: fill unused sensory slots with oscillators
+        # 4 frequency groups (period 10, 50, 100, 1000 ticks)
+        n_spare = n - N_SENSE
+        if n_spare > 0 and use_clocks:
+            periods = [10, 50, 100, 1000]
+            group_size = max(1, n_spare // len(periods))
+            for gi, period in enumerate(periods):
+                start = N_SENSE + gi * group_size
+                end = min(start + group_size, n)
+                phase = 2.0 * np.pi * t / period
+                for i in range(start, end):
+                    sig[i] = 0.5 + 0.5 * np.sin(phase + (i - start) * np.pi / max(1, end - start))
+
         norm_pos = pos / field_size
         norm_target = nearest_pos / field_size
 
@@ -473,10 +502,12 @@ def make_signal(w, h, args):
             fy = _vf_yy + vf_oy
             # Out-of-bounds + blocks: checkerboard pattern
             oob = (fx < 0) | (fx >= field_size) | (fy < 0) | (fy >= field_size)
+            fix = np.clip(fx.astype(int), 0, field_size - 1)
+            fiy = np.clip(fy.astype(int), 0, field_size - 1)
             if n_blocks > 0:
-                fix = np.clip(fx.astype(int), 0, field_size - 1)
-                fiy = np.clip(fy.astype(int), 0, field_size - 1)
                 oob = oob | blocked[fiy, fix]
+            # Ground texture: sample from permanent random pattern
+            vf = _ground_texture[fiy, fix]
             vf[oob] = _vf_border[oob]
             # POIs in viewport: contact circle + white center
             for p in range(len(pois)):

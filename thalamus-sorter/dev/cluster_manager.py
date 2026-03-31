@@ -84,6 +84,44 @@ class ClusterManager:
                     alpha=column_config.get('alpha', 0.01),
                     temperature=column_config.get('temperature', 0.5),
                     reseed_after=column_config.get('reseed_after', 1000),
+                    wta_mode=column_config.get('wta_mode', 'none'),
+                    lateral_inputs=column_config.get('lateral_inputs', False),
+                    lateral_input_k=column_config.get('lateral_input_k', 4))
+            elif column_type == 'recon':
+                from column_manager import ReconColumn
+                self.column_mgr = ReconColumn(
+                    m,
+                    n_outputs=column_config.get('n_outputs', 4),
+                    max_inputs=column_config.get('max_inputs', 20),
+                    window=column_config.get('window', 10),
+                    lr=column_config.get('lr', 1e-3),
+                    temperature=column_config.get('temperature', 0.5),
+                    n_heads=column_config.get('n_heads', 2),
+                    lambda_sharp=column_config.get('lambda_sharp', 0.01),
+                    lambda_balance=column_config.get('lambda_balance', 0.1),
+                    alpha=column_config.get('alpha', 0.0),
+                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
+                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+                    wta_mode=column_config.get('wta_mode', 'none'),
+                    lateral_inputs=column_config.get('lateral_inputs', False),
+                    lateral_input_k=column_config.get('lateral_input_k', 4))
+            elif column_type == 'predictive':
+                from column_manager import PredictiveColumn
+                self.column_mgr = PredictiveColumn(
+                    m,
+                    n_outputs=column_config.get('n_outputs', 4),
+                    max_inputs=column_config.get('max_inputs', 20),
+                    window=column_config.get('window', 10),
+                    lr=column_config.get('lr', 1e-3),
+                    temperature=column_config.get('temperature', 0.5),
+                    n_heads=column_config.get('n_heads', 2),
+                    lambda_sharp=column_config.get('lambda_sharp', 0.01),
+                    lambda_balance=column_config.get('lambda_balance', 0.1),
+                    train_every=column_config.get('train_every', 10),
+                    alpha=column_config.get('alpha', 0.0),
+                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
+                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+                    wta_mode=column_config.get('wta_mode', 'none'),
                     lateral_inputs=column_config.get('lateral_inputs', False),
                     lateral_input_k=column_config.get('lateral_input_k', 4))
             else:
