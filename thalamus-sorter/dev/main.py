@@ -555,7 +555,8 @@ def run_word2vec(args):
                 renderer=renderer,
                 output_dir=output_dir, wlog=wlog,
                 max_cluster_size=getattr(args, 'cluster_max_size', 0),
-                cluster_swap=not getattr(args, 'no_cluster_swap', False))
+                cluster_swap=not getattr(args, 'no_cluster_swap', False),
+                skip_init_wiring=getattr(args, 'skip_init_wiring', False))
             render_mode = getattr(args, 'cluster_render_mode', 'color')
             if render_mode in ('signal', 'both') or column_outputs > 0:
                 cluster_mgr.set_signals(signals, sig_channels, T)
@@ -890,6 +891,8 @@ def main():
                        help="Max neurons per cluster (0=unlimited). Full clusters swap worst-fit member instead of growing.")
     p_w2v.add_argument("--no-cluster-swap", action="store_true",
                        help="Disable swap on full clusters (just reject migration)")
+    p_w2v.add_argument("--skip-init-wiring", action="store_true",
+                       help="Skip initial neuron→column wiring (faster init for large m)")
     p_w2v.add_argument("--cluster-track-history", action="store_true",
                        help="Save per-neuron cluster ID at each report interval")
     p_w2v.add_argument("--cluster-render-mode", type=str, default='color',

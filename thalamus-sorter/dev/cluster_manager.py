@@ -17,7 +17,8 @@ class ClusterManager:
                  n_sensory=None, embed_render=False, embed_method='pca',
                  column_config=None, renderer=None,
                  output_dir=None, wlog=None,
-                 max_cluster_size=0, cluster_swap=True):
+                 max_cluster_size=0, cluster_swap=True,
+                 skip_init_wiring=False):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
@@ -35,6 +36,7 @@ class ClusterManager:
         self.k2, self.lr, self.split_every = k2, lr, split_every
         self.max_cluster_size = max_cluster_size
         self.cluster_swap = cluster_swap
+        self._skip_init_wiring = skip_init_wiring
         self.max_k = max_k
         self.output_dir = output_dir
         self.initialized = False
@@ -214,9 +216,15 @@ class ClusterManager:
         if self.track_history:
             self._jump_counts = np.zeros(self.n, dtype=np.int64)
         self.initialized = True
-        # Skip initial neuron wiring — random clusters are meaningless,
-        # streaming updates will wire neurons as they settle into real clusters.
-        # Only set up lateral connections (permanent, topology-based).
+        # Wire all neurons to their initial cluster columns
+        if self.column_mgr and not self._skip_init_wiring:
+            for neuron in range(self.n):
+                for s in range(self.max_k):
+                    c = self.cluster_ids[neuron, s]
+                    if c >= 0:
+                        self.column_mgr.wire(c, neuron)
+            n_wired = (self.column_mgr.slot_map >= 0).sum()
+            print(f"  Columns: {n_wired} initial wirings across {self.m} columns")
         if self.column_mgr:
             if getattr(self.column_mgr, '_lateral_inputs', False):
                 lateral_k = self.column_mgr._lateral_input_k
