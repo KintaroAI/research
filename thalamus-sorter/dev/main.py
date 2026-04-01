@@ -526,6 +526,8 @@ def run_word2vec(args):
                 'lambda_sharp': getattr(args, 'column_lambda_sharp', 0.01),
                 'lambda_balance': getattr(args, 'column_lambda_balance', 0.1),
                 'lambda_ortho': getattr(args, 'column_lambda_ortho', 0.01),
+                'lambda_now': getattr(args, 'column_lambda_now', 0.25),
+                'lambda_nudge': getattr(args, 'column_lambda_nudge', 0.10),
                 'train_every': getattr(args, 'column_train_every', 10),
                 'wta_mode': getattr(args, 'column_wta', 'none'),
                 'tiredness_rate': getattr(args, 'column_tiredness_rate', 0.0),
@@ -928,6 +930,10 @@ def main():
                        help="Balance loss weight for predictive column (default: 0.1)")
     p_w2v.add_argument("--column-lambda-ortho", type=float, default=0.01,
                        help="Orthogonality loss weight — push category embeddings apart (default: 0.01)")
+    p_w2v.add_argument("--column-lambda-now", type=float, default=0.25,
+                       help="Reconstruction anchor weight for conscience_predictive (default: 0.25)")
+    p_w2v.add_argument("--column-lambda-nudge", type=float, default=0.10,
+                       help="Predictive validation nudge weight for conscience_predictive (default: 0.10)")
     p_w2v.add_argument("--column-train-every", type=int, default=10,
                        help="Train predictive column every N ticks (default: 10, inference-only otherwise)")
     p_w2v.add_argument("--column-wta", type=str, default="none",

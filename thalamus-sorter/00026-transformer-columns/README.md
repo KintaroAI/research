@@ -238,6 +238,66 @@ directions:
    then just biases WHICH predictions matter more (hunger-related predictions
    get amplified, irrelevant ones get suppressed).
 
+## Recent progress
+
+### Unified TransformerColumn
+
+PredictiveColumn and ReconColumn refactored into a single `TransformerColumn`
+base with `loss_mode='predictive'|'recon'`. Thin wrappers for backward compat.
+Removes ~340 lines of duplication.
+
+### Anti-collapse fixes (from code review)
+
+1. **Cosine logits** — normalize z and cat_embs before dot product. Routing by
+   direction, not magnitude. Prevents one category dominating via embedding norm.
+2. **Normalized bottleneck values** — `z_q = p @ c_normalized`, not raw cat_embs.
+3. **EMA balance loss** — per-column category usage tracked across many ticks
+   (decay=0.9), not noisy per-window estimate. Live gradient (not detached).
+4. **Orthogonality loss** — `||C_n @ C_n^T - I||^2` pushes categories apart.
+5. **Temperature 2.0** (was 0.2/0.5). Prevents early softmax saturation.
+6. **L_sharp disabled** (was 0.01). Entropy minimization actively causes collapse.
+7. **Unrotated prediction path** — rotation only on external outputs, not on
+   stored predictions. Prevents train/output mismatch.
+8. **Forward rerun after optimizer.step()** — consistent post-update outputs.
+
+### ConsciencePredictiveColumn (hybrid)
+
+Combines conscience state dynamics with predictive validation:
+
+- **State head**: transformer encoder → state descriptor (normalized z + scaled
+  input), cosine similarity to prototypes, conscience rotation
+- **Per-category predictors** (W_pred_bank): each category has its own transition
+  model predicting next frame. Soft mixture weighted by state probabilities.
+- **Nudge loss**: per-category prediction errors build corrective target q that
+  pushes state toward categories that both match now AND predict well:
+  `q = softmax(log(p) - β * relative_error)`
+- **Reconstruction anchor** (L_now): bottleneck reconstruction of current frame
+  keeps categories grounded in spatial patterns
+- **Hebbian prototype pull**: winner prototype moves toward state (fast, local),
+  while encoder trains via gradient (slow, global)
+
+Key tuning parameters:
+- `--column-lambda-now` — reconstruction vs prediction balance (default 0.25, try 1.0)
+- `--column-lambda-nudge` — predictive validation strength (default 0.10)
+- `--column-alpha` — conscience rotation rate
+- `temperature` — 1.5 default for hybrid (between conscience's 0.2 and pure predictive's 2.0)
+
+### Forage environment changes
+
+- Spasm decay to zero (no floor) — model must learn to drive itself
+- Motor threshold 0.01 (was 0.3) — any motor signal contributes
+- Muscle tiredness disabled (tire_rate=0) — motors can push indefinitely
+- Motor-suppressed spasms — strong motor output reduces random walk by 90%
+- Ground texture for visual field (behind --forage-visual-field)
+- Clock neurons (behind --forage-clocks)
+
+### Fast cluster init
+
+- Replaced k-means with random assignment (O(n) vs O(n*m*iters))
+- Vectorized knn2 init (no O(m²) loop)
+- Skip initial neuron wiring (--skip-init-wiring) for large m
+- m=10K init now instant. m=100K possible but slow per-tick.
+
 ### Forage: hunger-modulated alpha (1M ticks, conscience, m=1000)
 
 | Metric | Fixed α=0.01 | Hunger × α |
