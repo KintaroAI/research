@@ -146,9 +146,9 @@ def make_signal(w, h, args):
     restlessness = np.zeros((4, n_fibers), dtype=np.float32)
     tiredness = np.zeros((4, n_fibers), dtype=np.float32)
     rest_rate = 0.01
-    tire_rate = 0.005
+    tire_rate = 0.0  # was 0.005 — disabled to let motor run freely
     recovery_rate = 0.002
-    move_threshold = 0.3  # per-fiber force for "straining" (tires muscle)
+    move_threshold = 0.01  # per-fiber force gate (low = neurons always contribute)
     score = [0]
     phase_scores = [0, 0]
     _refs = {'column_mgr': None, 'renderer': None, 'dsolver': None,
@@ -284,11 +284,14 @@ def make_signal(w, h, args):
 
         # Per-fiber muscle spasms: each of 8 fibers per direction
         # independently gets restless and spasms. Total force = sum/n_fibers.
-        # Spasm probability decays over time: halves every 5000 ticks.
-        # Spasm decays to zero — agent can fully stop if no motor output.
+        # Spasm probability decays over time and suppressed by strong motor output.
         spasm_base = 0.0625  # = 0.5^4, equivalent to old t=20k
-        spasm_floor = 0.01  # minimum spasm rate — always some random walk
-        spasm_decay = max(spasm_base * (0.5 ** (t / 20000.0)), spasm_floor)
+        spasm_decay = spasm_base * (0.5 ** (t / 20000.0))  # decays to zero, no floor
+        # Suppress spasms when motor output is confident
+        total_motor = sum(motor_forces)
+        if total_motor > 0:
+            motor_conf = min(1.0, total_motor / (motor_scale * 2))
+            spasm_decay *= (1.0 - 0.9 * motor_conf)  # strong motor → 90% spasm reduction
         spasm_forces = np.zeros(4, dtype=np.float32)
         for d in range(4):
             for f in range(n_fibers):

@@ -1093,32 +1093,32 @@ class ConscienceColumn(ColumnBase):
             self._theta_gpu = torch.from_numpy(self.theta).to(self._device)
 
 
+
 # ---------------------------------------------------------------------------
-# PredictiveColumn — self-supervised prediction via temporal encoder
+# TransformerColumn — unified transformer encoder with category bottleneck
 # ---------------------------------------------------------------------------
 
-class PredictiveColumn(ColumnBase):
-    """Predictive columns with temporal encoder and category bottleneck.
+class TransformerColumn(ColumnBase):
+    """Transformer encoder with category bottleneck and configurable loss.
 
-    Each column has a 1-layer causal transformer that encodes a signal window
-    into a summary vector, maps it to learned category prototypes, then
-    predicts the next input frame from the category-weighted state. Categories
-    are forced to carry predictive meaning through the bottleneck.
+    1-layer causal transformer encodes signal window -> summary -> category
+    probabilities via cosine similarity to learned embeddings. Prediction/
+    reconstruction flows through the category bottleneck (normalized values).
 
-    Key differences from ConscienceColumn:
-        - Learned temporal encoder (not temporal mean collapse)
-        - Categories differentiate via prediction loss (not conscience threshold)
-        - Balance via entropy regularization (not homeostatic threshold)
-        - Online gradient-based learning (Adam), not Hebbian prototype pull
+    loss_mode:
+        'predictive' - predict next frame at every window position (T-1 targets)
+        'recon'      - reconstruct current frame from last position (1 target)
+
+    Anti-collapse: EMA balance loss, orthogonality on category embeddings,
+    cosine logits. No L_sharp by default.
     """
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
                  lr=1e-3, temperature=2.0, n_heads=2,
                  lambda_sharp=0.0, lambda_balance=0.1,
-                 lambda_ortho=0.01,
-                 train_every=10, alpha=0.0,
+                 lambda_ortho=0.01, alpha=0.0,
                  tiredness_rate=0.0, tiredness_recovery=0.0,
-                 **kwargs):
+                 loss_mode='predictive', **kwargs):
         wta_mode = kwargs.pop('wta_mode', 'none')
         self._lateral_inputs = kwargs.pop('lateral_inputs', False)
         self._lateral_input_k = kwargs.pop('lateral_input_k', 4)
@@ -1130,7 +1130,7 @@ class PredictiveColumn(ColumnBase):
         self.lambda_sharp = lambda_sharp
         self.lambda_balance = lambda_balance
         self.lambda_ortho = lambda_ortho
-        self.train_every = train_every
+        self.loss_mode = loss_mode
         self.alpha = alpha
         self.tiredness_rate = tiredness_rate
         self.tiredness_recovery = tiredness_recovery
@@ -1156,10 +1156,10 @@ class PredictiveColumn(ColumnBase):
         self.W_fc2 = torch.nn.Parameter(torch.randn(m, d_ff, d_model) * (d_ff ** -0.5))
         self.b_fc2 = torch.nn.Parameter(torch.zeros(m, d_model))
 
-        # --- Head parameters ---
+        # --- Head: prediction/reconstruction through bottleneck ---
         self.cat_embs = torch.nn.Parameter(torch.randn(m, n_outputs, d_model) * 0.1)
-        self.W_pred = torch.nn.Parameter(torch.randn(m, d_model, d_model) * (d_model ** -0.5))
-        self.b_pred = torch.nn.Parameter(torch.zeros(m, d_model))
+        self.W_head = torch.nn.Parameter(torch.randn(m, d_model, d_model) * (d_model ** -0.5))
+        self.b_head = torch.nn.Parameter(torch.zeros(m, d_model))
 
         self._causal_mask_np = np.tril(np.ones((window, window), dtype=bool))
         self._np_dirty = True
@@ -1170,57 +1170,44 @@ class PredictiveColumn(ColumnBase):
         self._tick_count = 0
         self._learn_prob = 1.0
         self._rng = np.random.RandomState(42)
-        # EMA usage tracker for balance loss (more stable than per-window)
         self._usage_ema = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
 
-        # Collect all parameters for optimizer
         self._params = [
             self.pos_emb, self.ln1_g, self.ln1_b,
             self.W_qkv, self.W_proj,
             self.ln2_g, self.ln2_b,
             self.W_fc1, self.b_fc1, self.W_fc2, self.b_fc2,
-            self.cat_embs, self.W_pred, self.b_pred,
+            self.cat_embs, self.W_head, self.b_head,
+        ]
+        self._param_names = [
+            'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
+            'ln2_g', 'ln2_b', 'W_fc1', 'b_fc1', 'W_fc2', 'b_fc2',
+            'cat_embs', 'W_head', 'b_head',
         ]
         self._optimizer = torch.optim.Adam(self._params, lr=lr)
 
-        # Move to GPU if available
         self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if self._device.type == 'cuda':
             for p in self._params:
                 p.data = p.data.to(self._device)
-            # Rebuild optimizer on GPU params
             self._optimizer = torch.optim.Adam(self._params, lr=lr)
         self._causal_mask = torch.tril(torch.ones(window, window, device=self._device))
         self._inv_sqrt_hs = (d_model // n_heads) ** -0.5
 
     def _layer_norm(self, x, g, b):
-        """Batched layer norm with per-column gain/bias.
-
-        Args:
-            x: (m, T, d)
-            g: (m, d) gain
-            b: (m, d) bias
-        Returns:
-            (m, T, d) normalized
-        """
         mean = x.mean(dim=-1, keepdim=True)
         var = x.var(dim=-1, keepdim=True, unbiased=False)
         x = (x - mean) / (var + 1e-5).sqrt()
         return x * g.unsqueeze(1) + b.unsqueeze(1)
 
-    def _forward_gpu(self, x_gpu):
-        """GPU torch forward. x_gpu: (m, T, d) tensor on device.
-        Returns (x_hidden, p) where:
-            x_hidden: (m, T, d) — hidden states at all positions
-            p: (m, n_outputs) — category probabilities from last position
-        """
+    def _encode_gpu(self, x_gpu):
+        """Encode window -> all hidden states. x_gpu: (m, T, d) on device.
+        Returns x: (m, T, d) hidden states at all positions."""
         m, T, d = x_gpu.shape
         n_heads = self.n_heads
         hs = d // n_heads
 
         x = x_gpu + self.pos_emb
-
-        # Pre-attention LN
         h = self._layer_norm(x, self.ln1_g, self.ln1_b)
         qkv = torch.bmm(h, self.W_qkv)
         q, k, v = qkv.chunk(3, dim=-1)
@@ -1236,108 +1223,130 @@ class PredictiveColumn(ColumnBase):
         out = torch.bmm(out, self.W_proj)
         x = x + out
 
-        # Pre-FFN LN + FFN
         h = self._layer_norm(x, self.ln2_g, self.ln2_b)
         ff = torch.bmm(h, self.W_fc1) + self.b_fc1.unsqueeze(1)
         ff = F.gelu(ff)
         ff = torch.bmm(ff, self.W_fc2) + self.b_fc2.unsqueeze(1)
         x = x + ff
+        return x
 
-        # Categorize from last position (cosine logits — direction, not magnitude)
-        z = x[:, -1, :]
-        z_n = z / z.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+    def _categorize_gpu(self, z):
+        """Cosine logits: z (m, d) or (m, T, d) -> p, c_n."""
         c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        sim = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
+        if z.dim() == 2:
+            z_n = z / z.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            sim = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
+        else:
+            z_n = z / z.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            sim = torch.bmm(z_n, c_n.transpose(1, 2))
         p = F.softmax(sim / self.temperature, dim=-1)
+        return p, c_n
 
-        return x, p
+    def _compute_loss(self, x_hidden, x_gpu, dev):
+        """Compute training loss based on loss_mode."""
+        m, n_out = self.m, self.n_outputs
+        c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+
+        valid_gpu = torch.from_numpy(
+            (self.slot_map >= 0).astype(np.float32)).to(dev)
+        n_valid_gpu = valid_gpu.sum(dim=1).clamp(min=1.0)
+
+        if self.loss_mode == 'predictive':
+            # Next-frame prediction at all T-1 positions
+            h_ctx = x_hidden[:, :-1, :]
+            targets = x_gpu[:, 1:, :]
+            p_all, _ = self._categorize_gpu(h_ctx)
+            z_q_all = torch.bmm(p_all, c_n)
+            pred_all = torch.bmm(z_q_all, self.W_head) + self.b_head.unsqueeze(1)
+            diff_all = (pred_all - targets) ** 2
+            diff_masked = diff_all * valid_gpu.unsqueeze(1)
+            L_main = diff_masked.sum(dim=2).div(n_valid_gpu.unsqueeze(1)).mean()
+            p_for_balance = p_all.mean(dim=1)  # (m, n_out) avg over positions
+        else:  # recon
+            # Reconstruct current frame from last position
+            z = x_hidden[:, -1, :]
+            p, _ = self._categorize_gpu(z)
+            z_q = torch.bmm(p.unsqueeze(1), c_n).squeeze(1)
+            recon = torch.bmm(z_q.unsqueeze(1), self.W_head).squeeze(1) + self.b_head
+            target = x_gpu[:, -1, :]
+            L_main = ((recon - target) ** 2 * valid_gpu).sum(dim=1).div(n_valid_gpu).mean()
+            p_for_balance = p  # (m, n_out) single position
+
+        # L_sharp (disabled by default)
+        L_sharp = torch.tensor(0.0, device=dev)
+        if self.lambda_sharp > 0:
+            H = -(p_for_balance * (p_for_balance + 1e-10).log()).sum(dim=-1)
+            L_sharp = H.mean()
+
+        # L_balance: EMA usage per column -> uniform (live grad)
+        usage_ema = torch.from_numpy(self._usage_ema).to(dev)
+        beta = 0.9
+        usage_est = beta * usage_ema + (1.0 - beta) * p_for_balance
+        uniform = torch.full_like(usage_est, 1.0 / n_out)
+        L_balance = ((usage_est - uniform) ** 2).sum(dim=-1).mean()
+        self._usage_ema = (
+            beta * self._usage_ema
+            + (1.0 - beta) * p_for_balance.detach().cpu().numpy()
+        ).astype(np.float32)
+
+        # L_ortho: push category embeddings apart
+        L_ortho = torch.tensor(0.0, device=dev)
+        if self.lambda_ortho > 0:
+            gram = torch.bmm(c_n, c_n.transpose(1, 2))
+            eye = torch.eye(n_out, device=dev).unsqueeze(0)
+            L_ortho = ((gram - eye) ** 2).mean()
+
+        return (L_main + self.lambda_sharp * L_sharp
+                + self.lambda_balance * L_balance
+                + self.lambda_ortho * L_ortho)
 
     def _forward_np(self, x):
-        """Pure numpy encoder forward. Returns (p, predicted).
-
-        Args:
-            x: (m, T, d_model) numpy float32
-        Returns:
-            p: (m, n_outputs) category probabilities
-            predicted: (m, d_model) next-frame prediction
-        """
+        """Pure numpy encoder forward. Returns (sim, p, predicted).
+        x: (m, T, d_model) numpy float32."""
         m, T, d = x.shape
         n_heads = self.n_heads
         hs = d // n_heads
 
-        # Detach params to numpy (cached on first call and after training)
         if not hasattr(self, '_np_cache') or self._np_dirty:
-            self._np_cache = {
-                'pos_emb': self.pos_emb.detach().numpy(),
-                'ln1_g': self.ln1_g.detach().numpy(),
-                'ln1_b': self.ln1_b.detach().numpy(),
-                'W_qkv': self.W_qkv.detach().numpy(),
-                'W_proj': self.W_proj.detach().numpy(),
-                'ln2_g': self.ln2_g.detach().numpy(),
-                'ln2_b': self.ln2_b.detach().numpy(),
-                'W_fc1': self.W_fc1.detach().numpy(),
-                'b_fc1': self.b_fc1.detach().numpy(),
-                'W_fc2': self.W_fc2.detach().numpy(),
-                'b_fc2': self.b_fc2.detach().numpy(),
-                'cat_embs': self.cat_embs.detach().numpy(),
-                'W_pred': self.W_pred.detach().numpy(),
-                'b_pred': self.b_pred.detach().numpy(),
-            }
+            self._np_cache = {n: self._params[i].detach().cpu().numpy()
+                              for i, n in enumerate(self._param_names)}
             self._np_dirty = False
         c = self._np_cache
 
-        # --- Encode ---
+        # Encode
         x = x + c['pos_emb']
-
-        # Pre-attention layer norm
         mean = x.mean(axis=-1, keepdims=True)
         var = x.var(axis=-1, keepdims=True)
         h = (x - mean) / np.sqrt(var + 1e-5)
         h = h * c['ln1_g'][:, None, :] + c['ln1_b'][:, None, :]
 
-        # QKV
-        qkv = h @ c['W_qkv']  # (m, T, 3*d)
+        qkv = h @ c['W_qkv']
         q, k, v = np.split(qkv, 3, axis=-1)
-
-        # Multi-head reshape: (m, T, d) -> (m, n_heads, T, hs)
         q = q.reshape(m, T, n_heads, hs).transpose(0, 2, 1, 3)
         k = k.reshape(m, T, n_heads, hs).transpose(0, 2, 1, 3)
         v = v.reshape(m, T, n_heads, hs).transpose(0, 2, 1, 3)
-
-        # Attention: (m, n_heads, T, hs) @ (m, n_heads, hs, T) -> (m, n_heads, T, T)
         attn = (q @ k.transpose(0, 1, 3, 2)) / np.sqrt(hs)
-        # Causal mask
-        causal = self._causal_mask_np[:T, :T]  # (T, T) lower triangular
+        causal = self._causal_mask_np[:T, :T]
         attn = np.where(causal[None, None, :, :], attn, -1e9)
-        # Softmax along last axis
         attn_max = attn.max(axis=-1, keepdims=True)
         e = np.exp(attn - attn_max)
         attn = e / e.sum(axis=-1, keepdims=True)
-
-        # Apply attention -> (m, n_heads, T, hs)
         out = attn @ v
-        # Reshape back: (m, T, d)
         out = out.transpose(0, 2, 1, 3).reshape(m, T, d)
         out = out @ c['W_proj']
         x = x + out
 
-        # Pre-FFN layer norm
         mean = x.mean(axis=-1, keepdims=True)
         var = x.var(axis=-1, keepdims=True)
         h = (x - mean) / np.sqrt(var + 1e-5)
         h = h * c['ln2_g'][:, None, :] + c['ln2_b'][:, None, :]
-
-        # FFN with GELU approx
         ff = h @ c['W_fc1'] + c['b_fc1'][:, None, :]
-        # GELU: x * 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
         ff = ff * 0.5 * (1.0 + np.tanh(0.7978845608 * (ff + 0.044715 * ff ** 3)))
         ff = ff @ c['W_fc2'] + c['b_fc2'][:, None, :]
         x = x + ff
 
-        # Summary: last hidden state
-        z = x[:, -1, :]  # (m, d)
-
-        # --- Categorize (cosine logits, normalized values) ---
+        z = x[:, -1, :]
+        # Cosine logits + normalized values
         z_n = z / np.clip(np.linalg.norm(z, axis=-1, keepdims=True), 1e-8, None)
         c_n = c['cat_embs'] / np.clip(
             np.linalg.norm(c['cat_embs'], axis=-1, keepdims=True), 1e-8, None)
@@ -1347,28 +1356,19 @@ class PredictiveColumn(ColumnBase):
         e = np.exp(sim_scaled)
         p = e / e.sum(axis=-1, keepdims=True)
 
-        # --- Predict from category bottleneck (normalized values) ---
-        z_q = (p[:, None, :] @ c_n)[:, 0, :]  # (m, d)
-        predicted = (z_q[:, None, :] @ c['W_pred'])[:, 0, :] + c['b_pred']
+        z_q = (p[:, None, :] @ c_n)[:, 0, :]
+        predicted = (z_q[:, None, :] @ c['W_head'])[:, 0, :] + c['b_head']
 
-        return p.astype(np.float32), predicted.astype(np.float32)
+        return sim.astype(np.float32), p.astype(np.float32), predicted.astype(np.float32)
 
     def tick(self, signal_window, knn2=None):
-        """Forward + backward for all M columns. One gradient step per tick.
-
-        Training: next-frame prediction at every position within the window.
-        Position i sees frames 0..i (causal mask), predicts frame i+1.
-        This gives T-1 prediction targets per tick, all with live gradients.
-        """
         m, n_out, d = self.m, self.n_outputs, self.d_model
-        T = self.window
         dev = self._device
 
-        # --- Gather input ---
-        X = self._gather_input(signal_window)  # (m, max_inputs, window) numpy
-        x_np = X.transpose(0, 2, 1).astype(np.float32)  # (m, T, d_model)
+        X = self._gather_input(signal_window)
+        x_np = X.transpose(0, 2, 1).astype(np.float32)
 
-        # --- Compute surprise from previous prediction (numpy, no grad) ---
+        # Surprise from previous prediction
         if self._tick_count > 0:
             current_frame_np = x_np[:, -1, :]
             valid = (self.slot_map >= 0).astype(np.float32)
@@ -1381,83 +1381,29 @@ class PredictiveColumn(ColumnBase):
             x_gpu = torch.from_numpy(x_np).to(dev)
 
             if do_train:
-                # --- Forward with grad + training ---
-                x_hidden, p = self._forward_gpu(x_gpu)
-
-                # Normalized category values for bottleneck mixture
-                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-
-                # L_pred: next-frame prediction at positions 0..T-2 (cosine logits)
-                h_ctx = x_hidden[:, :-1, :]
-                targets = x_gpu[:, 1:, :]
-                h_n = h_ctx / h_ctx.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                sim_all = torch.bmm(h_n, c_n.transpose(1, 2))
-                p_all = F.softmax(sim_all / self.temperature, dim=-1)
-                z_q_all = torch.bmm(p_all, c_n)  # normalized values through bottleneck
-                pred_all = torch.bmm(z_q_all, self.W_pred) + self.b_pred.unsqueeze(1)
-
-                valid_gpu = torch.from_numpy(
-                    (self.slot_map >= 0).astype(np.float32)).to(dev)
-                n_valid_gpu = valid_gpu.sum(dim=1).clamp(min=1.0)
-                diff_all = (pred_all - targets) ** 2
-                diff_masked = diff_all * valid_gpu.unsqueeze(1)
-                L_pred = diff_masked.sum(dim=2).div(n_valid_gpu.unsqueeze(1)).mean()
-
-                # L_sharp: per-sample entropy (0 = disabled by default)
-                L_sharp = torch.tensor(0.0, device=dev)
-                if self.lambda_sharp > 0:
-                    H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
-                    L_sharp = H_sample.mean()
-
-                # L_balance: EMA usage per column → uniform (live grad + detached state update)
-                p_usage_live = p_all.mean(dim=1)  # (m, n_out) — with grad
-                usage_ema = torch.from_numpy(self._usage_ema).to(dev)
-                beta = 0.9
-                usage_est = beta * usage_ema + (1.0 - beta) * p_usage_live
-                uniform = torch.full_like(usage_est, 1.0 / self.n_outputs)
-                L_balance = ((usage_est - uniform) ** 2).sum(dim=-1).mean()
-                self._usage_ema = (
-                    beta * self._usage_ema
-                    + (1.0 - beta) * p_usage_live.detach().cpu().numpy()
-                ).astype(np.float32)
-
-                # L_ortho: push category embeddings apart
-                L_ortho = torch.tensor(0.0, device=dev)
-                if self.lambda_ortho > 0:
-                    gram = torch.bmm(c_n, c_n.transpose(1, 2))
-                    eye = torch.eye(self.n_outputs, device=dev).unsqueeze(0)
-                    L_ortho = ((gram - eye) ** 2).mean()
-
-                loss = (L_pred + self.lambda_sharp * L_sharp
-                        + self.lambda_balance * L_balance
-                        + self.lambda_ortho * L_ortho)
+                x_hidden = self._encode_gpu(x_gpu)
+                loss = self._compute_loss(x_hidden, x_gpu, dev)
                 self._optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self._params, 1.0)
                 self._optimizer.step()
                 self._np_dirty = True
 
-                # Rerun forward with updated weights for consistent output/prediction
-                with torch.no_grad():
-                    x_hidden, p = self._forward_gpu(x_gpu)
-            else:
-                with torch.no_grad():
-                    x_hidden, p = self._forward_gpu(x_gpu)
+            # Rerun forward with current weights
+            with torch.no_grad():
+                x_hidden = self._encode_gpu(x_gpu)
 
-            # --- Store outputs + prediction (unrotated for prediction, rotated for output) ---
+            # Output: unrotated for prediction, rotated for external
             with torch.no_grad():
                 z_last = x_hidden[:, -1, :]
-                z_n = z_last / z_last.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                sim_last = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
-
-                # Unrotated path for prediction
-                p_clean = F.softmax(sim_last / self.temperature, dim=-1)
+                p_clean, c_n = self._categorize_gpu(z_last)
                 z_q = torch.bmm(p_clean.unsqueeze(1), c_n).squeeze(1)
                 pred_last = torch.bmm(z_q.unsqueeze(1),
-                                      self.W_pred).squeeze(1) + self.b_pred
+                                      self.W_head).squeeze(1) + self.b_head
 
-                # Rotated path for external output only
+                sim_last = torch.bmm(
+                    (z_last / z_last.norm(dim=-1, keepdim=True).clamp(min=1e-8)).unsqueeze(1),
+                    c_n.transpose(1, 2)).squeeze(1)
                 sim_np = sim_last.cpu().numpy()
                 sim_np = self.apply_output_rotation(sim_np)
                 sim_adj = torch.from_numpy(sim_np).to(dev)
@@ -1468,60 +1414,50 @@ class PredictiveColumn(ColumnBase):
             self._outputs = self.apply_wta(p_np)
             self._prev_prediction = pred_last.cpu().numpy().astype(np.float32)
         else:
-            # CPU fallback: inference only (numpy, with rotation)
-            p, predicted = self._forward_np(x_np)
-            sim_np = p  # p is already softmax output, apply rotation
-            # Note: CPU fallback doesn't have raw sim, so rotation applied on p
-            # This is approximate but maintains parity
-            self._outputs = self.apply_wta(p)
+            # CPU fallback with rotation
+            sim, p, predicted = self._forward_np(x_np)
+            sim_rot = self.apply_output_rotation(sim)
+            sim_scaled = sim_rot / self.temperature
+            sim_scaled -= sim_scaled.max(axis=-1, keepdims=True)
+            e = np.exp(sim_scaled)
+            p_out = (e / e.sum(axis=-1, keepdims=True)).astype(np.float32)
+            self.update_output_rotation(p_out.argmax(axis=1))
+            self._outputs = self.apply_wta(p_out)
             self._prev_prediction = predicted
 
         self._tick_count += 1
 
     def get_surprise(self):
-        """Return (m,) prediction error per column."""
         return self._surprise.copy()
 
     def set_learn_prob(self, value):
-        """Set learning probability (0=inference only, 1=always train)."""
         self._learn_prob = float(value)
 
     def save(self, output_dir):
-        """Save column state."""
         np.save(os.path.join(output_dir, "column_slot_map.npy"), self.slot_map)
         state = {
-            'type': 'predictive',
+            'type': self.loss_mode,
             'tick_count': self._tick_count,
-            'm': self.m,
-            'n_outputs': self.n_outputs,
-            'max_inputs': self.max_inputs,
-            'window': self.window,
-            'lr': self.lr,
-            'temperature': self.temperature,
-            'n_heads': self.n_heads,
+            'm': self.m, 'n_outputs': self.n_outputs,
+            'max_inputs': self.max_inputs, 'window': self.window,
+            'lr': self.lr, 'temperature': self.temperature,
+            'n_heads': self.n_heads, 'loss_mode': self.loss_mode,
             'lambda_sharp': self.lambda_sharp,
             'lambda_balance': self.lambda_balance,
             'lambda_ortho': self.lambda_ortho,
-            'd_model': self.d_model,
-            'd_ff': self.d_ff,
+            'd_model': self.d_model, 'd_ff': self.d_ff,
             '_reserved_mask': torch.from_numpy(self._reserved_mask.astype(np.uint8)),
             '_prev_prediction': torch.from_numpy(self._prev_prediction),
             '_usage_ema': torch.from_numpy(self._usage_ema),
         }
         state.update(self.save_rotation_state())
-        for i, name in enumerate([
-            'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
-            'ln2_g', 'ln2_b', 'W_fc1', 'b_fc1', 'W_fc2', 'b_fc2',
-            'cat_embs', 'W_pred', 'b_pred',
-        ]):
+        for i, name in enumerate(self._param_names):
             state[name] = self._params[i].detach().cpu()
-        # Save optimizer state
         state['optimizer_state'] = self._optimizer.state_dict()
         torch.save(state, os.path.join(output_dir, "column_states.pt"))
-        print(f"  predictive column state saved to {output_dir}")
+        print(f"  {self.loss_mode} column state saved to {output_dir}")
 
     def load_state(self, state, slot_map):
-        """Restore column state."""
         self.slot_map = slot_map
         if state.get('_reserved_mask') is not None:
             t = state['_reserved_mask']
@@ -1531,314 +1467,40 @@ class PredictiveColumn(ColumnBase):
             self._tick_count = int(state['tick_count'])
         if '_prev_prediction' in state:
             t = state['_prev_prediction']
-            if hasattr(t, 'numpy'):
-                self._prev_prediction = t.numpy().astype(np.float32)
-            else:
-                self._prev_prediction = np.array(t, dtype=np.float32)
+            self._prev_prediction = t.numpy().astype(np.float32) if hasattr(t, 'numpy') else np.array(t, dtype=np.float32)
         if '_usage_ema' in state:
             t = state['_usage_ema']
             self._usage_ema = t.numpy().astype(np.float32) if hasattr(t, 'numpy') else np.array(t, dtype=np.float32)
-        # Restore parameters
-        param_names = [
-            'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
-            'ln2_g', 'ln2_b', 'W_fc1', 'b_fc1', 'W_fc2', 'b_fc2',
-            'cat_embs', 'W_pred', 'b_pred',
-        ]
-        for i, name in enumerate(param_names):
+        # Handle legacy param names (W_pred/b_pred -> W_head/b_head)
+        for i, name in enumerate(self._param_names):
+            legacy = name.replace('W_head', 'W_pred').replace('b_head', 'b_pred')
+            legacy2 = name.replace('W_head', 'W_recon').replace('b_head', 'b_recon')
             if name in state:
                 self._params[i].data.copy_(state[name])
+            elif legacy in state:
+                self._params[i].data.copy_(state[legacy])
+            elif legacy2 in state:
+                self._params[i].data.copy_(state[legacy2])
         self._np_dirty = True
         self.load_rotation_state(state)
         if 'optimizer_state' in state:
             self._optimizer.load_state_dict(state['optimizer_state'])
-            # Fix optimizer device after loading
             for opt_state in self._optimizer.state.values():
                 for k, v in opt_state.items():
                     if torch.is_tensor(v):
                         opt_state[k] = v.to(self._device)
 
 
-# ---------------------------------------------------------------------------
-# ReconColumn — spatial reconstruction through category bottleneck
-# ---------------------------------------------------------------------------
+# Thin wrappers for backward compatibility
+class PredictiveColumn(TransformerColumn):
+    """Next-frame prediction through category bottleneck."""
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('loss_mode', 'predictive')
+        super().__init__(*args, **kwargs)
 
-class ReconColumn(ColumnBase):
-    """Transformer encoder with spatial reconstruction loss.
 
-    Like PredictiveColumn but trains on reconstructing the CURRENT spatial
-    pattern from the category bottleneck, not predicting the next frame.
-    The transformer provides temporal context for categorization, but the
-    loss is about spatial pattern quality — like conscience but with a
-    learned encoder instead of cosine similarity.
-
-    Doesn't degrade when signals are static (reconstruction is always
-    meaningful). Categories represent distinct spatial activation patterns.
-    """
-
-    def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
-                 lr=1e-3, temperature=2.0, n_heads=2,
-                 lambda_sharp=0.0, lambda_balance=0.1,
-                 lambda_ortho=0.01, alpha=0.0,
-                 tiredness_rate=0.0, tiredness_recovery=0.0,
-                 **kwargs):
-        wta_mode = kwargs.pop('wta_mode', 'none')
-        lateral_inputs = kwargs.pop('lateral_inputs', False)
-        lateral_input_k = kwargs.pop('lateral_input_k', 4)
-        if lateral_inputs:
-            max_inputs = max_inputs + lateral_input_k * 2
-        super().__init__(m, n_outputs, max_inputs, window, lr)
-        self._lateral_inputs = lateral_inputs
-        self._lateral_input_k = lateral_input_k
-        self.temperature = temperature
-        self.n_heads = n_heads
-        self.lambda_sharp = lambda_sharp
-        self.lambda_balance = lambda_balance
-        self.lambda_ortho = lambda_ortho
-        self.alpha = alpha
-        self.tiredness_rate = tiredness_rate
-        self.tiredness_recovery = tiredness_recovery
-        self.wta_mode = wta_mode
-
-        d_model = max_inputs
-        d_ff = 4 * d_model
-        self.d_model = d_model
-        self.d_ff = d_ff
-        assert d_model % n_heads == 0, \
-            f"d_model={d_model} must be divisible by n_heads={n_heads}"
-        self._usage_ema = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
-
-        # --- Encoder parameters ---
-        self.pos_emb = torch.nn.Parameter(torch.randn(m, window, d_model) * 0.02)
-        self.ln1_g = torch.nn.Parameter(torch.ones(m, d_model))
-        self.ln1_b = torch.nn.Parameter(torch.zeros(m, d_model))
-        self.W_qkv = torch.nn.Parameter(torch.randn(m, d_model, 3 * d_model) * (d_model ** -0.5))
-        self.W_proj = torch.nn.Parameter(torch.randn(m, d_model, d_model) * (d_model ** -0.5))
-        self.ln2_g = torch.nn.Parameter(torch.ones(m, d_model))
-        self.ln2_b = torch.nn.Parameter(torch.zeros(m, d_model))
-        self.W_fc1 = torch.nn.Parameter(torch.randn(m, d_model, d_ff) * (d_model ** -0.5))
-        self.b_fc1 = torch.nn.Parameter(torch.zeros(m, d_ff))
-        self.W_fc2 = torch.nn.Parameter(torch.randn(m, d_ff, d_model) * (d_ff ** -0.5))
-        self.b_fc2 = torch.nn.Parameter(torch.zeros(m, d_model))
-
-        # --- Head parameters ---
-        self.cat_embs = torch.nn.Parameter(torch.randn(m, n_outputs, d_model) * 0.1)
-        self.W_recon = torch.nn.Parameter(torch.randn(m, d_model, d_model) * (d_model ** -0.5))
-        self.b_recon = torch.nn.Parameter(torch.zeros(m, d_model))
-
-        # --- State ---
-        self._surprise = np.zeros(m, dtype=np.float32)
-        self._tick_count = 0
-        self._learn_prob = 1.0
-        self._rng = np.random.RandomState(42)
-
-        self._params = [
-            self.pos_emb, self.ln1_g, self.ln1_b,
-            self.W_qkv, self.W_proj,
-            self.ln2_g, self.ln2_b,
-            self.W_fc1, self.b_fc1, self.W_fc2, self.b_fc2,
-            self.cat_embs, self.W_recon, self.b_recon,
-        ]
-        self._optimizer = torch.optim.Adam(self._params, lr=lr)
-
-        self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if self._device.type == 'cuda':
-            for p in self._params:
-                p.data = p.data.to(self._device)
-            self._optimizer = torch.optim.Adam(self._params, lr=lr)
-        self._causal_mask = torch.tril(torch.ones(window, window, device=self._device))
-        self._inv_sqrt_hs = (d_model // n_heads) ** -0.5
-
-    def _layer_norm(self, x, g, b):
-        mean = x.mean(dim=-1, keepdim=True)
-        var = x.var(dim=-1, keepdim=True, unbiased=False)
-        x = (x - mean) / (var + 1e-5).sqrt()
-        return x * g.unsqueeze(1) + b.unsqueeze(1)
-
-    def _encode(self, x_gpu):
-        """Encode window → last hidden state z. x_gpu: (m, T, d) on device."""
-        m, T, d = x_gpu.shape
-        n_heads = self.n_heads
-        hs = d // n_heads
-
-        x = x_gpu + self.pos_emb
-        h = self._layer_norm(x, self.ln1_g, self.ln1_b)
-        qkv = torch.bmm(h, self.W_qkv)
-        q, k, v = qkv.chunk(3, dim=-1)
-        q = q.view(m, T, n_heads, hs).transpose(1, 2)
-        k = k.view(m, T, n_heads, hs).transpose(1, 2)
-        v = v.view(m, T, n_heads, hs).transpose(1, 2)
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self._inv_sqrt_hs
-        mask = self._causal_mask[:T, :T]
-        attn = attn.masked_fill(mask == 0, -1e9)
-        attn = F.softmax(attn, dim=-1)
-        out = torch.matmul(attn, v)
-        out = out.transpose(1, 2).contiguous().view(m, T, d)
-        out = torch.bmm(out, self.W_proj)
-        x = x + out
-
-        h = self._layer_norm(x, self.ln2_g, self.ln2_b)
-        ff = torch.bmm(h, self.W_fc1) + self.b_fc1.unsqueeze(1)
-        ff = F.gelu(ff)
-        ff = torch.bmm(ff, self.W_fc2) + self.b_fc2.unsqueeze(1)
-        x = x + ff
-
-        return x[:, -1, :]  # (m, d)
-
-    def tick(self, signal_window, knn2=None):
-        m, n_out, d = self.m, self.n_outputs, self.d_model
-        dev = self._device
-
-        X = self._gather_input(signal_window)
-        x_np = X.transpose(0, 2, 1).astype(np.float32)
-        current_frame_np = x_np[:, -1, :]
-
-        if dev.type == 'cuda':
-            do_train = self._rng.rand() < self._learn_prob
-            x_gpu = torch.from_numpy(x_np).to(dev)
-            target = x_gpu[:, -1, :]  # current spatial frame
-
-            if do_train:
-                z = self._encode(x_gpu)
-
-                # Categorize (cosine logits, normalized values)
-                z_n = z / z.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                sim = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
-                p = F.softmax(sim / self.temperature, dim=-1)
-
-                # Reconstruct through bottleneck (normalized values)
-                z_q = torch.bmm(p.unsqueeze(1), c_n).squeeze(1)
-                recon = torch.bmm(z_q.unsqueeze(1), self.W_recon).squeeze(1) + self.b_recon
-
-                valid_gpu = torch.from_numpy(
-                    (self.slot_map >= 0).astype(np.float32)).to(dev)
-                n_valid_gpu = valid_gpu.sum(dim=1).clamp(min=1.0)
-                L_recon = ((recon - target) ** 2 * valid_gpu).sum(dim=1).div(n_valid_gpu).mean()
-
-                L_sharp = torch.tensor(0.0, device=dev)
-                if self.lambda_sharp > 0:
-                    H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
-                    L_sharp = H_sample.mean()
-
-                # L_balance: EMA usage per column → uniform (live grad)
-                usage_ema = torch.from_numpy(self._usage_ema).to(dev)
-                beta = 0.9
-                usage_est = beta * usage_ema + (1.0 - beta) * p  # p has grad
-                uniform = torch.full_like(usage_est, 1.0 / self.n_outputs)
-                L_balance = ((usage_est - uniform) ** 2).sum(dim=-1).mean()
-                self._usage_ema = (
-                    beta * self._usage_ema
-                    + (1.0 - beta) * p.detach().cpu().numpy()
-                ).astype(np.float32)
-
-                L_ortho = torch.tensor(0.0, device=dev)
-                if self.lambda_ortho > 0:
-                    gram = torch.bmm(c_n, c_n.transpose(1, 2))
-                    eye = torch.eye(self.n_outputs, device=dev).unsqueeze(0)
-                    L_ortho = ((gram - eye) ** 2).mean()
-
-                loss = (L_recon + self.lambda_sharp * L_sharp
-                        + self.lambda_balance * L_balance
-                        + self.lambda_ortho * L_ortho)
-                self._optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self._params, 1.0)
-                self._optimizer.step()
-
-                # Rerun encode with updated weights
-                with torch.no_grad():
-                    z = self._encode(x_gpu)
-            else:
-                with torch.no_grad():
-                    z = self._encode(x_gpu)
-
-            # --- Unrotated path for surprise, rotated for output ---
-            with torch.no_grad():
-                z_n = z.detach() / z.detach().norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                sim_out = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
-
-                # Surprise from unrotated path
-                p_clean = F.softmax(sim_out / self.temperature, dim=-1)
-                z_q_clean = torch.bmm(p_clean.unsqueeze(1), c_n).squeeze(1)
-                recon_clean = torch.bmm(z_q_clean.unsqueeze(1), self.W_recon).squeeze(1) + self.b_recon
-                valid_gpu = torch.from_numpy(
-                    (self.slot_map >= 0).astype(np.float32)).to(dev)
-                n_valid_gpu = valid_gpu.sum(dim=1).clamp(min=1.0)
-                self._surprise = ((recon_clean - target) ** 2 * valid_gpu).sum(
-                    dim=1).div(n_valid_gpu).cpu().numpy().astype(np.float32)
-
-                # Rotated for external output
-                sim_np = sim_out.cpu().numpy()
-                sim_np = self.apply_output_rotation(sim_np)
-                sim_adj = torch.from_numpy(sim_np).to(dev)
-                p_out = F.softmax(sim_adj / self.temperature, dim=-1)
-
-            p_np = p_out.cpu().numpy().astype(np.float32)
-            self.update_output_rotation(p_np.argmax(axis=1))
-            self._outputs = self.apply_wta(p_np)
-        else:
-            # CPU fallback: no training, just output uniform
-            self._outputs = np.full((m, n_out), 1.0 / n_out, dtype=np.float32)
-
-        self._tick_count += 1
-
-    def get_surprise(self):
-        return self._surprise.copy()
-
-    def set_learn_prob(self, value):
-        self._learn_prob = float(value)
-
-    def save(self, output_dir):
-        np.save(os.path.join(output_dir, "column_slot_map.npy"), self.slot_map)
-        state = {
-            'type': 'recon',
-            'tick_count': self._tick_count,
-            'm': self.m, 'n_outputs': self.n_outputs,
-            'max_inputs': self.max_inputs, 'window': self.window,
-            'lr': self.lr, 'temperature': self.temperature,
-            'n_heads': self.n_heads,
-            'lambda_sharp': self.lambda_sharp,
-            'lambda_balance': self.lambda_balance,
-            'lambda_ortho': self.lambda_ortho,
-            'd_model': self.d_model, 'd_ff': self.d_ff,
-            '_reserved_mask': torch.from_numpy(self._reserved_mask.astype(np.uint8)),
-            '_usage_ema': torch.from_numpy(self._usage_ema),
-        }
-        state.update(self.save_rotation_state())
-        for i, name in enumerate([
-            'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
-            'ln2_g', 'ln2_b', 'W_fc1', 'b_fc1', 'W_fc2', 'b_fc2',
-            'cat_embs', 'W_recon', 'b_recon',
-        ]):
-            state[name] = self._params[i].detach().cpu()
-        state['optimizer_state'] = self._optimizer.state_dict()
-        torch.save(state, os.path.join(output_dir, "column_states.pt"))
-        print(f"  recon column state saved to {output_dir}")
-
-    def load_state(self, state, slot_map):
-        self.slot_map = slot_map
-        if state.get('_reserved_mask') is not None:
-            t = state['_reserved_mask']
-            arr = t.numpy() if hasattr(t, 'numpy') else np.array(t)
-            self._reserved_mask = arr.astype(bool)
-        if 'tick_count' in state:
-            self._tick_count = int(state['tick_count'])
-        if '_usage_ema' in state:
-            t = state['_usage_ema']
-            self._usage_ema = t.numpy().astype(np.float32) if hasattr(t, 'numpy') else np.array(t, dtype=np.float32)
-        self.load_rotation_state(state)
-        param_names = [
-            'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
-            'ln2_g', 'ln2_b', 'W_fc1', 'b_fc1', 'W_fc2', 'b_fc2',
-            'cat_embs', 'W_recon', 'b_recon',
-        ]
-        for i, name in enumerate(param_names):
-            if name in state:
-                self._params[i].data.copy_(state[name])
-        if 'optimizer_state' in state:
-            self._optimizer.load_state_dict(state['optimizer_state'])
-            for opt_state in self._optimizer.state.values():
-                for k, v in opt_state.items():
-                    if torch.is_tensor(v):
-                        opt_state[k] = v.to(self._device)
+class ReconColumn(TransformerColumn):
+    """Spatial reconstruction through category bottleneck."""
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('loss_mode', 'recon')
+        super().__init__(*args, **kwargs)
