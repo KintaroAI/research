@@ -220,6 +220,23 @@ directions:
    topology stabilizes. Implementation: time-varying schedule on anchor_batches
    (decay) + knn2 neighborhood depth (expand). Could also increase
    `cluster_split_every` over time to let clusters stabilize.
+8. **Detector columns (not classifiers):** current columns are classifiers —
+   forced to output a category every tick. Instead: each output is an independent
+   detector with a learned template. Accumulates match evidence over the window.
+   Fires when match crosses threshold. Below threshold → silence. Multiple
+   detectors can fire simultaneously, or none. No softmax, no forced competition.
+   Closer to biological neurons (threshold, accumulate, fire, refractory).
+9. **Self-supervised optimization without reward:** the model should become smarter
+   by optimizing an intrinsic objective — reducing surprise in predicting the
+   future. No external reward needed. Reward (food, hunger) can incentivize
+   direction but the core learning should be: "I want to predict what happens
+   next, and I restructure myself to predict better." This is the free energy
+   principle — organisms minimize prediction error about their sensory inputs.
+   The column's job isn't to categorize — it's to build an internal model that
+   predicts its inputs. Categories emerge as a side effect of compression
+   (you need categories to predict efficiently through the bottleneck). Reward
+   then just biases WHICH predictions matter more (hunger-related predictions
+   get amplified, irrelevant ones get suppressed).
 
 ### Forage: hunger-modulated alpha (1M ticks, conscience, m=1000)
 
