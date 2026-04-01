@@ -9,9 +9,12 @@ Column types (selected via `type` key in column_config):
                    optional lateral connections, eligibility traces, tiredness.
     'conscience' — ConscienceColumn: hard WTA with homeostatic threshold that
                    prevents winner collapse. Normalized inputs, dead-unit reseeding.
-    'predictive' — PredictiveColumn: 1-layer causal transformer encoder with
-                   category bottleneck. Learns via next-frame prediction loss +
-                   entropy regularization. No conscience hack needed.
+    'predictive' — TransformerColumn(loss_mode='predictive'): causal transformer
+                   encoder, next-frame prediction through category bottleneck.
+    'recon'      — TransformerColumn(loss_mode='recon'): same encoder, spatial
+                   reconstruction through category bottleneck.
+    'conscience_predictive' — ConsciencePredictiveColumn: hybrid conscience state
+                   head + per-category predictive validation + reconstruction anchor.
 
 All column types inherit from ColumnBase which provides:
     wire/unwire, slot_map, get_outputs, save/load interface.
@@ -1603,13 +1606,14 @@ class ConsciencePredictiveColumn(TransformerColumn):
         state_last = self._normalize_t(z_last + self.state_input_scale * x_now_last)
         return state_all, state_last
 
-    def _categorize_state_torch(self, state):
+    def _categorize_state_torch(self, state, apply_rotation=False):
+        """Cosine similarity to prototypes. Rotation only for output, not training."""
         c_n = self._normalize_t(self.cat_embs)
         if state.dim() == 2:
             sim = torch.bmm(state.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
         else:
             sim = torch.bmm(state, c_n.transpose(1, 2))
-        scores = self._apply_rotation_torch(sim)
+        scores = self._apply_rotation_torch(sim) if apply_rotation else sim
         p_state = F.softmax(scores / self.temperature, dim=-1)
         return sim, scores, p_state, c_n
 
@@ -1695,7 +1699,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
         with torch.no_grad():
             x_hidden = self._encode_gpu(x_t)
             _, state_last = self._state_from_hidden_torch(x_hidden, x_t)
-            sim_last, scores_last, p_state_last, c_n = self._categorize_state_torch(state_last)
+            sim_last, scores_last, p_state_last, c_n = self._categorize_state_torch(state_last, apply_rotation=True)
 
             # Per-category prediction from current state
             pred_per_cat_last = torch.einsum('md,mkdf->mkf', state_last, self.W_pred_bank)
@@ -1744,6 +1748,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
             'lr': self.lr, 'temperature': self.temperature,
             'n_heads': self.n_heads, 'lambda_balance': self.lambda_balance,
             'lambda_ortho': self.lambda_ortho, 'lambda_now': self.lambda_now,
+            'lambda_pred': self.lambda_pred,
             'lambda_nudge': self.lambda_nudge,
             'state_input_scale': self.state_input_scale,
             'validation_beta': self.validation_beta,
