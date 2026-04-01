@@ -1534,7 +1534,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
                  lr=1e-3, temperature=1.5, n_heads=2,
                  lambda_balance=0.1, lambda_ortho=0.01,
-                 lambda_now=0.25, lambda_nudge=0.10,
+                 lambda_pred=0.1, lambda_now=0.25, lambda_nudge=0.10,
                  state_input_scale=0.5, validation_beta=4.0,
                  proto_lr=0.05, reseed_after=1000,
                  usage_decay=0.99, **kwargs):
@@ -1546,6 +1546,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
                          lambda_ortho=lambda_ortho,
                          **kwargs)
 
+        self.lambda_pred = float(lambda_pred)
         self.lambda_now = float(lambda_now)
         self.lambda_nudge = float(lambda_nudge)
         self.state_input_scale = float(state_input_scale)
@@ -1660,7 +1661,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
             eye = torch.eye(self.n_outputs, device=dev).unsqueeze(0)
             L_ortho = ((gram - eye) ** 2).mean()
 
-        return (L_pred
+        return (self.lambda_pred * L_pred
                 + self.lambda_now * L_now
                 + self.lambda_nudge * L_nudge
                 + self.lambda_balance * L_balance
