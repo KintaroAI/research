@@ -190,7 +190,15 @@ directions:
    variance), and naturally encodes magnitude as firing rate — closer to
    biological rate coding. The thalamus layer would convert continuous values
    to spike-like temporal patterns before they reach the embedding/column system.
-5. **Prediction error as system-wide signal:** columns that predict their inputs
+5. **Global neuromodulator (dopamine-like):** on food collection, broadcast a
+   scalar reward to all columns. Positive reward: freeze current outputs briefly
+   (what you did worked — hold it) or apply eligibility traces (ColumnManager
+   already has `--eligibility --trace-decay`). Negative (hunger rising): increase
+   exploration. Each column accumulates a trace of recent winner directions;
+   reward triggers the trace to update prototypes. Like dopamine — "whatever you
+   were just doing, do more of that." The traces decay so only recent actions
+   get credit. Already partly implemented, just needs wiring to hunger events.
+6. **Prediction error as system-wide signal:** columns that predict their inputs
    well are "understanding their corner." Columns with chronic high error are
    miswired or haven't learned. Could drive rewiring — high-error columns steal
    neurons from low-error ones, or get reassigned to different clusters. Makes
