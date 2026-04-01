@@ -345,10 +345,10 @@ the learning dynamics, not just the output.
 | **Collections** | 1119 | **2126** |
 | Dense phase | 124 | **262** |
 | Sparse phase | 995 | **1864** |
-| Clusters alive | ~250/400 | 74/400 |
-| Total jumps | ~110K | **39.9M** |
-| Total switches | ~28K | **13.2M** |
-| Splits | ~120 | **132K** |
+| Clusters alive | 54/400 | 74/400 |
+| Total jumps | 23.9M | **39.9M** |
+| Total switches | 4.3M | **13.2M** |
+| Splits | 146K | **132K** |
 | hunger r | 0.84 | **0.95** |
 | dir_xp r | — | **0.88** |
 
@@ -368,8 +368,9 @@ internal state very well despite (because of?) the churn.
 | Metric | Conscience | Hybrid (pred+recon) | Hybrid (recon only) |
 |--------|-----------|---------------------|---------------------|
 | Collections | **1119** | 126 | 373 |
-| Clusters alive | ~250 | 84 | 86 |
-| Stability | 0.4 | 0.998 | 1.000 |
+| Clusters alive | 54/400 | 84/400 | 86/400 |
+| Stability | 0.12 | 0.998 | 1.000 |
+| Total jumps | 23.9M | 14K | 26K |
 | pos_x r | **0.81** | 0.66 | 0.47 |
 | hunger r | **0.84** | 0.56 | 0.47 |
 
