@@ -1113,8 +1113,9 @@ class PredictiveColumn(ColumnBase):
     """
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
-                 lr=1e-3, temperature=0.5, n_heads=2,
-                 lambda_sharp=0.01, lambda_balance=0.1,
+                 lr=1e-3, temperature=2.0, n_heads=2,
+                 lambda_sharp=0.0, lambda_balance=0.1,
+                 lambda_ortho=0.01,
                  train_every=10, alpha=0.0,
                  tiredness_rate=0.0, tiredness_recovery=0.0,
                  **kwargs):
@@ -1128,6 +1129,7 @@ class PredictiveColumn(ColumnBase):
         self.n_heads = n_heads
         self.lambda_sharp = lambda_sharp
         self.lambda_balance = lambda_balance
+        self.lambda_ortho = lambda_ortho
         self.train_every = train_every
         self.alpha = alpha
         self.tiredness_rate = tiredness_rate
@@ -1246,9 +1248,11 @@ class PredictiveColumn(ColumnBase):
         ff = torch.bmm(ff, self.W_fc2) + self.b_fc2.unsqueeze(1)
         x = x + ff
 
-        # Categorize from last position
+        # Categorize from last position (cosine logits — direction, not magnitude)
         z = x[:, -1, :]
-        sim = torch.bmm(z.unsqueeze(1), self.cat_embs.transpose(1, 2)).squeeze(1)
+        z_n = z / z.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        sim = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
         p = F.softmax(sim / self.temperature, dim=-1)
 
         return x, p
@@ -1383,12 +1387,16 @@ class PredictiveColumn(ColumnBase):
                 # --- Forward with grad + training ---
                 x_hidden, p = self._forward_gpu(x_gpu)
 
-                # L_pred: next-frame prediction at positions 0..T-2
+                # Normalized category values for bottleneck mixture
+                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+
+                # L_pred: next-frame prediction at positions 0..T-2 (cosine logits)
                 h_ctx = x_hidden[:, :-1, :]
                 targets = x_gpu[:, 1:, :]
-                sim_all = torch.bmm(h_ctx, self.cat_embs.transpose(1, 2))
+                h_n = h_ctx / h_ctx.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                sim_all = torch.bmm(h_n, c_n.transpose(1, 2))
                 p_all = F.softmax(sim_all / self.temperature, dim=-1)
-                z_q_all = torch.bmm(p_all, self.cat_embs)
+                z_q_all = torch.bmm(p_all, c_n)  # normalized values through bottleneck
                 pred_all = torch.bmm(z_q_all, self.W_pred) + self.b_pred.unsqueeze(1)
 
                 valid_gpu = torch.from_numpy(
@@ -1398,36 +1406,55 @@ class PredictiveColumn(ColumnBase):
                 diff_masked = diff_all * valid_gpu.unsqueeze(1)
                 L_pred = diff_masked.sum(dim=2).div(n_valid_gpu.unsqueeze(1)).mean()
 
-                H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
-                L_sharp = H_sample.mean()
-                p_mean = p.mean(dim=0)
-                H_batch = -(p_mean * (p_mean + 1e-10).log()).sum()
-                L_balance = -H_batch
+                # L_sharp: per-sample entropy (0 = disabled by default)
+                L_sharp = torch.tensor(0.0, device=dev)
+                if self.lambda_sharp > 0:
+                    H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
+                    L_sharp = H_sample.mean()
 
-                loss = L_pred + self.lambda_sharp * L_sharp + self.lambda_balance * L_balance
+                # L_balance: per-column usage over window positions → uniform
+                p_usage = p_all.mean(dim=1)  # (m, n_out) — per-column avg over T-1 positions
+                uniform = torch.full_like(p_usage, 1.0 / self.n_outputs)
+                L_balance = ((p_usage - uniform) ** 2).sum(dim=-1).mean()
+
+                # L_ortho: push category embeddings apart
+                L_ortho = torch.tensor(0.0, device=dev)
+                if self.lambda_ortho > 0:
+                    gram = torch.bmm(c_n, c_n.transpose(1, 2))
+                    eye = torch.eye(self.n_outputs, device=dev).unsqueeze(0)
+                    L_ortho = ((gram - eye) ** 2).mean()
+
+                loss = (L_pred + self.lambda_sharp * L_sharp
+                        + self.lambda_balance * L_balance
+                        + self.lambda_ortho * L_ortho)
                 self._optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self._params, 1.0)
                 self._optimizer.step()
             else:
-                # --- Inference only (no grad) ---
                 with torch.no_grad():
                     x_hidden, p = self._forward_gpu(x_gpu)
 
-            # --- Store outputs + next-tick prediction (from last position) ---
+            # --- Store outputs + prediction (unrotated for prediction, rotated for output) ---
             with torch.no_grad():
                 z_last = x_hidden[:, -1, :]
-                sim_last = torch.bmm(z_last.unsqueeze(1),
-                                     self.cat_embs.transpose(1, 2)).squeeze(1)
+                z_n = z_last / z_last.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                sim_last = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
+
+                # Unrotated path for prediction (clean signal)
+                p_clean = F.softmax(sim_last / self.temperature, dim=-1)
+                z_q = torch.bmm(p_clean.unsqueeze(1), c_n).squeeze(1)
+                pred_last = torch.bmm(z_q.unsqueeze(1),
+                                      self.W_pred).squeeze(1) + self.b_pred
+
+                # Rotated path for external output only
                 sim_np = sim_last.cpu().numpy()
                 sim_np = self.apply_output_rotation(sim_np)
                 sim_adj = torch.from_numpy(sim_np).to(dev)
-                p_last = F.softmax(sim_adj / self.temperature, dim=-1)
-                z_q_last = torch.bmm(p_last.unsqueeze(1), self.cat_embs).squeeze(1)
-                pred_last = torch.bmm(z_q_last.unsqueeze(1),
-                                      self.W_pred).squeeze(1) + self.b_pred
+                p_out = F.softmax(sim_adj / self.temperature, dim=-1)
 
-            p_np = p_last.cpu().numpy().astype(np.float32)
+            p_np = p_out.cpu().numpy().astype(np.float32)
             self.update_output_rotation(p_np.argmax(axis=1))
             self._outputs = self.apply_wta(p_np)
             self._prev_prediction = pred_last.cpu().numpy().astype(np.float32)
@@ -1528,9 +1555,9 @@ class ReconColumn(ColumnBase):
     """
 
     def __init__(self, m, n_outputs=4, max_inputs=20, window=4,
-                 lr=1e-3, temperature=0.5, n_heads=2,
-                 lambda_sharp=0.01, lambda_balance=0.1,
-                 alpha=0.0,
+                 lr=1e-3, temperature=2.0, n_heads=2,
+                 lambda_sharp=0.0, lambda_balance=0.1,
+                 lambda_ortho=0.01, alpha=0.0,
                  tiredness_rate=0.0, tiredness_recovery=0.0,
                  **kwargs):
         wta_mode = kwargs.pop('wta_mode', 'none')
@@ -1545,6 +1572,7 @@ class ReconColumn(ColumnBase):
         self.n_heads = n_heads
         self.lambda_sharp = lambda_sharp
         self.lambda_balance = lambda_balance
+        self.lambda_ortho = lambda_ortho
         self.alpha = alpha
         self.tiredness_rate = tiredness_rate
         self.tiredness_recovery = tiredness_recovery
@@ -1648,27 +1676,41 @@ class ReconColumn(ColumnBase):
             if do_train:
                 z = self._encode(x_gpu)
 
-                # Categorize (without theta — theta only on output)
-                sim = torch.bmm(z.unsqueeze(1), self.cat_embs.transpose(1, 2)).squeeze(1)
+                # Categorize (cosine logits, normalized values)
+                z_n = z / z.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                sim = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
                 p = F.softmax(sim / self.temperature, dim=-1)
 
-                # Reconstruct through bottleneck
-                z_q = torch.bmm(p.unsqueeze(1), self.cat_embs).squeeze(1)
+                # Reconstruct through bottleneck (normalized values)
+                z_q = torch.bmm(p.unsqueeze(1), c_n).squeeze(1)
                 recon = torch.bmm(z_q.unsqueeze(1), self.W_recon).squeeze(1) + self.b_recon
 
-                # Losses
                 valid_gpu = torch.from_numpy(
                     (self.slot_map >= 0).astype(np.float32)).to(dev)
                 n_valid_gpu = valid_gpu.sum(dim=1).clamp(min=1.0)
                 L_recon = ((recon - target) ** 2 * valid_gpu).sum(dim=1).div(n_valid_gpu).mean()
 
-                H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
-                L_sharp = H_sample.mean()
-                p_mean = p.mean(dim=0)
-                H_batch = -(p_mean * (p_mean + 1e-10).log()).sum()
-                L_balance = -H_batch
+                L_sharp = torch.tensor(0.0, device=dev)
+                if self.lambda_sharp > 0:
+                    H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
+                    L_sharp = H_sample.mean()
 
-                loss = L_recon + self.lambda_sharp * L_sharp + self.lambda_balance * L_balance
+                # L_balance: per-column usage → uniform (ReconColumn has no p_all,
+                # so use p across columns as proxy — single position per tick)
+                p_mean = p.mean(dim=0)
+                uniform = torch.full_like(p_mean, 1.0 / self.n_outputs)
+                L_balance = ((p_mean - uniform) ** 2).sum()
+
+                L_ortho = torch.tensor(0.0, device=dev)
+                if self.lambda_ortho > 0:
+                    gram = torch.bmm(c_n, c_n.transpose(1, 2))
+                    eye = torch.eye(self.n_outputs, device=dev).unsqueeze(0)
+                    L_ortho = ((gram - eye) ** 2).mean()
+
+                loss = (L_recon + self.lambda_sharp * L_sharp
+                        + self.lambda_balance * L_balance
+                        + self.lambda_ortho * L_ortho)
                 self._optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self._params, 1.0)
@@ -1677,23 +1719,27 @@ class ReconColumn(ColumnBase):
                 with torch.no_grad():
                     z = self._encode(x_gpu)
 
-            # Output with rotation (conscience + tiredness from base class)
+            # --- Unrotated path for surprise, rotated for output ---
             with torch.no_grad():
-                sim_out = torch.bmm(z.detach().unsqueeze(1),
-                                    self.cat_embs.transpose(1, 2)).squeeze(1)
+                z_n = z.detach() / z.detach().norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                sim_out = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
+
+                # Surprise from unrotated path
+                p_clean = F.softmax(sim_out / self.temperature, dim=-1)
+                z_q_clean = torch.bmm(p_clean.unsqueeze(1), c_n).squeeze(1)
+                recon_clean = torch.bmm(z_q_clean.unsqueeze(1), self.W_recon).squeeze(1) + self.b_recon
+                valid_gpu = torch.from_numpy(
+                    (self.slot_map >= 0).astype(np.float32)).to(dev)
+                n_valid_gpu = valid_gpu.sum(dim=1).clamp(min=1.0)
+                self._surprise = ((recon_clean - target) ** 2 * valid_gpu).sum(
+                    dim=1).div(n_valid_gpu).cpu().numpy().astype(np.float32)
+
+                # Rotated for external output
                 sim_np = sim_out.cpu().numpy()
                 sim_np = self.apply_output_rotation(sim_np)
                 sim_adj = torch.from_numpy(sim_np).to(dev)
                 p_out = F.softmax(sim_adj / self.temperature, dim=-1)
-
-                # Surprise = reconstruction error from bottleneck
-                z_q_out = torch.bmm(p_out.unsqueeze(1), self.cat_embs).squeeze(1)
-                recon_out = torch.bmm(z_q_out.unsqueeze(1), self.W_recon).squeeze(1) + self.b_recon
-                valid_gpu = torch.from_numpy(
-                    (self.slot_map >= 0).astype(np.float32)).to(dev)
-                n_valid_gpu = valid_gpu.sum(dim=1).clamp(min=1.0)
-                self._surprise = ((recon_out - target) ** 2 * valid_gpu).sum(
-                    dim=1).div(n_valid_gpu).cpu().numpy().astype(np.float32)
 
             p_np = p_out.cpu().numpy().astype(np.float32)
             self.update_output_rotation(p_np.argmax(axis=1))

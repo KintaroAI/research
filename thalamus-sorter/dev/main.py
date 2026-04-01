@@ -525,6 +525,7 @@ def run_word2vec(args):
                 'n_heads': getattr(args, 'column_n_heads', 2),
                 'lambda_sharp': getattr(args, 'column_lambda_sharp', 0.01),
                 'lambda_balance': getattr(args, 'column_lambda_balance', 0.1),
+                'lambda_ortho': getattr(args, 'column_lambda_ortho', 0.01),
                 'train_every': getattr(args, 'column_train_every', 10),
                 'wta_mode': getattr(args, 'column_wta', 'none'),
                 'tiredness_rate': getattr(args, 'column_tiredness_rate', 0.0),
@@ -925,6 +926,8 @@ def main():
                        help="Sharpness loss weight for predictive column (default: 0.01)")
     p_w2v.add_argument("--column-lambda-balance", type=float, default=0.1,
                        help="Balance loss weight for predictive column (default: 0.1)")
+    p_w2v.add_argument("--column-lambda-ortho", type=float, default=0.01,
+                       help="Orthogonality loss weight — push category embeddings apart (default: 0.01)")
     p_w2v.add_argument("--column-train-every", type=int, default=10,
                        help="Train predictive column every N ticks (default: 10, inference-only otherwise)")
     p_w2v.add_argument("--column-wta", type=str, default="none",

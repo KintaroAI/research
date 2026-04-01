@@ -89,6 +89,22 @@ def make_signal(w, h, args):
             window=col_window, temperature=col_temp, lr=col_lr,
             alpha=col_alpha,
         )
+    elif col_type == 'predictive':
+        from column_manager import PredictiveColumn
+        n_heads = 7 if n_inputs % 7 == 0 else 1
+        first_layer_cm = PredictiveColumn(
+            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=col_window, temperature=col_temp, lr=0.001,
+            n_heads=n_heads,
+        )
+    elif col_type == 'recon':
+        from column_manager import ReconColumn
+        n_heads = 7 if n_inputs % 7 == 0 else 1
+        first_layer_cm = ReconColumn(
+            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
+            window=col_window, temperature=col_temp, lr=0.001,
+            n_heads=n_heads,
+        )
     else:
         first_layer_cm = ColumnManager(
             m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
