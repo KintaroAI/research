@@ -190,6 +190,28 @@ directions:
    variance), and naturally encodes magnitude as firing rate — closer to
    biological rate coding. The thalamus layer would convert continuous values
    to spike-like temporal patterns before they reach the embedding/column system.
+5. **Prediction error as system-wide signal:** columns that predict their inputs
+   well are "understanding their corner." Columns with chronic high error are
+   miswired or haven't learned. Could drive rewiring — high-error columns steal
+   neurons from low-error ones, or get reassigned to different clusters. Makes
+   prediction error useful beyond just column training.
+6. **Energy minimization / spike efficiency:** neurons "want" to fire less.
+   Connections to neurons that fire right after you = good (predicted the next
+   spike, efficient). Connections to uncorrelated neurons = wasted energy.
+   Conscience rotation approximates this: rotating outputs = "spending energy
+   trying all categories." A column that settles = energy-efficient. The problem
+   is conscience forces rotation even when settling is correct. True energy
+   minimization would let columns settle when they've found a good category and
+   only rotate when prediction error is high.
+7. **Global-to-local sorting transition:** early on, global skip-gram discovers
+   coarse structure (which neurons correlate at all). Over time, decay global
+   anchor rate (`k_sample` or `anchor_batches`) and increase knn2-driven local
+   refinement (friend-of-friend-of-friend). Each cluster becomes its own local
+   optimizer, recruiting based on neighborhood rather than global correlation.
+   Naturally leads to parallelism — clusters run independently once global
+   topology stabilizes. Implementation: time-varying schedule on anchor_batches
+   (decay) + knn2 neighborhood depth (expand). Could also increase
+   `cluster_split_every` over time to let clusters stabilize.
 
 ### Forage: hunger-modulated alpha (1M ticks, conscience, m=1000)
 
