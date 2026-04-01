@@ -337,3 +337,45 @@ creating deep churn that propagates through the feedback loop. In predictive,
 the encoder trains identically regardless of alpha, so feedback signals stay
 stable and don't separate into distinct clusters. Hierarchy requires churn in
 the learning dynamics, not just the output.
+
+### Forage: conscience max_k=4 vs max_k=2 (1M ticks, 14×14, m=400)
+
+| Metric | max_k=2 | max_k=4 |
+|--------|---------|---------|
+| **Collections** | 1119 | **2126** |
+| Dense phase | 124 | **262** |
+| Sparse phase | 995 | **1864** |
+| Clusters alive | ~250/400 | 74/400 |
+| Total jumps | ~110K | **39.9M** |
+| Total switches | ~28K | **13.2M** |
+| Splits | ~120 | **132K** |
+| hunger r | 0.84 | **0.95** |
+| dir_xp r | — | **0.88** |
+
+max_k=4 nearly doubled food collection. The ring buffer tracks each neuron's
+4 most recent cluster memberships, but only the primary (pointer) cluster gets
+the neuron wired to its column. The deeper ring means neurons switch primary
+cluster more freely — the streaming update checks all ring entries before
+deciding where a neuron belongs, creating more migration opportunities.
+
+The 40M jumps (vs 110K) drive massive feedback signal variation which is what
+produces exploration. Only 74/400 clusters survive because neurons spread thin,
+but survivors are well-connected. Hunger correlation 0.95 — the system tracks
+internal state very well despite (because of?) the churn.
+
+### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
+
+| Metric | Conscience | Hybrid (pred+recon) | Hybrid (recon only) |
+|--------|-----------|---------------------|---------------------|
+| Collections | **1119** | 126 | 373 |
+| Clusters alive | ~250 | 84 | 86 |
+| Stability | 0.4 | 0.998 | 1.000 |
+| pos_x r | **0.81** | 0.66 | 0.47 |
+| hunger r | **0.84** | 0.56 | 0.47 |
+
+**Key finding:** the transformer encoder hurts in the forage setting. It
+stabilizes representations so completely that exploration dies. Plain
+conscience with simple cosine similarity produces more churn, more
+exploration, more food. The encoder solves the wrong problem — stable
+consistent categories — when what the system needs is variation and
+exploration through the feedback loop.
