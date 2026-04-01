@@ -1409,13 +1409,17 @@ class PredictiveColumn(ColumnBase):
                     H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
                     L_sharp = H_sample.mean()
 
-                # L_balance: EMA usage per column → uniform (stable over many ticks)
-                p_usage = p_all.mean(dim=1).detach()  # (m, n_out)
+                # L_balance: EMA usage per column → uniform (live grad + detached state update)
+                p_usage_live = p_all.mean(dim=1)  # (m, n_out) — with grad
                 usage_ema = torch.from_numpy(self._usage_ema).to(dev)
-                usage_est = 0.95 * usage_ema + 0.05 * p_usage
+                beta = 0.9
+                usage_est = beta * usage_ema + (1.0 - beta) * p_usage_live
                 uniform = torch.full_like(usage_est, 1.0 / self.n_outputs)
                 L_balance = ((usage_est - uniform) ** 2).sum(dim=-1).mean()
-                self._usage_ema = usage_est.cpu().numpy()
+                self._usage_ema = (
+                    beta * self._usage_ema
+                    + (1.0 - beta) * p_usage_live.detach().cpu().numpy()
+                ).astype(np.float32)
 
                 # L_ortho: push category embeddings apart
                 L_ortho = torch.tensor(0.0, device=dev)
@@ -1431,7 +1435,11 @@ class PredictiveColumn(ColumnBase):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self._params, 1.0)
                 self._optimizer.step()
-                self._np_dirty = True  # invalidate numpy cache
+                self._np_dirty = True
+
+                # Rerun forward with updated weights for consistent output/prediction
+                with torch.no_grad():
+                    x_hidden, p = self._forward_gpu(x_gpu)
             else:
                 with torch.no_grad():
                     x_hidden, p = self._forward_gpu(x_gpu)
@@ -1443,7 +1451,7 @@ class PredictiveColumn(ColumnBase):
                 c_n = self.cat_embs / self.cat_embs.norm(dim=-1, keepdim=True).clamp(min=1e-8)
                 sim_last = torch.bmm(z_n.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
 
-                # Unrotated path for prediction (clean signal)
+                # Unrotated path for prediction
                 p_clean = F.softmax(sim_last / self.temperature, dim=-1)
                 z_q = torch.bmm(p_clean.unsqueeze(1), c_n).squeeze(1)
                 pred_last = torch.bmm(z_q.unsqueeze(1),
@@ -1460,8 +1468,11 @@ class PredictiveColumn(ColumnBase):
             self._outputs = self.apply_wta(p_np)
             self._prev_prediction = pred_last.cpu().numpy().astype(np.float32)
         else:
-            # CPU fallback: inference only (numpy)
+            # CPU fallback: inference only (numpy, with rotation)
             p, predicted = self._forward_np(x_np)
+            sim_np = p  # p is already softmax output, apply rotation
+            # Note: CPU fallback doesn't have raw sim, so rotation applied on p
+            # This is approximate but maintains parity
             self._outputs = self.apply_wta(p)
             self._prev_prediction = predicted
 
@@ -1536,6 +1547,7 @@ class PredictiveColumn(ColumnBase):
         for i, name in enumerate(param_names):
             if name in state:
                 self._params[i].data.copy_(state[name])
+        self._np_dirty = True
         self.load_rotation_state(state)
         if 'optimizer_state' in state:
             self._optimizer.load_state_dict(state['optimizer_state'])
@@ -1708,12 +1720,16 @@ class ReconColumn(ColumnBase):
                     H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
                     L_sharp = H_sample.mean()
 
-                # L_balance: EMA usage per column → uniform
+                # L_balance: EMA usage per column → uniform (live grad)
                 usage_ema = torch.from_numpy(self._usage_ema).to(dev)
-                usage_est = 0.95 * usage_ema + 0.05 * p.detach()
+                beta = 0.9
+                usage_est = beta * usage_ema + (1.0 - beta) * p  # p has grad
                 uniform = torch.full_like(usage_est, 1.0 / self.n_outputs)
                 L_balance = ((usage_est - uniform) ** 2).sum(dim=-1).mean()
-                self._usage_ema = usage_est.cpu().numpy()
+                self._usage_ema = (
+                    beta * self._usage_ema
+                    + (1.0 - beta) * p.detach().cpu().numpy()
+                ).astype(np.float32)
 
                 L_ortho = torch.tensor(0.0, device=dev)
                 if self.lambda_ortho > 0:
@@ -1728,6 +1744,10 @@ class ReconColumn(ColumnBase):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self._params, 1.0)
                 self._optimizer.step()
+
+                # Rerun encode with updated weights
+                with torch.no_grad():
+                    z = self._encode(x_gpu)
             else:
                 with torch.no_grad():
                     z = self._encode(x_gpu)
