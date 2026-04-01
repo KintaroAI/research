@@ -901,7 +901,7 @@ def main():
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # column wiring (thalamus-to-cortex)
     p_w2v.add_argument("--column-type", type=str, default="default",
-                       help="Column type: 'default' (softmax WTA), 'conscience' (hard WTA), 'predictive' (temporal encoder), 'recon' (spatial reconstruction)")
+                       help="Column type: 'default', 'conscience', 'predictive', 'recon', 'conscience_predictive' (hybrid)")
     p_w2v.add_argument("--column-outputs", type=int, default=4,
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,

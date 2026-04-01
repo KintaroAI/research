@@ -108,6 +108,24 @@ class ClusterManager:
                     wta_mode=column_config.get('wta_mode', 'none'),
                     lateral_inputs=column_config.get('lateral_inputs', False),
                     lateral_input_k=column_config.get('lateral_input_k', 4))
+            elif column_type == 'conscience_predictive':
+                from column_manager import ConsciencePredictiveColumn
+                self.column_mgr = ConsciencePredictiveColumn(
+                    m,
+                    n_outputs=column_config.get('n_outputs', 4),
+                    max_inputs=column_config.get('max_inputs', 20),
+                    window=column_config.get('window', 10),
+                    lr=column_config.get('lr', 1e-3),
+                    temperature=column_config.get('temperature', 1.5),
+                    n_heads=column_config.get('n_heads', 2),
+                    lambda_balance=column_config.get('lambda_balance', 0.1),
+                    lambda_ortho=column_config.get('lambda_ortho', 0.01),
+                    alpha=column_config.get('alpha', 0.01),
+                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
+                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+                    wta_mode=column_config.get('wta_mode', 'none'),
+                    lateral_inputs=column_config.get('lateral_inputs', False),
+                    lateral_input_k=column_config.get('lateral_input_k', 4))
             elif column_type == 'predictive':
                 from column_manager import PredictiveColumn
                 self.column_mgr = PredictiveColumn(
