@@ -1140,23 +1140,17 @@ class PredictiveColumn(ColumnBase):
         d_ff = 4 * d_model
         self.d_model = d_model
         self.d_ff = d_ff
+        assert d_model % n_heads == 0, \
+            f"d_model={d_model} must be divisible by n_heads={n_heads}"
 
         # --- Encoder parameters (all with leading m dimension) ---
         self.pos_emb = torch.nn.Parameter(torch.randn(m, window, d_model) * 0.02)
-
-        # Pre-attention layer norm
         self.ln1_g = torch.nn.Parameter(torch.ones(m, d_model))
         self.ln1_b = torch.nn.Parameter(torch.zeros(m, d_model))
-
-        # Fused QKV + output projection
         self.W_qkv = torch.nn.Parameter(torch.randn(m, d_model, 3 * d_model) * (d_model ** -0.5))
         self.W_proj = torch.nn.Parameter(torch.randn(m, d_model, d_model) * (d_model ** -0.5))
-
-        # Pre-FFN layer norm
         self.ln2_g = torch.nn.Parameter(torch.ones(m, d_model))
         self.ln2_b = torch.nn.Parameter(torch.zeros(m, d_model))
-
-        # FFN
         self.W_fc1 = torch.nn.Parameter(torch.randn(m, d_model, d_ff) * (d_model ** -0.5))
         self.b_fc1 = torch.nn.Parameter(torch.zeros(m, d_ff))
         self.W_fc2 = torch.nn.Parameter(torch.randn(m, d_ff, d_model) * (d_ff ** -0.5))
@@ -1167,16 +1161,17 @@ class PredictiveColumn(ColumnBase):
         self.W_pred = torch.nn.Parameter(torch.randn(m, d_model, d_model) * (d_model ** -0.5))
         self.b_pred = torch.nn.Parameter(torch.zeros(m, d_model))
 
-        # Causal mask (not a parameter, but persistent)
         self._causal_mask_np = np.tril(np.ones((window, window), dtype=bool))
-        self._np_dirty = True  # triggers numpy cache rebuild
+        self._np_dirty = True
 
         # --- State ---
         self._prev_prediction = np.zeros((m, d_model), dtype=np.float32)
         self._surprise = np.zeros(m, dtype=np.float32)
         self._tick_count = 0
-        self._learn_prob = 1.0  # modulated externally (e.g. by hunger)
+        self._learn_prob = 1.0
         self._rng = np.random.RandomState(42)
+        # EMA usage tracker for balance loss (more stable than per-window)
+        self._usage_ema = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
 
         # Collect all parameters for optimizer
         self._params = [
@@ -1342,16 +1337,18 @@ class PredictiveColumn(ColumnBase):
         # Summary: last hidden state
         z = x[:, -1, :]  # (m, d)
 
-        # --- Categorize ---
-        # (m, 1, d) @ (m, d, n_out) -> (m, 1, n_out) -> (m, n_out)
-        sim = (z[:, None, :] @ c['cat_embs'].transpose(0, 2, 1))[:, 0, :]
+        # --- Categorize (cosine logits, normalized values) ---
+        z_n = z / np.clip(np.linalg.norm(z, axis=-1, keepdims=True), 1e-8, None)
+        c_n = c['cat_embs'] / np.clip(
+            np.linalg.norm(c['cat_embs'], axis=-1, keepdims=True), 1e-8, None)
+        sim = (z_n[:, None, :] @ c_n.transpose(0, 2, 1))[:, 0, :]
         sim_scaled = sim / self.temperature
         sim_scaled -= sim_scaled.max(axis=-1, keepdims=True)
         e = np.exp(sim_scaled)
         p = e / e.sum(axis=-1, keepdims=True)
 
-        # --- Predict from category bottleneck ---
-        z_q = (p[:, None, :] @ c['cat_embs'])[:, 0, :]  # (m, d)
+        # --- Predict from category bottleneck (normalized values) ---
+        z_q = (p[:, None, :] @ c_n)[:, 0, :]  # (m, d)
         predicted = (z_q[:, None, :] @ c['W_pred'])[:, 0, :] + c['b_pred']
 
         return p.astype(np.float32), predicted.astype(np.float32)
@@ -1412,10 +1409,13 @@ class PredictiveColumn(ColumnBase):
                     H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
                     L_sharp = H_sample.mean()
 
-                # L_balance: per-column usage over window positions → uniform
-                p_usage = p_all.mean(dim=1)  # (m, n_out) — per-column avg over T-1 positions
-                uniform = torch.full_like(p_usage, 1.0 / self.n_outputs)
-                L_balance = ((p_usage - uniform) ** 2).sum(dim=-1).mean()
+                # L_balance: EMA usage per column → uniform (stable over many ticks)
+                p_usage = p_all.mean(dim=1).detach()  # (m, n_out)
+                usage_ema = torch.from_numpy(self._usage_ema).to(dev)
+                usage_est = 0.95 * usage_ema + 0.05 * p_usage
+                uniform = torch.full_like(usage_est, 1.0 / self.n_outputs)
+                L_balance = ((usage_est - uniform) ** 2).sum(dim=-1).mean()
+                self._usage_ema = usage_est.cpu().numpy()
 
                 # L_ortho: push category embeddings apart
                 L_ortho = torch.tensor(0.0, device=dev)
@@ -1431,6 +1431,7 @@ class PredictiveColumn(ColumnBase):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self._params, 1.0)
                 self._optimizer.step()
+                self._np_dirty = True  # invalidate numpy cache
             else:
                 with torch.no_grad():
                     x_hidden, p = self._forward_gpu(x_gpu)
@@ -1489,19 +1490,20 @@ class PredictiveColumn(ColumnBase):
             'n_heads': self.n_heads,
             'lambda_sharp': self.lambda_sharp,
             'lambda_balance': self.lambda_balance,
+            'lambda_ortho': self.lambda_ortho,
             'd_model': self.d_model,
             'd_ff': self.d_ff,
             '_reserved_mask': torch.from_numpy(self._reserved_mask.astype(np.uint8)),
             '_prev_prediction': torch.from_numpy(self._prev_prediction),
+            '_usage_ema': torch.from_numpy(self._usage_ema),
         }
         state.update(self.save_rotation_state())
-        # Save all parameters
         for i, name in enumerate([
             'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
             'ln2_g', 'ln2_b', 'W_fc1', 'b_fc1', 'W_fc2', 'b_fc2',
             'cat_embs', 'W_pred', 'b_pred',
         ]):
-            state[name] = self._params[i].detach()
+            state[name] = self._params[i].detach().cpu()
         # Save optimizer state
         state['optimizer_state'] = self._optimizer.state_dict()
         torch.save(state, os.path.join(output_dir, "column_states.pt"))
@@ -1522,6 +1524,9 @@ class PredictiveColumn(ColumnBase):
                 self._prev_prediction = t.numpy().astype(np.float32)
             else:
                 self._prev_prediction = np.array(t, dtype=np.float32)
+        if '_usage_ema' in state:
+            t = state['_usage_ema']
+            self._usage_ema = t.numpy().astype(np.float32) if hasattr(t, 'numpy') else np.array(t, dtype=np.float32)
         # Restore parameters
         param_names = [
             'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
@@ -1532,9 +1537,13 @@ class PredictiveColumn(ColumnBase):
             if name in state:
                 self._params[i].data.copy_(state[name])
         self.load_rotation_state(state)
-        # Restore optimizer
         if 'optimizer_state' in state:
             self._optimizer.load_state_dict(state['optimizer_state'])
+            # Fix optimizer device after loading
+            for opt_state in self._optimizer.state.values():
+                for k, v in opt_state.items():
+                    if torch.is_tensor(v):
+                        opt_state[k] = v.to(self._device)
 
 
 # ---------------------------------------------------------------------------
@@ -1582,6 +1591,9 @@ class ReconColumn(ColumnBase):
         d_ff = 4 * d_model
         self.d_model = d_model
         self.d_ff = d_ff
+        assert d_model % n_heads == 0, \
+            f"d_model={d_model} must be divisible by n_heads={n_heads}"
+        self._usage_ema = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
 
         # --- Encoder parameters ---
         self.pos_emb = torch.nn.Parameter(torch.randn(m, window, d_model) * 0.02)
@@ -1696,11 +1708,12 @@ class ReconColumn(ColumnBase):
                     H_sample = -(p * (p + 1e-10).log()).sum(dim=-1)
                     L_sharp = H_sample.mean()
 
-                # L_balance: per-column usage → uniform (ReconColumn has no p_all,
-                # so use p across columns as proxy — single position per tick)
-                p_mean = p.mean(dim=0)
-                uniform = torch.full_like(p_mean, 1.0 / self.n_outputs)
-                L_balance = ((p_mean - uniform) ** 2).sum()
+                # L_balance: EMA usage per column → uniform
+                usage_ema = torch.from_numpy(self._usage_ema).to(dev)
+                usage_est = 0.95 * usage_ema + 0.05 * p.detach()
+                uniform = torch.full_like(usage_est, 1.0 / self.n_outputs)
+                L_balance = ((usage_est - uniform) ** 2).sum(dim=-1).mean()
+                self._usage_ema = usage_est.cpu().numpy()
 
                 L_ortho = torch.tensor(0.0, device=dev)
                 if self.lambda_ortho > 0:
@@ -1767,8 +1780,10 @@ class ReconColumn(ColumnBase):
             'n_heads': self.n_heads,
             'lambda_sharp': self.lambda_sharp,
             'lambda_balance': self.lambda_balance,
+            'lambda_ortho': self.lambda_ortho,
             'd_model': self.d_model, 'd_ff': self.d_ff,
             '_reserved_mask': torch.from_numpy(self._reserved_mask.astype(np.uint8)),
+            '_usage_ema': torch.from_numpy(self._usage_ema),
         }
         state.update(self.save_rotation_state())
         for i, name in enumerate([
@@ -1776,7 +1791,7 @@ class ReconColumn(ColumnBase):
             'ln2_g', 'ln2_b', 'W_fc1', 'b_fc1', 'W_fc2', 'b_fc2',
             'cat_embs', 'W_recon', 'b_recon',
         ]):
-            state[name] = self._params[i].detach()
+            state[name] = self._params[i].detach().cpu()
         state['optimizer_state'] = self._optimizer.state_dict()
         torch.save(state, os.path.join(output_dir, "column_states.pt"))
         print(f"  recon column state saved to {output_dir}")
@@ -1789,6 +1804,9 @@ class ReconColumn(ColumnBase):
             self._reserved_mask = arr.astype(bool)
         if 'tick_count' in state:
             self._tick_count = int(state['tick_count'])
+        if '_usage_ema' in state:
+            t = state['_usage_ema']
+            self._usage_ema = t.numpy().astype(np.float32) if hasattr(t, 'numpy') else np.array(t, dtype=np.float32)
         self.load_rotation_state(state)
         param_names = [
             'pos_emb', 'ln1_g', 'ln1_b', 'W_qkv', 'W_proj',
@@ -1800,3 +1818,7 @@ class ReconColumn(ColumnBase):
                 self._params[i].data.copy_(state[name])
         if 'optimizer_state' in state:
             self._optimizer.load_state_dict(state['optimizer_state'])
+            for opt_state in self._optimizer.state.values():
+                for k, v in opt_state.items():
+                    if torch.is_tensor(v):
+                        opt_state[k] = v.to(self._device)
