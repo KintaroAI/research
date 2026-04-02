@@ -368,22 +368,23 @@ internal state very well despite (because of?) the churn.
 Wire neurons to ALL ring clusters, not just primary. With max_k=2, a neuron
 in clusters [5, 12] feeds signal to both columns instead of only cluster 5.
 
-| Metric | k=2 primary-only | k=2 all-ring | k=4 primary-only | k=4 all-ring |
-|--------|-----------------|--------------|-----------------|--------------|
-| **Collections** | 1119 | **2026** | 2126 | 2002 |
-| Dense phase | 124 | 223 | 262 | 204 |
-| Sparse phase | 995 | 1803 | 1864 | 1798 |
-| Clusters alive | 54/400 | 72/400 | 74/400 | 68/400 |
-| Initial wirings | — | 1796 | — | 1796 |
-| Total jumps | 23.9M | 47.0M | 39.9M | 45.2M |
-| Total switches | 4.3M | 10.1M | 13.2M | 11.5M |
-| Splits | 146K | 168K | 132K | 215K |
-| Contiguity | — | 0.668 | — | 0.549 |
+| Metric | k=2 primary | k=2 all-ring | k=4 primary | k=4 all-ring | k=8 all-ring |
+|--------|-------------|--------------|-------------|--------------|--------------|
+| **Collections** | 1119 | **2026** | 2126 | 2002 | 1890 |
+| Dense phase | 124 | 223 | 262 | 204 | 220 |
+| Sparse phase | 995 | 1803 | 1864 | 1798 | 1670 |
+| Clusters alive | 54/400 | 72/400 | 74/400 | 68/400 | 68/400 |
+| Initial wirings | — | 1796 | — | 1796 | 1796 |
+| Total jumps | 23.9M | 47.0M | 39.9M | 45.2M | 28.1M |
+| Total switches | 4.3M | 10.1M | 13.2M | 11.5M | 6.5M |
+| Splits | 146K | 168K | 132K | 215K | 259K |
+| Contiguity | — | 0.668 | — | 0.549 | 0.695 |
 
-All-ring wiring doesn't improve k=4 — collections drop slightly (2002 vs 2126).
-The extra wirings dilute column inputs: with max_inputs=8 and 4 ring entries per
-neuron, columns fill faster with partially-stale members. k=2 all-ring (2026) is
-the sweet spot — nearly matches k=4 primary-only with half the ring depth.
+All-ring k=2 (2026) nearly matches primary-only k=4 (2126) — the sweet spot.
+Deeper rings hurt with max_inputs=8: k=4 all-ring drops to 2002, k=8 to 1890.
+With k=8, a single neuron occupies a slot in 8 columns, so one neuron can fill
+an entire column (max_inputs=8) by itself, crowding out fresh signal and killing
+jumps (28M vs 47M at k=2). The ring depth must stay well below max_inputs.
 
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
 
