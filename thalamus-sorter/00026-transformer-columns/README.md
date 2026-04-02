@@ -363,6 +363,28 @@ produces exploration. Only 74/400 clusters survive because neurons spread thin,
 but survivors are well-connected. Hunger correlation 0.95 — the system tracks
 internal state very well despite (because of?) the churn.
 
+### Forage: all-ring wiring (1M ticks, 14×14, m=400)
+
+Wire neurons to ALL ring clusters, not just primary. With max_k=2, a neuron
+in clusters [5, 12] feeds signal to both columns instead of only cluster 5.
+
+| Metric | k=2 primary-only | k=2 all-ring | k=4 primary-only | k=4 all-ring |
+|--------|-----------------|--------------|-----------------|--------------|
+| **Collections** | 1119 | **2026** | 2126 | 2002 |
+| Dense phase | 124 | 223 | 262 | 204 |
+| Sparse phase | 995 | 1803 | 1864 | 1798 |
+| Clusters alive | 54/400 | 72/400 | 74/400 | 68/400 |
+| Initial wirings | — | 1796 | — | 1796 |
+| Total jumps | 23.9M | 47.0M | 39.9M | 45.2M |
+| Total switches | 4.3M | 10.1M | 13.2M | 11.5M |
+| Splits | 146K | 168K | 132K | 215K |
+| Contiguity | — | 0.668 | — | 0.549 |
+
+All-ring wiring doesn't improve k=4 — collections drop slightly (2002 vs 2126).
+The extra wirings dilute column inputs: with max_inputs=8 and 4 ring entries per
+neuron, columns fill faster with partially-stale members. k=2 all-ring (2026) is
+the sweet spot — nearly matches k=4 primary-only with half the ring depth.
+
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
 
 | Metric | Conscience | Hybrid (pred+recon) | Hybrid (recon only) |

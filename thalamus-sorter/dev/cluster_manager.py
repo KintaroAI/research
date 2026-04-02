@@ -385,18 +385,21 @@ class ClusterManager:
                     affected_cols.add(old_c)
                 if new_c >= 0:
                     affected_cols.add(new_c)
-            for neuron, evicted_set in neuron_evicted.items():
-                primary = int(self.cluster_ids[neuron, self.pointers[neuron]])
-                ring = self.cluster_ids[neuron]
-                for cid in ring:
-                    if cid >= 0 and cid != primary:
-                        self.column_mgr.unwire(int(cid), neuron)
-                for old_c in evicted_set:
-                    if old_c not in ring and old_c != primary:
-                        self.column_mgr.unwire(int(old_c), neuron)
-                self.column_mgr.wire(primary, neuron)
-            # Scan only affected columns for stale entries from swap races
             slot_map = self.column_mgr.slot_map
+            for neuron, evicted_set in neuron_evicted.items():
+                ring = self.cluster_ids[neuron]
+                ring_set = set(int(c) for c in ring if c >= 0)
+
+                # Unwire evicted clusters no longer in ring
+                for old_c in evicted_set:
+                    if int(old_c) not in ring_set:
+                        self.column_mgr.unwire(int(old_c), neuron)
+
+                # Wire only NEW ring entries (not already wired)
+                for cid in ring_set:
+                    if neuron not in slot_map[cid]:
+                        self.column_mgr.wire(cid, neuron)
+            # Scan only affected columns for stale entries from swap races
             reserved = self.column_mgr._reserved_mask
             for c in affected_cols:
                 for s in range(self.column_mgr.max_inputs):
