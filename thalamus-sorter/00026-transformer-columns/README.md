@@ -382,9 +382,27 @@ in clusters [5, 12] feeds signal to both columns instead of only cluster 5.
 
 All-ring k=2 (2026) nearly matches primary-only k=4 (2126) — the sweet spot.
 Deeper rings hurt with max_inputs=8: k=4 all-ring drops to 2002, k=8 to 1890.
-With k=8, a single neuron occupies a slot in 8 columns, so one neuron can fill
-an entire column (max_inputs=8) by itself, crowding out fresh signal and killing
-jumps (28M vs 47M at k=2). The ring depth must stay well below max_inputs.
+
+### All-ring with larger columns (mi=40, cap=40, 1M ticks, 14×14, m=400)
+
+Test whether max_inputs=8 was the bottleneck for deeper rings.
+
+| Metric | k=8 ar mi=8 | k=8 ar mi=40 | k=4 ar mi=8 | k=4 ar mi=40 |
+|--------|-------------|--------------|-------------|--------------|
+| **Collections** | 1890 | 1815 | 2002 | **2084** |
+| Clusters alive | 68/400 | 92/400 | 68/400 | 76/400 |
+| Total jumps | 28.1M | 17.5M | 45.2M | 7.4M |
+| Total switches | 6.5M | 5.6M | 11.5M | 1.9M |
+| Splits | 259K | 211K | 215K | 98K |
+| Contiguity | 0.695 | 0.769 | 0.549 | 0.704 |
+| Diameter | 3.4 | 2.2 | — | 3.2 |
+
+Larger columns don't help — k=8 mi=40 dropped further (1815 vs 1890).
+k=4 mi=40 improved slightly (2084 vs 2002) but with dramatically fewer jumps
+(7.4M vs 45.2M). The bigger columns absorb more neurons so fewer get evicted,
+reducing churn. Still doesn't beat k=2 all-ring mi=8 (2026) or k=4 primary mi=8
+(2126). The deeper ring itself suppresses exploration by keeping neurons
+connected to old clusters too long.
 
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
 
