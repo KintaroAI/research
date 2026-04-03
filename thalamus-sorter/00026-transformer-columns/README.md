@@ -387,21 +387,20 @@ Deeper rings hurt with max_inputs=8: k=4 all-ring drops to 2002, k=8 to 1890.
 
 Test whether max_inputs=8 was the bottleneck for deeper rings.
 
-| Metric | k=8 ar mi=8 | k=8 ar mi=40 | k=4 ar mi=8 | k=4 ar mi=40 |
-|--------|-------------|--------------|-------------|--------------|
-| **Collections** | 1890 | 1815 | 2002 | **2084** |
-| Clusters alive | 68/400 | 92/400 | 68/400 | 76/400 |
-| Total jumps | 28.1M | 17.5M | 45.2M | 7.4M |
-| Total switches | 6.5M | 5.6M | 11.5M | 1.9M |
-| Splits | 259K | 211K | 215K | 98K |
-| Contiguity | 0.695 | 0.769 | 0.549 | 0.704 |
-| Diameter | 3.4 | 2.2 | — | 3.2 |
+| Metric | k=2 ar mi=8 | k=2 ar mi=40 | k=4 ar mi=8 | k=4 ar mi=40 | k=8 ar mi=8 | k=8 ar mi=40 |
+|--------|-------------|--------------|-------------|--------------|-------------|--------------|
+| **Collections** | 2026 | **2284** | 2002 | 2084 | 1890 | 1815 |
+| Clusters alive | 72/400 | 80/400 | 68/400 | 76/400 | 68/400 | 92/400 |
+| Total jumps | 47.0M | 41.4M | 45.2M | 7.4M | 28.1M | 17.5M |
+| Total switches | 10.1M | 5.4M | 11.5M | 1.9M | 6.5M | 5.6M |
+| Splits | 168K | 206K | 215K | 98K | 259K | 211K |
+| Contiguity | 0.668 | 0.669 | 0.549 | 0.704 | 0.695 | 0.769 |
+| Diameter | — | 3.2 | — | 3.2 | 3.4 | 2.2 |
 
-Larger columns don't help — k=8 mi=40 dropped further (1815 vs 1890).
-k=4 mi=40 improved slightly (2084 vs 2002) but with dramatically fewer jumps
-(7.4M vs 45.2M). The bigger columns absorb more neurons so fewer get evicted,
-reducing churn. Still doesn't beat k=2 all-ring mi=8 (2026) or k=4 primary mi=8
-(2126). The deeper ring itself suppresses exploration by keeping neurons
+**k=2 all-ring mi=40 is the new best: 2284 collections** — beats k=4 primary mi=8
+(2126) by 7%. Larger columns help k=2 because neurons only occupy 2 slots each,
+leaving room for diverse members. Deeper rings (k=4, k=8) don't benefit from
+larger columns — the ring itself suppresses exploration by keeping neurons
 connected to old clusters too long.
 
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
