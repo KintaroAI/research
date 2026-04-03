@@ -94,13 +94,12 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
             f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}"
         )
         self.d_ff = 4 * self.d_model
-        self.state_dim = 3 * self.d_model
 
         # ------------------------------------------------------------------
-        # Conscience state head: handcrafted descriptor -> cosine prototypes
+        # Conscience state head: same descriptor as ConscienceColumn
         # ------------------------------------------------------------------
         rng = np.random.RandomState(42)
-        protos = rng.randn(m, n_outputs, self.state_dim).astype(np.float32)
+        protos = rng.randn(m, n_outputs, self.d_model).astype(np.float32)
         protos /= np.linalg.norm(protos, axis=2, keepdims=True).clip(1e-8)
         self.prototypes = protos
         self.usage = np.full((m, n_outputs), 1.0 / n_outputs, dtype=np.float32)
@@ -178,63 +177,30 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
         return x / x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
 
     def _state_descriptor_np(self, X):
-        """Build current conscience descriptor from raw window.
+        """Same descriptor as ConscienceColumn: mean(window) -> mean-sub -> L2-norm.
 
         X: (m, n_in, T)
-        Returns: (m, 3*n_in)
+        Returns: (m, n_in)
         """
-        cur = X[:, :, -1]
-        mean = X.mean(axis=2)
-        if X.shape[2] > 1:
-            delta = X[:, :, -1] - X[:, :, -2]
-        else:
-            delta = np.zeros_like(cur)
-
-        cur = cur - cur.mean(axis=1, keepdims=True)
-        mean = mean - mean.mean(axis=1, keepdims=True)
-        delta = delta - delta.mean(axis=1, keepdims=True)
-
-        cur = self._normalize_np(cur)
-        mean = self._normalize_np(mean)
-        delta = self._normalize_np(delta)
-        state = np.concatenate([
-            self.current_weight * cur,
-            self.mean_weight * mean,
-            self.delta_weight * delta,
-        ], axis=1)
-        return self._normalize_np(state).astype(np.float32)
+        x = X.mean(axis=2)
+        x = x - x.mean(axis=1, keepdims=True)
+        norms = np.linalg.norm(x, axis=1, keepdims=True).clip(1e-8)
+        return (x / norms).astype(np.float32)
 
     def _state_descriptor_torch_targets(self, x_gpu):
-        """Target conscience descriptors for positions 1..T-1.
+        """Prefix conscience descriptors for positions 1..T-1.
+        Same as ConscienceColumn: mean(frames[:t]) -> mean-sub -> L2-norm.
 
         x_gpu: (m, T, d)
-        Returns: states_next: (m, T-1, state_dim)
+        Returns: (m, T-1, d)
         """
-        cur = x_gpu[:, 1:, :]
-        cur = cur - cur.mean(dim=-1, keepdim=True)
-        cur = self._normalize_t(cur)
-
-        x_t = x_gpu.transpose(1, 2)  # (m, d, T)
-        csum = x_t.cumsum(dim=2)
-        denom = torch.arange(1, x_gpu.shape[1] + 1, device=x_gpu.device, dtype=x_gpu.dtype)
-        prefix_mean = csum / denom.view(1, 1, -1)
-        mean = prefix_mean[:, :, 1:].transpose(1, 2)  # (m, T-1, d)
-        mean = mean - mean.mean(dim=-1, keepdim=True)
-        mean = self._normalize_t(mean)
-
-        if x_gpu.shape[1] > 1:
-            delta = x_gpu[:, 1:, :] - x_gpu[:, :-1, :]
-        else:
-            delta = torch.zeros_like(cur)
-        delta = delta - delta.mean(dim=-1, keepdim=True)
-        delta = self._normalize_t(delta)
-
-        state = torch.cat([
-            self.current_weight * cur,
-            self.mean_weight * mean,
-            self.delta_weight * delta,
-        ], dim=-1)
-        return self._normalize_t(state)
+        csum = x_gpu.cumsum(dim=1)
+        counts = torch.arange(
+            1, x_gpu.shape[1], device=x_gpu.device, dtype=x_gpu.dtype
+        ).view(1, -1, 1)
+        x = csum[:, :-1, :] / counts
+        x = x - x.mean(dim=-1, keepdim=True)
+        return self._normalize_t(x)
 
     def _conscience_logits_np(self, state_np, apply_rotation=True):
         protos = self.prototypes / np.linalg.norm(self.prototypes, axis=2, keepdims=True).clip(1e-8)
@@ -390,9 +356,10 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
         logits_p_np = logits_p_np - logits_p_np.mean(axis=1, keepdims=True)
 
         # ------------------------------------------------------------------
-        # Final emitted output = conscience logits + trusted predictive bias
+        # Final emitted output: softmax on raw sims + trusted predictive bias
+        # (rotation only affects winner selection above, not output distribution)
         # ------------------------------------------------------------------
-        final_logits = scores_c_np + (self.beta_override * gate)[:, None] * logits_p_np
+        final_logits = sim_c_np + (self.beta_override * gate)[:, None] * logits_p_np
         final_logits = final_logits - final_logits.max(axis=1, keepdims=True)
         e = np.exp(final_logits / max(self.temperature, 1e-8))
         p_final = (e / e.sum(axis=1, keepdims=True)).astype(np.float32)
@@ -439,6 +406,12 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
     def set_learn_prob(self, value):
         self._learn_prob = float(value)
 
+    def set_pred_lr_scale(self, scale):
+        """Scale predictor LR relative to base pred_lr. Called externally (e.g. by forage hunger)."""
+        s = float(np.clip(scale, 0.0, self.pred_lr_scale_max))
+        for group in self._optimizer.param_groups:
+            group['lr'] = self.pred_lr * s
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -472,7 +445,7 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
             'pred_lr_scale_max': self.pred_lr_scale_max,
             'd_model': self.d_model,
             'd_ff': self.d_ff,
-            'state_dim': self.state_dim,
+            # state_dim removed — prototypes now use d_model like ConscienceColumn
             'prototypes': torch.from_numpy(self.prototypes),
             'usage': torch.from_numpy(self.usage),
             'theta': torch.from_numpy(self.theta),

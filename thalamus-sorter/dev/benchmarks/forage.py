@@ -405,19 +405,10 @@ def make_signal(w, h, args):
         #     if base_alpha[0] > 0:
         #         col_mgr.alpha = base_alpha[0] * hunger
 
-        # LR modulation: hunger scales down learning rate (disabled)
-        # High hunger → low lr (stop changing, focus on acting)
-        # Low hunger (just collected) → full lr (consolidate learning)
-        # col_mgr = _refs['column_mgr']
-        # dsolver = _refs.get('dsolver')
-        # if col_mgr is not None:
-        #     if base_column_lr[0] is None:
-        #         base_column_lr[0] = col_mgr.lr
-        #     col_mgr.lr = base_column_lr[0] * (1.0 - 0.9 * hunger)
-        # if dsolver is not None:
-        #     if base_embed_lr[0] is None:
-        #         base_embed_lr[0] = dsolver.lr
-        #     dsolver.lr = base_embed_lr[0] * (1.0 - 0.9 * hunger)
+        # Predictor LR modulation (disabled — testing constant LR first)
+        # col_mgr = _refs.get('column_mgr')
+        # if col_mgr is not None and hasattr(col_mgr, 'set_pred_lr_scale'):
+        #     col_mgr.set_pred_lr_scale(1.0 - hunger)  # full=learn, hungry=explore
 
         # Live LR control from field viz (background thread polls, we just read)
         if t % 100 == 0 and _ctrl_values:
