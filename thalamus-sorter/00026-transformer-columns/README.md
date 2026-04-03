@@ -403,6 +403,40 @@ leaving room for diverse members. Deeper rings (k=4, k=8) don't benefit from
 larger columns — the ring itself suppresses exploration by keeping neurons
 connected to old clusters too long.
 
+### Forage: conscience_override column (1M ticks, 14×14, m=400, k=2 ar, mi=40, cap=40)
+
+New column type: conscience-first with transformer predictor and trust-gated
+override. Conscience head emits primary state; predictor learns next-frame
+prediction in parallel; trust gate (EMA of prediction error) controls how much
+the predictor can bias the emitted logits. Prototype ecology updates from
+conscience-only winners, so predictor can't hijack category identity.
+
+Run 082 parameters:
+- `--column-type conscience_override`
+- `--column-alpha 0.01` (conscience rotation)
+- `--column-pred-lr 1e-3` (predictor Adam LR)
+- `--column-lambda-pred 1.0` (next-frame loss weight)
+- `--column-lambda-state 0.2` (state prediction loss weight)
+- `--column-beta-override 1.0` (predictor bias scaling)
+- `--column-gate-gamma 8.0` (trust gate sharpness)
+- `--column-gate-max 0.25` (max trust gate)
+- `--column-gate-decay 0.95` (prediction error EMA decay)
+- All other params match run 081 (k=2 all-ring, mi=40, cap=40, lateral inputs)
+
+| Metric | Conscience (081) | Override (082) | Override gate=0 (083) |
+|--------|-----------------|----------------|----------------------|
+| Collections | **2284** | killed early | *running* |
+
+Run 082 observation: the model develops consistently repeatable movement
+patterns — a positive sign of learned predictive structure. But the predictive
+head took full control and produced meaningless movements, killing exploration.
+The trust gate opened too easily and the predictor's bias dominated conscience
+output. Killed early.
+
+Run 083: `--column-gate-max 0` control — predictor trains in background but
+gate is clamped to zero so output is pure conscience. Should match baseline
+(2284) if column implementation is correct.
+
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
 
 | Metric | Conscience | Hybrid (pred+recon) | Hybrid (recon only) |

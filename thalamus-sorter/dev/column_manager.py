@@ -1539,7 +1539,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
                  lambda_balance=0.1, lambda_ortho=0.01,
                  lambda_pred=0.1, lambda_now=0.25, lambda_nudge=0.10,
                  state_input_scale=0.5, validation_beta=4.0,
-                 proto_lr=0.05, reseed_after=1000,
+                 proto_lr=None, reseed_after=1000,
                  usage_decay=0.99, **kwargs):
         kwargs.setdefault('loss_mode', 'predictive')
         super().__init__(m, n_outputs, max_inputs, window,
@@ -1552,9 +1552,11 @@ class ConsciencePredictiveColumn(TransformerColumn):
         self.lambda_pred = float(lambda_pred)
         self.lambda_now = float(lambda_now)
         self.lambda_nudge = float(lambda_nudge)
+        # kept only for backward compatibility; conscience head no longer uses it
         self.state_input_scale = float(state_input_scale)
         self.validation_beta = float(validation_beta)
-        self.proto_lr = float(proto_lr)
+        # Match ConscienceColumn by default unless explicitly overridden
+        self.proto_lr = float(self.lr if proto_lr is None else proto_lr)
         self.reseed_after = int(reseed_after)
         self.usage_decay = float(usage_decay)
 
@@ -1576,10 +1578,29 @@ class ConsciencePredictiveColumn(TransformerColumn):
     def _normalize_t(self, x):
         return x / x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
 
-    def _present_descriptor_torch(self, x_gpu):
-        x_now = x_gpu.mean(dim=1)
-        x_now = x_now - x_now.mean(dim=1, keepdim=True)
-        return self._normalize_t(x_now)
+    # ------------------------------------------------------------------
+    # Conscience path: keep this identical in spirit to ConscienceColumn
+    # ------------------------------------------------------------------
+    def _conscience_descriptor_torch(self, x_gpu):
+        """x_gpu: (m, T, d) -> (m, d).
+        Same as ConscienceColumn: mean(window) -> mean subtract -> L2 normalize.
+        """
+        x = x_gpu.mean(dim=1)
+        x = x - x.mean(dim=1, keepdim=True)
+        return self._normalize_t(x)
+
+    def _conscience_descriptor_prefix_torch(self, x_gpu):
+        """x_gpu: (m, T, d) -> (m, T-1, d).
+        Prefix version for training-time per-position routing:
+        mean(frames[:t]) -> mean subtract -> L2 normalize.
+        """
+        csum = x_gpu.cumsum(dim=1)
+        counts = torch.arange(
+            1, x_gpu.shape[1], device=x_gpu.device, dtype=x_gpu.dtype
+        ).view(1, -1, 1)
+        x = csum[:, :-1, :] / counts
+        x = x - x.mean(dim=-1, keepdim=True)
+        return self._normalize_t(x)
 
     def _apply_rotation_torch(self, sim):
         out = sim
@@ -1592,30 +1613,19 @@ class ConsciencePredictiveColumn(TransformerColumn):
             out = out - (tired.unsqueeze(1) if sim.dim() == 3 else tired) * sim_range.clamp(min=1e-8)
         return out
 
-    def _state_from_hidden_torch(self, x_hidden, x_gpu):
-        # Training states for positions 0..T-2
-        x_now_all = x_gpu[:, :-1, :]
-        x_now_all = x_now_all - x_now_all.mean(dim=-1, keepdim=True)
-        x_now_all = self._normalize_t(x_now_all)
-        z_all = self._normalize_t(x_hidden[:, :-1, :])
-        state_all = self._normalize_t(z_all + self.state_input_scale * x_now_all)
-
-        # External output state from full current window
-        x_now_last = self._present_descriptor_torch(x_gpu)
-        z_last = self._normalize_t(x_hidden[:, -1, :])
-        state_last = self._normalize_t(z_last + self.state_input_scale * x_now_last)
-        return state_all, state_last
-
-    def _categorize_state_torch(self, state, apply_rotation=False):
-        """Cosine similarity to prototypes. Rotation only for output, not training."""
+    def _categorize_state_torch(self, state):
+        """Cosine similarity to conscience prototypes. No rotation here."""
         c_n = self._normalize_t(self.cat_embs)
         if state.dim() == 2:
             sim = torch.bmm(state.unsqueeze(1), c_n.transpose(1, 2)).squeeze(1)
         else:
             sim = torch.bmm(state, c_n.transpose(1, 2))
-        scores = self._apply_rotation_torch(sim) if apply_rotation else sim
-        p_state = F.softmax(scores / self.temperature, dim=-1)
-        return sim, scores, p_state, c_n
+        p_state = F.softmax(sim / self.temperature, dim=-1)
+        return sim, p_state, c_n
+
+    def _conscience_scores_torch(self, sim):
+        """Winner selection uses rotated scores, like ConscienceColumn."""
+        return self._apply_rotation_torch(sim)
 
     def _compute_hybrid_loss(self, x_hidden, x_gpu, dev):
         valid_gpu = torch.from_numpy((self.slot_map >= 0).astype(np.float32)).to(dev)
@@ -1623,29 +1633,28 @@ class ConsciencePredictiveColumn(TransformerColumn):
         targets_next = x_gpu[:, 1:, :]
         targets_now = x_gpu[:, :-1, :]
 
-        state_all, _ = self._state_from_hidden_torch(x_hidden, x_gpu)
-        sim_all, scores_all, p_state_all, c_n = self._categorize_state_torch(state_all)
+        # Conscience routing for training uses the same descriptor family as
+        # ConscienceColumn, extended to prefixes only to provide per-position targets.
+        desc_all = self._conscience_descriptor_prefix_torch(x_gpu)
+        sim_all, p_state_all, c_n = self._categorize_state_torch(desc_all)
+        # Keep predictor auxiliary: do not let predictive loss move prototypes directly.
+        p_state_all = p_state_all.detach()
 
         # Per-category prediction of next frame
-        pred_per_cat = torch.einsum('mtd,mkdf->mtkf', state_all, self.W_pred_bank)
+        h_ctx = self._normalize_t(x_hidden[:, :-1, :])
+        pred_per_cat = torch.einsum('mtd,mkdf->mtkf', h_ctx, self.W_pred_bank)
         pred_per_cat = pred_per_cat + self.b_pred_bank[:, None, :, :]
         pred_mix = (p_state_all.unsqueeze(-1) * pred_per_cat).sum(dim=2)
         diff_next = (pred_mix - targets_next) ** 2
         L_pred = (diff_next * valid_gpu.unsqueeze(1)).sum(dim=2).div(n_valid_gpu.unsqueeze(1)).mean()
 
-        # Current-frame reconstruction anchor
-        z_q_all = torch.bmm(p_state_all, c_n)
-        recon_now = torch.bmm(z_q_all, self.W_head) + self.b_head.unsqueeze(1)
+        # Current-frame anchor should also stay independent of prototype logits.
+        recon_now = torch.bmm(h_ctx, self.W_head) + self.b_head.unsqueeze(1)
         diff_now = (recon_now - targets_now) ** 2
         L_now = (diff_now * valid_gpu.unsqueeze(1)).sum(dim=2).div(n_valid_gpu.unsqueeze(1)).mean()
 
-        # Predictive validation nudge
-        err_per_cat = (pred_per_cat - targets_next.unsqueeze(2)) ** 2
-        err_per_cat = (err_per_cat * valid_gpu[:, None, None, :]).sum(dim=-1)
-        err_per_cat = err_per_cat / n_valid_gpu[:, None, None]
-        err_rel = err_per_cat - err_per_cat.min(dim=-1, keepdim=True).values
-        q = F.softmax(torch.log(p_state_all + 1e-10) - self.validation_beta * err_rel.detach(), dim=-1)
-        L_nudge = -(q * torch.log(p_state_all + 1e-10)).sum(dim=-1).mean()
+        # Keep lambda_nudge plumbed, but disable prototype-shaping nudge here.
+        L_nudge = torch.tensor(0.0, device=dev)
 
         # EMA balance
         p_for_balance = p_state_all.mean(dim=1)
@@ -1698,19 +1707,23 @@ class ConsciencePredictiveColumn(TransformerColumn):
 
         with torch.no_grad():
             x_hidden = self._encode_gpu(x_t)
-            _, state_last = self._state_from_hidden_torch(x_hidden, x_t)
-            sim_last, scores_last, p_state_last, c_n = self._categorize_state_torch(state_last, apply_rotation=True)
+            # Conscience path for public output / ecology: plain ConscienceColumn descriptor
+            desc_last = self._conscience_descriptor_torch(x_t)
+            sim_last, p_state_last, c_n = self._categorize_state_torch(desc_last)
+            scores_last = self._conscience_scores_torch(sim_last)
 
             # Per-category prediction from current state
-            pred_per_cat_last = torch.einsum('md,mkdf->mkf', state_last, self.W_pred_bank)
+            h_last = self._normalize_t(x_hidden[:, -1, :])
+            pred_per_cat_last = torch.einsum('md,mkdf->mkf', h_last, self.W_pred_bank)
             pred_per_cat_last = pred_per_cat_last + self.b_pred_bank
             pred_last = (p_state_last.unsqueeze(-1) * pred_per_cat_last).sum(dim=1)
 
             # Hebbian prototype pull + dead-unit recovery
+            # IMPORTANT: use conscience-only winners and conscience-only descriptor
             winners = scores_last.argmax(dim=1).cpu().numpy()
             ar = torch.arange(self.m, device=dev)
             w_proto = self.cat_embs[ar, winners]
-            new_proto = (1.0 - self.proto_lr) * w_proto + self.proto_lr * state_last
+            new_proto = (1.0 - self.proto_lr) * w_proto + self.proto_lr * desc_last
             self.cat_embs[ar, winners] = self._normalize_t(new_proto)
 
             self.last_won[self._arange_m, winners] = self._tick_count
@@ -1718,18 +1731,18 @@ class ConsciencePredictiveColumn(TransformerColumn):
                 dead_ticks = self._tick_count - self.last_won
                 dead_cols, dead_outs = np.where(dead_ticks > self.reseed_after)
                 if len(dead_cols) > 0:
-                    self.cat_embs[dead_cols, dead_outs] = state_last[dead_cols]
+                    self.cat_embs[dead_cols, dead_outs] = desc_last[dead_cols]
                     self.last_won[dead_cols, dead_outs] = self._tick_count
 
-            # Output with rotation
-            sim_np = sim_last.cpu().numpy().astype(np.float32)
-            sim_np = self.apply_output_rotation(sim_np)
-            sim_scaled = sim_np / self.temperature
+            # Public output must match ConscienceColumn semantics:
+            # softmax(raw similarities), not softmax(rotated scores)
+            logits_np = sim_last.cpu().numpy().astype(np.float32)
+            sim_scaled = logits_np / self.temperature
             sim_scaled -= sim_scaled.max(axis=1, keepdims=True)
             e = np.exp(sim_scaled)
             p_out = (e / e.sum(axis=1, keepdims=True)).astype(np.float32)
 
-        self.update_output_rotation(p_out.argmax(axis=1))
+        self.update_output_rotation(winners)
         y = np.zeros((self.m, self.n_outputs), dtype=np.float32)
         y[self._arange_m, winners] = 1.0
         self.usage = self.usage * self.usage_decay + y * (1.0 - self.usage_decay)
@@ -1750,7 +1763,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
             'lambda_ortho': self.lambda_ortho, 'lambda_now': self.lambda_now,
             'lambda_pred': self.lambda_pred,
             'lambda_nudge': self.lambda_nudge,
-            'state_input_scale': self.state_input_scale,
+            'state_input_scale': self.state_input_scale,  # backward compatibility only
             'validation_beta': self.validation_beta,
             'proto_lr': self.proto_lr, 'reseed_after': self.reseed_after,
             'usage_decay': self.usage_decay,
@@ -1759,7 +1772,7 @@ class ConsciencePredictiveColumn(TransformerColumn):
             '_prev_prediction': torch.from_numpy(self._prev_prediction),
             '_usage_ema': torch.from_numpy(self._usage_ema),
             'usage': torch.from_numpy(self.usage),
-            'last_won': torch.from_numpy(self.last_won.astype(np.float32)),
+            'last_won': torch.from_numpy(self.last_won.astype(np.int64)),
         }
         state.update(self.save_rotation_state())
         for i, name in enumerate(self._param_names):

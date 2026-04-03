@@ -128,6 +128,30 @@ class ClusterManager:
                     wta_mode=column_config.get('wta_mode', 'none'),
                     lateral_inputs=column_config.get('lateral_inputs', False),
                     lateral_input_k=column_config.get('lateral_input_k', 4))
+            elif column_type == 'conscience_override':
+                from conscience_with_predictive_override_column import ConscienceWithPredictiveOverrideColumn
+                self.column_mgr = ConscienceWithPredictiveOverrideColumn(
+                    m,
+                    n_outputs=column_config.get('n_outputs', 4),
+                    max_inputs=column_config.get('max_inputs', 20),
+                    window=column_config.get('window', 10),
+                    lr=column_config.get('lr', 0.05),
+                    pred_lr=column_config.get('pred_lr', 1e-3),
+                    alpha=column_config.get('alpha', 0.01),
+                    temperature=column_config.get('temperature', 0.5),
+                    n_heads=column_config.get('n_heads', 2),
+                    reseed_after=column_config.get('reseed_after', 1000),
+                    lambda_pred=column_config.get('lambda_pred', 1.0),
+                    lambda_state=column_config.get('lambda_state', 0.2),
+                    beta_override=column_config.get('beta_override', 1.0),
+                    gate_gamma=column_config.get('gate_gamma', 8.0),
+                    gate_max=column_config.get('gate_max', 0.25),
+                    gate_decay=column_config.get('gate_decay', 0.95),
+                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
+                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+                    wta_mode=column_config.get('wta_mode', 'none'),
+                    lateral_inputs=column_config.get('lateral_inputs', False),
+                    lateral_input_k=column_config.get('lateral_input_k', 4))
             elif column_type == 'predictive':
                 from column_manager import PredictiveColumn
                 self.column_mgr = PredictiveColumn(

@@ -540,6 +540,13 @@ def run_word2vec(args):
                 'lateral_input_k': getattr(args, 'lateral_input_k', 4),
                 'eligibility': getattr(args, 'eligibility', False),
                 'trace_decay': getattr(args, 'trace_decay', 0.95),
+                'pred_lr': getattr(args, 'column_pred_lr', 1e-3),
+                'lambda_pred': getattr(args, 'column_lambda_pred', 1.0),
+                'lambda_state': getattr(args, 'column_lambda_state', 0.2),
+                'beta_override': getattr(args, 'column_beta_override', 1.0),
+                'gate_gamma': getattr(args, 'column_gate_gamma', 8.0),
+                'gate_max': getattr(args, 'column_gate_max', 0.25),
+                'gate_decay': getattr(args, 'column_gate_decay', 0.95),
             } if column_outputs > 0 else None
             cluster_mgr = ClusterManager(
                 n, cluster_m, w, h, k2=cluster_k2,
@@ -903,7 +910,7 @@ def main():
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # column wiring (thalamus-to-cortex)
     p_w2v.add_argument("--column-type", type=str, default="default",
-                       help="Column type: 'default', 'conscience', 'predictive', 'recon', 'conscience_predictive' (hybrid)")
+                       help="Column type: 'default', 'conscience', 'predictive', 'recon', 'conscience_predictive', 'conscience_override'")
     p_w2v.add_argument("--column-outputs", type=int, default=4,
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
@@ -936,6 +943,20 @@ def main():
                        help="Predictive validation nudge weight for conscience_predictive (default: 0.10)")
     p_w2v.add_argument("--column-train-every", type=int, default=10,
                        help="Train predictive column every N ticks (default: 10, inference-only otherwise)")
+    p_w2v.add_argument("--column-pred-lr", type=float, default=1e-3,
+                       help="Predictor learning rate for conscience_override (default: 1e-3)")
+    p_w2v.add_argument("--column-lambda-pred", type=float, default=1.0,
+                       help="Next-frame prediction loss weight for conscience_override (default: 1.0)")
+    p_w2v.add_argument("--column-lambda-state", type=float, default=0.2,
+                       help="State prediction loss weight for conscience_override (default: 0.2)")
+    p_w2v.add_argument("--column-beta-override", type=float, default=1.0,
+                       help="Predictor bias scaling for conscience_override (default: 1.0)")
+    p_w2v.add_argument("--column-gate-gamma", type=float, default=8.0,
+                       help="Trust gate sharpness for conscience_override (default: 8.0)")
+    p_w2v.add_argument("--column-gate-max", type=float, default=0.25,
+                       help="Max trust gate value for conscience_override (default: 0.25)")
+    p_w2v.add_argument("--column-gate-decay", type=float, default=0.95,
+                       help="Prediction error EMA decay for conscience_override (default: 0.95)")
     p_w2v.add_argument("--column-wta", type=str, default="none",
                        choices=["none", "soft", "hard", "confidence"],
                        help="Column WTA mode: 'none' (raw softmax), 'soft' (sharpened), 'hard' (one-hot), 'confidence' (scaled by decisiveness)")
