@@ -408,7 +408,7 @@ def make_signal(w, h, args):
         # Predictor LR modulation: full=learn, hungry=explore
         col_mgr = _refs.get('column_mgr')
         if col_mgr is not None and hasattr(col_mgr, 'set_pred_lr_scale'):
-            col_mgr.set_pred_lr_scale(1.0 - hunger)
+            col_mgr.set_pred_lr_scale(hunger)
 
         # Live LR control from field viz (background thread polls, we just read)
         if t % 100 == 0 and _ctrl_values:

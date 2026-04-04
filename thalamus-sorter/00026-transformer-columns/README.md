@@ -443,6 +443,11 @@ Run 091 (γ=2, gmax=1.0): 2478 — slightly worse. Uncapped gate freezes too
 hard (14K jumps, stability 0.991). The gmax=0.25 cap is helpful — prevents
 total predictor takeover while still allowing useful bias.
 
+Run 093 (γ=2, hunger-modulated pred LR): 2250 — worse than constant LR.
+Predictor learns fastest during hunger (when it should explore), freezing
+the system at the wrong time. Constant pred LR with γ=2 gmax=0.25 (run 090)
+remains the best override config at 2494.
+
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
 
 | Metric | Conscience | Hybrid (pred+recon) | Hybrid (recon only) |
