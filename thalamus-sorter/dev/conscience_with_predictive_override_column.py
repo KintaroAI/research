@@ -161,6 +161,7 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
         # ------------------------------------------------------------------
         self._tick_count = 0
         self._learn_prob = 1.0
+        self._external_lr_scale = 1.0
         self._rng = np.random.RandomState(42)
         self._prev_prediction = np.zeros((m, self.d_model), dtype=np.float32)
         self._surprise = np.zeros(m, dtype=np.float32)
@@ -275,6 +276,7 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
             uncertainty = 1.0 - float(np.clip(self._gate.mean() / self.gate_max, 0.0, 1.0))
         scale = 1.0 + self.pred_lr_gain * uncertainty
         scale = float(np.clip(scale, 1.0, self.pred_lr_scale_max))
+        scale *= self._external_lr_scale
         for group in self._optimizer.param_groups:
             group['lr'] = self.pred_lr * scale
 
@@ -407,10 +409,8 @@ class ConscienceWithPredictiveOverrideColumn(ColumnBase):
         self._learn_prob = float(value)
 
     def set_pred_lr_scale(self, scale):
-        """Scale predictor LR relative to base pred_lr. Called externally (e.g. by forage hunger)."""
-        s = float(np.clip(scale, 0.0, self.pred_lr_scale_max))
-        for group in self._optimizer.param_groups:
-            group['lr'] = self.pred_lr * s
+        """Set external LR scale factor. Composed with internal adaptive scale in _set_optimizer_lr."""
+        self._external_lr_scale = float(np.clip(scale, 0.0, self.pred_lr_scale_max))
 
     # ------------------------------------------------------------------
     # Persistence

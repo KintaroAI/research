@@ -405,10 +405,10 @@ def make_signal(w, h, args):
         #     if base_alpha[0] > 0:
         #         col_mgr.alpha = base_alpha[0] * hunger
 
-        # Predictor LR modulation (disabled — testing constant LR first)
-        # col_mgr = _refs.get('column_mgr')
-        # if col_mgr is not None and hasattr(col_mgr, 'set_pred_lr_scale'):
-        #     col_mgr.set_pred_lr_scale(1.0 - hunger)  # full=learn, hungry=explore
+        # Predictor LR modulation: full=learn, hungry=explore
+        col_mgr = _refs.get('column_mgr')
+        if col_mgr is not None and hasattr(col_mgr, 'set_pred_lr_scale'):
+            col_mgr.set_pred_lr_scale(1.0 - hunger)
 
         # Live LR control from field viz (background thread polls, we just read)
         if t % 100 == 0 and _ctrl_values:

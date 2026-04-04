@@ -423,24 +423,25 @@ Run 082 parameters:
 - `--column-gate-decay 0.95` (prediction error EMA decay)
 - All other params match run 081 (k=2 all-ring, mi=40, cap=40, lateral inputs)
 
-| Metric | Conscience (081) | Override γ=8 (089) | Override γ=2 (090) |
-|--------|-----------------|-------------------|-------------------|
-| **Collections** | 2284 | ~2284 (gate stuck) | **2494** |
-| Clusters alive | 80/400 | — | 79/400 |
-| Total jumps | 41.4M | — | 57K |
-| Total switches | 5.4M | — | 12K |
-| Stability | 0.129 | — | 0.965 |
-| Contiguity | 0.669 | — | 0.741 |
+| Metric | Conscience (081) | γ=8 (089) | γ=2 gmax=0.25 (090) | γ=2 gmax=1.0 (091) |
+|--------|-----------------|-----------|---------------------|---------------------|
+| **Collections** | 2284 | ~2284 | **2494** | 2478 |
+| Clusters alive | 80/400 | — | 79/400 | 86/400 |
+| Total jumps | 41.4M | — | 57K | 14K |
+| Total switches | 5.4M | — | 12K | 2.6K |
+| Stability | 0.129 | — | 0.965 | 0.991 |
+| Contiguity | 0.669 | — | 0.741 | 0.750 |
 
 Run 089 (γ=8, defaults): gate never opens — `exp(-8 * err)` ≈ 0 unless error
 is near zero. Effectively pure conscience. No visible predictor influence.
 
-Run 090 (γ=2): **new best 2494 collections (+9%)**. Completely different regime:
-predictor stabilized clusters early (57K total jumps vs 41M), stability 0.965.
-System exploits learned movement patterns instead of random exploration. Most
-jumps happen in first 25K ticks, then clusters freeze and the agent follows
-predictive paths for the remaining 975K ticks — collecting more food with less
-exploration. Exploit beats explore.
+Run 090 (γ=2, gmax=0.25): **new best 2494 collections (+9%)**. Predictor
+stabilized clusters early (57K jumps vs 41M), stability 0.965. System exploits
+learned movement patterns. Exploit beats explore.
+
+Run 091 (γ=2, gmax=1.0): 2478 — slightly worse. Uncapped gate freezes too
+hard (14K jumps, stability 0.991). The gmax=0.25 cap is helpful — prevents
+total predictor takeover while still allowing useful bias.
 
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
 
