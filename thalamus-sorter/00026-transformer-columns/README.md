@@ -423,22 +423,24 @@ Run 082 parameters:
 - `--column-gate-decay 0.95` (prediction error EMA decay)
 - All other params match run 081 (k=2 all-ring, mi=40, cap=40, lateral inputs)
 
-| Metric | Conscience (081) | Override (082) | Override (085) |
-|--------|-----------------|----------------|----------------|
-| Collections | **2284** | killed early | *running* |
+| Metric | Conscience (081) | Override γ=8 (089) | Override γ=2 (090) |
+|--------|-----------------|-------------------|-------------------|
+| **Collections** | 2284 | ~2284 (gate stuck) | **2494** |
+| Clusters alive | 80/400 | — | 79/400 |
+| Total jumps | 41.4M | — | 57K |
+| Total switches | 5.4M | — | 12K |
+| Stability | 0.129 | — | 0.965 |
+| Contiguity | 0.669 | — | 0.741 |
 
-Run 082: the model develops consistently repeatable movement patterns — a
-positive sign of learned predictive structure. But the predictor dominated
-conscience output, killing exploration. Killed early.
+Run 089 (γ=8, defaults): gate never opens — `exp(-8 * err)` ≈ 0 unless error
+is near zero. Effectively pure conscience. No visible predictor influence.
 
-Run 085: same params as 082 (default gate_max=0.25). Repeatable movement
-patterns still present, which is good — the predictor is learning temporal
-structure. But overall collection performance is hurt. The predictor's base
-LR (1e-3 Adam) may be too high, letting it converge fast and override
-conscience too aggressively. Options to try:
-- Lower predictor LR: `--column-pred-lr 1e-4` (slow down convergence)
-- Lower bias scaling: `--column-beta-override 0.1` (reduce predictor influence)
-- Both together for maximum restraint
+Run 090 (γ=2): **new best 2494 collections (+9%)**. Completely different regime:
+predictor stabilized clusters early (57K total jumps vs 41M), stability 0.965.
+System exploits learned movement patterns instead of random exploration. Most
+jumps happen in first 25K ticks, then clusters freeze and the agent follows
+predictive paths for the remaining 975K ticks — collecting more food with less
+exploration. Exploit beats explore.
 
 ### Forage: hybrid column comparison (1M ticks, 14×14, m=400)
 
