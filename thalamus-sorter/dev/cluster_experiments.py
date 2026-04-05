@@ -24,6 +24,16 @@ except ImportError:
     HAS_TORCH = False
 
 
+def _compute_sizes(cluster_ids, m, pointers=None, wire_all_ring=True):
+    """Count wired neurons per cluster."""
+    if wire_all_ring:
+        valid = cluster_ids[cluster_ids >= 0].ravel()
+    else:
+        primary = cluster_ids[np.arange(cluster_ids.shape[0]), pointers]
+        valid = primary[primary >= 0]
+    return np.bincount(valid, minlength=m).astype(np.int64) if len(valid) > 0 else np.zeros(m, dtype=np.int64)
+
+
 # ---------------------------------------------------------------------------
 # GPU-accelerated core functions (torch)
 # ---------------------------------------------------------------------------
@@ -126,7 +136,8 @@ if HAS_TORCH:
                                     hysteresis=0.0, knn2_is_neurons=False,
                                     centroid_mode='nudge', pointers=None,
                                     last_used=None, tick=0,
-                                    jump_counts=None):
+                                    jump_counts=None,
+                                    wire_all_ring=True):
         """Reference (scalar) streaming update — kept for verification.
         centroid_mode: 'exact' = incremental arithmetic (centroid snaps to true mean),
                        'nudge' = post-loop lr nudge (centroid drifts slowly).
@@ -146,10 +157,7 @@ if HAS_TORCH:
         if last_used is None:
             last_used = np.zeros((n, max_k), dtype=np.int64)
         if sizes is None:
-            # Sizes count primary memberships only
-            primary = cluster_ids[np.arange(n), pointers]
-            valid = primary[primary >= 0]
-            sizes = np.bincount(valid, minlength=m) if len(valid) > 0 else np.zeros(m, dtype=np.int64)
+            sizes = _compute_sizes(cluster_ids, m, pointers, wire_all_ring)
         if rng is None:
             rng = np.random.RandomState()
 
@@ -243,16 +251,25 @@ if HAS_TORCH:
                 pointers[anchor] = lru_slot
                 wiring_events.append((int(anchor), evicted, int(best)))
 
-            sizes[primary] -= 1
-            sizes[best] += 1
-            affected.add(primary)
-            affected.add(best)
             if in_ring:
+                if not wire_all_ring:
+                    sizes[primary] -= 1
+                    sizes[best] += 1
+                # wire_all_ring: neuron already wired to both, no size change
                 n_switches += 1
             else:
+                # Out-of-ring: evicted cluster loses a wiring, best gains one
+                if wire_all_ring:
+                    if evicted >= 0:
+                        sizes[evicted] -= 1
+                else:
+                    sizes[primary] -= 1
+                sizes[best] += 1
                 n_reassigned += 1
                 if jump_counts is not None:
                     jump_counts[anchor] += 1
+            affected.add(primary)
+            affected.add(best)
 
         # Update centroids for affected clusters
         if affected:
@@ -281,7 +298,8 @@ if HAS_TORCH:
                                 last_used=None, tick=0,
                                 jump_counts=None,
                                 max_cluster_size=0,
-                                cluster_swap=True):
+                                cluster_swap=True,
+                                wire_all_ring=True):
         """Vectorized streaming update: batch distance computation, thin apply loop.
 
         Same interface and results as streaming_update_v3_gpu_ref but ~10x faster
@@ -302,9 +320,7 @@ if HAS_TORCH:
         if last_used is None:
             last_used = np.zeros((n, max_k), dtype=np.int64)
         if sizes is None:
-            primary = cluster_ids[np.arange(n), pointers]
-            valid = primary[primary >= 0]
-            sizes = np.bincount(valid, minlength=m) if len(valid) > 0 else np.zeros(m, dtype=np.int64)
+            sizes = _compute_sizes(cluster_ids, m, pointers, wire_all_ring)
         if rng is None:
             rng = np.random.RandomState()
 
@@ -331,7 +347,8 @@ if HAS_TORCH:
                 anchors, lr=lr, sizes=sizes, min_size=min_size, rng=rng,
                 hysteresis=hysteresis, knn2_is_neurons=True,
                 centroid_mode=centroid_mode, pointers=pointers,
-                last_used=last_used, tick=tick, jump_counts=jump_counts)
+                last_used=last_used, tick=tick, jump_counts=jump_counts,
+                wire_all_ring=wire_all_ring)
 
         # --- Batch phase: compute all decisions at once ---
 
@@ -447,7 +464,11 @@ if HAS_TORCH:
                     last_used[swap_neuron, lru_slot_y] = tick
                     pointers[swap_neuron] = lru_slot_y
                     wiring_events.append((swap_neuron, evicted_y, primary))
-                    sizes[best] -= 1
+                    if wire_all_ring:
+                        if evicted_y >= 0:
+                            sizes[evicted_y] -= 1
+                    else:
+                        sizes[best] -= 1
                     sizes[primary] += 1
                     affected.add(best)
                     affected.add(primary)
@@ -470,16 +491,25 @@ if HAS_TORCH:
                 pointers[anchor] = lru_slot
                 wiring_events.append((anchor, evicted, best))
 
-            sizes[primary] -= 1
-            sizes[best] += 1
-            affected.add(primary)
-            affected.add(best)
             if in_ring:
+                if not wire_all_ring:
+                    sizes[primary] -= 1
+                    sizes[best] += 1
+                # wire_all_ring: neuron already wired to both, no size change
                 n_switches += 1
             else:
+                # Out-of-ring: evicted cluster loses a wiring, best gains one
+                if wire_all_ring:
+                    if evicted >= 0:
+                        sizes[evicted] -= 1
+                else:
+                    sizes[primary] -= 1
+                sizes[best] += 1
                 n_reassigned += 1
                 if jump_counts is not None:
                     jump_counts[anchor] += 1
+            affected.add(primary)
+            affected.add(best)
 
         # --- Post-loop centroid nudge (unchanged) ---
         if affected:
@@ -502,7 +532,8 @@ if HAS_TORCH:
 
     def split_largest_cluster_gpu(embeddings_t, centroids_t, cluster_ids, sizes, m,
                                   n_splits=1, seed=None, pointers=None,
-                                  last_used=None, tick=0):
+                                  last_used=None, tick=0,
+                                  wire_all_ring=True):
         """Split largest cluster(s) on GPU. Returns (splits_done, wiring_events)."""
         rng = np.random.RandomState(seed)
         max_k = cluster_ids.shape[1]
@@ -518,9 +549,11 @@ if HAS_TORCH:
             if len(empty) == 0:
                 break
             largest = np.argmax(sizes)
-            # Members by primary (not any-ring)
-            most_recent = cluster_ids[np.arange(cluster_ids.shape[0]), pointers]
-            members = np.where(most_recent == largest)[0]
+            if wire_all_ring:
+                members = np.where((cluster_ids == largest).any(axis=1))[0]
+            else:
+                most_recent = cluster_ids[np.arange(cluster_ids.shape[0]), pointers]
+                members = np.where(most_recent == largest)[0]
             if len(members) < 2:
                 break
 
@@ -550,10 +583,10 @@ if HAS_TORCH:
                 continue
 
             # Replace largest with dead in-place, point to dead slot
-            # Sizes track primary: each neuron moves primary from largest to dead
             for neuron in half1:
                 row = cluster_ids[neuron]
                 wrote_dead = False
+                n_evicted = 0
                 for s in range(max_k):
                     if row[s] == largest:
                         if not wrote_dead:
@@ -564,8 +597,13 @@ if HAS_TORCH:
                         else:
                             row[s] = -1
                             last_used[neuron, s] = 0
-                sizes[largest] -= 1
-                sizes[dead] += 1
+                        n_evicted += 1
+                if wire_all_ring:
+                    sizes[largest] -= n_evicted
+                    sizes[dead] += 1
+                else:
+                    sizes[largest] -= 1
+                    sizes[dead] += 1
                 wiring_events.append((int(neuron), int(largest), int(dead)))
             centroids_t[largest] = member_emb[assign_cpu == 0].mean(dim=0)
             centroids_t[dead] = member_emb[assign_cpu == 1].mean(dim=0)

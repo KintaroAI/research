@@ -8,6 +8,151 @@ import os
 import numpy as np
 
 
+def create_column(column_type, column_config):
+    """Factory for column managers. Used by ClusterManager and benchmarks."""
+    m = column_config.get('m')
+    if column_type == 'conscience':
+        from column_manager import ConscienceColumn
+        return ConscienceColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 4),
+            lr=column_config.get('lr', 0.05),
+            alpha=column_config.get('alpha', 0.01),
+            temperature=column_config.get('temperature', 0.5),
+            reseed_after=column_config.get('reseed_after', 1000),
+            wta_mode=column_config.get('wta_mode', 'none'),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
+    elif column_type == 'recon':
+        from column_manager import ReconColumn
+        return ReconColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 10),
+            lr=column_config.get('lr', 1e-3),
+            temperature=column_config.get('temperature', 0.5),
+            n_heads=column_config.get('n_heads', 2),
+            lambda_sharp=column_config.get('lambda_sharp', 0.01),
+            lambda_balance=column_config.get('lambda_balance', 0.1),
+            lambda_ortho=column_config.get('lambda_ortho', 0.01),
+            alpha=column_config.get('alpha', 0.0),
+            tiredness_rate=column_config.get('tiredness_rate', 0.0),
+            tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+            wta_mode=column_config.get('wta_mode', 'none'),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
+    elif column_type == 'conscience_predictive':
+        from column_manager import ConsciencePredictiveColumn
+        return ConsciencePredictiveColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 10),
+            lr=column_config.get('lr', 1e-3),
+            temperature=column_config.get('temperature', 1.5),
+            n_heads=column_config.get('n_heads', 2),
+            lambda_balance=column_config.get('lambda_balance', 0.1),
+            lambda_ortho=column_config.get('lambda_ortho', 0.01),
+            lambda_now=column_config.get('lambda_now', 0.25),
+            lambda_nudge=column_config.get('lambda_nudge', 0.10),
+            alpha=column_config.get('alpha', 0.01),
+            tiredness_rate=column_config.get('tiredness_rate', 0.0),
+            tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+            wta_mode=column_config.get('wta_mode', 'none'),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
+    elif column_type == 'conscience_homeostatic_fatigue':
+        from conscience_homeostatic_fatigue_column import ConscienceHomeostaticFatigueColumn
+        return ConscienceHomeostaticFatigueColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 4),
+            lr=column_config.get('lr', 0.05),
+            temperature=column_config.get('temperature', 0.45),
+            k_active=column_config.get('k_active', 2),
+            homeostasis_rate=column_config.get('homeostasis_rate', 0.02),
+            fatigue_decay=column_config.get('fatigue_decay', 0.90),
+            fatigue_rate=column_config.get('fatigue_rate', 0.75),
+            fatigue_strength=column_config.get('fatigue_strength', 1.0),
+            reseed_after=column_config.get('reseed_after', 1000),
+            wta_mode=column_config.get('wta_mode', 'none'),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
+    elif column_type == 'conscience_override':
+        from conscience_with_predictive_override_column import ConscienceWithPredictiveOverrideColumn
+        return ConscienceWithPredictiveOverrideColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 10),
+            lr=column_config.get('lr', 0.05),
+            pred_lr=column_config.get('pred_lr', 1e-3),
+            alpha=column_config.get('alpha', 0.01),
+            temperature=column_config.get('temperature', 0.5),
+            n_heads=column_config.get('n_heads', 2),
+            reseed_after=column_config.get('reseed_after', 1000),
+            lambda_pred=column_config.get('lambda_pred', 1.0),
+            lambda_state=column_config.get('lambda_state', 0.2),
+            beta_override=column_config.get('beta_override', 1.0),
+            gate_gamma=column_config.get('gate_gamma', 8.0),
+            gate_max=column_config.get('gate_max', 0.25),
+            gate_decay=column_config.get('gate_decay', 0.95),
+            tiredness_rate=column_config.get('tiredness_rate', 0.0),
+            tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+            wta_mode=column_config.get('wta_mode', 'none'),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
+    elif column_type == 'predictive':
+        from column_manager import PredictiveColumn
+        return PredictiveColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 10),
+            lr=column_config.get('lr', 1e-3),
+            temperature=column_config.get('temperature', 0.5),
+            n_heads=column_config.get('n_heads', 2),
+            lambda_sharp=column_config.get('lambda_sharp', 0.01),
+            lambda_balance=column_config.get('lambda_balance', 0.1),
+            lambda_ortho=column_config.get('lambda_ortho', 0.01),
+            train_every=column_config.get('train_every', 10),
+            alpha=column_config.get('alpha', 0.0),
+            tiredness_rate=column_config.get('tiredness_rate', 0.0),
+            tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
+            wta_mode=column_config.get('wta_mode', 'none'),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
+    else:
+        from column_manager import ColumnManager
+        return ColumnManager(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 4),
+            temperature=column_config.get('temperature', 0.5),
+            lr=column_config.get('lr', 0.05),
+            match_threshold=column_config.get('match_threshold', 0.1),
+            streaming_decay=column_config.get('streaming_decay', 0.5),
+            lateral=column_config.get('lateral', False),
+            lateral_k=column_config.get('lateral_k', 6),
+            eligibility=column_config.get('eligibility', False),
+            trace_decay=column_config.get('trace_decay', 0.95),
+            mode=column_config.get('mode', 'kmeans'),
+            confidence_gating=column_config.get('confidence_gating', False),
+            confidence_floor=column_config.get('confidence_floor', 0.3),
+            tiredness_rate=column_config.get('tiredness_rate', 0.0),
+            tiredness_recovery=column_config.get('tiredness_recovery', 0.0005),
+            entropy_scaled_lr=column_config.get('entropy_scaled_lr', True),
+            lateral_mode=column_config.get('lateral_mode', 'covariance'),
+            reward_lr=column_config.get('reward_lr', 0.01),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
+
+
 class ClusterManager:
     """Live streaming cluster maintenance during training."""
 
@@ -18,12 +163,13 @@ class ClusterManager:
                  column_config=None, renderer=None,
                  output_dir=None, wlog=None,
                  max_cluster_size=0, cluster_swap=True,
-                 skip_init_wiring=False):
+                 skip_init_wiring=False, wire_all_ring=True):
         import torch
         from cluster_experiments import (
             kmeans_cluster_gpu, _assign_clusters_gpu,
             streaming_update_v3_gpu, split_largest_cluster_gpu,
             visualize_clusters, visualize_clusters_signal, eval_clusters,
+            _compute_sizes,
         )
         self.n, self.m, self.w, self.h = n, m, w, h
         self.n_sensory = n_sensory if n_sensory is not None else n
@@ -37,6 +183,7 @@ class ClusterManager:
         self.max_cluster_size = max_cluster_size
         self.cluster_swap = cluster_swap
         self._skip_init_wiring = skip_init_wiring
+        self.wire_all_ring = wire_all_ring
         self.max_k = max_k
         self.output_dir = output_dir
         self.initialized = False
@@ -50,6 +197,7 @@ class ClusterManager:
         self._visualize = visualize_clusters
         self._visualize_signal = visualize_clusters_signal
         self._eval = eval_clusters
+        self._compute_sizes = _compute_sizes
         self.render_mode = render_mode  # 'color', 'signal', 'both'
         self._signals = None
         self._signal_T = 0
@@ -75,128 +223,8 @@ class ClusterManager:
         if column_config is not None and column_config.get('n_outputs', 0) > 0:
             self.column_n_outputs = column_config['n_outputs']
             column_type = column_config.get('type', 'default')
-            if column_type == 'conscience':
-                from column_manager import ConscienceColumn
-                self.column_mgr = ConscienceColumn(
-                    m,
-                    n_outputs=column_config.get('n_outputs', 4),
-                    max_inputs=column_config.get('max_inputs', 20),
-                    window=column_config.get('window', 4),
-                    lr=column_config.get('lr', 0.05),
-                    alpha=column_config.get('alpha', 0.01),
-                    temperature=column_config.get('temperature', 0.5),
-                    reseed_after=column_config.get('reseed_after', 1000),
-                    wta_mode=column_config.get('wta_mode', 'none'),
-                    lateral_inputs=column_config.get('lateral_inputs', False),
-                    lateral_input_k=column_config.get('lateral_input_k', 4))
-            elif column_type == 'recon':
-                from column_manager import ReconColumn
-                self.column_mgr = ReconColumn(
-                    m,
-                    n_outputs=column_config.get('n_outputs', 4),
-                    max_inputs=column_config.get('max_inputs', 20),
-                    window=column_config.get('window', 10),
-                    lr=column_config.get('lr', 1e-3),
-                    temperature=column_config.get('temperature', 0.5),
-                    n_heads=column_config.get('n_heads', 2),
-                    lambda_sharp=column_config.get('lambda_sharp', 0.01),
-                    lambda_balance=column_config.get('lambda_balance', 0.1),
-                    lambda_ortho=column_config.get('lambda_ortho', 0.01),
-                    alpha=column_config.get('alpha', 0.0),
-                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
-                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
-                    wta_mode=column_config.get('wta_mode', 'none'),
-                    lateral_inputs=column_config.get('lateral_inputs', False),
-                    lateral_input_k=column_config.get('lateral_input_k', 4))
-            elif column_type == 'conscience_predictive':
-                from column_manager import ConsciencePredictiveColumn
-                self.column_mgr = ConsciencePredictiveColumn(
-                    m,
-                    n_outputs=column_config.get('n_outputs', 4),
-                    max_inputs=column_config.get('max_inputs', 20),
-                    window=column_config.get('window', 10),
-                    lr=column_config.get('lr', 1e-3),
-                    temperature=column_config.get('temperature', 1.5),
-                    n_heads=column_config.get('n_heads', 2),
-                    lambda_balance=column_config.get('lambda_balance', 0.1),
-                    lambda_ortho=column_config.get('lambda_ortho', 0.01),
-                    lambda_now=column_config.get('lambda_now', 0.25),
-                    lambda_nudge=column_config.get('lambda_nudge', 0.10),
-                    alpha=column_config.get('alpha', 0.01),
-                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
-                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
-                    wta_mode=column_config.get('wta_mode', 'none'),
-                    lateral_inputs=column_config.get('lateral_inputs', False),
-                    lateral_input_k=column_config.get('lateral_input_k', 4))
-            elif column_type == 'conscience_override':
-                from conscience_with_predictive_override_column import ConscienceWithPredictiveOverrideColumn
-                self.column_mgr = ConscienceWithPredictiveOverrideColumn(
-                    m,
-                    n_outputs=column_config.get('n_outputs', 4),
-                    max_inputs=column_config.get('max_inputs', 20),
-                    window=column_config.get('window', 10),
-                    lr=column_config.get('lr', 0.05),
-                    pred_lr=column_config.get('pred_lr', 1e-3),
-                    alpha=column_config.get('alpha', 0.01),
-                    temperature=column_config.get('temperature', 0.5),
-                    n_heads=column_config.get('n_heads', 2),
-                    reseed_after=column_config.get('reseed_after', 1000),
-                    lambda_pred=column_config.get('lambda_pred', 1.0),
-                    lambda_state=column_config.get('lambda_state', 0.2),
-                    beta_override=column_config.get('beta_override', 1.0),
-                    gate_gamma=column_config.get('gate_gamma', 8.0),
-                    gate_max=column_config.get('gate_max', 0.25),
-                    gate_decay=column_config.get('gate_decay', 0.95),
-                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
-                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
-                    wta_mode=column_config.get('wta_mode', 'none'),
-                    lateral_inputs=column_config.get('lateral_inputs', False),
-                    lateral_input_k=column_config.get('lateral_input_k', 4))
-            elif column_type == 'predictive':
-                from column_manager import PredictiveColumn
-                self.column_mgr = PredictiveColumn(
-                    m,
-                    n_outputs=column_config.get('n_outputs', 4),
-                    max_inputs=column_config.get('max_inputs', 20),
-                    window=column_config.get('window', 10),
-                    lr=column_config.get('lr', 1e-3),
-                    temperature=column_config.get('temperature', 0.5),
-                    n_heads=column_config.get('n_heads', 2),
-                    lambda_sharp=column_config.get('lambda_sharp', 0.01),
-                    lambda_balance=column_config.get('lambda_balance', 0.1),
-                    lambda_ortho=column_config.get('lambda_ortho', 0.01),
-                    train_every=column_config.get('train_every', 10),
-                    alpha=column_config.get('alpha', 0.0),
-                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
-                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0),
-                    wta_mode=column_config.get('wta_mode', 'none'),
-                    lateral_inputs=column_config.get('lateral_inputs', False),
-                    lateral_input_k=column_config.get('lateral_input_k', 4))
-            else:
-                from column_manager import ColumnManager
-                self.column_mgr = ColumnManager(
-                    m,
-                    n_outputs=column_config.get('n_outputs', 4),
-                    max_inputs=column_config.get('max_inputs', 20),
-                    window=column_config.get('window', 4),
-                    temperature=column_config.get('temperature', 0.5),
-                    lr=column_config.get('lr', 0.05),
-                    match_threshold=column_config.get('match_threshold', 0.1),
-                    streaming_decay=column_config.get('streaming_decay', 0.5),
-                    lateral=column_config.get('lateral', False),
-                    lateral_k=column_config.get('lateral_k', 6),
-                    eligibility=column_config.get('eligibility', False),
-                    trace_decay=column_config.get('trace_decay', 0.95),
-                    mode=column_config.get('mode', 'kmeans'),
-                    confidence_gating=column_config.get('confidence_gating', False),
-                    confidence_floor=column_config.get('confidence_floor', 0.3),
-                    tiredness_rate=column_config.get('tiredness_rate', 0.0),
-                    tiredness_recovery=column_config.get('tiredness_recovery', 0.0005),
-                    entropy_scaled_lr=column_config.get('entropy_scaled_lr', True),
-                    lateral_mode=column_config.get('lateral_mode', 'covariance'),
-                    reward_lr=column_config.get('reward_lr', 0.01),
-                    lateral_inputs=column_config.get('lateral_inputs', False),
-                    lateral_input_k=column_config.get('lateral_input_k', 4))
+            cfg = dict(column_config, m=m)
+            self.column_mgr = create_column(column_type, cfg)
 
     def set_signals(self, signals_t, sig_channels, T):
         """Store signal tensor reference for signal-based rendering."""
@@ -218,7 +246,8 @@ class ClusterManager:
         self.pointers = np.zeros(self.n, dtype=np.int64)
         self.last_used = np.zeros((self.n, self.max_k), dtype=np.int64)
         self.cluster_ids_t = torch.from_numpy(ids_np.astype(np.int64)).to(self.device)
-        self.sizes = np.bincount(ids_np, minlength=self.m)
+        self.sizes = self._compute_sizes(self.cluster_ids, self.m,
+                                         self.pointers, self.wire_all_ring)
 
         # Centroids: pick a random member as initial centroid (O(n), no per-cluster loop)
         emb_np = embeddings_t.cpu().numpy()
@@ -309,7 +338,8 @@ class ClusterManager:
                 pointers=self.pointers, last_used=self.last_used,
                 tick=global_tick, jump_counts=self._jump_counts,
                 max_cluster_size=self.max_cluster_size,
-                cluster_swap=self.cluster_swap)
+                cluster_swap=self.cluster_swap,
+                wire_all_ring=self.wire_all_ring)
             self.total_reassigned += n_reassigned
             self.total_switches += n_switches
             # Patch knn2 for affected clusters from neuron-level KNN
@@ -344,7 +374,8 @@ class ClusterManager:
                 pointers=self.pointers, last_used=self.last_used,
                 tick=global_tick, jump_counts=self._jump_counts,
                 max_cluster_size=self.max_cluster_size,
-                cluster_swap=self.cluster_swap)
+                cluster_swap=self.cluster_swap,
+                wire_all_ring=self.wire_all_ring)
             self.total_reassigned += n_reassigned
             self.total_switches += n_switches
             if affected:
@@ -370,7 +401,8 @@ class ClusterManager:
                     self.sizes, self.m, n_splits=n_to_split,
                     seed=self.rng.randint(1000000),
                     pointers=self.pointers, last_used=self.last_used,
-                    tick=global_tick)
+                    tick=global_tick,
+                    wire_all_ring=self.wire_all_ring)
                 self.total_splits += n_splits
                 if n_splits > 0:
                     most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
@@ -563,13 +595,12 @@ class ClusterManager:
             knn2_np = self.knn2_t.cpu().numpy()
             metrics = self._eval(sensory_ids, centroids_np, knn2_np,
                                  self.w, self.h)
-        n_empty = metrics['n_empty']
+        n_alive = int((self.sizes > 0).sum())
         interval_reassigned = self.total_reassigned - self._prev_reassigned
         interval_ticks = max(1, tick - self._prev_report_tick)
         jumps_per_tick = interval_reassigned / interval_ticks
         self._prev_reassigned = self.total_reassigned
         self._prev_report_tick = tick
-        n_alive = self.m - n_empty
         # Neuron stability: fraction that stayed in same cluster since last report
         if self._prev_cluster_ids is not None:
             stability = (most_recent == self._prev_cluster_ids).mean()
@@ -656,8 +687,8 @@ class ClusterManager:
         most_recent = self.cluster_ids[np.arange(self.n), self.pointers]
         self.cluster_ids_t = torch.from_numpy(
             most_recent.astype(np.int64)).to(self.device)
-        self.sizes = np.bincount(most_recent[most_recent >= 0],
-                                 minlength=self.m).astype(np.int64)
+        self.sizes = self._compute_sizes(self.cluster_ids, self.m,
+                                         self.pointers, self.wire_all_ring)
 
         knn2_np = np.load(os.path.join(state_dir, "knn2.npy"))
         if self.knn2_mode == 'knn':

@@ -566,7 +566,8 @@ def run_word2vec(args):
                 output_dir=output_dir, wlog=wlog,
                 max_cluster_size=getattr(args, 'cluster_max_size', 0),
                 cluster_swap=not getattr(args, 'no_cluster_swap', False),
-                skip_init_wiring=getattr(args, 'skip_init_wiring', False))
+                skip_init_wiring=getattr(args, 'skip_init_wiring', False),
+                wire_all_ring=not getattr(args, 'no_wire_all_ring', False))
             render_mode = getattr(args, 'cluster_render_mode', 'color')
             if render_mode in ('signal', 'both') or column_outputs > 0:
                 cluster_mgr.set_signals(signals, sig_channels, T)
@@ -903,6 +904,8 @@ def main():
                        help="Disable swap on full clusters (just reject migration)")
     p_w2v.add_argument("--skip-init-wiring", action="store_true",
                        help="Skip initial neuron→column wiring (faster init for large m)")
+    p_w2v.add_argument("--no-wire-all-ring", action="store_true",
+                       help="Count only primary cluster membership in sizes (not all ring slots)")
     p_w2v.add_argument("--cluster-track-history", action="store_true",
                        help="Save per-neuron cluster ID at each report interval")
     p_w2v.add_argument("--cluster-render-mode", type=str, default='color',
@@ -910,7 +913,7 @@ def main():
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # column wiring (thalamus-to-cortex)
     p_w2v.add_argument("--column-type", type=str, default="default",
-                       help="Column type: 'default', 'conscience', 'predictive', 'recon', 'conscience_predictive', 'conscience_override'")
+                       help="Column type: 'default', 'conscience', 'predictive', 'recon', 'conscience_predictive', 'conscience_override', 'conscience_homeostatic_fatigue'")
     p_w2v.add_argument("--column-outputs", type=int, default=4,
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
