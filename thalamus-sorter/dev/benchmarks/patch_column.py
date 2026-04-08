@@ -17,10 +17,10 @@ import os
 import json
 import numpy as np
 
-from column_manager import ColumnManager, ConscienceColumn
+from cluster_manager import create_column
 
 name = 'patch_column'
-description = 'Hardcoded 9x9 patch first layer → model clustering diagnostic'
+description = 'Hardcoded 7x7 patch first layer → model clustering diagnostic'
 
 
 def add_args(parser):
@@ -40,6 +40,8 @@ def add_args(parser):
                         help="Column type: 'default' or 'conscience' (default: default)")
     parser.add_argument("--patch-column-alpha", type=float, default=0.01,
                         help="Conscience threshold lr (default: 0.01)")
+    parser.add_argument("--patch-column-outputs", type=int, default=4,
+                        help="Outputs per patch column (default: 4)")
 
 
 def make_signal(w, h, args):
@@ -53,10 +55,10 @@ def make_signal(w, h, args):
     step = getattr(args, 'saccade_step', 50)
 
     # Grid of patches
-    grid_n = retina // patch_sz  # 80 // 9 = 8
+    grid_n = retina // patch_sz  # 56 // 7 = 8
     n_patches = grid_n * grid_n  # 64
-    n_inputs = patch_sz * patch_sz  # 81
-    n_outputs = 4
+    n_inputs = patch_sz * patch_sz  # 49
+    n_outputs = getattr(args, 'patch_column_outputs', 4)
     assert n_patches * n_outputs == n, \
         f"Grid mismatch: {n_patches}*{n_outputs}={n_patches*n_outputs} != {n}"
 
@@ -80,37 +82,23 @@ def make_signal(w, h, args):
     assert src_h >= retina and src_w >= retina, \
         f"Source {src_w}x{src_h} too small for {retina}x{retina} retina"
 
-    # Create first-layer columns
+    # Create first-layer columns via shared factory
     col_type = getattr(args, 'patch_column_type', 'default')
     col_alpha = getattr(args, 'patch_column_alpha', 0.01)
-    if col_type == 'conscience':
-        first_layer_cm = ConscienceColumn(
-            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
-            window=col_window, temperature=col_temp, lr=col_lr,
-            alpha=col_alpha,
-        )
-    elif col_type == 'predictive':
-        from column_manager import PredictiveColumn
-        n_heads = 7 if n_inputs % 7 == 0 else 1
-        first_layer_cm = PredictiveColumn(
-            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
-            window=col_window, temperature=col_temp, lr=0.001,
-            n_heads=n_heads,
-        )
-    elif col_type == 'recon':
-        from column_manager import ReconColumn
-        n_heads = 7 if n_inputs % 7 == 0 else 1
-        first_layer_cm = ReconColumn(
-            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
-            window=col_window, temperature=col_temp, lr=0.001,
-            n_heads=n_heads,
-        )
-    else:
-        first_layer_cm = ColumnManager(
-            m=n_patches, n_outputs=n_outputs, max_inputs=n_inputs,
-            window=col_window, temperature=col_temp, lr=col_lr,
-            mode='kmeans', entropy_scaled_lr=True,
-        )
+    n_heads = 7 if n_inputs % 7 == 0 else 1
+    col_config = {
+        'm': n_patches,
+        'n_outputs': n_outputs,
+        'max_inputs': n_inputs,
+        'window': col_window,
+        'temperature': col_temp,
+        'lr': col_lr,
+        'alpha': col_alpha,
+        'n_heads': n_heads,
+        'mode': 'kmeans',
+        'entropy_scaled_lr': True,
+    }
+    first_layer_cm = create_column(col_type, col_config)
 
     # Pre-wire: patch (px, py) gets neurons at retina positions
     retina_n = retina * retina  # 6400
@@ -159,6 +147,7 @@ def make_signal(w, h, args):
         'first_layer_cm': first_layer_cm,
         'ring': ring,
         'source': source,
+        '_tick_fn': tick_fn,
     }
 
     print(f"  signal buffer: PATCH_COLUMN ({n_patches} patches of {patch_sz}x{patch_sz}, "
@@ -187,7 +176,7 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     # For each patch, count unique model clusters among its 4 neurons
     # ---------------------------------------------------------------
     spread_counts = []
-    spread_hist = {1: 0, 2: 0, 3: 0, 4: 0}
+    spread_hist = {k: 0 for k in range(1, n_outputs + 1)}
     for p in range(n_patches):
         neuron_ids = [p * n_outputs + o for o in range(n_outputs)]
         clusters = set()
@@ -202,10 +191,10 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     mean_spread = np.mean(spread_counts)
 
     print(f"  PATCH_COLUMN spread distribution:")
-    labels = {1: 'all-4-same', 2: '3+1 or 2+2', 3: '2+1+1', 4: 'all-different'}
-    for k in [1, 2, 3, 4]:
-        print(f"    {labels[k]}: {spread_hist[k]}/{n_patches}")
-    print(f"    Mean spread: {mean_spread:.2f} (1.0=collapsed, 4.0=differentiated)")
+    print(f"    1 (collapsed): {spread_hist[1]}/{n_patches}, "
+          f"{n_outputs} (all-different): {spread_hist[n_outputs]}/{n_patches}")
+    print(f"    Mean spread: {mean_spread:.2f} "
+          f"(1.0=collapsed, {n_outputs}.0=differentiated)")
 
     # ---------------------------------------------------------------
     # Metric 2 & 3: Sample 500 ticks post-training
@@ -224,9 +213,25 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     # Collect per-patch outputs over time: (n_sample, n_patches, n_outputs)
     output_history = np.zeros((n_sample, n_patches, n_outputs), dtype=np.float32)
 
+    # Freeze first-layer learning during eval
+    saved_lr = first_layer_cm.lr
+    first_layer_cm.lr = 0.0
+    if hasattr(first_layer_cm, 'set_learn_prob'):
+        first_layer_cm.set_learn_prob(0.0)
+
+    retina = metadata['retina']
+    ring = metadata['ring']
+    crop_history = np.zeros((n_sample, retina, retina), dtype=np.float32)
+
     for t in range(n_sample):
         tick_fn(total_ticks + T + t)
         output_history[t] = first_layer_cm.get_outputs()
+        crop_history[t] = ring[:, -1].reshape(retina, retina)
+
+    # Restore learning state
+    first_layer_cm.lr = saved_lr
+    if hasattr(first_layer_cm, 'set_learn_prob'):
+        first_layer_cm.set_learn_prob(1.0)
 
     # --- Metric 2: Per-patch Shannon entropy of output probabilities ---
     # Average entropy across samples
@@ -288,6 +293,63 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     dominant = win_counts.argmax(axis=1)
     for o in range(n_outputs):
         print(f"    Output {o} dominates: {(dominant == o).sum()}/{n_patches} patches")
+
+    # --- Pattern visualization: what does each output respond to? ---
+    # Layout: 8x8 grid of blocks (one per patch position)
+    # Each block: 16 rows (samples) x 4 columns (outputs) of 7x7 patches
+    if output_dir:
+        try:
+            import cv2
+            patch_sz = metadata['patch_sz']
+            grid_n = metadata['grid_n']
+            n_show = 16
+            scale = 2
+            cell = patch_sz * scale
+            gap = 1
+            block_h = n_show * (cell + gap) + gap
+            block_w = n_outputs * (cell + gap) + gap
+            block_gap = 3
+            img_h = grid_n * (block_h + block_gap)
+            img_w = grid_n * (block_w + block_gap)
+
+            canvas = np.full((img_h, img_w), 40, dtype=np.uint8)
+            rng_viz = np.random.RandomState(0)
+
+            for py in range(grid_n):
+                for px in range(grid_n):
+                    p = py * grid_n + px
+                    winners = output_history[:, p, :].argmax(axis=1)
+                    by = py * (block_h + block_gap)
+                    bx = px * (block_w + block_gap)
+                    # Block background
+                    canvas[by:by+block_h, bx:bx+block_w] = 80
+
+                    for o in range(n_outputs):
+                        ticks_won = np.where(winners == o)[0]
+                        if len(ticks_won) == 0:
+                            continue
+                        chosen = rng_viz.choice(
+                            ticks_won, min(n_show, len(ticks_won)), replace=False)
+                        chosen.sort()
+
+                        for row, t_idx in enumerate(chosen):
+                            patch = crop_history[t_idx,
+                                                 py*patch_sz:(py+1)*patch_sz,
+                                                 px*patch_sz:(px+1)*patch_sz]
+                            patch_u8 = (np.clip(patch, 0, 1) * 255).astype(np.uint8)
+                            patch_large = cv2.resize(
+                                patch_u8, (cell, cell),
+                                interpolation=cv2.INTER_NEAREST)
+
+                            y0 = by + gap + row * (cell + gap)
+                            x0 = bx + gap + o * (cell + gap)
+                            canvas[y0:y0+cell, x0:x0+cell] = patch_large
+
+            path = os.path.join(output_dir, "patch_patterns.png")
+            cv2.imwrite(path, canvas)
+            print(f"  PATCH_COLUMN pattern grid saved: {path}")
+        except ImportError:
+            pass
 
     _save_results(output_dir, spread_hist, mean_spread,
                   mean_entropy, mean_inter_corr,
