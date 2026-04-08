@@ -116,12 +116,17 @@ class DriftSolver:
             matmul_corr: use matmul path for correlation
             predictive_shift: causal/predictive correlation shift
         """
+        if predictive_shift > 0:
+            assert matmul_corr and use_deriv_corr, (
+                "predictive_shift requires matmul_corr=True and use_deriv_corr=True")
+
         n = self.n
         compute_dtype = torch.float16 if fp16 else torch.float32
+        signals = signals.to(self.device)
 
         if matmul_corr:
             if use_deriv_corr:
-                sig = signals.to(compute_dtype)
+                sig = signals.to(self.device, dtype=compute_dtype)
                 deriv = sig[:, 1:] - sig[:, :-1]
                 if predictive_shift > 0:
                     s = predictive_shift
@@ -138,16 +143,16 @@ class DriftSolver:
                     norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
                     sig_normed = centered / norms
             elif use_mse:
-                sig = signals.to(compute_dtype)
+                sig = signals.to(self.device, dtype=compute_dtype)
                 T_len = sig.shape[1]
                 sig_sq_mean = (sig * sig).mean(dim=1)
                 sig_normed = sig
             elif use_covariance:
-                sig = signals.to(compute_dtype)
+                sig = signals.to(self.device, dtype=compute_dtype)
                 T_len = sig.shape[1]
                 sig_normed = sig - sig.mean(dim=1, keepdim=True)
             else:
-                sig = signals.to(compute_dtype)
+                sig = signals.to(self.device, dtype=compute_dtype)
                 centered = sig - sig.mean(dim=1, keepdim=True)
                 norms = centered.norm(dim=1, keepdim=True).clamp(min=1e-8)
                 sig_normed = centered / norms
@@ -229,6 +234,10 @@ class DriftSolver:
                     score = ((anchor_centered / a_norm).unsqueeze(1) *
                              (cand_centered / c_norm)).sum(dim=2).float()
                     mask = score.abs() > threshold
+
+            # Exclude self-matches (anchor correlated with itself)
+            self_match = candidates == anchors.unsqueeze(1)
+            mask[self_match] = False
 
             good_counts = mask.sum(dim=1)
 
