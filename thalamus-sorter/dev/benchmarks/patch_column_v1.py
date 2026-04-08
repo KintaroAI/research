@@ -61,6 +61,7 @@ def build_patch_layer(args):
         'k_active': args.k_active,
         'homeostasis_rate': args.homeostasis_rate,
         'fatigue_strength': args.fatigue_strength,
+        'multi_scale': getattr(args, 'multi_scale', False),
     }
     cm = create_column(args.column_type, col_config)
 
@@ -300,6 +301,8 @@ def main():
                         help='Top-k active outputs for homeostatic-fatigue column')
     parser.add_argument('--homeostasis-rate', type=float, default=0.02)
     parser.add_argument('--fatigue-strength', type=float, default=1.0)
+    parser.add_argument('--multi-scale', action='store_true',
+                        help='Use multi-scale descriptor [current, mean, delta_1, delta_half]')
     parser.add_argument('--window', type=int, default=10)
     parser.add_argument('--step', type=int, default=3)
     parser.add_argument('--eval-step', type=int, default=50,

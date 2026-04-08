@@ -470,15 +470,343 @@ center-seeking" behavior collects more food than conscience's wider
 wandering because POIs respawn uniformly — staying central maximizes
 proximity to the next spawn.
 
+### 2026-04-07 — Rotating line benchmark + multi-output R² analysis
+
+New benchmark: `benchmarks/rotating_line.py`. A line on a 7×7 grid
+rotates continuously with periodic direction reversal and thickness
+pulsation. Column outputs are correlated against ground-truth generative
+factors (angle, sin/cos angle, direction, angular velocity, thickness,
+thickness velocity). No supervision — factors must emerge from the
+column's unsupervised learning.
+
+**Key methodological finding:** single-output Pearson |r| has a
+statistical ceiling that shrinks with more outputs. With k_active=1,
+each output fires 1/n_out of the time (sparse binary), capping |r| at
+~sqrt(p/(1-p)). This hid the real representational quality of
+16-output columns. Multi-output R² (linear regression from all outputs
+jointly to each factor) removes this ceiling.
+
+**Rotating line results (20k training, reversal=200, speed_mod=0.3):**
+
+Multi-output R² per factor:
+
+| Factor | Consc 8 | TP 8 k=1 | TP 8 k=2 | TP 16 k=1 | **TP 16 k=2** |
+|--------|---------|----------|----------|-----------|------------|
+| angle | 0.220 | 0.160 | 0.101 | 0.258 | **0.455** |
+| sin_angle | 0.071 | 0.166 | 0.105 | 0.285 | **0.441** |
+| cos_angle | 0.048 | 0.289 | 0.257 | **0.506** | 0.376 |
+| direction | 0.060 | 0.104 | 0.208 | 0.278 | **0.520** |
+| angular_vel | 0.077 | 0.097 | 0.203 | 0.289 | **0.526** |
+| thickness | **0.560** | 0.196 | 0.189 | 0.138 | 0.123 |
+| thickness_vel | 0.142 | 0.091 | 0.124 | 0.174 | 0.287 |
+| **R²>0.3 count** | **1/7** | **0/7** | **0/7** | **1/7** | **5/7** |
+
+Findings:
+
+1. **TP 16-out k=2 discovers 5 of 7 factors** (R²>0.3). Best overall
+   representation by a wide margin. Direction (R²=0.52) and angular
+   velocity (R²=0.53) are temporal dynamics that require the delta
+   descriptor — conscience can't see them (R²=0.06-0.08).
+
+2. **k=2 massively helps multi-output R².** Going from k=1 to k=2 at
+   16 outputs: 1/7 → 5/7 coverage. Two active outputs produce
+   continuous-valued signals (not sparse binary), giving linear
+   regression much more to work with.
+
+3. **More outputs + k=2 is the representation sweet spot.** 16 outputs
+   with 2 active gives enough capacity for 7 factors while keeping
+   outputs non-degenerate.
+
+4. **Conscience wins only on thickness** (R²=0.56) — a static spatial
+   feature. Its mean-only descriptor handles static structure but
+   misses all temporal dynamics.
+
+5. **Single-output |r| was hiding the story.** TP 16 k=2 has max
+   single-output |r| of ~0.3 but multi-output R² of 0.52. The sparse
+   binary ceiling was masking real quality.
+
+Scaling with proportional k (n_out/k ≈ 8):
+
+| Factor | 8/k=1 | 16/k=2 | 32/k=4 |
+|--------|-------|--------|--------|
+| angle | 0.160 | 0.455 | **0.672** |
+| sin_angle | 0.166 | 0.441 | **0.805** |
+| cos_angle | 0.289 | 0.376 | **0.705** |
+| direction | 0.104 | 0.520 | **0.784** |
+| angular_vel | 0.097 | 0.526 | **0.782** |
+| thickness | 0.196 | 0.123 | **0.571** |
+| thickness_vel | 0.091 | 0.287 | **0.536** |
+| **R²>0.3** | **0/7** | **5/7** | **7/7** |
+
+At 32/k=4, all 7 factors discovered with R²>0.5. The ratio n_out/k≈8
+scales cleanly — each doubling of capacity with proportional k gives
+a large jump.
+
+**Output specialization (32-out k=4 analysis):**
+
+Outputs are distributed, not one-per-factor:
+- angular_velocity: 8 outputs specialize to it
+- sin_angle: 7 outputs
+- angle: 5, cos_angle: 5, direction: 4
+- thickness: only 1 output
+- thickness_velocity: 2 outputs
+
+Outputs sharing the same best factor are **not redundant** — mean
+pairwise r within groups is near 0 (-0.05 to +0.06). They respond at
+different phases or polarities (e.g., sin_angle: o23 at +0.48, o31 at
+-0.40). Global output uniqueness: mean pairwise r = -0.032, only 1%
+of pairs have |r|>0.5.
+
+This is distributed representation — closer to how word2vec encodes
+meaning across dimensions than to clean one-output-per-factor
+specialization. Multi-output R² captures this; single-output |r| misses
+it.
+
+**Output smoothness (32-out k=4):**
+
+Outputs change **gradually**, not hash-like:
+- Cosine autocorrelation: 0.979 at lag=1, 0.88 at lag=5, 0.72 at
+  lag=10, near-zero at lag=50
+- Winner persists for mean 11 ticks (~20° rotation per winner) —
+  each prototype owns an angular sector
+- Tick-to-tick L2 change: mean 0.063 (small gradual shifts)
+- Angle-sorted outputs are 9% smoother than random sort
+
+The column rotates through prototypes as the line rotates, with smooth
+probability transitions between winners. Not a hash function — a
+continuous state tracker with discrete but overlapping sectors.
+
+**Window size sweep (32-out k=4):**
+
+| Factor | w=1 | w=2 | w=3 | w=5 | w=10 | w=20 | w=50 |
+|--------|-----|-----|-----|-----|------|------|------|
+| angle | 0.621 | 0.636 | **0.694** | 0.638 | 0.672 | 0.689 | 0.568 |
+| sin_angle | 0.795 | 0.636 | 0.798 | 0.688 | **0.805** | 0.795 | 0.719 |
+| cos_angle | **0.840** | 0.693 | 0.605 | 0.776 | 0.705 | 0.741 | 0.767 |
+| direction | 0.720 | 0.676 | 0.668 | 0.762 | **0.784** | 0.761 | 0.761 |
+| angular_vel | 0.704 | 0.663 | 0.674 | 0.738 | **0.782** | 0.785 | 0.745 |
+| thickness | **0.625** | 0.526 | 0.578 | **0.643** | 0.571 | 0.513 | 0.576 |
+| thickness_vel | 0.414 | 0.475 | 0.545 | 0.477 | **0.536** | 0.495 | 0.392 |
+| **Mean R²** | 0.674 | 0.615 | 0.652 | 0.675 | **0.694** | 0.684 | 0.661 |
+
+All window sizes achieve 7/7 factor coverage. w=10 has the best mean
+R² (0.694). The tradeoff:
+
+- **Short windows (w=1-3)**: see snapshots better. cos_angle peaks at
+  0.840 (w=1), thickness at 0.625 (w=1). No temporal blur → static
+  factors are sharpest. But at w=1, descriptor has no mean or delta
+  (only current frame).
+- **Long windows (w=20-50)**: mean component blurs across multiple
+  prototypes, hurting dynamic factors (thickness_velocity drops from
+  0.536 to 0.392 at w=50).
+- **w=10 sweet spot**: 10 ticks ≈ 18° rotation ≈ one winner sector.
+  Descriptor temporal scope matches prototype angular coverage.
+
+Surprising: direction (0.720) and angular_velocity (0.704) remain
+strong even at w=1 (no temporal info). Prototypes distinguish angle
+positions that correlate with direction regime — reversal boundaries
+are at predictable angles.
+
+Implication for forage: the 16-output TP column that failed in forage
+(runs 001-002) may have been a motor-wiring problem, not a
+representation problem. The rotating line shows 16-out k=2 has
+excellent factor discovery — the missing piece was translating that
+representation into motor commands. This motivates revisiting 16
+outputs in forage with better motor design.
+
+### 2026-04-07 — Multi-scale descriptor experiment
+
+Tested replacing `[current, mean, delta]` with alternatives:
+
+| Descriptor | angle | sin | cos | dir | ang_vel | thick | thick_vel | Mean R² |
+|------------|-------|-----|-----|-----|---------|-------|-----------|---------|
+| [cur, mean, delta_1] (default) | 0.672 | **0.805** | 0.705 | **0.784** | **0.782** | **0.571** | **0.536** | **0.694** |
+| [cur, mean, delta_1, delta_5] (4-part) | 0.712 | 0.841 | 0.710 | 0.765 | 0.749 | 0.479 | 0.322 | 0.654 |
+| [cur, delta_1, delta_5] (no mean) | 0.555 | 0.534 | 0.706 | 0.737 | 0.717 | 0.552 | 0.396 | 0.600 |
+
+The mean component carries real signal — dropping it loses sin_angle
+(0.805→0.534). The 4-part descriptor is 33% larger but doesn't improve
+mean R². `delta_half` is redundant with `delta_1`. Default 3-part wins.
+
+### 2026-04-07 — Patch column v1 benchmark: homeostasis vs specialization
+
+Tested TP column on static visual patches (garden.png saccades). This
+task has NO temporal dynamics — just spatial pattern matching.
+
+**8 outputs k=1 — homeostasis sweep:**
+
+| Config | Dominant winner↑ | Balance range | Inter-r↓ |
+|--------|-----------------|---------------|----------|
+| Conscience 8 | **0.221** | 11.5-14.3% | -0.112 |
+| TP 8 k=1 **h=0** | **0.196** | 12.2-12.8% | **-0.140** |
+| TP 8 k=1 h=0.001 | 0.131 | 12.4-12.6% | -0.143 |
+| TP 8 k=1 h=0.01 | 0.132 | 12.4-12.6% | -0.143 |
+| TP 8 k=1 h=0.5 | 0.128 | 12.5-12.5% | -0.143 |
+
+Any homeostasis (even h=0.001) crushes patch specialization from 0.196
+to ~0.13. Bare TP (h=0) gets closest to conscience (0.196 vs 0.221),
+with even better output differentiation (inter-r -0.140 vs -0.112).
+
+**32 outputs k=4 — homeostasis vs bare:**
+
+| Config | Dominant winner↑ | Inter-r |
+|--------|-----------------|---------|
+| Conscience 32 | **0.086** | -0.021 |
+| TP 32 k=4 **bare** (h=0, fs=0) | **0.098** | -0.018 |
+| TP 32 k=4 h=0.001 | 0.053 | -0.032 |
+| TP 32 k=4 h=0.5 | 0.050 | -0.032 |
+
+Bare TP at 32 outputs beats conscience on dominant winner (0.098 vs
+0.086). Prototypes naturally separate through Hebbian competition
+alone on static patterns — homeostasis is counterproductive.
+
+**Key insight: homeostasis role depends on task type.**
+
+| Task | Best homeostasis | Why |
+|------|-----------------|-----|
+| **Forage** (feedback loop) | h=0.5 (2969 collections) | Forces motor diversity via output cycling |
+| **Rotating line** (temporal) | h=0.5 works (factor R² unaffected) | Temporal dynamics drive differentiation regardless |
+| **Static patches** (spatial) | **h=0** (0.196 dom winner) | No dynamics to drive differentiation; homeostasis just rotates randomly |
+
+Homeostasis is a **motor/behavioral mechanism**, not a general
+representation mechanism. For pure feature learning on static inputs,
+Hebbian competition alone produces better specialization.
+
+**Multi-scale descriptor on static patches (8out k=1):**
+
+| h | Default dom | Multi-scale dom |
+|------|------------|----------------|
+| 0.0 | **0.196** | 0.184 |
+| 0.001 | **0.205** | 0.200 |
+| 0.01 | **0.175** | 0.167 |
+| 0.5 | 0.147 | 0.146 |
+
+Multi-scale slightly worse — on static patches with slow saccades,
+`delta_1` and `delta_half` are both near-zero. Extra descriptor
+dimension adds noise without new information.
+
+### 2026-04-07 — Rotating line: homeostasis sweep (32out k=4)
+
+| Factor | h=0 | h=0.001 | h=0.01 | **h=0.1** | h=0.5 | h=1.0 |
+|--------|-----|---------|--------|-----------|-------|-------|
+| angle | 0.383 | 0.361 | 0.363 | 0.468 | **0.672** | 0.643 |
+| sin_angle | 0.218 | 0.183 | 0.185 | 0.397 | **0.805** | 0.756 |
+| cos_angle | 0.112 | 0.115 | 0.152 | 0.330 | 0.705 | **0.832** |
+| direction | 0.562 | 0.648 | 0.818 | **0.874** | 0.784 | 0.783 |
+| angular_vel | 0.539 | 0.670 | 0.804 | **0.887** | 0.782 | 0.783 |
+| thickness | **0.709** | **0.826** | **0.860** | 0.737 | 0.571 | 0.577 |
+| thick_vel | 0.290 | 0.366 | 0.270 | 0.435 | 0.536 | **0.546** |
+| **R²>0.3** | 4/7 | 5/7 | 4/7 | **7/7** | **7/7** | **7/7** |
+
+Different factors peak at different h values:
+- **Spatial/static** (thickness): peaks at low h (0.01→0.860). Stable
+  prototypes hold position.
+- **Temporal/dynamic** (direction, angular_vel): peaks at medium h
+  (0.1→0.874/0.887). Homeostasis cycling encodes motion.
+- **Circular phase** (sin/cos angle): needs high h (0.5-1.0). Many
+  active prototypes needed to tile the full circle.
+
+h=0.1 is the overall sweet spot for factor discovery (7/7, best on
+dynamics). Different from forage optimal h=0.5 — the rotating line
+rewards balanced representation, forage rewards motor diversity.
+
+**Summary: optimal h depends on what matters in the task.**
+
+| Task | Optimal h | Why |
+|------|-----------|-----|
+| Static patches | 0 | No dynamics; homeostasis rotates randomly |
+| Rotating line (all factors) | 0.1 | Balances spatial + dynamic factors |
+| Rotating line (phase only) | 0.5-1.0 | Full circle tiling needs many prototypes |
+| Forage (collections) | 0.5 | Motor diversity drives food collection |
+
+### 2026-04-08 — Temporal prototype column: loser repulsion + forage runs
+
+Removed hunger-gated repulsion — learning should not be driven by
+hunger. Repulsion now fires at constant `lr_neg` regardless of hunger.
+
+**TP forage results (4out k=1):**
+
+| Run | h | lr_neg | hunger-gated | Collections | hunger r | prox r | Stability |
+|-----|------|--------|-------------|-------------|----------|--------|-----------|
+| 005 (HF) | 0.1 | — | — | 2379 | 0.779 | 0.874 | 0.987 |
+| 008 (HF best) | 0.5 | — | — | **2969** | 0.418 | 0.524 | 1.000 |
+| 010 (TP) | 0.5 | 0.01 | yes | 2932 | 0.416 | 0.467 | 1.000 |
+| 011 (TP) | 0.1 | 0.01 | no | 2148 | **0.819** | **0.890** | 0.993 |
+| Conscience | — | — | — | 2284 | 0.91 | 0.77 | 0.12 |
+
+Loser repulsion is **neutral at h=0.5** (2932 vs 2969 — homeostasis
+dominates) and **slightly negative at h=0.1** (2148 vs 2379 — constant
+repulsion destabilizes already-separated prototypes).
+
+Run 011 has the best feature tracking of any TP run (hunger 0.82,
+prox 0.89, pos_y 0.89) — nearly matching conscience on representation
+while still +28% over HF baseline at same h.
+
+The collections-vs-representation tradeoff remains consistent:
+h=0.5 → 2969 collections / weak features.
+h=0.1 → 2148 collections / strong features.
+
+### 2026-04-08 — Step 3+4: correlation persistence + prediction-modulated learning
+
+Implemented in `temporal_prototype_column.py`:
+- **Correlation diagnostics** now persist to `column_corr_diagnostics.npz`
+  (raw + centered covariance matrices). Summary printed on save.
+- **Predictor head**: linear map `(d_model + n_out) → d_model`, predicts
+  next tick's descriptor from current descriptor + output.
+- **Surprise EMA**: `surprise_ema = β * surprise_ema + (1-β) * MSE`.
+  Normalized surprise = `MSE / surprise_ema` (clipped to [0, 5]).
+- **LR modulation**: `effective_lr = base_lr * (1 + α * norm_surprise)`.
+  Higher surprise → faster prototype learning.
+- Predictor trained via proper gradient descent (stored last input for
+  backprop through linear layer).
+
+CLI: `--column-surprise-alpha` (default 0.5, 0=disabled),
+`--column-surprise-beta` (default 0.99).
+
+**Rotating line benchmark (32out k=4, h=0.1, 20k frames):**
+
+| Factor | TP without prediction | **TP with prediction** | Conscience |
+|--------|---------------------|----------------------|------------|
+| angle | 0.468 | 0.476 | 0.418 |
+| sin_angle | 0.397 | 0.328 | 0.311 |
+| cos_angle | 0.330 | 0.309 | 0.279 |
+| direction | 0.874 | **0.914** | 0.144 |
+| angular_vel | 0.887 | **0.895** | 0.184 |
+| thickness | **0.737** | 0.670 | **0.901** |
+| thickness_vel | **0.435** | 0.306 | 0.296 |
+| **R²>0.3** | **7/7** | **7/7** | 3/7 |
+
+Prediction improved temporal dynamics (direction 0.874→0.914) but
+slightly hurt spatial factors (thickness 0.737→0.670). The surprise-
+modulated LR may destabilize spatial prototypes when prediction error
+spikes at direction reversals.
+
+**Patch v1 (8out k=1, h=0, 10k frames):** prediction has no effect on
+static patches (dominant winner 0.194 vs 0.196 without). Expected — no
+temporal signal to predict.
+
+**Forage run 012** (h=0.5, prediction enabled) running — will show
+whether prediction helps the motor feedback loop.
+
 ## Next Steps
 
 - [x] Run baseline 1M forage with 16 outputs / k=4
 - [x] Ablate fatigue_strength and homeostasis_rate at 4 outputs
 - [x] Add CLI flags for homeostasis/fatigue params
 - [x] Compare against conscience 16-out and 4-out baselines
-- [ ] Run full 1M with best HF config (005) without viz for clean timing
-- [ ] Test h=0.1, fs=0.01 at 16 outputs (strong homeostasis may now help)
+- [x] Rotating line benchmark — factor discovery analysis
+- [x] Multi-output R² metric (removes sparse-binary ceiling)
+- [x] Loser repulsion implementation + forage test
+- [ ] Run full 1M with best HF config (008) without viz for clean timing
+- [ ] Revisit 16 outputs in forage with k=2 + better motor design
 - [ ] Compare against conscience_override (best ts-00026 result: 2494)
 - [ ] Sweep temperature (0.2 vs 0.45 vs 1.0) at best config
 - [ ] Test without clocks / without increased spasms to isolate their effect
 - [ ] Consider whether the "stable policy" strategy generalizes beyond forage
+- [x] Implement prediction-error-modulated learning (step 4 of TP plan)
+- [x] Add correlation diagnostics persistence to save()
+- [ ] Test adaptive h: low h early (learn features), ramp h later (drive motor)
+- [x] Multi-output R² metric (removes sparse-binary ceiling)
+- [ ] Implement loser repulsion (step 2 of temporal prototype plan)
+- [ ] Add correlation diagnostics (step 3)
+- [ ] Add prediction-error-modulated learning (step 4)

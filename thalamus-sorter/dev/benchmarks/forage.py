@@ -455,10 +455,6 @@ def make_signal(w, h, args):
         if col_mgr is not None and hasattr(col_mgr, 'set_pred_lr_scale'):
             col_mgr.set_pred_lr_scale(hunger)
 
-        # Pass hunger level to column for gated loser repulsion
-        if col_mgr is not None and hasattr(col_mgr, 'set_hunger'):
-            col_mgr.set_hunger(hunger)
-
         # Hunger-modulated homeostasis: hungry → fast rotation (explore), satiated → stable
         # DISABLED: testing fixed-h configs first
         # if col_mgr is not None and hasattr(col_mgr, 'homeostasis_rate'):

@@ -56,6 +56,12 @@ class TemporalPrototypeColumn(ColumnBase):
         margin_band=0.3,
         # --- New: correlation diagnostics ---
         corr_window=50,
+        # --- New: multi-scale descriptor ---
+        multi_scale=False,
+        # --- New: prediction-error-modulated learning ---
+        pred_lr=0.01,
+        surprise_alpha=0.5,
+        surprise_beta=0.99,
         **kwargs,
     ):
         wta_mode = kwargs.pop("wta_mode", "none")
@@ -105,10 +111,18 @@ class TemporalPrototypeColumn(ColumnBase):
         self.last_raw_corr = None       # (m, n_out, n_out) or None
         self.last_centered_corr = None  # (m, n_out, n_out) or None
 
-        # External hunger level for gating repulsion (set by forage tick_fn)
-        self._hunger_level = 0.0
+        # Multi-scale descriptor: [current, delta_1, mean_full, delta_half]
+        self.multi_scale = bool(multi_scale)
 
-        self.d_model = self.max_inputs * 3
+        # Prediction-error-modulated learning
+        self.pred_lr = float(pred_lr)
+        self.surprise_alpha = float(surprise_alpha)  # how much surprise boosts LR
+        self.surprise_beta = float(surprise_beta)    # EMA smoothing for surprise
+
+        # External signals (set by benchmark tick_fn)
+        self._hunger_level = 0.0  # informational only, not used for learning
+
+        self.d_model = self.max_inputs * (4 if self.multi_scale else 3)
 
         rng = np.random.RandomState(42)
         protos = rng.randn(m, n_outputs, self.d_model).astype(np.float32)
@@ -119,6 +133,19 @@ class TemporalPrototypeColumn(ColumnBase):
         self.theta = np.zeros((m, n_outputs), dtype=np.float32)
         self.fast_fatigue = np.zeros((m, n_outputs), dtype=np.float32)
         self.last_won = np.zeros((m, n_outputs), dtype=np.int64)
+
+        # Predictor: linear map from (d_model + n_outputs) → d_model
+        # Predicts next descriptor from current descriptor + current output
+        pred_in = self.d_model + n_outputs
+        self._pred_dim = pred_in
+        self._pred_W = (rng.randn(m, pred_in, self.d_model).astype(np.float32)
+                        * 0.01 / np.sqrt(pred_in))
+        self._pred_b = np.zeros((m, self.d_model), dtype=np.float32)
+        self._pending_pred = None           # (m, d_model) or None
+        self._last_pred_input = None        # (m, pred_in) for gradient
+        self._surprise_ema = np.ones(m, dtype=np.float32)  # per-column smoothed surprise
+        self._surprise_raw = np.zeros(m, dtype=np.float32)  # last raw surprise
+        self.last_pred_error = 0.0          # scalar diagnostic
 
         self._tick_count = 0
         self._learn_prob = 1.0
@@ -138,27 +165,35 @@ class TemporalPrototypeColumn(ColumnBase):
     def _state_descriptor_np(self, X):
         """
         X: (m, n_in, T)
-        Returns: (m, 3 * n_in)
+        Returns: (m, d_model) where d_model = n_in * (4 if multi_scale else 3)
         """
+        T = X.shape[2]
         current = X[:, :, -1]
-        mean = X.mean(axis=2)
-        if X.shape[2] > 1:
-            delta = X[:, :, -1] - X[:, :, -2]
+
+        if self.multi_scale:
+            # Multi-scale: current + mean + fast delta + slow delta
+            delta_1 = X[:, :, -1] - X[:, :, -2] if T > 1 else np.zeros_like(current)
+            mean_full = X.mean(axis=2)
+            half = max(2, T // 2)
+            delta_half = X[:, :, -1] - X[:, :, -half] if T > half else np.zeros_like(current)
+
+            parts = [
+                self.current_weight * self._part_norm(current),
+                self.mean_weight * self._part_norm(mean_full),
+                self.delta_weight * self._part_norm(delta_1),
+                self.delta_weight * self._part_norm(delta_half),
+            ]
         else:
-            delta = np.zeros_like(current)
+            mean = X.mean(axis=2)
+            delta = X[:, :, -1] - X[:, :, -2] if T > 1 else np.zeros_like(current)
 
-        cur_n = self._part_norm(current)
-        mean_n = self._part_norm(mean)
-        delta_n = self._part_norm(delta)
+            parts = [
+                self.current_weight * self._part_norm(current),
+                self.mean_weight * self._part_norm(mean),
+                self.delta_weight * self._part_norm(delta),
+            ]
 
-        desc = np.concatenate(
-            [
-                self.current_weight * cur_n,
-                self.mean_weight * mean_n,
-                self.delta_weight * delta_n,
-            ],
-            axis=1,
-        )
+        desc = np.concatenate(parts, axis=1)
         return self._normalize_np(desc).astype(np.float32)
 
     def _raw_similarity(self, state_np):
@@ -217,10 +252,10 @@ class TemporalPrototypeColumn(ColumnBase):
             + (self.max_lr_scale - self.min_lr_scale) * underuse
         ).astype(np.float32)
 
-    def _update_prototypes(self, state_np, p_active, scores):
+    def _update_prototypes(self, state_np, p_active, scores, surprise=None):
         ar = self._arange_m
 
-        # --- Winner pull (existing) ---
+        # --- Winner pull ---
         if not self.learn_from_probs:
             winners = p_active.argmax(axis=1)
             learn = np.zeros_like(p_active, dtype=np.float32)
@@ -229,6 +264,10 @@ class TemporalPrototypeColumn(ColumnBase):
             learn = p_active
 
         lr_scale = self._lr_scale_from_usage()
+        # Surprise modulation: higher surprise → faster learning
+        if surprise is not None and self.surprise_alpha > 0:
+            surprise_boost = 1.0 + self.surprise_alpha * surprise  # (m,)
+            lr_scale = lr_scale * surprise_boost[:, None]
         step = (self.proto_lr * lr_scale * learn)[:, :, None]
         self.prototypes += step * (state_np[:, None, :] - self.prototypes)
 
@@ -238,7 +277,7 @@ class TemporalPrototypeColumn(ColumnBase):
         # --- Loser repulsion (new) ---
         if self.lr_neg > 0:
             # Hunger-gated: repulsion strongest when satiated, weakest when hungry
-            lr_neg_eff = self.lr_neg * (1.0 - self._hunger_level)
+            lr_neg_eff = self.lr_neg
             if lr_neg_eff > 1e-8:
                 winners = scores.argmax(axis=1)                    # (m,)
                 winner_scores = scores[ar, winners]                # (m,)
@@ -335,6 +374,40 @@ class TemporalPrototypeColumn(ColumnBase):
             cen_corr = cen_cov / (std_c[:, :, None] * std_c[:, None, :])
             self.last_centered_corr = cen_corr
 
+    def _check_prediction(self, desc_t):
+        """Compare last tick's prediction to actual descriptor. Returns per-column normalized surprise."""
+        if self._pending_pred is None:
+            return np.zeros(self.m, dtype=np.float32)
+        # MSE per column between predicted and actual descriptor
+        err = ((self._pending_pred - desc_t) ** 2).mean(axis=1)  # (m,)
+        self._surprise_raw = err
+        # Smooth surprise via EMA
+        self._surprise_ema = (self.surprise_beta * self._surprise_ema
+                              + (1.0 - self.surprise_beta) * err)
+        # Normalized surprise: how surprising relative to recent baseline
+        norm = np.clip(err / self._surprise_ema.clip(1e-8), 0.0, 5.0)
+        self.last_pred_error = float(err.mean())
+        return norm.astype(np.float32)
+
+    def _make_prediction(self, desc_t, a_t):
+        """Predict next descriptor from current descriptor + output."""
+        pred_input = np.concatenate([desc_t, a_t], axis=1)  # (m, d_model + n_out)
+        pred = np.einsum('mi,mid->md', pred_input, self._pred_W) + self._pred_b
+        self._pending_pred = pred
+        self._last_pred_input = pred_input
+
+    def _update_predictor(self, desc_t):
+        """Train predictor weights via gradient descent toward actual descriptor."""
+        if self._pending_pred is None or self._last_pred_input is None:
+            return
+        # error = prediction - target
+        error = self._pending_pred - desc_t  # (m, d_model)
+        # grad_W = input^T @ error for each column: (m, pred_in, 1) @ (m, 1, d_model)
+        inp = self._last_pred_input  # (m, pred_in)
+        grad_W = np.einsum('mi,md->mid', inp, error)  # (m, pred_in, d_model)
+        self._pred_W -= self.pred_lr * grad_W
+        self._pred_b -= self.pred_lr * error
+
     # ------------------------------------------------------------------
     # Output rotation hooks — fully owned by this class
     # ------------------------------------------------------------------
@@ -371,6 +444,9 @@ class TemporalPrototypeColumn(ColumnBase):
         X = self._gather_input(signal_window).astype(np.float32)
         state_np = self._state_descriptor_np(X)
 
+        # Check last tick's prediction against actual descriptor
+        surprise = self._check_prediction(state_np)
+
         sim_raw = self._raw_similarity(state_np)
 
         # Our rotation: homeostatic theta + fast fatigue
@@ -379,12 +455,16 @@ class TemporalPrototypeColumn(ColumnBase):
         p_active = self._postprocess_probs(scores)
 
         if self._rng.rand() < self._learn_prob:
-            self._update_prototypes(state_np, p_active, scores)
+            self._update_prototypes(state_np, p_active, scores, surprise)
+            self._update_predictor(state_np)
             self._reseed_dead_units(state_np)
 
         self._update_fast_fatigue(p_active)
         self._update_homeostasis(p_active)
         self._update_corr_diagnostics(p_active)
+
+        # Predict next descriptor from current state + output
+        self._make_prediction(state_np, p_active)
 
         self._outputs = self.apply_wta(p_active)
 
@@ -450,9 +530,32 @@ class TemporalPrototypeColumn(ColumnBase):
             "last_won": torch.from_numpy(self.last_won),
             "_reserved_mask": torch.from_numpy(self._reserved_mask.astype(np.uint8)),
             "wta_mode": self.wta_mode,
+            # Predictor state
+            "pred_W": torch.from_numpy(self._pred_W),
+            "pred_b": torch.from_numpy(self._pred_b),
+            "surprise_ema": torch.from_numpy(self._surprise_ema),
+            "pred_lr": self.pred_lr,
+            "surprise_alpha": self.surprise_alpha,
+            "surprise_beta": self.surprise_beta,
         }
         torch.save(state, os.path.join(output_dir, "column_states.pt"))
-        print(f"  temporal_prototype column state saved to {output_dir}")
+
+        # Save correlation diagnostics separately (large arrays, optional analysis)
+        if self.last_raw_corr is not None:
+            np.savez(os.path.join(output_dir, "column_corr_diagnostics.npz"),
+                     raw_corr=self.last_raw_corr,
+                     centered_corr=self.last_centered_corr)
+
+        # Print summary
+        pred_err = f", pred_err={self.last_pred_error:.4f}" if self._pending_pred is not None else ""
+        corr_summary = ""
+        if self.last_raw_corr is not None:
+            n_out = self.n_outputs
+            offdiag_mask = ~np.eye(n_out, dtype=bool)
+            mean_offdiag = np.abs(self.last_raw_corr[:, offdiag_mask]).mean()
+            corr_summary = f", output_corr={mean_offdiag:.3f}"
+        print(f"  temporal_prototype column state saved to {output_dir}"
+              f"{pred_err}{corr_summary}")
 
     def load_state(self, state, slot_map):
         def _to_np(t):
@@ -476,3 +579,9 @@ class TemporalPrototypeColumn(ColumnBase):
             self.last_won = _to_np(state["last_won"]).astype(np.int64)
         if "wta_mode" in state:
             self.wta_mode = state["wta_mode"]
+        if "pred_W" in state:
+            self._pred_W = _to_np(state["pred_W"]).astype(np.float32)
+        if "pred_b" in state:
+            self._pred_b = _to_np(state["pred_b"]).astype(np.float32)
+        if "surprise_ema" in state:
+            self._surprise_ema = _to_np(state["surprise_ema"]).astype(np.float32)

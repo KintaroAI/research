@@ -535,6 +535,10 @@ def run_word2vec(args):
                 'homeostasis_rate': getattr(args, 'column_homeostasis_rate', 0.02),
                 'lr_neg': getattr(args, 'column_lr_neg', 0.01),
                 'margin_band': getattr(args, 'column_margin_band', 0.3),
+                'multi_scale': getattr(args, 'column_multi_scale', False),
+                'pred_lr': getattr(args, 'column_pred_lr', 0.01),
+                'surprise_alpha': getattr(args, 'column_surprise_alpha', 0.5),
+                'surprise_beta': getattr(args, 'column_surprise_beta', 0.99),
                 'tiredness_rate': getattr(args, 'column_tiredness_rate', 0.0),
                 'tiredness_recovery': getattr(args, 'column_tiredness_recovery', 0.0),
                 'match_threshold': getattr(args, 'column_match_threshold', 0.1),
@@ -974,6 +978,12 @@ def main():
                        help="Fast fatigue penalty weight (default: 1.0, 0=disabled)")
     p_w2v.add_argument("--column-homeostasis-rate", type=float, default=0.02,
                        help="Slow homeostatic theta drift rate (default: 0.02, lower=weaker equalization)")
+    p_w2v.add_argument("--column-surprise-alpha", type=float, default=0.5,
+                       help="Surprise LR boost for temporal_prototype (default: 0.5, 0=disabled)")
+    p_w2v.add_argument("--column-surprise-beta", type=float, default=0.99,
+                       help="Surprise EMA smoothing (default: 0.99, higher=smoother)")
+    p_w2v.add_argument("--column-multi-scale", action="store_true",
+                       help="Use multi-scale descriptor [current, delta_1, mean_full, delta_half] (4 parts instead of 3)")
     p_w2v.add_argument("--column-lr-neg", type=float, default=0.01,
                        help="Loser repulsion learning rate for temporal_prototype column (default: 0.01)")
     p_w2v.add_argument("--column-margin-band", type=float, default=0.3,
