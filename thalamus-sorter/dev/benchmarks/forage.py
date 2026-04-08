@@ -80,6 +80,22 @@ def add_args(parser):
                         help="Distance to collect a POI (default: 5.0)")
     parser.add_argument("--forage-walk-step", type=float, default=0.5,
                         help="Spasm step size per fiber (default: 0.5)")
+    parser.add_argument("--forage-spasm-base", type=float, default=0.0625,
+                        help="Spasm base probability multiplier (default: 0.0625). "
+                             "Higher = more early exploration.")
+    parser.add_argument("--forage-spasm-halflife", type=float, default=20000.0,
+                        help="Spasm decay half-life in ticks (default: 20000). "
+                             "Larger = spasms persist longer.")
+    parser.add_argument("--forage-motor-wiring", type=str, default="first4",
+                        choices=["first4", "random"],
+                        help="Motor output → direction mapping: 'first4' (outputs 0-3 → dx+/dx-/dy+/dy-) "
+                             "or 'random' (distribute all outputs across 4 directions, reduce with max)")
+    parser.add_argument("--forage-motor-reduction", type=str, default="max",
+                        choices=["max", "sum"],
+                        help="Per-direction reduction for random wiring (default: max)")
+    parser.add_argument("--forage-move-threshold", type=float, default=0.01,
+                        help="Per-fiber force gate (default: 0.01). "
+                             "Below this, no movement and no tiredness. Lower → more motor responsiveness.")
     parser.add_argument("--forage-hunger-rate", type=float, default=0.001,
                         help="Hunger ramp per tick (default: 0.001, 1000 ticks to 1.0)")
     parser.add_argument("--forage-motor-columns", type=str, default="0,1,2,3,4,5,6,7",
@@ -109,11 +125,18 @@ def make_signal(w, h, args):
     collect_radius = getattr(args, 'forage_collect_radius', 5.0)
     poi_signals = not getattr(args, 'no_forage_poi_signals', False)
     walk_step = getattr(args, 'forage_walk_step', 0.5)
+    spasm_base_param = getattr(args, 'forage_spasm_base', 0.0625)
+    spasm_halflife = getattr(args, 'forage_spasm_halflife', 20000.0)
     hunger_rate = getattr(args, 'forage_hunger_rate', 0.01)
     motor_cols_str = getattr(args, 'forage_motor_columns', '0,1,2,3,4,5,6,7')
     motor_columns = [int(x) for x in motor_cols_str.split(',')]
     motor_scale = getattr(args, 'forage_motor_scale', 0.5)
+    motor_wiring = getattr(args, 'forage_motor_wiring', 'first4')
+    motor_reduction = getattr(args, 'forage_motor_reduction', 'max')
     rng = np.random.RandomState(42)
+    # Per-column random wiring: map each motor column's outputs to 4 directions.
+    # Built lazily in tick_fn once column_mgr is known (need n_outputs).
+    motor_output_to_dir = {}  # motor_col_idx → list of 4 lists (outputs per direction)
 
     # Agent state
     pos = np.array([field_size / 2, field_size / 2], dtype=np.float32)
@@ -148,7 +171,7 @@ def make_signal(w, h, args):
     rest_rate = 0.01
     tire_rate = 0.0  # was 0.005 — disabled to let motor run freely
     recovery_rate = 0.002
-    move_threshold = 0.01  # per-fiber force gate (low = neurons always contribute)
+    move_threshold = getattr(args, 'forage_move_threshold', 0.01)  # per-fiber force gate
     score = [0]
     phase_scores = [0, 0]
     _refs = {'column_mgr': None, 'renderer': None, 'dsolver': None,
@@ -272,11 +295,33 @@ def make_signal(w, h, args):
         col_mgr = _refs['column_mgr']
         if col_mgr is not None and len(motor_columns) > 0:
             all_out = col_mgr.get_outputs()
-            m_cols = all_out.shape[0]
+            m_cols, n_out = all_out.shape
+            # Lazily build random wiring table once we know n_outputs
+            if motor_wiring == 'random' and not motor_output_to_dir:
+                wire_rng = np.random.RandomState(7919)
+                for mc in motor_columns:
+                    perm = wire_rng.permutation(n_out)
+                    base = n_out // 4
+                    remainder = n_out % 4
+                    dir_outputs = []
+                    cur = 0
+                    for d in range(4):
+                        size = base + (1 if d < remainder else 0)
+                        dir_outputs.append(perm[cur:cur+size].tolist())
+                        cur += size
+                    motor_output_to_dir[mc] = dir_outputs
             for f, mc in enumerate(motor_columns):
                 if f < n_fibers and mc < m_cols:
                     for d in range(4):
-                        force = all_out[mc, d] * motor_scale
+                        if motor_wiring == 'random':
+                            outs = motor_output_to_dir[mc][d]
+                            if motor_reduction == 'sum':
+                                raw = float(all_out[mc, outs].sum())
+                            else:  # 'max'
+                                raw = float(all_out[mc, outs].max())
+                        else:
+                            raw = float(all_out[mc, d])
+                        force = raw * motor_scale
                         per_fiber_force[d, f] = force
                         if force >= move_threshold:
                             # Above gate: contributes to movement, scaled by tiredness
@@ -285,8 +330,8 @@ def make_signal(w, h, args):
         # Per-fiber muscle spasms: each of 8 fibers per direction
         # independently gets restless and spasms. Total force = sum/n_fibers.
         # Spasm probability decays over time and suppressed by strong motor output.
-        spasm_base = 0.0625  # = 0.5^4, equivalent to old t=20k
-        spasm_decay = spasm_base * (0.5 ** (t / 20000.0))  # decays to zero, no floor
+        spasm_base = spasm_base_param
+        spasm_decay = spasm_base * (0.5 ** (t / spasm_halflife))  # decays to zero, no floor
         # Suppress spasms when motor output is confident
         total_motor = sum(motor_forces)
         if total_motor > 0:
@@ -409,6 +454,20 @@ def make_signal(w, h, args):
         col_mgr = _refs.get('column_mgr')
         if col_mgr is not None and hasattr(col_mgr, 'set_pred_lr_scale'):
             col_mgr.set_pred_lr_scale(hunger)
+
+        # Pass hunger level to column for gated loser repulsion
+        if col_mgr is not None and hasattr(col_mgr, 'set_hunger'):
+            col_mgr.set_hunger(hunger)
+
+        # Hunger-modulated homeostasis: hungry → fast rotation (explore), satiated → stable
+        # DISABLED: testing fixed-h configs first
+        # if col_mgr is not None and hasattr(col_mgr, 'homeostasis_rate'):
+        #     h_low = getattr(col_mgr, '_h_base_low', None)
+        #     if h_low is None:
+        #         col_mgr._h_base_high = col_mgr.homeostasis_rate
+        #         col_mgr._h_base_low = col_mgr.homeostasis_rate / 10.0
+        #         h_low = col_mgr._h_base_low
+        #     col_mgr.homeostasis_rate = h_low + hunger * (col_mgr._h_base_high - h_low)
 
         # Live LR control from field viz (background thread polls, we just read)
         if t % 100 == 0 and _ctrl_values:

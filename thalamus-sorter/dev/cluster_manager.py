@@ -64,6 +64,27 @@ def create_column(column_type, column_config):
             wta_mode=column_config.get('wta_mode', 'none'),
             lateral_inputs=column_config.get('lateral_inputs', False),
             lateral_input_k=column_config.get('lateral_input_k', 4))
+    elif column_type == 'temporal_prototype':
+        from temporal_prototype_column import TemporalPrototypeColumn
+        return TemporalPrototypeColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 20),
+            window=column_config.get('window', 4),
+            lr=column_config.get('lr', 0.05),
+            temperature=column_config.get('temperature', 0.45),
+            k_active=column_config.get('k_active', 2),
+            homeostasis_rate=column_config.get('homeostasis_rate', 0.02),
+            fatigue_decay=column_config.get('fatigue_decay', 0.90),
+            fatigue_rate=column_config.get('fatigue_rate', 0.75),
+            fatigue_strength=column_config.get('fatigue_strength', 1.0),
+            lr_neg=column_config.get('lr_neg', 0.01),
+            margin_band=column_config.get('margin_band', 0.3),
+            corr_window=column_config.get('corr_window', 50),
+            reseed_after=column_config.get('reseed_after', 1000),
+            wta_mode=column_config.get('wta_mode', 'none'),
+            lateral_inputs=column_config.get('lateral_inputs', False),
+            lateral_input_k=column_config.get('lateral_input_k', 4))
     elif column_type == 'conscience_homeostatic_fatigue':
         from conscience_homeostatic_fatigue_column import ConscienceHomeostaticFatigueColumn
         return ConscienceHomeostaticFatigueColumn(

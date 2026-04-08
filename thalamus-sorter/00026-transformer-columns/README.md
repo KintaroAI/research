@@ -1,7 +1,7 @@
 # ts-00026: Transformer Columns
 
-**Date:** 2026-03-29
-**Status:** In progress
+**Date:** 2026-03-29 → 2026-04-05
+**Status:** Complete
 **Source:** `exp/ts-00026`
 **Depends on:** ts-00025 (lateral connections, visual field, blocks, cluster cap)
 
@@ -465,3 +465,18 @@ conscience with simple cosine similarity produces more churn, more
 exploration, more food. The encoder solves the wrong problem — stable
 consistent categories — when what the system needs is variation and
 exploration through the feedback loop.
+
+## Closing summary
+
+Best forage result: **2494 collections** (conscience_override, γ=2, gmax=0.25).
+Best conscience baseline: 2284 collections. Transformer hybrids consistently
+underperformed plain conscience — stable categories kill the exploration
+churn that drives food collection.
+
+Secondary fix (late in experiment): `sizes` array now counts all ring wires,
+not just primary assignments. This eliminates false-death splits when
+`wire_all_ring=True` (default with `max_k=2`). See run 115 for first all-ring
+conscience baseline at 2172 collections.
+
+Next direction: alternative conscience designs that preserve exploration —
+see ts-00027 (conscience_homeostatic_fatigue column).

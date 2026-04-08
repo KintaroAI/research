@@ -530,6 +530,11 @@ def run_word2vec(args):
                 'lambda_nudge': getattr(args, 'column_lambda_nudge', 0.10),
                 'train_every': getattr(args, 'column_train_every', 10),
                 'wta_mode': getattr(args, 'column_wta', 'none'),
+                'k_active': getattr(args, 'column_k_active', 2),
+                'fatigue_strength': getattr(args, 'column_fatigue_strength', 1.0),
+                'homeostasis_rate': getattr(args, 'column_homeostasis_rate', 0.02),
+                'lr_neg': getattr(args, 'column_lr_neg', 0.01),
+                'margin_band': getattr(args, 'column_margin_band', 0.3),
                 'tiredness_rate': getattr(args, 'column_tiredness_rate', 0.0),
                 'tiredness_recovery': getattr(args, 'column_tiredness_recovery', 0.0),
                 'match_threshold': getattr(args, 'column_match_threshold', 0.1),
@@ -913,7 +918,7 @@ def main():
                        help="Cluster visualization: 'color' (ID-based), 'signal' (mean neuron signal), 'both'")
     # column wiring (thalamus-to-cortex)
     p_w2v.add_argument("--column-type", type=str, default="default",
-                       help="Column type: 'default', 'conscience', 'predictive', 'recon', 'conscience_predictive', 'conscience_override', 'conscience_homeostatic_fatigue'")
+                       help="Column type: 'default', 'conscience', 'predictive', 'recon', 'conscience_predictive', 'conscience_override', 'conscience_homeostatic_fatigue', 'temporal_prototype'")
     p_w2v.add_argument("--column-outputs", type=int, default=4,
                        help="Column outputs per cluster (0=disabled, 4=enable with 4 outputs)")
     p_w2v.add_argument("--column-max-inputs", type=int, default=20,
@@ -963,6 +968,16 @@ def main():
     p_w2v.add_argument("--column-wta", type=str, default="none",
                        choices=["none", "soft", "hard", "confidence"],
                        help="Column WTA mode: 'none' (raw softmax), 'soft' (sharpened), 'hard' (one-hot), 'confidence' (scaled by decisiveness)")
+    p_w2v.add_argument("--column-k-active", type=int, default=2,
+                       help="Top-k active outputs for conscience_homeostatic_fatigue column (default: 2)")
+    p_w2v.add_argument("--column-fatigue-strength", type=float, default=1.0,
+                       help="Fast fatigue penalty weight (default: 1.0, 0=disabled)")
+    p_w2v.add_argument("--column-homeostasis-rate", type=float, default=0.02,
+                       help="Slow homeostatic theta drift rate (default: 0.02, lower=weaker equalization)")
+    p_w2v.add_argument("--column-lr-neg", type=float, default=0.01,
+                       help="Loser repulsion learning rate for temporal_prototype column (default: 0.01)")
+    p_w2v.add_argument("--column-margin-band", type=float, default=0.3,
+                       help="Similarity band for loser repulsion trigger (default: 0.3)")
     p_w2v.add_argument("--column-tiredness-rate", type=float, default=0.0,
                        help="Output tiredness per win (0=disabled, 0.001=tired in ~1k ticks)")
     p_w2v.add_argument("--column-tiredness-recovery", type=float, default=0.0,
