@@ -141,6 +141,9 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
     print(f"    V1 (sensory): {len(v1_set)} clusters")
     print(f"    V2 (from V1): {len(v2_set)} clusters")
     print(f"    V3 (from V2): {len(v3_set)} clusters")
+    alive = set(c for c in range(m) if s_counts[c] + f_counts[c] > 0)
+    unclassified = alive - v1_set - v2_set - v3_set
+    print(f"    Unclassified: {len(unclassified)}/{len(alive)} alive clusters")
 
     # --- V1 spatial coherence: do sensory clusters contain nearby pixels? ---
     v1_diameters = []
@@ -185,6 +188,29 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
         print(f"    V2 receptive field: mean={mean_rf:.1f} "
               f"(should be > V1 diameter)")
 
+    # --- V2 fan-in: how many V1 sources per V2 cluster? ---
+    v2_fan_ins = []
+    v2_all_fb = set()
+    for c in v2_set:
+        fb_members = np.where((most_recent == c) &
+                              (np.arange(n_total) >= n_sensory))[0]
+        source_cols = set((fb_members - n_sensory) // n_outputs)
+        v1_sources = source_cols & v1_set
+        v2_fan_ins.append(len(v1_sources))
+        v2_all_fb.update(fb_members.tolist())
+
+    if v2_fan_ins:
+        print(f"    V2 fan-in from V1: mean={np.mean(v2_fan_ins):.1f}, "
+              f"min={min(v2_fan_ins)}, max={max(v2_fan_ins)}")
+
+    # --- V1→V2 coverage: do V1 column outputs end up in V2 clusters? ---
+    v1_feeding_v2 = 0
+    for c in v1_set:
+        col_fb = set(n_sensory + c * n_outputs + o for o in range(n_outputs))
+        if col_fb & v2_all_fb:
+            v1_feeding_v2 += 1
+    print(f"    V1→V2 coverage: {v1_feeding_v2}/{len(v1_set)} V1 clusters feed V2")
+
     # --- Column differentiation per layer ---
     cm = cluster_mgr.column_mgr
     # Quick differentiation check
@@ -210,19 +236,62 @@ def analyze(metadata, cluster_mgr, signals, tick_counter, T, output_dir):
                 'V1': len(v1_set),
                 'V2': len(v2_set),
                 'V3': len(v3_set),
+                'unclassified': len(unclassified),
+                'alive': len(alive),
             },
             'v1_mean_diameter': float(np.mean(v1_diameters)) if v1_diameters else None,
             'v2_mean_receptive_field': float(np.mean(v2_rf_sizes)) if v2_rf_sizes else None,
+            'v2_fan_in': {
+                'mean': float(np.mean(v2_fan_ins)) if v2_fan_ins else None,
+                'min': min(v2_fan_ins) if v2_fan_ins else None,
+                'max': max(v2_fan_ins) if v2_fan_ins else None,
+            },
+            'v1_v2_coverage': f"{v1_feeding_v2}/{len(v1_set)}",
         }
         path = os.path.join(output_dir, "edges_analysis.json")
         with open(path, 'w') as f:
             json.dump(results, f, indent=2)
         print(f"  EDGES analysis saved: {path}")
 
-        # Save the source image for reference
+        # Save the source image and V1 cluster map
         try:
             import cv2
             img_uint8 = (metadata['img'] * 255).astype(np.uint8)
             cv2.imwrite(os.path.join(output_dir, "edges_source.png"), img_uint8)
+
+            # V1 cluster map: color each pixel by its cluster assignment
+            # Golden-ratio hue spacing for max visual distinction
+            v1_list = sorted(v1_set)
+            color_map = {}
+            golden = 0.618033988749895
+            for i, c in enumerate(v1_list):
+                hue = int(180 * ((i * golden) % 1.0))
+                sat = 180 + (i % 3) * 30       # vary saturation
+                val = 200 + ((i // 3) % 2) * 40  # vary brightness
+                color_map[c] = cv2.cvtColor(
+                    np.array([[[hue, sat, val]]], dtype=np.uint8),
+                    cv2.COLOR_HSV2BGR)[0, 0].tolist()
+
+            grid = np.full((h, w, 3), 40, dtype=np.uint8)
+            for idx in range(n_sensory):
+                py, px = idx // w, idx % w
+                cid = most_recent[idx]
+                if cid in color_map:
+                    grid[py, px] = color_map[cid]
+
+            scale = 16
+            grid_large = cv2.resize(grid, (w * scale, h * scale),
+                                    interpolation=cv2.INTER_NEAREST)
+            # Grid lines
+            for i in range(1, w):
+                cv2.line(grid_large, (i * scale, 0),
+                         (i * scale, h * scale), (80, 80, 80), 1)
+            for i in range(1, h):
+                cv2.line(grid_large, (0, i * scale),
+                         (w * scale, i * scale), (80, 80, 80), 1)
+
+            map_path = os.path.join(output_dir, "edges_v1_map.png")
+            cv2.imwrite(map_path, grid_large)
+            print(f"  V1 cluster map saved: {map_path}")
         except ImportError:
             pass
