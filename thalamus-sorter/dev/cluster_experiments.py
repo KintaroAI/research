@@ -775,9 +775,22 @@ def eval_clusters(cluster_ids, centroids, knn2, width, height, knn_lists=None):
       - spatial_contiguity: fraction of members within radius of cluster's grid center
       - knn2_spatial: mean grid distance between cluster center and knn2 target clusters
       - knn2_agreement: fraction of knn2 entries that appear in original KNN lists
+
+    Note: knn2 should contain CLUSTER IDs. If it contains neuron IDs (as
+    returned by frequency_knn), they will be auto-converted via cluster_ids.
     """
     n = len(cluster_ids)
     m = centroids.shape[0]
+
+    # Auto-detect neuron-ID knn2 and convert to cluster IDs.
+    # frequency_knn() returns neuron IDs; ClusterManager pre-converts; other
+    # callers like run_offline() may pass neuron IDs directly.
+    if knn2 is not None:
+        valid_mask = knn2 >= 0
+        if valid_mask.any() and knn2[valid_mask].max() >= m:
+            # Values exceed cluster range → must be neuron IDs
+            knn2 = knn2.copy()
+            knn2[valid_mask] = cluster_ids[knn2[valid_mask]]
 
     # Grid coordinates
     coords = np.stack([np.arange(n) % width, np.arange(n) // width], axis=1).astype(float)

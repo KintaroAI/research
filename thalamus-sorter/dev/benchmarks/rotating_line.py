@@ -174,6 +174,9 @@ def run(args):
         'lr_neg': args.lr_neg,
         'margin_band': args.margin_band,
         'multi_scale': getattr(args, 'multi_scale', False),
+        'activation': getattr(args, 'activation', 'topk'),
+        'corr_window': (args.corr_window if args.corr_window > 0 else None),
+        'theta_learn_scale': args.theta_learn_scale,
         'mode': 'kmeans',
         'entropy_scaled_lr': True,
     }
@@ -422,6 +425,13 @@ def main():
     parser.add_argument('--fatigue-strength', type=float, default=0.001)
     parser.add_argument('--lr-neg', type=float, default=0.01)
     parser.add_argument('--margin-band', type=float, default=0.3)
+    parser.add_argument('--activation', type=str, default='entmax15',
+                        choices=['topk', 'sparsemax', 'entmax15'],
+                        help='Output activation mode')
+    parser.add_argument('--corr-window', type=int, default=0,
+                        help='Correlation diagnostic window (0=match window)')
+    parser.add_argument('--theta-learn-scale', type=float, default=0.0,
+                        help='Theta influence on learning (0=decoupled, 1=coupled)')
     parser.add_argument('--multi-scale', action='store_true',
                         help='Use multi-scale descriptor (4 parts: current, delta_1, mean_full, delta_half)')
     parser.add_argument('--window', type=int, default=10)

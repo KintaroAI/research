@@ -55,13 +55,20 @@ class TemporalPrototypeColumn(ColumnBase):
         lr_neg=0.01,
         margin_band=0.3,
         # --- New: correlation diagnostics ---
-        corr_window=50,
+        corr_window=None,  # defaults to `window` to match learning timescale
         # --- New: multi-scale descriptor ---
         multi_scale=False,
         # --- New: prediction-error-modulated learning ---
         pred_lr=0.01,
         surprise_alpha=0.5,
         surprise_beta=0.99,
+        # --- New: decorrelation ---
+        decorrelation=True,
+        decor_lr=0.01,
+        # --- New: activation mode ---
+        activation='entmax15',  # 'topk', 'sparsemax', 'entmax15'
+        # --- New: decouple learning from emission ---
+        theta_learn_scale=0.0,  # 0=fully decoupled, 1=coupled (old behavior)
         **kwargs,
     ):
         wta_mode = kwargs.pop("wta_mode", "none")
@@ -103,9 +110,9 @@ class TemporalPrototypeColumn(ColumnBase):
         self.lr_neg = float(lr_neg)
         self.margin_band = float(margin_band)
 
-        # Correlation diagnostics
-        self.corr_window = int(corr_window)
-        self._corr_buf = np.zeros((corr_window, m, n_outputs), dtype=np.float32)
+        # Correlation diagnostics — default to 2× learning window
+        self.corr_window = int(window * 2 if corr_window is None else corr_window)
+        self._corr_buf = np.zeros((self.corr_window, m, n_outputs), dtype=np.float32)
         self._corr_buf_idx = 0
         self._corr_buf_full = False
         self.last_raw_corr = None       # (m, n_out, n_out) or None
@@ -116,8 +123,16 @@ class TemporalPrototypeColumn(ColumnBase):
 
         # Prediction-error-modulated learning
         self.pred_lr = float(pred_lr)
-        self.surprise_alpha = float(surprise_alpha)  # how much surprise boosts LR
-        self.surprise_beta = float(surprise_beta)    # EMA smoothing for surprise
+        self.surprise_alpha = float(surprise_alpha)
+        self.surprise_beta = float(surprise_beta)
+
+        # Decorrelation: push correlated output prototypes apart
+        self.decorrelation = bool(decorrelation)
+        self.decor_lr = float(decor_lr)
+
+        # Activation mode
+        self.activation = activation
+        self.theta_learn_scale = float(theta_learn_scale)
 
         # External signals (set by benchmark tick_fn)
         self._hunger_level = 0.0  # informational only, not used for learning
@@ -134,18 +149,21 @@ class TemporalPrototypeColumn(ColumnBase):
         self.fast_fatigue = np.zeros((m, n_outputs), dtype=np.float32)
         self.last_won = np.zeros((m, n_outputs), dtype=np.int64)
 
-        # Predictor: linear map from (d_model + n_outputs) → d_model
-        # Predicts next descriptor from current descriptor + current output
+        # Predictor: linear map from (d_model + n_outputs) → max_inputs
+        # Predicts next raw frame from current descriptor + current output
+        # GPU-accelerated: weights + forward/backward on GPU, surprise on CPU
         pred_in = self.d_model + n_outputs
+        pred_out = self.max_inputs
         self._pred_dim = pred_in
-        self._pred_W = (rng.randn(m, pred_in, self.d_model).astype(np.float32)
-                        * 0.01 / np.sqrt(pred_in))
-        self._pred_b = np.zeros((m, self.d_model), dtype=np.float32)
-        self._pending_pred = None           # (m, d_model) or None
-        self._last_pred_input = None        # (m, pred_in) for gradient
-        self._surprise_ema = np.ones(m, dtype=np.float32)  # per-column smoothed surprise
-        self._surprise_raw = np.zeros(m, dtype=np.float32)  # last raw surprise
-        self.last_pred_error = 0.0          # scalar diagnostic
+        self._pred_out = pred_out
+        self._pred_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self._pred_W = torch.randn(m, pred_in, pred_out, device=self._pred_device) * (0.01 / np.sqrt(pred_in))
+        self._pred_b = torch.zeros(m, pred_out, device=self._pred_device)
+        self._pending_pred_np = None        # (m, max_inputs) numpy or None
+        self._last_pred_input_t = None      # (m, pred_in) torch tensor for gradient
+        self._surprise_ema = np.ones(m, dtype=np.float32)
+        self._surprise_raw = np.zeros(m, dtype=np.float32)
+        self.last_pred_error = 0.0
 
         self._tick_count = 0
         self._learn_prob = 1.0
@@ -211,24 +229,89 @@ class TemporalPrototypeColumn(ColumnBase):
         mask[self._arange_m[:, None], idx] = 1.0
         return mask
 
-    def _postprocess_probs(self, scores):
-        logits = scores - scores.max(axis=1, keepdims=True)
-        e = np.exp(logits / max(self.temperature, 1e-8))
-        p = e / e.sum(axis=1, keepdims=True).clip(1e-8)
+    @staticmethod
+    def _entmax15(z):
+        """α-entmax with α=1.5. Batched: z is (m, n_out).
 
-        mask = self._topk_mask(scores)
-        p = p * mask
+        For α=1.5, the support set is determined by finding the largest k such that:
+            1 + k * z_sorted[k-1] > sum(z_sorted[:k]) + sqrt(k * (1 + sum(z_sorted[:k]^2) - sum(z_sorted[:k])^2))
+        Then τ = (sum(z_sorted[:k]) - sqrt(k * (1 + sum(z_sorted[:k]^2) - sum(z_sorted[:k])^2) - ...)) / k
+
+        Simplified exact formula per Peters et al.:
+            τ such that sum_i max(z_i - τ, 0)^2 = 1
+            → on the support of size k: tau = (sum_k(z) - sqrt(k + sum_k(z)^2 - k*sum_k(z^2))) / (−k)... ugh
+        Vectorized via bisection across all rows in parallel.
+        """
+        m, n = z.shape
+        # Bisection bounds: tau is in [max(z) - 1, max(z)]
+        z_max = z.max(axis=1)  # (m,)
+        lo = (z_max - 1.0)[:, None]  # (m, 1)
+        hi = z_max[:, None]           # (m, 1)
+
+        for _ in range(30):  # 30 iterations for ~1e-9 precision
+            mid = (lo + hi) * 0.5                  # (m, 1)
+            vals = np.maximum(z - mid, 0.0)         # (m, n)
+            s = (vals ** 2).sum(axis=1, keepdims=True)  # (m, 1)
+            # If s > 1, tau is too low (need higher tau to reduce support mass)
+            too_low = s > 1.0
+            lo = np.where(too_low, mid, lo)
+            hi = np.where(too_low, hi, mid)
+
+        tau = (lo + hi) * 0.5  # (m, 1)
+        p = np.maximum(z - tau, 0.0)  # (m, n)
+        # Normalize to sum=1 (entmax projects onto simplex; small numerical drift)
         p_sum = p.sum(axis=1, keepdims=True)
+        empty = p_sum[:, 0] <= 1e-8
+        if empty.any():
+            # Fallback: one-hot on argmax for degenerate rows
+            winners = z.argmax(axis=1)
+            for row in np.where(empty)[0]:
+                p[row] = 0.0
+                p[row, winners[row]] = 1.0
+                p_sum[row] = 1.0
+        p = p / p_sum
+        return p.astype(np.float32)
 
-        empty = p_sum[:, 0] <= self.sparse_floor
-        if np.any(empty):
-            winners = scores.argmax(axis=1)
-            p[empty] = 0.0
-            p[empty, winners[empty]] = 1.0
+    @staticmethod
+    def _sparsemax(z):
+        """Sparsemax activation. Batched: z is (m, n_out)."""
+        m, n = z.shape
+        sorted_z = np.sort(z, axis=1)[:, ::-1]
+        cumsum = np.cumsum(sorted_z, axis=1)
+        k_arr = np.arange(1, n + 1, dtype=np.float32)
+        support = sorted_z > (cumsum - 1.0) / k_arr
+        # k = number of support elements per row
+        k = support.sum(axis=1).astype(int)  # (m,)
+        tau = (cumsum[np.arange(m), k - 1] - 1.0) / k
+        p = np.maximum(z - tau[:, None], 0.0)
+        return p.astype(np.float32)
+
+    def _postprocess_probs(self, scores):
+        z = scores / max(self.temperature, 1e-8)
+
+        if self.activation == 'entmax15':
+            return self._entmax15(z)
+        elif self.activation == 'sparsemax':
+            return self._sparsemax(z)
+        else:
+            # Original: softmax + top-k mask
+            logits = z - z.max(axis=1, keepdims=True)
+            e = np.exp(logits)
+            p = e / e.sum(axis=1, keepdims=True).clip(1e-8)
+
+            mask = self._topk_mask(scores)
+            p = p * mask
             p_sum = p.sum(axis=1, keepdims=True)
 
-        p = p / p_sum.clip(1e-8)
-        return p.astype(np.float32)
+            empty = p_sum[:, 0] <= self.sparse_floor
+            if np.any(empty):
+                winners = scores.argmax(axis=1)
+                p[empty] = 0.0
+                p[empty, winners[empty]] = 1.0
+                p_sum = p.sum(axis=1, keepdims=True)
+
+            p = p / p_sum.clip(1e-8)
+            return p.astype(np.float32)
 
     def _update_fast_fatigue(self, p_active):
         self.fast_fatigue = (
@@ -252,16 +335,24 @@ class TemporalPrototypeColumn(ColumnBase):
             + (self.max_lr_scale - self.min_lr_scale) * underuse
         ).astype(np.float32)
 
-    def _update_prototypes(self, state_np, p_active, scores, surprise=None):
+    def _update_prototypes(self, state_np, p_active, scores, sim_raw, surprise=None):
         ar = self._arange_m
 
         # --- Winner pull ---
+        # Decoupled: learn from raw similarity (no theta bias)
+        # Coupled: learn from emitted p_active (theta-biased)
+        if self.theta_learn_scale < 1.0:
+            sim_learn = sim_raw - self.theta_learn_scale * self.theta
+            p_learn = self._postprocess_probs(sim_learn)
+        else:
+            p_learn = p_active
+
         if not self.learn_from_probs:
-            winners = p_active.argmax(axis=1)
-            learn = np.zeros_like(p_active, dtype=np.float32)
+            winners = p_learn.argmax(axis=1)
+            learn = np.zeros_like(p_learn, dtype=np.float32)
             learn[ar, winners] = 1.0
         else:
-            learn = p_active
+            learn = p_learn
 
         lr_scale = self._lr_scale_from_usage()
         # Surprise modulation: higher surprise → faster learning
@@ -374,37 +465,58 @@ class TemporalPrototypeColumn(ColumnBase):
             cen_corr = cen_cov / (std_c[:, :, None] * std_c[:, None, :])
             self.last_centered_corr = cen_corr
 
-    def _check_prediction(self, desc_t):
-        """Compare last tick's prediction to actual descriptor. Returns per-column normalized surprise."""
-        if self._pending_pred is None:
+            # Decorrelation: push prototypes of correlated outputs apart
+            if self.decorrelation and self.decor_lr > 0:
+                n_out = self.n_outputs
+                # Zero the diagonal (self-correlation is always 1, ignore it)
+                offdiag = cen_corr.copy()
+                offdiag[:, np.arange(n_out), np.arange(n_out)] = 0.0
+                # For each pair (i,j) with positive centered correlation,
+                # push prototype[i] and prototype[j] apart proportionally
+                for i in range(n_out):
+                    for j in range(i + 1, n_out):
+                        corr_ij = offdiag[:, i, j]  # (m,)
+                        # Only push apart positively correlated pairs
+                        push_mask = corr_ij > 0.1
+                        if push_mask.any():
+                            idx = np.where(push_mask)[0]
+                            strength = self.decor_lr * corr_ij[idx, None]  # (n_push, 1)
+                            diff = self.prototypes[idx, i] - self.prototypes[idx, j]  # (n_push, d_model)
+                            self.prototypes[idx, i] += strength * diff
+                            self.prototypes[idx, j] -= strength * diff
+                # Renormalize
+                norms = np.linalg.norm(self.prototypes, axis=2, keepdims=True).clip(1e-8)
+                self.prototypes = (self.prototypes / norms).astype(np.float32)
+
+    def _check_prediction(self, current_frame):
+        """Compare last tick's prediction to actual raw frame. Returns per-column normalized surprise."""
+        if self._pending_pred_np is None:
             return np.zeros(self.m, dtype=np.float32)
-        # MSE per column between predicted and actual descriptor
-        err = ((self._pending_pred - desc_t) ** 2).mean(axis=1)  # (m,)
+        err = ((self._pending_pred_np - current_frame) ** 2).mean(axis=1)  # (m,)
         self._surprise_raw = err
-        # Smooth surprise via EMA
         self._surprise_ema = (self.surprise_beta * self._surprise_ema
                               + (1.0 - self.surprise_beta) * err)
-        # Normalized surprise: how surprising relative to recent baseline
         norm = np.clip(err / self._surprise_ema.clip(1e-8), 0.0, 5.0)
         self.last_pred_error = float(err.mean())
         return norm.astype(np.float32)
 
     def _make_prediction(self, desc_t, a_t):
-        """Predict next descriptor from current descriptor + output."""
-        pred_input = np.concatenate([desc_t, a_t], axis=1)  # (m, d_model + n_out)
-        pred = np.einsum('mi,mid->md', pred_input, self._pred_W) + self._pred_b
-        self._pending_pred = pred
-        self._last_pred_input = pred_input
+        """Predict next raw frame from current descriptor + output. GPU-accelerated."""
+        pred_input = np.concatenate([desc_t, a_t], axis=1)  # (m, pred_in)
+        inp_t = torch.from_numpy(pred_input).to(self._pred_device)
+        pred_t = torch.bmm(inp_t.unsqueeze(1), self._pred_W).squeeze(1) + self._pred_b
+        self._pending_pred_np = pred_t.cpu().numpy()
+        self._last_pred_input_t = inp_t
 
-    def _update_predictor(self, desc_t):
-        """Train predictor weights via gradient descent toward actual descriptor."""
-        if self._pending_pred is None or self._last_pred_input is None:
+    def _update_predictor(self, current_frame):
+        """Train predictor via gradient descent on GPU."""
+        if self._pending_pred_np is None or self._last_pred_input_t is None:
             return
-        # error = prediction - target
-        error = self._pending_pred - desc_t  # (m, d_model)
-        # grad_W = input^T @ error for each column: (m, pred_in, 1) @ (m, 1, d_model)
-        inp = self._last_pred_input  # (m, pred_in)
-        grad_W = np.einsum('mi,md->mid', inp, error)  # (m, pred_in, d_model)
+        target_t = torch.from_numpy(current_frame).to(self._pred_device)
+        pred_t = torch.from_numpy(self._pending_pred_np).to(self._pred_device)
+        error = pred_t - target_t  # (m, max_inputs)
+        # grad_W = input^T @ error: (m, pred_in, 1) @ (m, 1, max_inputs)
+        grad_W = torch.bmm(self._last_pred_input_t.unsqueeze(2), error.unsqueeze(1))
         self._pred_W -= self.pred_lr * grad_W
         self._pred_b -= self.pred_lr * error
 
@@ -442,10 +554,11 @@ class TemporalPrototypeColumn(ColumnBase):
         self._tick_count += 1
 
         X = self._gather_input(signal_window).astype(np.float32)
+        current_frame = X[:, :, -1]  # raw frame for predictor target
         state_np = self._state_descriptor_np(X)
 
-        # Check last tick's prediction against actual descriptor
-        surprise = self._check_prediction(state_np)
+        # Check last tick's prediction against actual raw frame
+        surprise = self._check_prediction(current_frame)
 
         sim_raw = self._raw_similarity(state_np)
 
@@ -455,15 +568,15 @@ class TemporalPrototypeColumn(ColumnBase):
         p_active = self._postprocess_probs(scores)
 
         if self._rng.rand() < self._learn_prob:
-            self._update_prototypes(state_np, p_active, scores, surprise)
-            self._update_predictor(state_np)
+            self._update_prototypes(state_np, p_active, scores, sim_raw, surprise)
+            self._update_predictor(current_frame)
             self._reseed_dead_units(state_np)
 
         self._update_fast_fatigue(p_active)
         self._update_homeostasis(p_active)
         self._update_corr_diagnostics(p_active)
 
-        # Predict next descriptor from current state + output
+        # Predict next raw frame from current descriptor + output
         self._make_prediction(state_np, p_active)
 
         self._outputs = self.apply_wta(p_active)
@@ -531,8 +644,8 @@ class TemporalPrototypeColumn(ColumnBase):
             "_reserved_mask": torch.from_numpy(self._reserved_mask.astype(np.uint8)),
             "wta_mode": self.wta_mode,
             # Predictor state
-            "pred_W": torch.from_numpy(self._pred_W),
-            "pred_b": torch.from_numpy(self._pred_b),
+            "pred_W": self._pred_W.cpu(),
+            "pred_b": self._pred_b.cpu(),
             "surprise_ema": torch.from_numpy(self._surprise_ema),
             "pred_lr": self.pred_lr,
             "surprise_alpha": self.surprise_alpha,
@@ -547,7 +660,7 @@ class TemporalPrototypeColumn(ColumnBase):
                      centered_corr=self.last_centered_corr)
 
         # Print summary
-        pred_err = f", pred_err={self.last_pred_error:.4f}" if self._pending_pred is not None else ""
+        pred_err = f", pred_err={self.last_pred_error:.4f}" if self._pending_pred_np is not None else ""
         corr_summary = ""
         if self.last_raw_corr is not None:
             n_out = self.n_outputs
@@ -580,8 +693,10 @@ class TemporalPrototypeColumn(ColumnBase):
         if "wta_mode" in state:
             self.wta_mode = state["wta_mode"]
         if "pred_W" in state:
-            self._pred_W = _to_np(state["pred_W"]).astype(np.float32)
+            t = state["pred_W"]
+            self._pred_W = (t if isinstance(t, torch.Tensor) else torch.from_numpy(_to_np(t))).float().to(self._pred_device)
         if "pred_b" in state:
-            self._pred_b = _to_np(state["pred_b"]).astype(np.float32)
+            t = state["pred_b"]
+            self._pred_b = (t if isinstance(t, torch.Tensor) else torch.from_numpy(_to_np(t))).float().to(self._pred_device)
         if "surprise_ema" in state:
             self._surprise_ema = _to_np(state["surprise_ema"]).astype(np.float32)

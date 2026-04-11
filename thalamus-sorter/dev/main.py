@@ -539,6 +539,10 @@ def run_word2vec(args):
                 'pred_lr': getattr(args, 'column_pred_lr', 0.01),
                 'surprise_alpha': getattr(args, 'column_surprise_alpha', 0.5),
                 'surprise_beta': getattr(args, 'column_surprise_beta', 0.99),
+                'decorrelation': not getattr(args, 'no_column_decorrelation', False),
+                'decor_lr': getattr(args, 'column_decor_lr', 0.001),
+                'activation': getattr(args, 'column_activation', 'entmax15'),
+                'theta_learn_scale': getattr(args, 'column_theta_learn_scale', 0.0),
                 'tiredness_rate': getattr(args, 'column_tiredness_rate', 0.0),
                 'tiredness_recovery': getattr(args, 'column_tiredness_recovery', 0.0),
                 'match_threshold': getattr(args, 'column_match_threshold', 0.1),
@@ -982,6 +986,15 @@ def main():
                        help="Surprise LR boost for temporal_prototype (default: 0.5, 0=disabled)")
     p_w2v.add_argument("--column-surprise-beta", type=float, default=0.99,
                        help="Surprise EMA smoothing (default: 0.99, higher=smoother)")
+    p_w2v.add_argument("--column-theta-learn-scale", type=float, default=0.0,
+                       help="How much theta affects learning (0=decoupled, 1=coupled). Default: 0 (decoupled)")
+    p_w2v.add_argument("--column-activation", type=str, default="entmax15",
+                       choices=["topk", "sparsemax", "entmax15"],
+                       help="Output activation for temporal_prototype: 'topk' (softmax+mask), 'sparsemax', 'entmax15' (default)")
+    p_w2v.add_argument("--no-column-decorrelation", action="store_true",
+                       help="Disable output decorrelation for temporal_prototype column")
+    p_w2v.add_argument("--column-decor-lr", type=float, default=0.01,
+                       help="Decorrelation learning rate (default: 0.001)")
     p_w2v.add_argument("--column-multi-scale", action="store_true",
                        help="Use multi-scale descriptor [current, delta_1, mean_full, delta_half] (4 parts instead of 3)")
     p_w2v.add_argument("--column-lr-neg", type=float, default=0.01,

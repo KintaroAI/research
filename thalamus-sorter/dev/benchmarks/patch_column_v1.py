@@ -62,6 +62,9 @@ def build_patch_layer(args):
         'homeostasis_rate': args.homeostasis_rate,
         'fatigue_strength': args.fatigue_strength,
         'multi_scale': getattr(args, 'multi_scale', False),
+        'activation': getattr(args, 'activation', 'topk'),
+        'corr_window': (args.corr_window if args.corr_window > 0 else None),
+        'theta_learn_scale': args.theta_learn_scale,
     }
     cm = create_column(args.column_type, col_config)
 
@@ -303,6 +306,13 @@ def main():
     parser.add_argument('--fatigue-strength', type=float, default=1.0)
     parser.add_argument('--multi-scale', action='store_true',
                         help='Use multi-scale descriptor [current, mean, delta_1, delta_half]')
+    parser.add_argument('--activation', type=str, default='entmax15',
+                        choices=['topk', 'sparsemax', 'entmax15'],
+                        help='Output activation mode')
+    parser.add_argument('--corr-window', type=int, default=0,
+                        help='Correlation diagnostic window (0=match window)')
+    parser.add_argument('--theta-learn-scale', type=float, default=0.0,
+                        help='Theta influence on learning (0=decoupled, 1=coupled)')
     parser.add_argument('--window', type=int, default=10)
     parser.add_argument('--step', type=int, default=3)
     parser.add_argument('--eval-step', type=int, default=50,

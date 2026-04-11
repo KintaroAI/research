@@ -380,18 +380,18 @@ each, which collectively fan out to 28-155 columns at hop 2.
 
 ### Metrics
 
-| Metric | **HF best (008)** | **HF balanced (009)** | HF (005) | Conscience 4-out | Conscience 16-out |
-|--------|--------------|---------------|----------|-----------------|------------------|
-| Collections | **2969** | **2642** | 2379 | 2284 | 1363 |
-| pos_x \|r\| | 0.519 | 0.632 | 0.605 | 0.75 | 0.708 |
-| pos_y \|r\| | 0.515 | 0.890 | 0.877 | — | 0.894 |
-| hunger \|r\| | 0.418 | **0.801** | 0.779 | 0.91 | 0.979 |
-| proximity \|r\| | 0.524 | **0.890** | 0.874 | 0.77 | 0.899 |
-| Stability | 1.000 | 0.991 | 0.987 | 0.12 | 0.077 |
-| Total jumps | 2.4k | 15.7k | 23k | 46M | 27.7M |
-| Contiguity | 0.781 | 0.770 | 0.601 | — | — |
-| Splits | 4 | 123 | 255 | 113k | 2464 |
-| Runtime | 10343s | 10488s | 10434s | 14237s | 15399s |
+| Metric | **TP 019 (decoupled h=0.1)** | TP 013 (coupled h=0.5) | **HF 009** | HF 005 | Conscience 4-out |
+|--------|-----------------------|-----------------------|-----------|--------|-----------------|
+| Collections | **3154** | **3210** | 2642 | 2379 | 2284 |
+| pos_x \|r\| | 0.588 | 0.525 | 0.632 | 0.605 | 0.75 |
+| pos_y \|r\| | **0.833** | 0.519 | 0.890 | 0.877 | — |
+| hunger \|r\| | **0.707** | 0.470 | 0.801 | 0.779 | 0.91 |
+| proximity \|r\| | **0.836** | 0.544 | 0.890 | 0.874 | 0.77 |
+| Stability | 1.000 | 1.000 | 0.991 | 0.987 | 0.12 |
+| Total jumps | 2.9k | 3.1k | 15.7k | 23k | 46M |
+| Contiguity | 0.693 | 0.716 | 0.770 | 0.601 | — |
+| Splits | 3 | 2 | 123 | 255 | 113k |
+| Runtime | 11134s | 10809s | 10488s | 10434s | 14237s |
 
 ### Homeostasis sweep (4 outputs, k=1, fs=0.01)
 
@@ -431,8 +431,8 @@ Two viable strategies for foraging:
    [current, mean, delta] captures temporal dynamics that the mean-only
    conscience descriptor misses.
 
-The HF column achieves 30% more collections with 19000× less cluster
-churn and 27% faster runtime. The stability vs churn tradeoff suggests
+The TP column with prediction achieves 36% more collections with
+16000× less cluster churn and 22% faster runtime than conscience. The stability vs churn tradeoff suggests
 the forage benchmark rewards either extreme — the dangerous middle
 ground is "stable enough to not explore but not stable enough to
 navigate" (runs 001-002 with 16 outputs).
@@ -785,8 +785,458 @@ spikes at direction reversals.
 static patches (dominant winner 0.194 vs 0.196 without). Expected — no
 temporal signal to predict.
 
-**Forage run 012** (h=0.5, prediction enabled) running — will show
-whether prediction helps the motor feedback loop.
+**Forage run 012 (h=0.5, prediction GPU): new best at 3109 collections.**
+
+| Run | Config | Collections | hunger r | prox r | pred_err | output_corr | Runtime |
+|-----|--------|-------------|----------|--------|----------|-------------|---------|
+| 008 (HF) | h=0.5, no prediction | 2969 | 0.418 | 0.524 | — | — | 10343s |
+| 010 (TP) | h=0.5, repulsion only | 2932 | 0.416 | 0.467 | — | — | 10554s |
+| **012 (TP)** | **h=0.5, prediction** | **3109** | 0.415 | 0.537 | 0.003 | 0.152 | 11079s |
+| Conscience | baseline | 2284 | 0.91 | 0.77 | — | — | 14237s |
+
+Prediction adds +5% collections over non-prediction best (3109 vs 2969),
++36% over conscience baseline. Prediction error converged to 0.003
+(predictor learning). Output correlation 0.152 (moderate — outputs not
+fully independent but not redundant).
+
+**GPU predictor optimization:** initial CPU predictor was 83ms/tick
+(predicted full 144-dim descriptor, 65MB weight matrix). Reduced to
+32ms by predicting raw 48-dim frame instead. Then moved to GPU via
+torch.bmm: **3.2ms/tick** (26× speedup from original). Final forage
+run at 11.1ms/tick total — comparable to non-prediction runs.
+
+The prediction adds a fundamentally new signal: surprise-modulated
+prototype learning. When the column can't predict what comes next, it
+learns faster. When predictions are accurate, it consolidates. This
+creates adaptive learning rate that responds to novelty — exactly the
+"where is this going?" signal the design review identified as the
+biggest missing piece.
+
+### 2026-04-08 — Step 5: decorrelation update
+
+When two outputs have high centered correlation (co-activate on same
+inputs), push their prototypes apart. Fires every `corr_window` ticks
+(default 50). Only pushes positively correlated pairs (r > 0.1).
+Enabled by default, controlled by `--column-decor-lr` (default 0.01)
+and `--no-column-decorrelation`.
+
+**Patch v1 (8out k=1, h=0):** zero effect across all decor_lr values
+(0.0 to 0.1). Static patches have no temporal structure to decorrelate.
+
+**Rotating line (32out k=4, h=0.1, 20k):**
+
+| Factor | dl=0 (off) | dl=0.001 | **dl=0.01** | dl=0.1 |
+|--------|-----------|---------|------------|--------|
+| angle | 0.474 | 0.445 | 0.441 | **0.479** |
+| sin_angle | **0.406** | 0.281 | 0.304 | 0.340 |
+| cos_angle | 0.307 | 0.327 | **0.367** | 0.229 |
+| direction | 0.904 | 0.879 | **0.936** | 0.921 |
+| angular_vel | 0.874 | 0.843 | **0.919** | 0.896 |
+| thickness | 0.669 | 0.611 | **0.732** | 0.645 |
+| thickness_vel | 0.333 | 0.336 | **0.356** | **0.403** |
+| **R²>0.3** | 7/7 | 6/7 | **7/7** | 6/7 |
+
+**dl=0.01 is the sweet spot** — best R² on direction (0.936), angular
+velocity (0.919), and thickness (0.732). These are the best factor
+scores seen on the rotating line. Set as default.
+
+dl=0.001 too weak (barely differs from off). dl=0.1 too aggressive
+(hurts cos_angle). Decorrelation helps most on temporal dynamics —
+pushing correlated prototypes apart forces specialization on different
+aspects of motion.
+
+**Forage run 013 (decorrelation dl=0.01 + prediction): new best at 3210.**
+
+| Run | Prediction | Decorrelation | Activation | Collections | output_corr | pred_err |
+|-----|-----------|---------------|-----------|-------------|-------------|----------|
+| 008 (HF) | no | no | topk | 2969 | — | — |
+| 012 (TP) | yes | no | topk | 3109 | 0.152 | 0.003 |
+| **013 (TP)** | **yes** | **dl=0.01** | **topk** | **3210** | **0.154** | **0.003** |
+| Conscience | — | — | — | 2284 | — | — |
+
+Decorrelation adds +3% collections (3210 vs 3109). Combined with
+prediction: +41% over conscience baseline. Output correlation stayed
+at 0.154 (similar to 012's 0.152) — decorrelation maintains rather
+than reduces, suggesting it's preventing drift rather than fixing
+existing redundancy.
+
+**Entmax-1.5 benchmark results (rotating line, 32out k=4, h=0.1):**
+
+| Factor | topk (k=4) | **entmax15** | sparsemax |
+|--------|-----------|------------|-----------|
+| angle | 0.491 | **0.540** | 0.508 |
+| sin_angle | 0.357 | **0.454** | **0.465** |
+| cos_angle | 0.259 | **0.486** | 0.480 |
+| direction | **0.911** | 0.817 | 0.695 |
+| angular_vel | **0.885** | 0.767 | 0.702 |
+| thickness | 0.693 | 0.719 | **0.734** |
+| thickness_vel | 0.416 | **0.580** | 0.415 |
+| **Mean R²** | 0.573 | **0.623** | 0.571 |
+
+Entmax-1.5 gets best mean R² (0.623) — trades some direction/velocity
+strength for much better angle/phase and thickness_velocity coverage.
+Graded probabilities encode continuous factors more smoothly than
+hard top-k.
+
+**Patch v1 (8out, h=0):** entmax15 produces graded outputs (entropy
+0.277 vs topk's 0.000) with similar specialization (dominant winner
+0.184 vs 0.191). More informative for downstream consumers.
+
+**Forage runs 014+015 (entmax15):** graded outputs don't help collections
+at either h value.
+
+| Run | Activation | h | Collections | hunger r | prox r | Stability | Jumps |
+|-----|-----------|------|-------------|----------|--------|-----------|-------|
+| 013 | topk | 0.5 | **3210** | 0.470 | 0.544 | 1.000 | 3.1k |
+| 014 | entmax15 | 0.5 | 2447 | 0.416 | 0.546 | 1.000 | 114k |
+| **015** | **entmax15** | **0.1** | **2473** | **0.758** | **0.863** | 0.177 | 15.9M |
+
+Entmax15 at h=0.5: more churn (114k jumps vs 3.1k) but fewer collections.
+Graded outputs create noisy motor signals — soft probabilities let
+multiple directions partially fire each tick, hurting navigation
+decisiveness.
+
+Entmax15 at h=0.1: excellent feature tracking (hunger 0.758, prox 0.863,
+pos_y 0.859 — best representation from any entmax run, close to
+conscience baseline), but still only 2473 collections.
+
+**Key finding: representation quality and collection count trade off.**
+
+| Best at | Config | Collections | hunger r |
+|---------|--------|-------------|----------|
+| Collections | 013 topk + h=0.5 | **3210** | 0.470 |
+| Representation | 015 entmax15 + h=0.1 | 2473 | **0.758** |
+
+Forage rewards decisive motor actions — hard WTA wins. Downstream tasks
+needing clean state tracking would prefer graded outputs with low h.
+
+### 2026-04-10 — Idea: sort neighbors by correlation strength in skip-gram
+
+Current `DriftSolver.tick_correlation` in `solvers/drift_torch.py`
+constructs skip-gram sentences as `[anchor, neighbor_1, neighbor_2, ...]`
+where neighbors are sorted by **mask value** (binary above-threshold),
+then arbitrary order within the "good" group. With `window=5`, skip-gram
+couples each position with ±5 neighbors — the top 5 positions get
+tightly coupled via anchor.
+
+**Proposed: sort neighbors by actual correlation strength.**
+
+```
+[anchor, strongest, 2nd_strongest, 3rd_strongest, ..., weakest_above_threshold]
+```
+
+With window=5:
+- anchor (pos 0) pairs with pos 1-5 → top 5 strongest directly couple to anchor
+- Weak correlates at pos 10+ only pair with other weak correlates (transitively)
+
+**Pros:**
+1. **Implicit weighting**: strong matches get direct anchor coupling;
+   weak matches only via transitive chains. Current random ordering
+   gives all "good" neighbors equal proximity.
+2. **Better transitive structure**: if anchor→A→B where A strongly
+   correlates with anchor but B is only strong with A, sorted ordering
+   places B further from anchor but still coupled through A. Current
+   random ordering could put B adjacent to anchor by chance.
+3. **Matches word2vec intuition**: in word2vec the window is real
+   positional proximity. Sorting by correlation strength is the natural
+   analog for neuron streams.
+
+**Cons:**
+1. **Creates artificial super-groups**: top 5 strongest correlates all
+   end up within each other's windows → extra mutual pull. Good for
+   real clusters, risky for spurious weak common signals.
+2. **Under-weights weak-but-real correlates**: a neighbor at r=0.51
+   (just above threshold) gets pushed to the far end and only couples
+   with other weak correlates, reducing its embedding influence.
+3. **Minor cost**: need to preserve correlation scores and sort
+   (cheap — already O(n log n) per anchor).
+
+**Current random ordering acts as a regularizer** — spreads coupling
+across all valid neighbors. Strict sorting would sharpen cluster
+formation (faster convergence, tighter clusters) but reduce exploration
+(weak correlates get less embedding influence).
+
+**Likely verdict:**
+- **Better for clean, well-separated clusters** (rotating line —
+  genuine strong correlations)
+- **Worse for noisy, heterogeneous signals** (forage — mixed sensory
+  types where exploration matters)
+
+**Cleaner alternative**: weight pairs by correlation strength directly
+(strong pairs get stronger gradient). More principled than ordering,
+doesn't create artificial proximity, but requires bigger solver change.
+
+Not implementing now — current behavior works well.
+
+### 2026-04-10 — Decoupled learning: failed hypothesis
+
+Implemented `theta_learn_scale` parameter: 0=decoupled (learning uses
+sim_raw, no theta), 1=coupled (old behavior). Hypothesis: decoupling
+would give stable features (like h=0.1) with motor diversity (like
+h=0.5), breaking the collections-vs-representation tradeoff.
+
+**Result: decoupling HURT forage dramatically.**
+
+| Run | cw | theta_learn_scale | Collections | hunger r | Contiguity |
+|-----|-----|-------------------|-------------|----------|------------|
+| 013 | 50 | coupled | **3210** | 0.470 | 0.718 |
+| 017 | 20 | coupled | 2888 | 0.408 | 0.754 |
+| **018** | 20 | **decoupled** | **858** | 0.324 | **0.791** |
+
+Contiguity is highest ever (0.791 — prototypes well-organized), but
+collections crashed by 70%.
+
+**Why decoupling failed for forage:**
+
+The "musical chairs" was a feature, not a bug. In coupled mode:
+1. Output 0 wins on "sin(angle) peak" → theta[0] rises
+2. Output 5 wins next time that pattern appears
+3. Output 5's **prototype** also drifts toward sin(angle) peak
+   (because Hebbian pull uses the emitted p_active)
+4. Output 5 becomes the new "sin(angle) detector"
+5. Emission stays meaningful — the output that fires matches what
+   it was trained to detect
+
+In decoupled mode:
+1. Output 0 locks onto "sin(angle) peak" forever (sim_raw drives
+   learning, independent of theta)
+2. Theta rotation still makes output 5 emit instead of output 0
+   when theta[0] rises
+3. But output 5's prototype was never refined for sin(angle) —
+   it's a different detector
+4. **Output 5 emits a signal that doesn't match what it's trained on**
+5. Downstream motor columns see "output 5 fired" but the meaning
+   of output 5 doesn't correspond to the current input
+6. Motor decisions become nonsensical → agent fails to navigate
+
+**The winning output AND its meaning must shift together.** Coupling
+keeps them in sync. Decoupling breaks the sync. This is a fundamental
+requirement for feedback-loop tasks where downstream consumers track
+output identity.
+
+The stable-prototype benefit of decoupling (seen in contiguity 0.791
+and clean feature tracking) is real, but the cost to the feedback
+loop is catastrophic. For pure representation learning (no downstream
+consumer), decoupling might still be worth it. For motor control or
+any task where "which output fires" needs to carry consistent meaning,
+coupling is required.
+
+**This is a significant finding.** The coupling between theta and
+learning isn't just an implementation detail — it's structurally
+necessary for the feedback-loop architecture to work **when h is high**.
+
+### 2026-04-10 — Decoupled + h=0.1: breaks the tradeoff!
+
+| Run | h | theta_learn_scale | Collections | hunger r | prox r | pos_y r |
+|-----|------|-------------------|-------------|----------|--------|---------|
+| 013 | 0.5 | coupled (cw=50) | **3210** | 0.470 | 0.544 | — |
+| 018 | 0.5 | decoupled | 858 | 0.324 | 0.369 | — |
+| **019** | **0.1** | **decoupled** | **3154** | **0.707** | **0.836** | **0.833** |
+| 005 (HF) | 0.1 | coupled | 2379 | 0.779 | 0.874 | 0.877 |
+| Conscience | — | — | 2284 | 0.91 | 0.77 | — |
+
+**Run 019 breaks the collections-vs-representation tradeoff.**
+
+- Collections: 3154 (within 2% of all-time best 3210, +38% over conscience)
+- Feature tracking: hunger r=0.707, proximity r=0.836, pos_y r=0.833
+  — the best feature tracking of any TP run, close to conscience baseline
+- vs HF run 005 (same h=0.1, coupled): +32% collections (3154 vs 2379)
+  at comparable feature tracking
+
+**Why h=0.1 works with decoupling but h=0.5 doesn't:**
+
+Decoupling breaks when theta rotates winners so fast that the emission
+stops matching what the prototype was trained to detect. At h=0.5,
+theta drives complete "musical chairs" every ~20 ticks — emissions
+become nonsensical relative to stable prototypes. At h=0.1, theta
+drift is 5× slower. Prototypes have time to lead, emission follows
+loosely, and the feedback loop stays coherent.
+
+This is the first config that achieves BOTH high collections AND
+strong feature tracking. Previous best was either:
+- **Collections** (013): 3210 collections, hunger r=0.47
+- **Representation** (009 HF): 2642 collections, hunger r=0.80
+
+Run 019 gets 3154 + hunger r=0.71 — essentially Pareto-dominant.
+
+The correct mental model: **theta should be a gentle bias, not a
+rotation engine.** When theta is strong enough to flip winners,
+decoupling breaks. When theta is weak enough that winners stay
+put, decoupling gives stable prototypes without losing motor
+diversity (which comes from cluster churn, not column rotation).
+
+**Forage run 020** (decoupled h=0.1 with entmax15) running — will
+show whether graded output activation adds more on top.
+
+### 2026-04-09 — Forage corr_window results
+
+| Run | cw | Learning | Collections | raw corr | centered corr |
+|-----|-----|----------|-------------|----------|---------------|
+| 013 | 50 | coupled | **3210** | 0.154 | 0.624 |
+| 016 | 10 | coupled | 3115 | 0.031 | 0.929 |
+| 017 | 20 | coupled | 2888 | 0.061 | — |
+
+cw=50 is best for forage (3210), even though cw=20 is best for rotating
+line factor R² (0.601). Forage and rotating line optimize different
+things: forage rewards rotation-driven motor diversity (long cw captures
+multi-rotation patterns), rotating line rewards real-time co-activation
+measurement.
+
+Default remains `corr_window = 2 * window = 20` (good for rotating line
+and most tasks). Forage-specific runs may want explicit `corr_window=50`.
+
+### 2026-04-09 — corr_window sweep
+
+Original default was `corr_window=50`. Suspected the window should
+match the learning window (`window=10`) to measure co-activation on
+the same timescale the column actually learns at.
+
+**Rotating line sweep (32out k=4, h=0.1):**
+
+| Factor | cw=10 | **cw=20** | cw=50 | cw=100 |
+|--------|-------|----------|-------|--------|
+| angle | 0.363 | 0.495 | **0.512** | 0.472 |
+| sin_angle | 0.337 | 0.352 | **0.383** | 0.357 |
+| cos_angle | 0.322 | **0.445** | 0.291 | 0.278 |
+| direction | 0.855 | 0.866 | 0.913 | **0.937** |
+| angular_vel | 0.836 | 0.846 | 0.887 | **0.909** |
+| thickness | 0.717 | **0.797** | 0.692 | 0.651 |
+| thickness_vel | 0.278 | **0.408** | 0.319 | 0.381 |
+| **Coverage** | 6/7 | **7/7** | 6/7 | 6/7 |
+| **Mean R²** | 0.530 | **0.601** | 0.571 | 0.569 |
+
+**cw=20 (2× learning window) is the sweet spot.** cw=10 is too noisy
+(decorrelation reacts to random fluctuations, mean R² drops to 0.530).
+cw=50-100 averages too long (direction/angular_vel peak at 0.94 but
+other factors drop). cw=20 balances both.
+
+New default: `corr_window = 2 * window` (20 for default window=10).
+
+**Patch v1 (8out k=1, h=0):** corr_window has no effect on static
+patches (0.183-0.192 across all values). Decorrelation doesn't fire
+meaningfully without homeostasis-driven rotation.
+
+### 2026-04-09 — Prototype geometry notes
+
+**Prototypes live on the unit hypersphere in 144-dim space.** After
+every update (Hebbian pull, loser repulsion, decorrelation), prototypes
+are L2-normalized back to unit length. There is no "magnitude" to grow
+or shrink — prototypes can only **rotate** around the sphere.
+
+- **Hebbian pull**: `proto += lr * (desc - proto)` → then normalize →
+  prototype rotates by `lr` fraction of the angle toward `desc`
+- **Loser repulsion**: `proto -= lr_neg * (desc - proto)` → rotates
+  away from `desc`
+- **Decorrelation**: `proto[i] += strength * (proto[i] - proto[j])` →
+  rotates i and j apart on the sphere
+
+With many updates toward the same descriptor, a prototype converges
+to that direction. With conflicting updates, it settles at the vector
+mean of its "wins," normalized.
+
+**Similarity = cosine similarity**, exactly like word2vec:
+
+```python
+sim = einsum("moi,mi->mo", normalized_protos, normalized_desc)
+```
+
+Both prototypes and descriptor are L2-normalized, so the dot product
+equals the cosine of the angle between them. Range: [-1, 1]. No
+Euclidean distance is ever computed.
+
+**Scale mismatch with theta:** theta is clipped to ±2.5 (set by
+`theta_clip`), while cosine similarity is bounded to [-1, 1]. When
+`scores = sim - theta`, theta can completely overpower similarity —
+an unused output with theta=-2.5 wins even when its genuine match is
+zero. This is why the current design gets full role migration at high
+h: theta literally drowns out similarity.
+
+### 2026-04-09 — Entmax15 optimization
+
+Initial entmax15 implementation was 20× slower (67ms/tick vs 3.3ms for
+topk) due to Python bisection loop over columns. Vectorized across all
+columns simultaneously using numpy-wide bisection: **4ms/tick** — now
+comparable to topk and sparsemax. Within 20% overhead.
+
+### 2026-04-09 — Idea: decouple emission from learning
+
+Currently, theta affects BOTH which output wins externally AND which
+prototype learns (since `learn_weights = p_active` which is computed
+from theta-biased scores). This causes "musical chairs": as h rises,
+output 0 wins less → learns less → drifts → its meaning migrates to
+output 5 → forage gets motor diversity but feature tracking degrades.
+
+**Proposed decoupling:**
+
+```python
+# Emission: theta-biased (for motor diversity)
+scores = sim_raw - theta - fatigue
+p_active = activation(scores)   # what gets emitted
+
+# Learning: raw similarity (for stable prototypes)
+learn_weights = sharpen(sim_raw)   # independent of theta
+prototypes += lr * learn_weights * (desc - prototypes)
+```
+
+Under this scheme:
+- Prototypes always learn from their true match patterns (high sim_raw)
+- Theta only gates OUTPUT gain, not synaptic plasticity
+- Each prototype stabilizes to its natural match regardless of rotation
+- **Decorrelation becomes the primary separation mechanism** — without
+  theta-driven rotation forcing outputs apart, decorrelation is the
+  only thing preventing two prototypes from converging on similar
+  inputs
+
+This is more biologically sensible: LTP responds to coincidence of
+pre/post-synaptic activity (similarity), not to external gating
+signals. Homeostasis should control gain, not plasticity.
+
+**Expected outcome:** stable feature tracking (like h=0.1) WITH motor
+diversity (like h=0.5). Breaks the collections-vs-representation
+tradeoff.
+
+**Choice for `sharpen()`:**
+- `topk` on sim_raw — cleanest, hard WTA for learning
+- `sparsemax` / `entmax15` on sim_raw — naturally sparse, graded
+- `softmax` with low temperature — fully soft, risks dilution
+
+**Risk: rich-get-richer with pure sim_raw learning.** Without any
+anti-monopoly pressure on learning, one well-initialized prototype
+could dominate forever. Mitigations already in the column:
+
+1. **Dead-unit reseeding** — prototypes with low usage + long idle
+   get reseeded to current descriptor (already implemented)
+2. **Decorrelation pressure** — prevents two prototypes converging
+   to the same meaning (step 5)
+3. **Top-k > 1 for learning** — multiple outputs learn per tick,
+   distributing the pull
+4. **Surprise modulation** — high surprise → faster learning. But
+   **this is per-column, not per-output** (single scalar per column
+   shared across all its prototypes). A per-output version could
+   help but needs per-prototype prediction tracking.
+5. **Usage-based LR scaling** — underused outputs already get 2.3×
+   learning boost (`min_lr_scale=0.75`, `max_lr_scale=1.75`)
+
+**Safer intermediate: weak theta in learning path.**
+
+Instead of fully removing theta from learning, keep a small fraction:
+
+```python
+# Strong theta for emission (motor rotation)
+scores_emit = sim_raw - theta - fatigue
+
+# Weak theta for learning (prevent runaway without forcing migration)
+theta_learn_scale = 0.1   # 10% of emission strength
+scores_learn = sim_raw - theta_learn_scale * theta
+p_learn = activation(scores_learn)
+```
+
+Theta still gently nudges learning away from the dominant winner, but
+not enough to force complete role migration. Prototypes should stay
+mostly locked while still giving other outputs breathing room when
+the winner over-dominates. Then `theta_learn_scale` becomes a tunable
+dial between "full migration" (=1.0, current behavior) and "full
+lock" (=0.0, the pure decoupling idea).
 
 ## Next Steps
 
@@ -797,7 +1247,13 @@ whether prediction helps the motor feedback loop.
 - [x] Rotating line benchmark — factor discovery analysis
 - [x] Multi-output R² metric (removes sparse-binary ceiling)
 - [x] Loser repulsion implementation + forage test
-- [ ] Run full 1M with best HF config (008) without viz for clean timing
+- [x] Prediction-error-modulated learning — GPU predictor (step 4 of TP plan)
+- [x] Decorrelation update — dl=0.01 sweet spot (step 5 of TP plan)
+- [x] Entmax-1.5 implementation (step 6 of TP plan)
+- [ ] **Decouple emission (theta-biased) from learning (sim_raw-based)**
+      — addresses the collections vs representation tradeoff. Let theta
+      control gain only; decorrelation handles prototype separation.
+- [ ] Run full 1M with best config without viz for clean timing
 - [ ] Revisit 16 outputs in forage with k=2 + better motor design
 - [ ] Compare against conscience_override (best ts-00026 result: 2494)
 - [ ] Sweep temperature (0.2 vs 0.45 vs 1.0) at best config
