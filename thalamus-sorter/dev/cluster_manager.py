@@ -65,8 +65,8 @@ def create_column(column_type, column_config):
             lateral_inputs=column_config.get('lateral_inputs', False),
             lateral_input_k=column_config.get('lateral_input_k', 4))
     elif column_type == 'temporal_prototype':
-        from temporal_prototype_column import TemporalPrototypeColumn
-        return TemporalPrototypeColumn(
+        from temporal_prototype_column_gpu import TemporalPrototypeColumnGPU
+        return TemporalPrototypeColumnGPU(
             m,
             n_outputs=column_config.get('n_outputs', 4),
             max_inputs=column_config.get('max_inputs', 20),

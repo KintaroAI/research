@@ -253,10 +253,23 @@ def make_signal(w, h, args):
         # Boundary pattern: 2x2 checkerboard at low intensity
         _vf_border = ((_vf_xx.astype(int) // 2 + _vf_yy.astype(int) // 2)
                       % 2).astype(np.float32) * 0.15
-        # Permanent random ground texture: gives visual neurons something to learn
-        # as agent moves. Low intensity (0-0.15) so POIs (0.3/1.0) still stand out.
+        # Ground texture: multi-scale spatial gradients + noise.
+        # Smooth gradients give visual neurons position-dependent signal that
+        # changes predictably with movement (derivative-correlatable).
+        # Multiple frequencies prevent aliasing.
         _ground_rng = np.random.RandomState(123)
-        _ground_texture = _ground_rng.rand(field_size, field_size).astype(np.float32) * 0.15
+        _gy, _gx = np.mgrid[:field_size, :field_size].astype(np.float32)
+        _ground_texture = np.zeros((field_size, field_size), dtype=np.float32)
+        # Low-freq gradients (position encoding, ~0.3 amplitude each)
+        _ground_texture += 0.15 * (np.sin(2 * np.pi * _gx / field_size) + 1)
+        _ground_texture += 0.15 * (np.sin(2 * np.pi * _gy / field_size) + 1)
+        # Medium-freq texture (local landmarks, period ~100)
+        _ground_texture += 0.1 * (np.sin(2 * np.pi * _gx / 100 + 0.7) + 1)
+        _ground_texture += 0.1 * (np.sin(2 * np.pi * _gy / 100 + 1.3) + 1)
+        # Fine noise (breaks uniformity)
+        _ground_texture += _ground_rng.rand(field_size, field_size).astype(np.float32) * 0.1
+        # Clip to [0, 0.8] so POIs (1.0) still stand out
+        _ground_texture = np.clip(_ground_texture, 0.0, 0.8).astype(np.float32)
 
     # Sensory neuron indices: S neurons per signal
     idx = {}

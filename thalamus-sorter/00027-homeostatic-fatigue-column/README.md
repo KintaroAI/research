@@ -1117,6 +1117,66 @@ outputs: 29 neurons/cluster (vs 4.5 without visual field).
    population, spatial locality in the grid doesn't map to spatial
    locality in the field.
 
+### 2026-04-12 — GPU column + gradient texture + m=2000 layers
+
+**GPU column (`temporal_prototype_column_gpu.py`):** ported hot path
+(descriptor, similarity, postprocess, prototype update, fatigue,
+homeostasis, predictor) to torch on GPU. Inherits from CPU column,
+overrides tick(). Single CPU→GPU transfer per tick (_gather_input
+stays CPU due to irregular slot_map indexing).
+
+| Config | CPU | GPU | Speedup |
+|--------|-----|-----|---------|
+| m=2000/16out | 75ms | 20ms | **3.8×** |
+| m=2000/8out | 55ms | 16ms | **3.3×** |
+| m=400/4out | 6ms | 10ms | 0.6× (transfer overhead) |
+
+GPU version is default for `temporal_prototype` column type. At m=400
+it's slightly slower (transfer cost exceeds compute savings), but at
+m=2000 it saves ~3× per tick.
+
+**Gradient ground texture:** replaced flat random noise (0-0.15) with
+multi-scale spatial gradients + medium-freq texture + fine noise.
+Skip-gram pair count jumped from 5/tick to **2764/tick** (550×) —
+the visual field now provides real derivative-correlatable signal.
+
+**Run 026 (m=2000, 8out k=2, field=1000, vis=99, GPU):**
+
+| Metric | m=400 (run 025) | **m=2000 (run 026)** |
+|--------|----------------|---------------------|
+| Collections | 135 | 119 |
+| hunger r | 0.953 | **0.924** |
+| pos_y r | 0.909 | **0.900** |
+| proximity r | 0.905 | **0.892** |
+| Pairs/tick | 5 | **1977** |
+| Contiguity | 0.112 | **0.512** |
+| Diameter | 113.5 | **25.9** |
+| Runtime | 15911s | **22607s** |
+
+**Layered structure emerged at m=2000:**
+
+| Layer | Clusters | % | Description |
+|-------|----------|---|-------------|
+| Depth 0 | 803 | 40% | Has sensory (input layer) |
+| **Depth 1** | **1156** | **58%** | Pure feedback from L0 (processing) |
+| Depth 2 | 41 | 2% | Fed by L1 (higher-order) |
+
+Compare m=400: 98% depth 0 (flat). At m=2000 with 62% feedback ratio,
+the majority of clusters form a genuine second processing layer. This
+3-layer hierarchy (L0→L1→L2) emerged purely from clustering — no
+explicit layer design. The feedback-dominant neuron ratio forced the
+system to create pure-feedback clusters as intermediary processors.
+
+| Metric | m=400 | m=2000 |
+|--------|-------|--------|
+| Pure feedback clusters | 7 (2%) | **1197 (60%)** |
+| Depth 1 clusters | 7 (2%) | **1156 (58%)** |
+| Mean fan-in | 10.7 | **18.1** |
+
+Cluster sizes at m=2000: mean=25.9, median=25 (much better distributed
+than m=400's median=3). 557 clusters at cap (≥40) — max_cluster_size
+is actually relevant now.
+
 **Fundamental limitation exposed by field=1000:** the architecture
 learns excellent sensory representations (hunger 0.95!) but has no
 reward-gradient mechanism to connect "what I see" to "where I should
