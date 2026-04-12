@@ -1025,6 +1025,109 @@ coupling is required.
 learning isn't just an implementation detail — it's structurally
 necessary for the feedback-loop architecture to work **when h is high**.
 
+### 2026-04-11 — Large field experiments (field=1000×1000)
+
+Scaling the forage field from 100×100 to 1000×1000 exposes a
+fundamental limitation of the current column architecture:
+**homeostasis enforces zero-mean motor drift over long timescales,
+preventing sustained directional navigation.**
+
+**Background**: with `target_usage = 1/n_outputs = 0.25` and 4 outputs
+mapped to dx+/dx-/dy+/dy-, each direction fires exactly 25% of ticks
+at steady state. Net displacement over time: ~zero. Agent orbits the
+starting mean regardless of where food is.
+
+| Run | field | m | h | motor_scale | walk_step | clocks | Collections | hunger r | Jumps |
+|-----|-------|----|----|-----|-----|------|-------------|----------|-------|
+| 021a | 1000 | 100 | 0.01 | 0.5 | 0.5 | no | 50 | 0.802 | 5.7k |
+| 022a | 1000 | 400 | 0.001 | 1.0 | 0.5 | no | 104 | 0.799 | **12.6M** |
+
+Both runs show the **orbit-around-mean** pattern: agent drifts in a
+direction, then homeostasis rotates winners → motor balances → agent
+returns to vicinity of start. At field=1000, orbit radius is too small
+relative to POI density (5-unit radius in 1000-unit field) to find
+food reliably.
+
+**Surprising secondary finding:** lower h produces MORE cluster churn,
+not less. At h=0.001 (run 022a), stability=0.087 and jumps=12.6M —
+opposite of the 100×100 field pattern where h=0.5 gave stability=1.000.
+
+Hypothesis: at very low h, columns stabilize on raw similarity →
+feedback neurons have consistent, differentiated activation patterns
+→ skip-gram sees strong pair correlations → embeddings strongly
+separate → clusters reassign to catch up. So **low h trades column
+stability for cluster stability**, not either for both.
+
+Feature representation remained excellent across all large-field runs
+(hunger r ~0.80, pos_y r ~0.81, proximity r ~0.79), confirming the
+column learns fine — the motor loop simply can't commit to sustained
+directions.
+
+**The fundamental constraint:** homeostasis mathematically enforces
+each output to win `1/n_outputs` of ticks at steady state. This
+zero-means motor drift at ALL h values. Only h=0 (no homeostasis)
+or a different decoupling mode (e.g., `theta_emit_scale=0` with
+homeostasis affecting only learning) could break the orbit.
+
+### 2026-04-11/12 — Large field experiments continued
+
+**Border wrapping (toroidal topology):** replaced `np.clip` with modulo
+wrapping so agent teleports to opposite side at boundaries. Fixed
+off-by-one from float precision (`int(1000.0 % 1000)` edge case).
+
+**Visual field (`--forage-visual-field --forage-visual-res 99`):**
+99×99 = 9801 egocentric grayscale pixels as additional sensory neurons.
+Agent can "see" POIs as bright spots within its viewport (radius ~50
+field units). n_sensory jumps from 196 to 10000. At m=400 with 4
+outputs: 29 neurons/cluster (vs 4.5 without visual field).
+
+| Run | field | wrap | vis | m | h | out/k | Collections | hunger r | pairs/tick |
+|-----|-------|------|-----|---|------|-------|-------------|----------|-----------|
+| 021a | 1000 | no | no | 100 | 0.01 | 4/1 | 50 | 0.802 | — |
+| 022a | 1000 | no | no | 400 | 0.001 | 4/1 | 104 | 0.799 | — |
+| 023 | 1000 | no | no | 400 | 0 | 4/1 | 101 | 0.839 | — |
+| 024 | 1000 | **wrap** | no | 400 | 0.001 | 4/1 | **150** | 0.824 | — |
+| 025 | 1000 | wrap | **99** | 400 | 0.005 | **8/2** | **135** | **0.953** | **5** |
+
+**Key findings:**
+
+1. **Border wrapping +50% collections** (104→150). Walls were acting
+   as a restoring force trapping the agent near center.
+
+2. **Visual field gives excellent feature tracking** but doesn't help
+   collections. Run 025: hunger r=0.953 (best ever), proximity r=0.905.
+   But only 135 collections — the visual field alone isn't enough for
+   navigation. Agent can see POIs but doesn't know "move toward bright
+   spot."
+
+3. **Low skip-gram pair count with visual field**: only 5 pairs/tick
+   (vs thousands normally). Most sampled neurons are visual pixels
+   showing ground texture noise — unlikely to correlate above threshold
+   0.5. The skip-gram signal is drowned by uninformative visual pixels.
+
+4. **h value sweep at field=1000**: h=0 through h=0.005 all give
+   100-150 collections. The zero-mean motor drift from homeostasis
+   is confirmed irrelevant at large field — the real bottleneck is
+   that columns learn stable representations but can't translate
+   "seeing food" into "moving toward food."
+
+5. **Cluster quality at large field**: contiguity=0.112, diameter=113
+   — clusters span the full 100×100 grid rather than forming tight
+   spatial groups. With visual field pixels as the dominant neuron
+   population, spatial locality in the grid doesn't map to spatial
+   locality in the field.
+
+**Fundamental limitation exposed by field=1000:** the architecture
+learns excellent sensory representations (hunger 0.95!) but has no
+reward-gradient mechanism to connect "what I see" to "where I should
+go." Navigation requires directed motor output toward a goal —
+which requires either:
+- Reward-modulated learning (prototype update gated by collection events)
+- Explicit gradient following (proximity → direction mapping)
+- Longer training at consistent conditions
+The current feedback loop creates self-consistent attractors, not
+goal-directed behavior.
+
 ### 2026-04-10 — Decoupled + h=0.1: breaks the tradeoff!
 
 | Run | h | theta_learn_scale | Collections | hunger r | prox r | pos_y r |

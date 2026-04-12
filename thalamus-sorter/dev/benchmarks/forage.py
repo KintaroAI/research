@@ -354,20 +354,21 @@ def make_signal(w, h, args):
         if _dt_forage:
             _ft_motor = time.perf_counter()
 
-        # Move (clip at walls, block collision)
+        # Move (wrap at borders — toroidal topology, block collision)
         prev_pos[:] = pos
-        new_x = np.clip(pos[0] + total_dx, 0, field_size - 1)
-        new_y = np.clip(pos[1] + total_dy, 0, field_size - 1)
-        ix, iy = int(new_x), int(new_y)
+        new_x = (pos[0] + total_dx) % field_size
+        new_y = (pos[1] + total_dy) % field_size
+        ix = min(int(new_x), field_size - 1)
+        iy = min(int(new_y), field_size - 1)
         if not blocked[iy, ix]:
             pos[0] = new_x
             pos[1] = new_y
         else:
-            # Try axes independently (slide along walls)
-            sx = np.clip(pos[0] + total_dx, 0, field_size - 1)
+            # Try axes independently (slide along blocked obstacles)
+            sx = (pos[0] + total_dx) % field_size
             if not blocked[int(pos[1]), int(sx)]:
                 pos[0] = sx
-            sy = np.clip(pos[1] + total_dy, 0, field_size - 1)
+            sy = (pos[1] + total_dy) % field_size
             if not blocked[int(sy), int(pos[0])]:
                 pos[1] = sy
 
