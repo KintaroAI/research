@@ -1177,6 +1177,42 @@ Cluster sizes at m=2000: mean=25.9, median=25 (much better distributed
 than m=400's median=3). 557 clusters at cap (≥40) — max_cluster_size
 is actually relevant now.
 
+### 2026-04-12/13 — Field=1000 comprehensive sweep
+
+All field=1000 runs with wrap borders and gradient ground texture:
+
+| Run | m | out/k | h | vis | Collections | hunger r | pairs/tick | Stability |
+|-----|---|-------|------|-----|-------------|----------|-----------|-----------|
+| 021a | 100 | 4/1 | 0.01 | no | 50 | 0.802 | — | 0.874 |
+| 022a | 400 | 4/1 | 0.001 | no | 104 | 0.799 | — | 0.087 |
+| 023 | 400 | 4/1 | 0 | no | 101 | 0.839 | — | 0.072 |
+| 024 | 400 | 4/1 | 0.001 | no+wrap | 150 | 0.824 | — | — |
+| 025 | 400 | 8/2 | 0.005 | 99 | 135 | 0.953 | 5 | 0.995 |
+| 026 | 2000 | 8/2 | 0.005 | 99+grad | 119 | 0.924 | 1977 | 0.883 |
+| 027 | 400 | 4/1 | 0.001 | 99+grad | 123 | 0.734 | 7104 | 0.437 |
+
+The ~100-150 collection ceiling persists across ALL configurations:
+- Varying m (100, 400, 2000)
+- Varying outputs (4/1, 8/2)
+- Varying h (0, 0.001, 0.005, 0.01, 0.1)
+- With/without visual field
+- With/without gradient texture
+- With/without border wrapping
+
+**Conclusion:** the ceiling is geometric, not architectural. At
+field=1000 with collect_radius=5, the agent needs to cover much more
+area than any column configuration drives. The feedback loop creates
+self-consistent attractors that traverse a limited region regardless
+of representation quality. All configs achieve excellent feature
+tracking (hunger r > 0.7, proximity r > 0.8) but can't translate
+representation into goal-directed navigation.
+
+To break the ceiling requires either:
+1. Scaled parameters (walk_step, motor_scale, collect_radius)
+2. Reward-modulated learning (connect collection events to motor policy)
+3. Direct gradient following (proximity → direction mapping)
+4. Much longer runs (>10M ticks to explore more via spasms)
+
 **Fundamental limitation exposed by field=1000:** the architecture
 learns excellent sensory representations (hunger 0.95!) but has no
 reward-gradient mechanism to connect "what I see" to "where I should
