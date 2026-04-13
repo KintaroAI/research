@@ -1190,6 +1190,7 @@ All field=1000 runs with wrap borders and gradient ground texture:
 | 025 | 400 | 8/2 | 0.005 | 99 | 135 | 0.953 | 5 | 0.995 |
 | 026 | 2000 | 8/2 | 0.005 | 99+grad | 119 | 0.924 | 1977 | 0.883 |
 | 027 | 400 | 4/1 | 0.001 | 99+grad | 123 | 0.734 | 7104 | 0.437 |
+| 028 | 400 | 4/1 | 0.001 | **none** | 105 | 0.549 | 675 | 0.880 |
 
 The ~100-150 collection ceiling persists across ALL configurations:
 - Varying m (100, 400, 2000)
@@ -1198,6 +1199,10 @@ The ~100-150 collection ceiling persists across ALL configurations:
 - With/without visual field
 - With/without gradient texture
 - With/without border wrapping
+
+Run 028 (no visual field): 105 collections with weaker features
+(hunger r=0.55 vs 0.73 with vis). Visual field helps representation
+but not collections. The bottleneck is motor, not sensory.
 
 **Conclusion:** the ceiling is geometric, not architectural. At
 field=1000 with collect_radius=5, the agent needs to cover much more
