@@ -61,10 +61,10 @@ def pulsate(value, t, period):
     carrier = abs(np.sin(t * 2.0 * np.pi / period))
     return float(carrier * value)
 
-N_SENSE_DEFAULT = 176  # 144 base + 32 muscle contraction feedback
-# 8×18 signals + 8×4 muscle contraction = 176
+N_SENSE_DEFAULT = 184  # 152 base + 32 muscle contraction feedback
+# 8×19 signals + 8×4 muscle contraction = 184
 NEURONS_PER_SIGNAL_DEFAULT = 8
-N_SIGNAL_TYPES = 22  # 18 base + 4 muscle contraction
+N_SIGNAL_TYPES = 23  # 19 base + 4 muscle contraction
 
 
 def add_args(parser):
@@ -133,6 +133,10 @@ def make_signal(w, h, args):
     motor_scale = getattr(args, 'forage_motor_scale', 0.5)
     motor_wiring = getattr(args, 'forage_motor_wiring', 'first4')
     motor_reduction = getattr(args, 'forage_motor_reduction', 'max')
+    prox_scale_ref = 100.0  # reference field size for proximity scaling
+    prox_scale = field_size / prox_scale_ref
+    prox_max_far = np.sqrt(2.0) * prox_scale_ref  # diagonal of reference field
+
     rng = np.random.RandomState(42)
     # Per-column random wiring: map each motor column's outputs to 4 directions.
     # Built lazily in tick_fn once column_mgr is known (need n_outputs).
@@ -276,7 +280,7 @@ def make_signal(w, h, args):
     offset = 0
     for name in ['pos_x', 'pos_y', 'target_x', 'target_y',
                   'dir_xp', 'dir_xn', 'dir_yp', 'dir_yn',
-                  'hunger', 'proximity',
+                  'hunger', 'proximity', 'proximity_near',
                   'rest_dxp', 'rest_dxn', 'rest_dyp', 'rest_dyn',
                   'tire_dxp', 'tire_dxn', 'tire_dyp', 'tire_dyn']:
         idx[name] = list(range(offset, offset + S))
@@ -367,21 +371,20 @@ def make_signal(w, h, args):
         if _dt_forage:
             _ft_motor = time.perf_counter()
 
-        # Move (wrap at borders — toroidal topology, block collision)
+        # Move (clip at walls, block collision)
         prev_pos[:] = pos
-        new_x = (pos[0] + total_dx) % field_size
-        new_y = (pos[1] + total_dy) % field_size
-        ix = min(int(new_x), field_size - 1)
-        iy = min(int(new_y), field_size - 1)
+        new_x = np.clip(pos[0] + total_dx, 0, field_size - 1)
+        new_y = np.clip(pos[1] + total_dy, 0, field_size - 1)
+        ix, iy = int(new_x), int(new_y)
         if not blocked[iy, ix]:
             pos[0] = new_x
             pos[1] = new_y
         else:
-            # Try axes independently (slide along blocked obstacles)
-            sx = (pos[0] + total_dx) % field_size
+            # Try axes independently (slide along walls)
+            sx = np.clip(pos[0] + total_dx, 0, field_size - 1)
             if not blocked[int(pos[1]), int(sx)]:
                 pos[0] = sx
-            sy = (pos[1] + total_dy) % field_size
+            sy = np.clip(pos[1] + total_dy, 0, field_size - 1)
             if not blocked[int(sy), int(pos[0])]:
                 pos[1] = sy
 
@@ -469,15 +472,15 @@ def make_signal(w, h, args):
         if col_mgr is not None and hasattr(col_mgr, 'set_pred_lr_scale'):
             col_mgr.set_pred_lr_scale(hunger)
 
-        # Hunger-modulated homeostasis: hungry → fast rotation (explore), satiated → stable
-        # DISABLED: testing fixed-h configs first
+        # Decaying homeostasis: starts at base rate, decays toward 0 over 10k ticks
+        # DISABLED
         # if col_mgr is not None and hasattr(col_mgr, 'homeostasis_rate'):
-        #     h_low = getattr(col_mgr, '_h_base_low', None)
-        #     if h_low is None:
-        #         col_mgr._h_base_high = col_mgr.homeostasis_rate
-        #         col_mgr._h_base_low = col_mgr.homeostasis_rate / 10.0
-        #         h_low = col_mgr._h_base_low
-        #     col_mgr.homeostasis_rate = h_low + hunger * (col_mgr._h_base_high - h_low)
+        #     h_base = getattr(col_mgr, '_h_base', None)
+        #     if h_base is None:
+        #         col_mgr._h_base = col_mgr.homeostasis_rate
+        #         h_base = col_mgr._h_base
+        #     decay = max(0.0, 1.0 - t / 10000.0)
+        #     col_mgr.homeostasis_rate = h_base * decay
 
         # Live LR control from field viz (background thread polls, we just read)
         if t % 100 == 0 and _ctrl_values:
@@ -508,23 +511,32 @@ def make_signal(w, h, args):
         norm_pos = pos / field_size
         norm_target = nearest_pos / field_size
 
+        # Scaled position/target: normalize by reference field size so
+        # derivative per step is field-size-invariant. Uses modulo to
+        # wrap into [0, 1] since pos can exceed prox_scale_ref.
+        scaled_pos = (pos / prox_scale_ref) % 1.0
+        scaled_target = (nearest_pos / prox_scale_ref) % 1.0
+
         # Override neurons: 8 per signal.
         # All slow-changing signals pulsated with unique periods.
-        for i in idx['pos_x']:     sig[i] = pulsate(norm_pos[0], t, 11)
-        for i in idx['pos_y']:     sig[i] = pulsate(norm_pos[1], t, 13)
+        for i in idx['pos_x']:     sig[i] = pulsate(scaled_pos[0], t, 11)
+        for i in idx['pos_y']:     sig[i] = pulsate(scaled_pos[1], t, 13)
         if poi_signals:
-            for i in idx['target_x']:  sig[i] = pulsate(norm_target[0], t, 37)
-            for i in idx['target_y']:  sig[i] = pulsate(norm_target[1], t, 41)
+            for i in idx['target_x']:  sig[i] = pulsate(scaled_target[0], t, 37)
+            for i in idx['target_y']:  sig[i] = pulsate(scaled_target[1], t, 41)
         for i in idx['dir_xp']:    sig[i] = max(0.0, direction[0])
         for i in idx['dir_xn']:    sig[i] = max(0.0, -direction[0])
         for i in idx['dir_yp']:    sig[i] = max(0.0, direction[1])
         for i in idx['dir_yn']:    sig[i] = max(0.0, -direction[1])
         if len(pois) > 0:
-            prox = max(0.0, 1.0 - nearest_dist / (field_size * 0.3))
+            prox_far = max(0.0, 1.0 - (nearest_dist / prox_scale) / prox_max_far)
+            prox_near = max(0.0, 1.0 - nearest_dist / 100.0)
         else:
-            prox = 0.0
+            prox_far = 0.0
+            prox_near = 0.0
         if poi_signals:
-            for i in idx['proximity']: sig[i] = pulsate(prox, t, 15)
+            for i in idx['proximity']:      sig[i] = pulsate(prox_far, t, 15)
+            for i in idx['proximity_near']: sig[i] = pulsate(prox_near, t, 29)
         for i in idx['hunger']:    sig[i] = pulsate(hunger, t, 17)
         # Per-fiber restlessness and tiredness signals
         rest_names = ['rest_dxp', 'rest_dxn', 'rest_dyp', 'rest_dyn']
@@ -547,7 +559,7 @@ def make_signal(w, h, args):
                             norm_target[0], norm_target[1],
                             max(0, direction[0]), max(0, -direction[0]),
                             max(0, direction[1]), max(0, -direction[1]),
-                            hunger, prox,
+                            hunger, prox_far,
                             restlessness.mean(), tiredness.mean(),
                             float(is_sparse)))
 

@@ -1204,6 +1204,67 @@ Run 028 (no visual field): 105 collections with weaker features
 (hunger r=0.55 vs 0.73 with vis). Visual field helps representation
 but not collections. The bottleneck is motor, not sensory.
 
+### 2026-04-13/14 — Signal scaling + h sweep + noise experiments
+
+**Signal scaling fix:** position and target signals were normalized
+by `field_size` → at field=1000, derivative per step was 10× weaker
+than field=100. Fixed: normalize by `prox_scale_ref=100` with modulo
+wrapping. Also added dual proximity signals:
+- `prox_far`: `1 - (dist/scale) / (√2 × 100)` — covers entire field
+- `prox_near`: `1 - dist/100` — 100-unit homing bubble
+
+**h sweep on field=1000 with scaled signals (4out k=1, decoupled):**
+
+| h | Behavior observed |
+|------|-------------------|
+| 0.0 | Straight line — no direction changes at all |
+| 0.0001 | Near-straight with barely perceptible drift |
+| 0.001 | Slow orbits around start, ~3300-tick rotation cycles |
+| 0.005 | Moderate orbits, ~667-tick cycles |
+| 0.01 | Tighter orbits |
+| 0.03 | Visible center-seeking |
+| 0.05 | Fast direction switching |
+| 0.1 | Run 019 sweet spot on field=100 — orbits mean on field=1000 |
+
+All configs produce ~100-150 collections. The h value changes orbit
+radius and switching speed but not the fundamental coverage problem.
+
+**Noise modulation experiments:**
+- ±10% random h per tick: no visible improvement
+- ±50% random h per tick: irregular trajectories but same plateau
+- Decaying h (0.1→0 over 10k): explores early, locks in straight line
+
+**Clock neurons:** 20 oscillators (periods 10/50/100/1000) added via
+`--forage-clocks` with 15×14 grid. At h=0, clocks didn't break the
+straight-line behavior — columns learn to ignore them since they
+don't correlate with motor outcomes.
+
+**Key insight from h=0 experiment:** without ANY homeostasis, columns
+produce a single fixed motor output forever. The feedback loop is
+self-reinforcing: moving in direction X produces sensory patterns
+consistent with "moving X" → same prototype wins → same direction.
+Direction changes REQUIRE either theta rotation or external events
+(POI collection, wall contact). Neither scales to field=1000.
+
+**Run 029 (vis=99, scaled, h=0.001): 121 collections.** Visual field
++ scaled signals + very low h. Still same plateau. Pairs/tick improved
+to 3519 (from 675 without scaling), features good (hunger 0.83,
+proximity 0.80), but navigation unchanged.
+
+**Updated field=1000 comprehensive table:**
+
+| Run | vis | scaled | h | noise/decay | Collections |
+|-----|-----|--------|------|------------|-------------|
+| 021a-028 | various | no | various | no | 50-150 |
+| 029 | 99 | **yes** | 0.001 | no | 121 |
+| various | no | **yes** | 0-0.5 | various | ~100-150 |
+
+**Conclusion remains:** the ~100-150 ceiling at field=1000 is geometric.
+Signal scaling improved pair count and representation quality but did
+not affect collections. The motor loop cannot produce goal-directed
+navigation without reward-modulated learning connecting "seeing food"
+to "moving toward food."
+
 **Conclusion:** the ceiling is geometric, not architectural. At
 field=1000 with collect_radius=5, the agent needs to cover much more
 area than any column configuration drives. The feedback loop creates
