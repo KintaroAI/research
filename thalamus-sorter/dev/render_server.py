@@ -199,6 +199,23 @@ def _render_heatmap(job):
     cv2.imwrite(job['output_path'], hist_img)
 
 
+def _render_layer_scatter(job):
+    """Cluster centroid scatter colored by modality × depth × specificity."""
+    from layer_scatter import render_layer_scatter
+    import cv2
+    img = render_layer_scatter(
+        job['most_recent'], job['n_sensory'], job['n_outputs'],
+        job['centroids'],
+        sensory_hue=job.get('sensory_hue'),
+        sensory_modality=job.get('sensory_modality'),
+        modality_names=job.get('modality_names'),
+        img_size=job.get('img_size', 1200),
+        method=job.get('method', 'pca'),
+        title=job.get('title'),
+        dot_scale=job.get('dot_scale', 1.0))
+    cv2.imwrite(job['output_path'], img)
+
+
 def _relay_graph(job):
     """Relay graph payload to visualization app via TCP. Fire-and-forget."""
     viz_addr = job.get('viz_address')
@@ -228,6 +245,7 @@ HANDLERS = {
     'field': _render_field,
     'embed': _render_embed,
     'heatmap': _render_heatmap,
+    'layer_scatter': _render_layer_scatter,
     'graph': _relay_graph,
     'field_live': _relay_graph,  # same relay mechanism, different address
 }
@@ -612,6 +630,17 @@ class Renderer:
         """Position heatmap (e.g., motor saccade positions)."""
         path = os.path.join(self.output_dir, f"{name}.png")
         self._submit('heatmap', path, positions=positions)
+
+    def layer_scatter(self, tick, most_recent, n_sensory, n_outputs,
+                      centroids, sensory_hue=None, modality_names=None,
+                      method='pca'):
+        """Cluster centroid scatter colored by modality×depth×specificity."""
+        self._submit('layer_scatter', self._path('layers', tick),
+                     most_recent=most_recent, n_sensory=n_sensory,
+                     n_outputs=n_outputs, centroids=centroids,
+                     sensory_hue=sensory_hue,
+                     modality_names=modality_names or {0: 'V'},
+                     method=method, title=f"tick {tick}")
 
     def field_live(self, tick, agent_pos, pois, field_size,
                    hunger=0.0, collect_radius=5.0, score=0,

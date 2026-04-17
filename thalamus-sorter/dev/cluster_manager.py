@@ -702,6 +702,15 @@ class ClusterManager:
                                      cluster_ids=most_recent,
                                      n_outputs=self.column_n_outputs,
                                      method=self.embed_method)
+            if self.column_mgr is not None:
+                from layer_scatter import make_grid_hue
+                sensory_hue = make_grid_hue(self.w, self.h,
+                                            hue_center=0.60, hue_spread=0.20)
+                centroids_np = self.centroids_t.cpu().numpy()
+                self._renderer.layer_scatter(
+                    tick, most_recent, ns, self.column_n_outputs,
+                    centroids_np, sensory_hue=sensory_hue,
+                    modality_names={0: 'V'}, method=self.embed_method)
 
     def load_state(self, state_dir, embeddings_t):
         """Load saved cluster + column state for warm restart."""
