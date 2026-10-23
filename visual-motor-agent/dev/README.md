@@ -90,8 +90,9 @@ Per-run outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name/`:
 browser-replay JSON and `[current | predicted | actual]` imagination strips.
 
 `make_video.py --run RUN --run2 RUN_FROM_BABBLER --babbler BABBLER -o DIR` writes MP4s and
-screenshot sheets of the agent at every numbered checkpoint. Each checkpoint replays the same start
-states, with the cursor path and clicks drawn on top. For a fine-grained time-lapse, train with
+screenshot sheets of the agent at every numbered checkpoint. Each view plays continuously, as in
+training: after every hit or timeout, a new random circle and cursor appear. The cursor path and
+clicks are drawn on top. Charts come from a fixed set of 128 test episodes per checkpoint. For a fine-grained time-lapse, train with
 dense checkpoints, e.g. `--set 'train.milestones=[0,16384,32768,...]'`. One PPO iteration is
 16,384 steps, so the policy changes no more often than that.
 

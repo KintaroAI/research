@@ -1,8 +1,10 @@
 """Videos and screenshot sheets of the agent at successive training checkpoints.
 
-Every checkpoint replays the same start states (fixed env seed; actions sampled from the policy, as
-in training), so the clips show how behaviour changes with training. Views are the agent's own 64x64
-frames, upscaled; the cursor path and click markers are drawn on top for the viewer only.
+Each view plays continuously, as in training: after every hit or timeout the world draws a new random
+circle and cursor. Every checkpoint gets its own random sequence of starts (both runs of part 3 share
+it); actions are sampled from the policy. The charts and the "% hit" numbers come from a fixed set of
+evaluation episodes per checkpoint. Views are the agent's own 64x64 frames, upscaled; the cursor path
+and click markers are drawn on top for the viewer only.
 
 Writes into OUT_DIR:
   1_learning.mp4      PPO from scratch, checkpoint by checkpoint                          (--run)
@@ -12,7 +14,7 @@ Writes into OUT_DIR:
   all.mp4             the three parts with title cards
   learning_paths.png, transfer_paths.png
                       screenshot sheets: one picture per episode (start frame, whole cursor path,
-                      every click)
+                      every click): the first episode of each view, played to its end
   babbling_<steps>.png  the prediction card of each babbler checkpoint
 
 Usage:
@@ -110,18 +112,64 @@ def play(agent, cfg, n, seed, reward_scale):
     return [r.arrays() for r in recs]
 
 
-def evaluate_ckpts(ckpts, cfg, reward_scale, n, seed, cache):
-    """{steps: (episodes, stats)} for each checkpoint (cached by path)."""
+def play_stream(agent, cfg, n, seed, reward_scale, steps):
+    """n envs played for `steps` steps as in training: after every hit or timeout the world draws a new
+    random circle and cursor. Returns, per env, its list of episodes (the last one may be unfinished)."""
+    env = CircleWorld(n, dataclasses.replace(cfg, auto_reset=True), seed=seed)
+    obs = env.observe()
+    recs = [EpisodeRecorder(env.config, i) for i in range(n)]
+    for r in recs:
+        r.begin(env)
+    eps = [[] for _ in range(n)]
+    ctx = agent.new_context(n, seed=seed)
+    ep_start = np.ones(n, np.uint8)
+    prev_a = np.zeros((n, 3), np.float32)
+    prev_r = np.zeros(n, np.float32)
+    for _ in range(steps):
+        a = agent.act(ctx, obs["image"], obs["drives"], prev_a, prev_r, ep_start=ep_start)["action"]
+        obs, rew, done, inf = env.step(a)
+        for i in range(n):
+            recs[i].record(a, rew, done, inf)
+            if done[i]:
+                eps[i].append(recs[i].arrays())
+                recs[i].begin(env)                        # the episode the world just drew
+        first = inf["first"].astype(bool)                 # same resets of the agent's inputs as train.py
+        prev_a = executed_action(a)
+        prev_a[first] = 0.0
+        prev_r = (rew * reward_scale).astype(np.float32)
+        prev_r[first] = 0.0
+        ep_start = first.astype(np.uint8)
+    ctx.close()
+    for i in range(n):
+        if len(recs[i]):
+            eps[i].append(recs[i].arrays())
+    return eps
+
+
+def evaluate_ckpts(ckpts, cfg, reward_scale, n, seed, frames, cache):
+    """{steps: dict(stats, stream, first)} per checkpoint (cached by path).
+
+    stats: success rate and median length of n episodes from a fixed set of start states.
+    stream: 4 views played continuously for `frames` steps; first: the first episode of each view,
+    played to its end. Their random starts depend only on the checkpoint's step count, so two runs
+    evaluated at the same step see the same circles.
+    """
     out = {}
     for s, path in ckpts:
         if path not in cache:
             agent = agent_lib.Agent.load(path)
             eps = play(agent, cfg, n, seed, reward_scale)
+            vseed = 1000 * seed + s // ITER
+            stream = play_stream(agent, cfg, 4, vseed, reward_scale, frames)
+            first = play(agent, cfg, 4, vseed, reward_scale)
             agent.close()
             lens = np.array([len(e["reward"]) for e in eps])
             succ = np.array([e["success"].any() for e in eps])
-            cache[path] = (eps, dict(success=float(succ.mean()), median_len=float(np.median(lens))))
-            print("  %8d  success %.2f  median length %5.1f" % (s, succ.mean(), np.median(lens)), flush=True)
+            cache[path] = dict(stats=dict(success=float(succ.mean()), median_len=float(np.median(lens))),
+                               stream=stream, first=first)
+            hits = sum(int(e["success"].any()) for st in stream for e in st)
+            print("  %8d  success %.2f  median length %5.1f  clip hits %d" % (s, succ.mean(), np.median(lens), hits),
+                  flush=True)
         out[s] = cache[path]
     return out
 
@@ -210,6 +258,26 @@ def view(ep, k, cfg, s, label, note=None):
     if note:
         banner(d, im.width, im.height, note[0], note[1], font(max(12, 3 * s), True))
     return im
+
+
+def stream_seq(episodes, hold=4):
+    """Video frames of one continuously playing view: (episode, frame) pairs. Each episode runs from its
+    start to its last frame; a finished episode's last frame is held for `hold` frames."""
+    seq = []
+    for e, ep in enumerate(episodes):
+        T = len(ep["reward"])
+        seq += [(e, k) for k in range(T + 1)] + [(e, T)] * (hold if ep["done"][-1] else 0)
+    return seq
+
+
+def stream_view(eps, seq, f, cfg, s, letter):
+    """Video frame f of one view and its number of hits so far."""
+    e, k = seq[min(f, len(seq) - 1)]
+    ep = eps[e]
+    over = k == len(ep["reward"]) and ep["done"][-1]
+    hits = sum(int(x["success"].any()) for x in eps[:e]) + int(over and ep["success"].any())
+    note = outcome_note(ep, k) if over else None
+    return view(ep, k, cfg, s, "%s   t = %d   hits: %d" % (letter, k, hits), note), hits
 
 
 def path_summary(ep, cfg, s):
@@ -352,43 +420,43 @@ class Tee:
 
 # ----------------------------------------------------------------------------- part 1: learning
 
-def learning_frame(eps, k, K, s, stats, last, cfg, charts, run_name):
+def learning_frame(d1s, f, s, last, cfg, charts, run_name):
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img, "RGBA")
     title_bar(d, "1 · Learning from reward: PPO from scratch", run_name)
-    for i, ep in enumerate(eps):
-        T = len(ep["reward"])
-        kk = min(k, T)
-        note = outcome_note(ep, K) if (kk == T or k == K) else None
-        v = view(ep, kk, cfg, 5, "%s   t = %d" % ("ABCD"[i], kk), note)
+    total = 0
+    for i, (eps, seq) in enumerate(zip(d1s["stream"], d1s["seqs"])):
+        v, hits = stream_view(eps, seq, f, cfg, 5, "ABCD"[i])
+        total += hits
         img.paste(v, (24 + (i % 2) * 332, 62 + (i // 2) * 332))
     x = 700
     d.text((x, 66), steps_label(s), font=font(30, True), fill=TEXT)
     sub = "of PPO training · iteration %d of %d" % (s // ITER, last // ITER) if s else "PPO training starts here"
-    d.text((x, 106), sub, font=font(17), fill=MUTED)
-    put_chart(img, d, charts[0], (x, 140), s, [stats["success"]], [HIT])
-    put_chart(img, d, charts[1], (x, 332), s, [stats["median_len"]], [TRAIL])
-    d.text((x, 530), "Same 4 start positions at every checkpoint; charts: 128 episodes each.",
-           font=font(15), fill=MUTED)
-    legend(d, x, 566)
+    d.text((x, 106), sub + "   ·   hits in this clip: %d" % total, font=font(17), fill=MUTED)
+    st = d1s["stats"]
+    put_chart(img, d, charts[0], (x, 140), s, [st["success"]], [HIT])
+    put_chart(img, d, charts[1], (x, 332), s, [st["median_len"]], [TRAIL])
+    d.text((x, 524), "Each view keeps playing: after a hit or a timeout, a new random", font=font(15), fill=MUTED)
+    d.text((x, 544), "circle and cursor appear. Charts: 128 test episodes per checkpoint.", font=font(15),
+           fill=MUTED)
+    legend(d, x, 576)
     d.text((x, 668), "The agent sees only these 64×64 pixels (+ its previous action)", font=font(15), fill=MUTED)
     d.text((x, 690), "and outputs dx, dy and click.", font=font(15), fill=MUTED)
     return np.asarray(img)
 
 
-def part_learning(data, cfg, out, cap, hold, run_name):
+def part_learning(data, cfg, out, frames, hold, run_name):
     steps = sorted(data)
     last = steps[-1]
-    succ = [data[s][1]["success"] for s in steps]
-    lens = [data[s][1]["median_len"] for s in steps]
-    charts = (chart([(steps, succ, HIT, None)], (556, 186), last, (0, 1.03), "episodes that hit the circle (fraction)"),
+    succ = [data[s]["stats"]["success"] for s in steps]
+    lens = [data[s]["stats"]["median_len"] for s in steps]
+    charts = (chart([(steps, succ, HIT, None)], (556, 186), last, (0, 1.03), "test episodes that hit the circle (fraction)"),
               chart([(steps, lens, TRAIL, None)], (556, 186), last, (3, 230), "median steps per episode (200 = gave up)",
                     log=True))
     for s in steps:
-        eps = data[s][0][:4]
-        K = min(max(len(e["reward"]) for e in eps), cap)
-        for k in range(K + 1):
-            frame = learning_frame(eps, k, K, s, data[s][1], last, cfg, charts, run_name)
+        d1s = dict(data[s], seqs=[stream_seq(st) for st in data[s]["stream"]])
+        for f in range(frames):
+            frame = learning_frame(d1s, f, s, last, cfg, charts, run_name)
             out.write(frame)
         out.write(frame, hold)
 
@@ -519,41 +587,40 @@ def part_babbling(babbler, out, out_dir, hold, run_name):
 
 # ----------------------------------------------------------------------------- part 3: transfer
 
-def transfer_frame(left, right, k, K, s, sl, sr, last, cfg, names):
+def transfer_frame(left, right, f, s, last, cfg, names):
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img, "RGBA")
     title_bar(d, "3 · Babbling first, then reward", names)
-    f = font(26, True)
+    fb = font(26, True)
     txt = steps_label(s) + ("" if s == 0 else " of PPO")
-    l, _, r, _ = d.textbbox((0, 0), txt, font=f)
-    d.text(((W - (r - l)) / 2, 60), txt, font=f, fill=TEXT)
+    l, _, r, _ = d.textbbox((0, 0), txt, font=fb)
+    d.text(((W - (r - l)) / 2, 60), txt, font=fb, fill=TEXT)
     bx, by, bw = W / 2 - 200, 98, 400                                 # progress through the shown range
     d.rectangle([bx, by, bx + bw, by + 6], fill=PANEL)
     d.rectangle([bx, by, bx + bw * s / last, by + 6], fill=MUTED)
     heads = (("PPO from scratch", "random initial weights"),
              ("PPO from the babbler", "initial weights from 1M reward-free steps"))
-    for p, (eps, st, (h1, h2)) in enumerate(((left, sl, heads[0]), (right, sr, heads[1]))):
+    for p, (side, (h1, h2)) in enumerate(((left, heads[0]), (right, heads[1]))):
         x0 = 40 if p == 0 else W - 40 - 522
         d.text((x0, 114), h1, font=font(20, True), fill=TEXT)
         d.text((x0, 140), h2, font=font(14), fill=MUTED)
-        for i, ep in enumerate(eps):
-            T = len(ep["reward"])
-            kk = min(k, T)
-            note = outcome_note(ep, K) if (kk == T or k == K) else None
-            v = view(ep, kk, cfg, 4, "%s  t = %d" % ("ABCD"[i], kk), note)
+        total = 0
+        for i, (eps, seq) in enumerate(zip(side["stream"], side["seqs"])):
+            v, hits = stream_view(eps, seq, f, cfg, 4, "ABCD"[i])
+            total += hits
             img.paste(v, (x0 + (i % 2) * 266, 164 + (i // 2) * 266))
-        d.text((x0, 696 - 6), "%d%% of 128 episodes hit the circle · median %d steps"
-               % (round(100 * st["success"]), st["median_len"]), font=font(16), fill=TEXT)
+        st = side["stats"]
+        d.text((x0, 690), "hits in this clip: %d  ·  tests: %d%% hit, median %d steps"
+               % (total, round(100 * st["success"]), st["median_len"]), font=font(16), fill=TEXT)
     return np.asarray(img)
 
 
-def part_transfer(dl, dr, cfg, out, cap, hold, names):
+def part_transfer(dl, dr, cfg, out, frames, hold, names):
     steps = sorted(set(dl) & set(dr))
     for s in steps:
-        left, right = dl[s][0][:4], dr[s][0][:4]
-        K = min(max(len(e["reward"]) for e in left + right), cap)
-        for k in range(K + 1):
-            frame = transfer_frame(left, right, k, K, s, dl[s][1], dr[s][1], steps[-1], cfg, names)
+        left, right = (dict(dd[s], seqs=[stream_seq(st) for st in dd[s]["stream"]]) for dd in (dl, dr))
+        for f in range(frames):
+            frame = transfer_frame(left, right, f, s, steps[-1], cfg, names)
             out.write(frame)
         out.write(frame, hold)
 
@@ -594,8 +661,8 @@ def main():
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--seed", type=int, default=3, help="env seed of the replayed start states")
     ap.add_argument("--episodes", type=int, default=128, help="episodes per checkpoint for the statistics")
-    ap.add_argument("--cap", type=int, default=60, help="max frames shown per episode (part 1)")
-    ap.add_argument("--cap-transfer", type=int, default=45, help="max frames shown per episode (part 3)")
+    ap.add_argument("--frames", type=int, default=48, help="video frames per checkpoint (part 1)")
+    ap.add_argument("--frames-transfer", type=int, default=45, help="video frames per checkpoint (part 3)")
     ap.add_argument("--transfer-max", type=int, default=294912, help="last checkpoint shown in part 3")
     ap.add_argument("--threads", type=int, default=64)
     args = ap.parse_args()
@@ -605,7 +672,8 @@ def main():
     cfg, rs = load_run(args.run)
     cache = {}
     print("evaluating", args.run, flush=True)
-    d1 = evaluate_ckpts(checkpoints(args.run), cfg, rs, args.episodes, args.seed, cache)
+    frames = max(args.frames, args.frames_transfer)
+    d1 = evaluate_ckpts(checkpoints(args.run), cfg, rs, args.episodes, args.seed, frames, cache)
 
     full = Video(os.path.join(args.out, "all.mp4"))
     full.write(card("Pixels in, mouse out", [
@@ -618,10 +686,10 @@ def main():
 
     full.write(card("1 · Learning from reward", [
         "PPO from random weights. Reward: +10 for clicking the circle, −0.001 per step.",
-        "The same 4 start positions are replayed at each training checkpoint;",
-        "actions are sampled from the policy, as in training."]), 4 * FPS)
+        "Four views play on, as in training: after each hit or timeout, a new random circle",
+        "and cursor appear. A few seconds per training checkpoint."]), 4 * FPS)
     v = Video(os.path.join(args.out, "1_learning.mp4"))
-    part_learning(d1, cfg, Tee(v, full), args.cap, 10, name(args.run))
+    part_learning(d1, cfg, Tee(v, full), args.frames, 10, name(args.run))
     v.close()
 
     if args.babbler:
@@ -636,22 +704,24 @@ def main():
 
     if args.run2:
         print("evaluating", args.run2, flush=True)
-        d2 = evaluate_ckpts(checkpoints(args.run2, args.transfer_max), cfg, rs, args.episodes, args.seed, cache)
+        d2 = evaluate_ckpts(checkpoints(args.run2, args.transfer_max), cfg, rs, args.episodes, args.seed, frames,
+                            cache)
         d1t = {s: d1[s] for s in d1 if s <= args.transfer_max}
         full.write(card("3 · Babbling first, then reward", [
             "Left: PPO from scratch. Right: the same PPO, starting from the babbler's weights",
-            "(its policy head is untrained). Same seed, same start positions."]), 4 * FPS)
+            "(its policy head is untrained). Both sides get the same random sequence of circles."]), 4 * FPS)
         v = Video(os.path.join(args.out, "3_transfer.mp4"))
-        part_transfer(d1t, d2, cfg, Tee(v, full), args.cap_transfer, 10, "%s vs %s" % (name(args.run), name(args.run2)))
+        part_transfer(d1t, d2, cfg, Tee(v, full), args.frames_transfer, 10,
+                      "%s vs %s" % (name(args.run), name(args.run2)))
         v.close()
-        rows = [("{:,} steps".format(s), [d1t[s][1], d2[s][1]], [d1t[s][0], d2[s][0]]) for s in sorted(d1t)
-                if s in d2]
+        rows = [("{:,} steps".format(s), [d1t[s]["stats"], d2[s]["stats"]], [d1t[s]["first"], d2[s]["first"]])
+                for s in sorted(d1t) if s in d2]
         sheet(rows, cfg, 2, os.path.join(args.out, "transfer_paths.png"), ["PPO from scratch", "PPO from the babbler"])
     full.close()
 
     steps = sorted(d1)
     shown = steps[::2] + ([steps[-1]] if (len(steps) - 1) % 2 else [])   # every other checkpoint and the last
-    rows = [("{:,} steps".format(s), [d1[s][1]], [d1[s][0]]) for s in shown]
+    rows = [("{:,} steps".format(s), [d1[s]["stats"]], [d1[s]["first"]]) for s in shown]
     sheet(rows, cfg, 3, os.path.join(args.out, "learning_paths.png"), ["PPO from scratch: one picture per episode"])
 
 
