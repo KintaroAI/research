@@ -44,7 +44,7 @@ of, reward. Then test whether that knowledge helps it learn the task.
 
 | # | Experiment | Status | Key result |
 |---|---|---|---|
-| [00001](00001-pixel-agent-and-babbling/README.md) | World + C++ agent; sparse-reward PPO; reward-free motor babbling; transfer | Core results in | Reward-free babbling (forward + inverse prediction, random policy, no reward) learns: <br>• movement semantics (retrieval 0.91 vs 0.11 chance) <br>• the click contingency (circle vanishes on inside clicks 0.97, outside 0.04) <br>• hunger relief <br>Replicated over 2 seeds. PPO initialized from the babbler reaches 95% success 3.3–3.5× faster (2 seeds). |
+| [00001](00001-pixel-agent-and-babbling/README.md) | World + C++ agent; sparse-reward PPO; reward-free motor babbling; transfer | Complete | Reward-free babbling (forward + inverse prediction, random policy, no reward) learns: <br>• movement semantics (retrieval 0.91 vs 0.11 chance) <br>• the click contingency (circle vanishes on inside clicks 0.97, outside 0.04) <br>• hunger relief <br>Replicated over 2 seeds. PPO initialized from the babbler reaches 95% success 3.3–3.5× faster (2 seeds). |
 
 ## Open Questions
 

@@ -1,8 +1,8 @@
 # vm-00001: Pixel Agent and Reward-Free Babbling
 
 **Date:** 2026-10-23
-**Status:** In Progress (all runs finished and reported; not yet tagged)
-**Source:** *tagged on completion as `exp/vm-00001`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00001` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00001/` (runs `NNN_<name>_s<seed>`)
 
 ## Goal
