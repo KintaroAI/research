@@ -91,7 +91,9 @@ Correctness checks:
 
 On held-out states, the world is restored with `set_state` and steps each candidate action. The
 model predicts each outcome from the same single-frame context. Ground truth is used only for
-scoring.
+scoring. The movement metrics use episode-start states, where the cursor is always on the
+background. The click metrics compare those states with states whose cursor was moved inside the
+circle.
 
 | Metric | Meaning | Chance / truth |
 |---|---|---|
@@ -192,6 +194,9 @@ next-frame and next-drive prediction train, plus, in 012, inverse dynamics. All 
 \* At 2M, the predicted hunger after an inside click is 0.022 (truth 0.0), and after an outside
 click 0.267 (truth 0.273). There is no false relief. The smaller "drop" comes from underestimating
 the no-click hunger of inside states (0.19 vs 0.26 true).
+
+The movement columns measure moves with the cursor on the background. With the cursor over the
+circle, movement is not learned yet (see Caveats).
 
 Summary figure: `exp_00001/babbling_comparison.png` (all babbling runs, five metrics over
 training). Per-run detail: `<run>/analysis/dynamics_over_training.png`.
@@ -384,6 +389,21 @@ representation is still a much better starting point than random weights (R4: 3.
   have one seed.
 - Counterfactual tests use single-frame contexts, i.e. episode-start-like inputs, which are in
   distribution.
+- **Movement over the circle is not learned yet** (found after tagging, while making the video).
+  The same movement test on 256 held-out states with the cursor moved inside the circle:
+
+  | run | cursor | retrieval | explained | displacement error (static) | corr x / y |
+  |---|---|---:|---:|---:|---:|
+  | 012 @1M | on the background | .914 | .865 | 1.18 px (4.11) | .94 / .96 |
+  | 012 @1M | over the circle | .111 | .135 | 3.42 px (4.29) | .54 / .50 |
+  | 012 @2M | over the circle | .112 | .175 | 2.65 px (4.29) | .73 / .78 |
+  | 015 @1M | over the circle | .111 | .141 | 3.73 px (4.29) | .55 / .60 |
+
+  Over red, the predicted shifts point roughly the right way but are too short. Retrieval stays at
+  chance because errors in the red region dominate the full-frame comparison. The likely cause is
+  coverage: under the random policy, the cursor rarely moves over a live circle, because a click
+  there ends the episode about half the time. The click contingency itself is learned (vanish .97
+  inside vs .04 outside).
 - Predicted cursors are blurry or faint. Displacements are read off with a whiteness-centroid
   detector, so the "± px" numbers are approximate.
 - Successful clicks in babbling come from a random policy whose click probability is about 0.5.
@@ -395,7 +415,8 @@ representation is still a much better starting point than random weights (R4: 3.
   PPO), with every gradient verified against a PyTorch reference. It learns to aim and click from a
   sparse reward in about 0.35–0.5M steps at radius 12–16.
 - **Without any reward, motor babbling plus prediction teaches the model what its actions do:**
-  - how each move displaces its cursor (correlation 0.94–0.96, retrieval 0.91 vs 0.11 chance);
+  - how each move displaces its cursor on the background (correlation 0.94–0.96, retrieval 0.91
+    vs 0.11 chance); over the circle, this is not learned yet;
   - that clicking *on* the circle removes it (0.97) while clicking elsewhere does not (0.04);
   - that this click relieves hunger (0.29 vs about 0.27 true).
 - This requires decoder inductive biases for small controllable objects and enough gradient
@@ -432,7 +453,8 @@ representation is still a much better starting point than random weights (R4: 3.
      init there;
    - radius 3 / 100 steps / click p 0.1 (random success about 5%);
    - an empty-click cost.
-4. Plain-arch PPO seeds 2–3, to test whether CoordConv slows RL (R3). Seeds for the babbling runs
+4. Plain-arch PPO seeds 2–3, to test whether CoordConv slows RL (R3). Babbling coverage of the
+   cursor over the circle (e.g. a lower click probability), to learn movement there too. Seeds for the babbling runs
    (2–3 each). Bootstrap at timeouts in GAE. Separate entropy
    coefficients for movement and click (see `RESEARCH.md` §9).
 5. A GRU vs Transformer comparison (plan §9), and the browser twin driven by a trained agent in a

@@ -18,7 +18,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `evaluate.py`: task metrics.
   - `analyze_dynamics.py`: counterfactual tests of the learned dynamics (plus
     `dynamics_over_training.py` and `compare_dynamics.py`). `plot_runs.py`: learning curves.
-    `record_episodes.py`: GIFs, replay JSON and imagination strips.
+    `record_episodes.py`: GIFs, replay JSON and imagination strips. `make_video.py`: MP4s and
+    screenshot sheets across checkpoints (needs dense checkpoints via `train.milestones`).
   - `reference/torch_reference.py`: float64 PyTorch re-implementation, used only by tests.
   - `configs/*.json`: runs from the plan's experiment matrix (A–F) plus reward-free babbling (P_*).
 - **`NNNNN-experiment-name/`**: experiment snapshots (README.md + Makefile only; the git tag

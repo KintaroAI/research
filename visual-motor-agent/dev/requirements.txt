@@ -2,3 +2,4 @@ numpy
 pillow
 matplotlib
 pytest
+imageio-ffmpeg

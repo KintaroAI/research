@@ -89,6 +89,12 @@ Per-run outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name/`:
 `compare_dynamics.py RUN1 RUN2 ... -o fig.png` overlays runs. `record_episodes.py RUN` writes GIFs,
 browser-replay JSON and `[current | predicted | actual]` imagination strips.
 
+`make_video.py --run RUN --run2 RUN_FROM_BABBLER --babbler BABBLER -o DIR` writes MP4s and
+screenshot sheets of the agent at every numbered checkpoint. Each checkpoint replays the same start
+states, with the cursor path and clicks drawn on top. For a fine-grained time-lapse, train with
+dense checkpoints, e.g. `--set 'train.milestones=[0,16384,32768,...]'`. One PPO iteration is
+16,384 steps, so the policy changes no more often than that.
+
 `analyze_dynamics.py` asks whether the model knows what its actions do. It restores the world to
 the same state and compares predicted and true outcomes of counterfactual actions:
 - action retrieval accuracy (chance 1/9)
@@ -115,5 +121,5 @@ the same state and compares predicted and true outcomes of counterfactual action
 | `agent_lib.py` | ctypes wrapper |
 | `world/` | CircleWorld, recorder, browser demo |
 | `train.py`, `run_queue.py`, `output_name.py` | training |
-| `evaluate.py`, `analyze_dynamics.py`, `dynamics_over_training.py`, `compare_dynamics.py`, `plot_runs.py`, `record_episodes.py` | evaluation and analysis |
+| `evaluate.py`, `analyze_dynamics.py`, `dynamics_over_training.py`, `compare_dynamics.py`, `plot_runs.py`, `record_episodes.py`, `make_video.py` | evaluation and analysis |
 | `reference/torch_reference.py`, `tests/` | PyTorch reference and tests |
