@@ -1,0 +1,15 @@
+{
+  "name": "E_drives_only",
+  "description": "Plan run E: drives observed + hunger cost 0.01/step; no bonuses, no prediction.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.01
+  },
+  "ppo": {
+    "pred_coef": 0.0,
+    "drive_coef": 0.0
+  },
+  "model": {},
+  "train": {}
+}

@@ -1,0 +1,18 @@
+{
+  "name": "C_small_w10",
+  "description": "Run C with the next-frame loss up-weighted 11x on pixels that change between consecutive frames. Small targets: radius 4-8 px.",
+  "env": {
+    "bonuses": false,
+    "drives": false,
+    "hunger_cost": 0.0,
+    "radius_min": 4.0,
+    "radius_max": 8.0
+  },
+  "ppo": {
+    "pred_coef": 1.0,
+    "drive_coef": 0.0,
+    "pred_changed_weight": 10.0
+  },
+  "model": {},
+  "train": {}
+}

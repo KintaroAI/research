@@ -1,0 +1,15 @@
+{
+  "name": "D_combined",
+  "description": "Plan run D: bonuses + drives (observed hunger/restlessness, hunger cost 0.01/step) + next-frame and next-drive prediction.",
+  "env": {
+    "bonuses": true,
+    "drives": true,
+    "hunger_cost": 0.01
+  },
+  "ppo": {
+    "pred_coef": 1.0,
+    "drive_coef": 1.0
+  },
+  "model": {},
+  "train": {}
+}

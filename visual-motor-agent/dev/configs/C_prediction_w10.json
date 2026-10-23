@@ -1,0 +1,16 @@
+{
+  "name": "C_prediction_w10",
+  "description": "Run C with the next-frame loss up-weighted 11x on pixels that change between consecutive frames.",
+  "env": {
+    "bonuses": false,
+    "drives": false,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "pred_coef": 1.0,
+    "drive_coef": 0.0,
+    "pred_changed_weight": 10.0
+  },
+  "model": {},
+  "train": {}
+}

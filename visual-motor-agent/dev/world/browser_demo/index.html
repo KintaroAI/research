@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CircleWorld demo</title>
+<style>
+  :root {
+    --bg: #12121a; --panel: #1b1b27; --line: #2c2c3e; --text: #e4e4ee; --muted: #9696ab;
+    --red: #dc2828; --ok: #5ad27a; --hunger: #e0913a; --restless: #5aa0e6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+           padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; }
+  .tabs button { background: none; color: var(--muted); border: 1px solid var(--line);
+                 padding: 4px 14px; cursor: pointer; font: inherit; }
+  .tabs button:first-child { border-radius: 6px 0 0 6px; }
+  .tabs button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+  .tabs button.active { color: var(--text); background: var(--panel); }
+  .muted { color: var(--muted); }
+  main { display: flex; flex-wrap: wrap; gap: 20px; padding: 16px; align-items: flex-start; }
+  .view { display: flex; flex-direction: column; gap: 8px; }
+  .screen-wrap { position: relative; width: min(512px, calc(100vw - 32px)); }
+  canvas { image-rendering: crisp-edges; image-rendering: pixelated; display: block; }
+  #screen { width: 100%; height: auto; aspect-ratio: 1 / 1; border: 1px solid var(--line);
+            cursor: crosshair; }
+  .eye { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  #eye { width: 64px; height: 64px; border: 1px solid var(--line); }
+  .flash { position: absolute; left: 0; right: 0; top: 44%; text-align: center; font-size: 22px;
+           font-weight: 700; opacity: 0; transition: opacity .5s; pointer-events: none;
+           text-shadow: 0 1px 4px #000, 0 0 2px #000; }
+  .flash.show { opacity: 1; transition: none; }
+  .flash.ok { color: var(--ok); }
+  .flash.bad { color: #d0d0dc; }
+  .panel { flex: 1 1 340px; max-width: 520px; background: var(--panel);
+           border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+  .panel h2 { font-size: 14px; margin: 14px 0 6px; color: var(--muted); font-weight: 600;
+              text-transform: uppercase; letter-spacing: .04em; }
+  .panel h2:first-child { margin-top: 0; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .stat { background: var(--bg); border-radius: 6px; padding: 6px 8px; }
+  .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat > span { font-size: 12px; color: var(--muted); }
+  .stat b .muted { font-size: 13px; font-weight: 400; }
+  .drive { display: grid; grid-template-columns: 96px 1fr 56px; align-items: center; gap: 8px;
+           margin: 4px 0; font-variant-numeric: tabular-nums; }
+  .bar { height: 10px; background: var(--bg); border-radius: 5px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; }
+  .hunger > div { background: var(--hunger); }
+  .restless > div { background: var(--restless); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  .controls label { white-space: nowrap; }
+  button.btn { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+               border-radius: 6px; padding: 4px 12px; font: inherit; cursor: pointer; }
+  button.btn:hover { border-color: var(--muted); }
+  input[type=number] { width: 64px; background: var(--bg); color: var(--text);
+                       border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+  select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+           border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 3px 6px; border-bottom: 1px solid var(--line); text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  table.kv th { text-align: left; color: var(--muted); font-weight: 500; width: 9.5em; }
+  table.kv td { text-align: left; }
+  .log-wrap { max-height: 220px; overflow-y: auto; }
+  .ok-text { color: var(--ok); }
+  .help { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  kbd { background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
+        font-size: 12px; }
+  #r-slider { flex: 1 1 200px; }
+  .transport { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  .error { color: #ff7b72; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CircleWorld</h1>
+  <nav class="tabs"><button id="tab-play" class="active">Play</button><button id="tab-replay">Replay</button></nav>
+  <span class="muted">64×64 world drawn ×8. Same renderer and step rules as the Python training simulator.</span>
+</header>
+
+<main>
+  <div class="view">
+    <div class="screen-wrap">
+      <canvas id="screen" width="64" height="64"></canvas>
+      <div id="flash" class="flash"></div>
+    </div>
+    <div class="eye"><canvas id="eye" width="64" height="64"></canvas>
+      <span class="muted">The agent's observation at 1:1: these pixels (plus the drive values)
+        are all it gets.</span></div>
+  </div>
+
+  <!-- ============================== PLAY ============================== -->
+  <section id="play" class="panel">
+    <h2>Episode</h2>
+    <div class="stats">
+      <div class="stat"><span>Step</span><b><span id="p-step">0</span><span class="muted"> / <span id="p-max">200</span></span></b></div>
+      <div class="stat"><span>Last reward</span><b id="p-reward">0.000</b></div>
+      <div class="stat"><span>Return</span><b id="p-return">0.000</b></div>
+    </div>
+    <div class="muted" id="p-bonus-line"></div>
+
+    <h2>Drives</h2>
+    <div class="drive"><span>Hunger</span><div class="bar hunger"><div id="p-hbar"></div></div><span id="p-h">0</span></div>
+    <div class="drive"><span>Restlessness</span><div class="bar restless"><div id="p-bbar"></div></div><span id="p-b">0</span></div>
+    <div class="muted" id="p-drive-note"></div>
+
+    <h2>Controls</h2>
+    <div class="controls">
+      <button class="btn" id="p-pause">Pause</button>
+      <button class="btn" id="p-stepbtn" title="advance one step (useful while paused)">Step</button>
+      <button class="btn" id="p-reset">New episode</button>
+      <label><input type="checkbox" id="p-mouse"> Mouse control</label>
+    </div>
+    <div class="controls" style="margin-top:8px">
+      <label><input type="checkbox" id="p-bonuses"> Exploration bonuses</label>
+      <label><input type="checkbox" id="p-drives"> Drives</label>
+      <label>hunger cost <input type="number" id="p-hcost" value="0" min="0" step="0.005"></label>
+    </div>
+    <div class="controls" style="margin-top:8px">
+      <label>radius <input type="number" id="p-rmin" value="12" min="1" max="32" step="1"> –
+        <input type="number" id="p-rmax" value="16" min="1" max="32" step="1"></label>
+      <label>speed <select id="p-fps"><option>5</option><option>10</option><option selected>15</option><option>30</option></select> steps/s</label>
+      <label>seed <input type="number" id="p-seed" value="1" min="0" step="1"></label>
+      <button class="btn" id="p-newworld" title="restart with this seed">Restart</button>
+    </div>
+    <p class="help"><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+      set dx, dy = ±1. <kbd>Space</kbd> clicks once (one click per press).
+      In mouse mode each step pulls the cursor toward the mouse,
+      dx, dy = clip((mouse − cursor) / 4, −1, 1), and pressing the mouse button clicks.
+      The world steps at a fixed rate whether or not you act, and waiting costs reward.</p>
+
+    <h2>Finished episodes</h2>
+    <div class="log-wrap">
+      <table><thead><tr><th>#</th><th>Result</th><th>Steps</th><th>Return</th><th>Clicks</th><th>Bonus</th></tr></thead>
+        <tbody id="p-log"></tbody></table>
+    </div>
+  </section>
+
+  <!-- ============================== REPLAY ============================== -->
+  <section id="replay" class="panel" hidden>
+    <h2>Episode file</h2>
+    <input type="file" id="r-file" accept=".json,application/json">
+    <div class="help">Load a JSON file written by <code>EpisodeRecorder.save_json()</code>, or drop one anywhere
+      on the page. Every frame is re-rendered from the recorded state.</div>
+    <div class="error" id="r-error"></div>
+
+    <div id="r-body" hidden>
+      <div class="transport">
+        <button class="btn" id="r-play">Play</button>
+        <button class="btn" id="r-prev" title="previous frame (←)">◀</button>
+        <button class="btn" id="r-next" title="next frame (→)">▶</button>
+        <input type="range" id="r-slider" min="0" max="0" value="0" step="1">
+        <label><select id="r-speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+      </div>
+      <table class="kv">
+        <tr><th>Frame</th><td><b id="r-frame">0</b> / <span id="r-total">0</span>
+          <span class="muted" id="r-name"></span></td></tr>
+        <tr><th>Action taken</th><td id="r-action"></td></tr>
+        <tr><th>Reward</th><td id="r-reward"></td></tr>
+        <tr><th>Bonus part</th><td id="r-bonusv"></td></tr>
+        <tr><th>Return so far</th><td id="r-return"></td></tr>
+        <tr><th>Event</th><td id="r-event"></td></tr>
+        <tr><th>Geometry</th><td id="r-geom" class="muted"></td></tr>
+      </table>
+      <h2>Drives</h2>
+      <div class="drive"><span>Hunger</span><div class="bar hunger"><div id="r-hbar"></div></div><span id="r-h">0</span></div>
+      <div class="drive"><span>Restlessness</span><div class="bar restless"><div id="r-bbar"></div></div><span id="r-b">0</span></div>
+      <div class="muted" id="r-drive-note"></div>
+      <h2>Summary</h2>
+      <div id="r-summary" class="muted"></div>
+      <p class="help">Frame <i>k</i> is the screen the agent saw before action <i>k</i>; the last frame is the
+        terminal screen. Keys: <kbd>Space</kbd> play/pause, <kbd>←</kbd><kbd>→</kbd> step,
+        <kbd>Home</kbd>/<kbd>End</kbd>.</p>
+    </div>
+  </section>
+</main>
+
+<script src="circle_world.js"></script>
+<script>
+(function () {
+  'use strict';
+  const CW = window.CircleWorldJS;
+  const $ = (id) => document.getElementById(id);
+  if (!CW) {
+    document.body.insertAdjacentHTML('afterbegin',
+      '<p class="error" style="padding:16px">circle_world.js did not load; keep it next to index.html.</p>');
+    return;
+  }
+  const clip = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  const signed = (v, d) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d === undefined ? 3 : d);
+
+  // ------------------------------------------------------------------ canvas
+  const screen = $('screen');
+  const eye = $('eye');
+  const sctx = screen.getContext('2d');
+  const ectx = eye.getContext('2d');
+  let imageData = null;
+
+  function draw(rgb, size) {
+    if (!imageData || imageData.width !== size) {
+      screen.width = screen.height = eye.width = eye.height = size;
+      imageData = sctx.createImageData(size, size);
+    }
+    CW.rgbToRgba(rgb, 0, size, imageData.data);
+    sctx.putImageData(imageData, 0, 0);
+    ectx.putImageData(imageData, 0, 0);
+  }
+
+  let flashTimer = null;
+  function flash(text, kind) {
+    const el = $('flash');
+    el.textContent = text;
+    el.className = 'flash show ' + kind;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { el.className = 'flash ' + kind; }, 900);
+  }
+
+  function setBar(barId, valueId, v) {
+    $(barId).style.width = (100 * clip(v, 0, 1)).toFixed(1) + '%';
+    $(valueId).textContent = v.toFixed(3);
+  }
+
+  // -------------------------------------------------------------------- play
+  const KEYMAP = {
+    ArrowLeft: [-1, 0], a: [-1, 0], ArrowRight: [1, 0], d: [1, 0],
+    ArrowUp: [0, -1], w: [0, -1], ArrowDown: [0, 1], s: [0, 1],
+  };
+  const play = { world: null, timer: null, paused: false, keys: new Set(), pendingClick: false,
+                 mouse: null, episodes: 0, lastReward: 0, lastBonus: 0 };
+
+  function playConfig() {
+    let rmin = parseFloat($('p-rmin').value);
+    let rmax = parseFloat($('p-rmax').value);
+    if (!(rmin > 0)) rmin = 12;
+    if (!(rmax > 0)) rmax = 16;
+    rmax = clip(rmax, rmin, 32);
+    rmin = Math.min(rmin, rmax);
+    return CW.makeConfig({
+      bonuses: $('p-bonuses').checked,
+      drives: $('p-drives').checked,
+      hunger_cost: Math.max(0, parseFloat($('p-hcost').value) || 0),
+      radius_min: rmin,
+      radius_max: rmax,
+    });
+  }
+
+  function newWorld() {
+    const seed = (parseInt($('p-seed').value, 10) || 0) >>> 0;
+    play.world = new CW.CircleWorld(1, playConfig(), seed);
+    play.episodes = 0;
+    play.lastReward = 0;
+    play.lastBonus = 0;
+    $('p-log').innerHTML = '';
+    renderPlay(play.world.render());
+  }
+
+  /** Settings that change rewards apply immediately; the radius range applies at the next reset. */
+  function applySettings() {
+    const cfg = playConfig();
+    const w = play.world.config;
+    for (const k of ['bonuses', 'drives', 'hunger_cost', 'radius_min', 'radius_max']) w[k] = cfg[k];
+    renderPlay(play.world.render());
+  }
+
+  function playAction() {
+    const w = play.world;
+    const step = w.config.max_step_px;
+    let dx = 0;
+    let dy = 0;
+    if ($('p-mouse').checked) {
+      if (play.mouse) {
+        dx = clip((play.mouse.x - w.cursor[0]) / step, -1, 1);
+        dy = clip((play.mouse.y - w.cursor[1]) / step, -1, 1);
+      }
+    } else {
+      for (const k of play.keys) {
+        const v = KEYMAP[k];
+        if (v) { dx += v[0]; dy += v[1]; }
+      }
+      dx = clip(dx, -1, 1);
+      dy = clip(dy, -1, 1);
+    }
+    const click = play.pendingClick ? 1 : 0;
+    play.pendingClick = false;
+    return [dx, dy, click];
+  }
+
+  function tick() {
+    const out = play.world.step([playAction()]);
+    const info = out.info;
+    play.lastReward = out.reward[0];
+    play.lastBonus = info.bonus[0];
+    if (out.done[0]) {
+      play.episodes += 1;
+      logEpisode(info);
+      if (info.success[0]) flash('SUCCESS  ' + signed(info.ep_return[0], 2) + ' in ' + info.ep_length[0] + ' steps', 'ok');
+      else flash('TIMEOUT after ' + info.ep_length[0] + ' steps', 'bad');
+    }
+    renderPlay(out.obs.image);
+    return out;
+  }
+
+  function renderPlay(rgb) {
+    const w = play.world;
+    const cfg = w.config;
+    draw(rgb, cfg.size);
+    $('p-step').textContent = w.t[0];
+    $('p-max').textContent = cfg.max_steps;
+    $('p-reward').textContent = signed(play.lastReward, 3);
+    $('p-return').textContent = signed(w.ep_return[0], 3);
+    if (cfg.bonuses) {
+      const mf = Math.max(0, 1 - w.cum_move[0] / cfg.move_budget_px);
+      const cf = Math.max(0, 1 - w.empty_clicks[0] / cfg.click_budget);
+      $('p-bonus-line').textContent = 'last bonus ' + signed(play.lastBonus, 4) + ' · budget left: movement '
+        + (100 * mf).toFixed(0) + '%, empty clicks ' + (100 * cf).toFixed(0) + '%';
+    } else {
+      $('p-bonus-line').textContent = 'exploration bonuses off: reward = +10 per hit, −0.001 per step';
+    }
+    setBar('p-hbar', 'p-h', w.hunger[0]);
+    setBar('p-bbar', 'p-b', w.restlessness[0]);
+    $('p-drive-note').textContent = cfg.drives
+      ? 'drives on: the agent observes [hunger, restlessness]; reward −= ' + cfg.hunger_cost + ' × hunger'
+      : 'drives off: drives are simulated but the agent observes [0, 0] and pays no hunger cost';
+  }
+
+  function logEpisode(info) {
+    const tr = document.createElement('tr');
+    const ok = info.success[0] === 1;
+    const cells = [play.episodes, ok ? 'success' : 'timeout', info.ep_length[0],
+                   info.ep_return[0].toFixed(3), info.ep_clicks[0], info.ep_bonus_total[0].toFixed(3)];
+    cells.forEach((v, i) => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      if (i === 1 && ok) td.className = 'ok-text';
+      tr.appendChild(td);
+    });
+    const body = $('p-log');
+    body.insertBefore(tr, body.firstChild);
+    while (body.children.length > 100) body.removeChild(body.lastChild);
+  }
+
+  function setRunning(on) {
+    clearInterval(play.timer);
+    play.timer = on ? setInterval(tick, 1000 / parseFloat($('p-fps').value)) : null;
+    $('p-pause').textContent = on ? 'Pause' : 'Resume';
+  }
+
+  $('p-pause').addEventListener('click', () => { play.paused = !play.paused; setRunning(!play.paused); });
+  $('p-stepbtn').addEventListener('click', () => tick());
+  $('p-reset').addEventListener('click', () => { play.world.reset(); play.lastReward = 0; renderPlay(play.world.render()); });
+  $('p-newworld').addEventListener('click', () => newWorld());
+  $('p-fps').addEventListener('change', () => { if (!play.paused && mode === 'play') setRunning(true); });
+  for (const id of ['p-bonuses', 'p-drives', 'p-hcost', 'p-rmin', 'p-rmax']) {
+    $(id).addEventListener('change', applySettings);
+  }
+
+  screen.addEventListener('mousemove', (e) => {
+    const r = screen.getBoundingClientRect();
+    const size = play.world.config.size;
+    play.mouse = { x: (e.clientX - r.left) / r.width * size, y: (e.clientY - r.top) / r.height * size };
+  });
+  screen.addEventListener('mouseleave', () => { play.mouse = null; });
+  screen.addEventListener('mousedown', (e) => {
+    if (mode === 'play') { play.pendingClick = true; e.preventDefault(); }
+  });
+
+  // ------------------------------------------------------------------ replay
+  const rep = { doc: null, cfg: null, T: 0, k: 0, timer: null, cum: null };
+
+  function loadEpisodeText(text, name) {
+    const doc = JSON.parse(text);
+    if (!doc || doc.format !== 'circle_world_episode') throw new Error('not a circle_world_episode file');
+    rep.doc = doc;
+    rep.cfg = CW.makeConfig(doc.config);
+    rep.T = doc.num_steps;
+    rep.cum = new Float64Array(rep.T + 1);
+    for (let k = 0; k < rep.T; k++) rep.cum[k + 1] = rep.cum[k] + doc.steps.reward[k];
+    $('r-slider').max = rep.T;
+    $('r-total').textContent = rep.T;
+    $('r-name').textContent = name ? '· ' + name : '';
+    $('r-error').textContent = '';
+    $('r-body').hidden = false;
+    const s = doc.summary || {};
+    const meta = Object.entries(doc.meta || {}).map(([k, v]) => k + '=' + JSON.stringify(v)).join(', ');
+    $('r-summary').textContent = (s.success ? 'success' : (s.finished ? 'timeout' : 'unfinished'))
+      + ' · ' + rep.T + ' steps · return ' + (s.return !== undefined ? s.return.toFixed(3) : '?')
+      + ' · clicks ' + s.clicks + ' (' + s.empty_clicks + ' empty) · path ' + (s.path_length || 0).toFixed(1)
+      + ' px · start distance to edge ' + (s.init_dist || 0).toFixed(1) + ' px'
+      + (rep.cfg.bonuses ? ' · bonus total ' + (s.bonus_total || 0).toFixed(3) : '')
+      + (meta ? ' · ' + meta : '');
+    $('r-drive-note').textContent = rep.cfg.drives ? 'drives were observed by the agent'
+      : 'drives were simulated but hidden from the agent';
+    setReplayPlaying(false);
+    setFrame(0);
+  }
+
+  function setFrame(k) {
+    if (!rep.doc) return;
+    rep.k = clip(k | 0, 0, rep.T);
+    const f = rep.doc.frames;
+    const s = rep.doc.steps;
+    const i = rep.k;
+    draw(CW.renderState([f.cursor[i]], [f.target[i]], [f.radius[i]], [f.target_alive[i]], rep.cfg), rep.cfg.size);
+    $('r-slider').value = i;
+    $('r-frame').textContent = i;
+    if (i < rep.T) {
+      const a = s.action[i];
+      $('r-action').textContent = 'dx ' + signed(a[0], 3) + ', dy ' + signed(a[1], 3) + (a[2] ? ', CLICK' : ', no click');
+      $('r-reward').textContent = signed(s.reward[i], 4);
+      $('r-bonusv').textContent = signed(s.bonus[i], 4);
+      const ev = s.success[i] ? 'target hit' : (s.empty_click[i] ? 'empty click' : (s.click[i] ? 'click' : '–'));
+      $('r-event').textContent = ev + (s.done[i] ? ' · episode ends' : '');
+    } else {
+      $('r-action').textContent = '– (terminal frame)';
+      $('r-reward').textContent = '–';
+      $('r-bonusv').textContent = '–';
+      $('r-event').textContent = (rep.doc.summary && rep.doc.summary.success) ? 'ended with a success' : 'ended';
+    }
+    $('r-return').textContent = signed(rep.cum[i], 4);
+    const c = f.cursor[i];
+    const t = f.target[i];
+    $('r-geom').textContent = 'cursor (' + c[0].toFixed(2) + ', ' + c[1].toFixed(2) + ') · circle ('
+      + t[0].toFixed(2) + ', ' + t[1].toFixed(2) + ') r ' + f.radius[i].toFixed(2)
+      + (f.target_alive[i] ? '' : ' (gone)');
+    setBar('r-hbar', 'r-h', f.hunger[i]);
+    setBar('r-bbar', 'r-b', f.restlessness[i]);
+  }
+
+  function setReplayPlaying(on) {
+    clearInterval(rep.timer);
+    rep.timer = null;
+    if (on && rep.doc) {
+      if (rep.k >= rep.T) setFrame(0);
+      const fps = 15 * parseFloat($('r-speed').value);
+      rep.timer = setInterval(() => {
+        if (rep.k >= rep.T) setReplayPlaying(false);
+        else setFrame(rep.k + 1);
+      }, 1000 / fps);
+    }
+    $('r-play').textContent = rep.timer ? 'Pause' : 'Play';
+  }
+
+  function readFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        loadEpisodeText(String(reader.result), file.name);
+        setMode('replay');
+      } catch (err) {
+        setMode('replay');
+        $('r-error').textContent = 'Could not load ' + file.name + ': ' + err.message;
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  $('r-file').addEventListener('change', (e) => { if (e.target.files[0]) readFile(e.target.files[0]); });
+  $('r-play').addEventListener('click', () => setReplayPlaying(!rep.timer));
+  $('r-prev').addEventListener('click', () => { setReplayPlaying(false); setFrame(rep.k - 1); });
+  $('r-next').addEventListener('click', () => { setReplayPlaying(false); setFrame(rep.k + 1); });
+  $('r-slider').addEventListener('input', (e) => { setReplayPlaying(false); setFrame(parseInt(e.target.value, 10)); });
+  $('r-speed').addEventListener('change', () => { if (rep.timer) setReplayPlaying(true); });
+  document.addEventListener('dragover', (e) => e.preventDefault());
+  document.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer && e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+  });
+
+  // ------------------------------------------------------------- mode, keys
+  let mode = 'play';
+
+  function setMode(m) {
+    mode = m;
+    clearTimeout(flashTimer);
+    $('flash').className = 'flash';
+    $('tab-play').classList.toggle('active', m === 'play');
+    $('tab-replay').classList.toggle('active', m === 'replay');
+    $('play').hidden = m !== 'play';
+    $('replay').hidden = m !== 'replay';
+    if (m === 'play') {
+      setReplayPlaying(false);
+      renderPlay(play.world.render());
+      setRunning(!play.paused);
+    } else {
+      setRunning(false);
+      play.keys.clear();
+      if (rep.doc) {
+        setFrame(rep.k);
+      } else {
+        const cfg = CW.makeConfig();
+        draw(CW.renderState([[-100, -100]], [[0, 0]], [0], [false], cfg), cfg.size);
+      }
+    }
+  }
+
+  $('tab-play').addEventListener('click', () => setMode('play'));
+  $('tab-replay').addEventListener('click', () => setMode('replay'));
+
+  function typingInto(el) {
+    if (!el || !el.tagName) return false;
+    if (el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') return true;
+    return el.tagName === 'INPUT' && el.type !== 'checkbox' && el.type !== 'button';
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (typingInto(e.target)) return;
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (mode === 'play') {
+      if (key in KEYMAP) { play.keys.add(key); e.preventDefault(); }
+      else if (key === ' ') { if (!e.repeat) play.pendingClick = true; e.preventDefault(); }
+    } else if (rep.doc) {
+      if (key === ' ') { setReplayPlaying(!rep.timer); e.preventDefault(); }
+      else if (key === 'ArrowLeft') { setReplayPlaying(false); setFrame(rep.k - 1); e.preventDefault(); }
+      else if (key === 'ArrowRight') { setReplayPlaying(false); setFrame(rep.k + 1); e.preventDefault(); }
+      else if (key === 'Home') { setFrame(0); e.preventDefault(); }
+      else if (key === 'End') { setFrame(rep.T); e.preventDefault(); }
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    play.keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key);
+  });
+  window.addEventListener('blur', () => play.keys.clear());
+
+  // Hook for scripted checks (e.g. a headless browser); not needed for normal use.
+  window.CircleWorldDemo = { tick, setMode, loadEpisodeText, setFrame, play, rep, newWorld };
+
+  newWorld();
+  setMode('play');
+}());
+</script>
+</body>
+</html>

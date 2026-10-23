@@ -1,0 +1,21 @@
+{
+  "name": "P_babble_w10_fast",
+  "description": "Reward-free motor babbling with changed-pixel weighted next-frame loss (w=10), tuned for supervised learning: 8 minibatches x 4 epochs (32 updates per 16k fresh transitions), constant lr 5e-4.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "minibatches": 8,
+    "lr": 0.0005
+  },
+  "model": {},
+  "train": {
+    "lr_anneal": false
+  }
+}

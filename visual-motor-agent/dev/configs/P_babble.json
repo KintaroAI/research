@@ -1,0 +1,16 @@
+{
+  "name": "P_babble",
+  "description": "Reward-free motor babbling: the policy stays at its random initialization (no PPO); only next-frame and next-drive prediction learn. Tests whether action consequences (cursor motion, circle vanishing on click, hunger relief) are learned without any reinforcement.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0
+  },
+  "model": {},
+  "train": {}
+}

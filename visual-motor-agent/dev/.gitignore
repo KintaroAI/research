@@ -1,0 +1,13 @@
+# Binaries
+libvmagent.so
+libvmagent.so.tmp
+test_vm_agent
+bench_vm_agent
+
+# Python
+venv/
+__pycache__/
+.pytest_cache/
+
+# Local job lists for run_queue.py (session-specific; experiment Makefiles record the commands)
+queue*.txt

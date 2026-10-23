@@ -1,0 +1,26 @@
+{
+  "name": "P_babble_skip_full",
+  "description": "Ablation of P_babble_skip: full-frame (sigmoid) prediction instead of change prediction; skip + tiled action kept.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "minibatches": 8,
+    "lr": 0.0005
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 0,
+    "pred_skip": 1
+  },
+  "train": {
+    "lr_anneal": false
+  }
+}

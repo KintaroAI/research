@@ -1,0 +1,26 @@
+{
+  "name": "P_babble_skip",
+  "description": "Reward-free motor babbling. Change prediction (residual) with a U-Net skip of the encoder's conv-2 map of the current frame plus the action tiled as channels into the last deconv, CoordConv/broadcast decoder, changed-pixel weight w=10, fast supervised schedule.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "minibatches": 8,
+    "lr": 0.0005
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 1,
+    "pred_skip": 1
+  },
+  "train": {
+    "lr_anneal": false
+  }
+}

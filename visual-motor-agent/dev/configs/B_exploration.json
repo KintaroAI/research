@@ -1,0 +1,15 @@
+{
+  "name": "B_exploration",
+  "description": "Plan run B: A + bounded movement / empty-click exploration bonuses.",
+  "env": {
+    "bonuses": true,
+    "drives": false,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "pred_coef": 0.0,
+    "drive_coef": 0.0
+  },
+  "model": {},
+  "train": {}
+}

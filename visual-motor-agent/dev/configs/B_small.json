@@ -1,0 +1,17 @@
+{
+  "name": "B_small",
+  "description": "Plan run B: A + bounded movement / empty-click exploration bonuses. Small targets: radius 4-8 px.",
+  "env": {
+    "bonuses": true,
+    "drives": false,
+    "hunger_cost": 0.0,
+    "radius_min": 4.0,
+    "radius_max": 8.0
+  },
+  "ppo": {
+    "pred_coef": 0.0,
+    "drive_coef": 0.0
+  },
+  "model": {},
+  "train": {}
+}

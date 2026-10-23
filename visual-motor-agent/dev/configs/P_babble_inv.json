@@ -1,0 +1,29 @@
+{
+  "name": "P_babble_inv",
+  "description": "Reward-free babbling with forward prediction (as P_babble_skip_ctx8) PLUS inverse dynamics: MLP([v_t, v_t+1]) predicts the agent's own executed (dx, dy) from consecutive visual features (teaches the encoder which screen element it controls). inv_hidden=128, inv_coef=0.1.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "minibatches": 32,
+    "lr": 0.001,
+    "inv_coef": 0.1
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 1,
+    "pred_skip": 1,
+    "ctx": 8,
+    "inv_hidden": 128
+  },
+  "train": {
+    "lr_anneal": false
+  }
+}

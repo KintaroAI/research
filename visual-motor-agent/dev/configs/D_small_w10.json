@@ -1,0 +1,18 @@
+{
+  "name": "D_small_w10",
+  "description": "Run D (bonuses + drives + prediction) with the changed-pixel weighted next-frame loss. Small targets: radius 4-8 px.",
+  "env": {
+    "bonuses": true,
+    "drives": true,
+    "hunger_cost": 0.01,
+    "radius_min": 4.0,
+    "radius_max": 8.0
+  },
+  "ppo": {
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0
+  },
+  "model": {},
+  "train": {}
+}

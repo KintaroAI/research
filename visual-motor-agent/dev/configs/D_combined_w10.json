@@ -1,0 +1,16 @@
+{
+  "name": "D_combined_w10",
+  "description": "Run D (bonuses + drives + prediction) with the changed-pixel weighted next-frame loss.",
+  "env": {
+    "bonuses": true,
+    "drives": true,
+    "hunger_cost": 0.01
+  },
+  "ppo": {
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0
+  },
+  "model": {},
+  "train": {}
+}

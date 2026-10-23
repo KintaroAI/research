@@ -1,0 +1,17 @@
+{
+  "name": "P_babble_w10",
+  "description": "Reward-free motor babbling (as P_babble) with the next-frame loss up-weighted 11x on pixels that change between consecutive frames (computed from the two rendered frames only).",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0
+  },
+  "model": {},
+  "train": {}
+}

@@ -1,0 +1,15 @@
+{
+  "name": "F_full_minus_pred",
+  "description": "Plan run F: bonuses + drives (observed, hunger cost 0.01/step); no prediction.",
+  "env": {
+    "bonuses": true,
+    "drives": true,
+    "hunger_cost": 0.01
+  },
+  "ppo": {
+    "pred_coef": 0.0,
+    "drive_coef": 0.0
+  },
+  "model": {},
+  "train": {}
+}

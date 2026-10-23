@@ -1,0 +1,17 @@
+{
+  "name": "A_small",
+  "description": "Plan run A: sparse +10 success reward and step cost only. No exploration bonuses, no drives, no prediction loss. Small targets: radius 4-8 px.",
+  "env": {
+    "bonuses": false,
+    "drives": false,
+    "hunger_cost": 0.0,
+    "radius_min": 4.0,
+    "radius_max": 8.0
+  },
+  "ppo": {
+    "pred_coef": 0.0,
+    "drive_coef": 0.0
+  },
+  "model": {},
+  "train": {}
+}
