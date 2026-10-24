@@ -1,8 +1,8 @@
 # vm-00004: Learning From Its Own Plans
 
 **Date:** 2026-10-23
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00004`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00004` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00004/`
 **Task plan:** [`../tasks/00004-learning-from-own-plans.md`](../tasks/00004-learning-from-own-plans.md)
 
