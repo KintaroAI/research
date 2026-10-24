@@ -216,6 +216,24 @@ The losses stay reward-free. Surprise only decides what is stored; the model nev
       motion to learn from.
   - **Test success:** 0.13, 0.13 (I+U) and 0.20, 0.15 (I+R) at 10k; 0.36, 0.21 and 0.11, 0.09 at 20k.
 - **All runs finished by 05:36.** Results below.
+- **Follow-up after the tag (from 11:07, same code; `make planner-control`, runs 021–032):** the
+  planner agent's missing size controls, with 4 seeds per arm:
+  - U10: every chunk with probability 0.1; U50: with probability 0.5. Seeds 1–4 each;
+  - plus seeds 3–4 of U and R.
+  - In the planner agent, most of R's chunks are relief chunks, so its memory is 40–60% of U's. U50
+    matches that size; U10 is much smaller.
+- **First 10k steps of the follow-up** (12:18; online hits, seeds 1–4):
+
+  | Arm | hits in steps 0–10k | mean | long-term memory at 10k (chunks) |
+  |---|---|---|---|
+  | U | 119, 136, 101, 73 | 107 | 1,248 |
+  | R | 293, 189, 114, 147 | 186 | 407–626 |
+  | U50 | 119, 151, 83, 78 | 108 | 669–698 |
+  | U10 | 99, 110, 44, 43 | 74 | 228–247 |
+
+  - **Content, not size:** at about R's size, a random memory learns no faster than storing everything
+    (U50 ≈ U). R beats it in every seed.
+  - A much smaller random memory (U10) learns more slowly.
 
 ## Results
 
@@ -408,17 +426,18 @@ Relative to inside, R's imagined relief outside is the same as U's (0.55–0.58 
   agent at 10k.
 - The planner arms used 4 threads (vm-00005: 8). U also differs from vm-00005 L in how it draws its
   training sequences (whole chunks), so the two are not bitwise comparable.
-- **The planner arms have no equal-size control (U10).** At 30k, R's memory holds 1,902–2,252
-  chunks against U's 3,748, so each stored chunk is replayed 1.7–2.0× as often. Part of R's early
-  speedup may come from that rather than from what it stores.
+- **The planner arms had no equal-size control.** At 30k, R's memory holds 1,902–2,252 chunks against
+  U's 3,748, so each stored chunk is replayed 1.7–2.0× as often. The follow-up below adds it: the speedup
+  comes from what R stores, not from its size.
 - No importance weights. The gated memories are biased by design, and the bias is measured, not
   corrected.
 
 ## Conclusions
 
 1. **Planner agent:** remembering what came before relief speeds up early learning, in both seeds,
-   and costs nothing later. It does not bias the world model toward optimism. An equal-size control
-   is still missing (see Caveats).
+   and costs nothing later. It does not bias the world model toward optimism. With 4 seeds and
+   equal-size controls (follow-up), this comes from what it stores: a random memory of its size learns
+   more slowly than storing everything.
 2. **Basic agent:** salience-gated memory does not create goal-directed moves, with or without the
    inverse-dynamics head.
    - The bottleneck is the representation, not what is remembered. The memory holds a clear aiming
@@ -440,5 +459,54 @@ Relative to inside, R's imagined relief outside is the same as U's (0.55–0.58 
 - **The feature blow-up without replay** (vm-00006): weight decay or a normalized v, then re-run
   A against A+H as a real test of the hindsight input.
 - **Salience as replay priority instead of storage:** keep everything and replay salient chunks
-  more. This keeps the memory size equal across arms. For the planner agent, a U10 arm is the
-  cheaper check.
+  more. This keeps the memory size equal across arms. (The planner agent's equal-size controls: see the
+  follow-up.)
+
+## Follow-up (after the tag): equal-size memory controls for the planner agent
+
+Same code as the tag (`make planner-control`, runs 021–032, 4 threads, 30k steps; `make
+planner-control-analysis`). In the planner agent most of R's chunks are relief chunks, so its memory is
+40–60% of U's. Two uniform controls store every chunk with a fixed probability: U50 (0.5, about R's size)
+and U10 (0.1, the gated arms' base rate). Seeds 1–4 for both, plus seeds 3–4 of U and R.
+
+**Online hits** (sum of 4 seeds; per seed in steps 0–10k):
+
+| Arm | memory at 30k (chunks) | relief chunks at 30k | 0–10k | 10k–20k | 20k–30k | 0–10k by seed |
+|---|---|---|---|---|---|---|
+| R | 1,700–2,252 | 79–88% | **743** | **1,931** | **2,304** | 293, 189, 114, 147 |
+| U | 3,748 | 27–46% | 429 | 1,424 | 2,218 | 119, 136, 101, 73 |
+| U50 | 1,904–1,967 | 16–36% | 431 | 877 | 1,278 | 119, 151, 83, 78 |
+| U10 | 484–519 | 6–24% | 296 | 537 | 748 | 99, 110, 44, 43 |
+
+**Planner test success** (frozen checkpoints, 128 test episodes; seeds 1–4, mean):
+
+| Arm | 10k | 20k | 30k |
+|---|---|---|---|
+| R | 0.90, 0.95, 0.65, 0.88 (0.84) | 0.93, 0.92, 0.86, 0.96 (0.92) | 0.92, 0.95, 0.89, 0.96 (0.93) |
+| U | 0.70, 0.93, 0.80, 0.69 (0.78) | 0.80, 0.84, 0.98, 0.98 (0.90) | 0.92, 0.95, 0.88, 0.96 (0.93) |
+| U50 | 0.46, 0.84, 0.60, 0.53 (0.61) | 0.85, 0.76, 0.75, 0.74 (0.78) | 0.78, 0.92, 0.92, 0.72 (0.84) |
+| U10 | 0.42, 0.80, 0.55, 0.53 (0.57) | 0.69, 0.75, 0.48, 0.47 (0.60) | 0.58, 0.87, 0.90, 0.45 (0.70) |
+
+**Imagined relief for a click at the circle's edge** (30k; inside 1–3 px, outside 1–3 px, outside 5–8 px,
+false relief; seeds 1–4):
+
+| Arm | inside | outside 1–3 px | outside 5–8 px | false relief |
+|---|---|---|---|---|
+| R | 0.51–0.83 | 0.27–0.48 | 0.06–0.11 | 0.037–0.072 |
+| U | 0.48–0.70 | 0.24–0.36 | 0.04–0.12 | 0.022–0.149 |
+| U50 | 0.18–0.59 | 0.12–0.27 | 0.04–0.06 | 0.000–0.038 |
+| U10 | 0.02–0.32 | 0.02–0.20 | 0.01–0.13 | 0.003–0.101 |
+
+- **Content, not size.** At R's memory size, a random memory (U50) learns more slowly than storing
+  everything: after the first 10k steps it gets 877 hits against U's 1,424, and its planner tests trail
+  (0.61, 0.78, 0.84 against 0.78, 0.90, 0.93). R, just as small, is the fastest. So R's speedup comes from
+  storing the chunks that lead to relief.
+- **A smaller random memory hurts.** U10 is the slowest on every measure. Replaying fewer chunks more
+  often does not help the planner agent.
+- **Online, R leads in all 4 seeds** in the first 10k steps. On the frozen test its lead at 10k is small
+  (0.84 against 0.78) and holds in 2 of 4 seeds: frozen checkpoints understate online learners
+  (vm-00005).
+- **Still no optimism.** R's imagined relief just outside the circle, relative to inside, is 0.53–0.60,
+  against 0.46–0.56 for U. The smaller random memories imagine less relief everywhere: they have seen
+  fewer relief chunks.
+

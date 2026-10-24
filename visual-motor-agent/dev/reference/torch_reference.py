@@ -22,14 +22,16 @@ def param_shapes(cfg):
     in_dim = feat + 6
     co = 1 if cfg.get("coord", 0) else 0
     pb = cfg.get("pb", 0) if co else 0
-    return {
+    shapes = {
         "enc_c1w": (c1, 3 + 2 * co, 4, 4), "enc_c1b": (c1,), "enc_c2w": (c2, c1, 4, 4), "enc_c2b": (c2,),
         "enc_c3w": (c3, c2, 4, 4), "enc_c3b": (c3,), "enc_fcw": (feat, c3 * h3 * h3), "enc_fcb": (feat,),
         "in_w": (d, in_dim), "in_b": (d,), "wpe": (K, d),
         "ln1w": (L, d), "ln1b": (L, d), "qkvw": (L, 3 * d, d), "qkvb": (L, 3 * d),
         "attprojw": (L, d, d), "attprojb": (L, d), "ln2w": (L, d), "ln2b": (L, d),
         "fcw": (L, dff, d), "fcb": (L, dff), "fcprojw": (L, d, dff), "fcprojb": (L, d),
-        "lnfw": (d,), "lnfb": (d,), "pi_w": (3, d), "pi_b": (3,), "logstd": (2,), "v_w": (d,), "v_b": (1,),
+        "lnfw": (d,), "lnfb": (d,), "pi_w": (3, cfg.get("pi_hidden", 0) or d), "pi_b": (3,),
+        "pi_h_w": (cfg.get("pi_hidden", 0), d), "pi_h_b": (cfg.get("pi_hidden", 0),),
+        "logstd": (2,), "v_w": (d,), "v_b": (1,),
         "pr1w": (ph, d + 3), "pr1b": (ph,), "pr2w": (pc2 * p0 * p0, ph), "pr2b": (pc2 * p0 * p0,),
         "pbw": (pb, ph), "pbb": (pb,),
         "dc1w": (pc2 + pb + 2 * co + (c3 + 3 if cfg.get("pred_skip", 0) else 0), pc1, 4, 4), "dc1b": (pc1,),
@@ -39,7 +41,33 @@ def param_shapes(cfg):
         "iv2w": (2 if cfg.get("inv_hidden", 0) else 0, cfg.get("inv_hidden", 0)),
         "iv2b": (2 if cfg.get("inv_hidden", 0) else 0,),
         **dyn_shapes(cfg),
+        **patch_shapes(cfg),
     }
+    if cfg.get("patch", 0):   # no CNN encoder or decoder; pr2w outputs one patch's cell
+        cell = cfg["pred_img"] // (cfg["img"] // cfg["patch"])
+        for k in ("enc_c1w", "enc_c1b", "enc_c2w", "enc_c2b", "enc_c3w", "enc_c3b", "enc_fcw", "enc_fcb", "in_w",
+                  "in_b", "pbw", "pbb", "dc1w", "dc1b", "dc2w", "dc2b"):
+            shapes[k] = (0,)
+        shapes["pr2w"], shapes["pr2b"] = (cell * cell * 3, ph), (cell * cell * 3,)
+    return shapes
+
+
+def patch_dims(cfg):
+    """(patch side, grid side, patches, predicted cell side); zeros without patch tokens."""
+    ps = cfg.get("patch", 0)
+    if not ps:
+        return 0, 0, 0, 0
+    g = cfg["img"] // ps
+    return ps, g, g * g, cfg["pred_img"] // g
+
+
+def patch_shapes(cfg):
+    d = cfg["d_model"]
+    ps, g, npch, _ = patch_dims(cfg)
+    on = 1 if ps else 0
+    return {"pt_w": (d * on, ps * ps * 3), "pt_b": (d * on,), "pos2d": (npch, d), "tok_type": (4 * on, d),
+            "drv_w": (d * on, 2), "drv_b": (d * on,), "mv_w": (d * on, 3), "mv_b": (d * on,),
+            "cmd_w": (d * on, 1), "cmd_b": (d * on,)}
 
 
 def dyn_shapes(cfg):
@@ -150,12 +178,95 @@ def downsample_u8(img, f):
     return ((x + (f * f) // 2) // (f * f)).astype(np.uint8)
 
 
-def forward(P, cfg, images, drives, prev_action, prev_reward, ep_start, pred_actions=None):
-    """images u8 [S,T,H,W,3]; returns dict of torch tensors (z, pi, value, pred_frames CHW, pred_drives)."""
-    dt = P["in_w"].dtype
-    S, T = images.shape[:2]
+def policy(P, cfg, z):
+    """Policy logits [..., 3] (mean dx, dy before tanh; click logit), through a ReLU hidden layer if pi_hidden."""
+    if cfg.get("pi_hidden", 0):
+        z = F.relu(F.linear(z, P["pi_h_w"], P["pi_h_b"]))
+    return F.linear(z, P["pi_w"], P["pi_b"])
+
+
+def transformer(P, cfg, h, mask):
+    """The Transformer layers and final LayerNorm on token inputs h [S,N,d]; mask [S,1,N,N] (query, key)."""
+    S, N = h.shape[:2]
     d, L, nh = cfg["d_model"], cfg["n_layer"], cfg["n_head"]
     hs = d // nh
+    for l in range(L):
+        y = F.layer_norm(h, (d,), P["ln1w"][l], P["ln1b"][l], eps=1e-5)
+        qkv = F.linear(y, P["qkvw"][l], P["qkvb"][l])
+        q, k, v = qkv.split(d, dim=-1)
+        q = q.reshape(S, N, nh, hs).transpose(1, 2)
+        k = k.reshape(S, N, nh, hs).transpose(1, 2)
+        v = v.reshape(S, N, nh, hs).transpose(1, 2)
+        att = (q @ k.transpose(-1, -2)) / math.sqrt(hs)
+        att = att.masked_fill(~mask, float("-inf")).softmax(dim=-1)
+        y = (att @ v).transpose(1, 2).reshape(S, N, d)
+        h = h + F.linear(y, P["attprojw"][l], P["attprojb"][l])
+        y = F.layer_norm(h, (d,), P["ln2w"][l], P["ln2b"][l], eps=1e-5)
+        y = F.gelu(F.linear(y, P["fcw"][l], P["fcb"][l]), approximate="tanh")
+        h = h + F.linear(y, P["fcprojw"][l], P["fcprojb"][l])
+    return F.layer_norm(h, (d,), P["lnfw"], P["lnfb"], eps=1e-5)
+
+
+def forward_patch(P, cfg, images, drives, prev_action, prev_reward, ep_start, pred_actions=None):
+    """Patch tokens (cfg['patch'] > 0), as seq_fwd_patch in C++. Per step: the patches row by row, then the drives,
+    previous-move and command tokens. A token attends to every token of its own step and of the earlier steps of its
+    context block. Returns z (the move tokens' outputs [S,T,d]), h (all token outputs [S,T,ntok,d]), pi, value."""
+    dt = P["pt_w"].dtype
+    S, T = images.shape[:2]
+    d = cfg["d_model"]
+    ps, g, npch, _ = patch_dims(cfg)
+    nt = npch + 3
+    x = torch.tensor(images, dtype=dt).reshape(S, T, g, ps, g, ps, 3) / 255.0
+    x = x.permute(0, 1, 2, 4, 3, 5, 6).reshape(S, T, npch, ps * ps * 3)          # (y, x, c) within each patch
+    tp = F.linear(x, P["pt_w"], P["pt_b"]) + P["pos2d"] + P["tok_type"][0]
+    cmd = torch.tensor(prev_reward, dtype=dt)[..., None] * float(cfg["use_prev_reward"])
+    td = F.linear(torch.tensor(drives, dtype=dt), P["drv_w"], P["drv_b"]) + P["tok_type"][1]
+    tm = F.linear(torch.tensor(prev_action, dtype=dt), P["mv_w"], P["mv_b"]) + P["tok_type"][2]
+    tc = F.linear(cmd, P["cmd_w"], P["cmd_b"]) + P["tok_type"][3]
+    ss = segment_starts(np.asarray(ep_start, bool))
+    if cfg.get("one_frame", 0):
+        ss = np.broadcast_to(np.arange(T)[None, :], ss.shape).copy()
+    pos = np.arange(T)[None, :] - ss
+    h = torch.cat([tp, td[:, :, None], tm[:, :, None], tc[:, :, None]], dim=2)
+    h = (h + P["wpe"][torch.tensor(pos)][:, :, None]).reshape(S, T * nt, d)
+    step = np.repeat(np.arange(T), nt)                                             # token -> its step
+    first = np.repeat(ss, nt, axis=1)                                              # [S, T*nt]: first step it sees
+    mask = (step[None, None, :] <= step[None, :, None]) & (step[None, None, :] >= first[:, :, None])
+    hz = transformer(P, cfg, h, torch.tensor(mask)[:, None]).reshape(S, T, nt, d)
+    z = hz[:, :, npch + 1]
+    out = dict(z=z, h=hz, pi=policy(P, cfg, z), value=z @ P["v_w"] + P["v_b"][0])
+    if pred_actions is not None:
+        out.update(predict_patch(P, cfg, hz, pred_actions, images))
+    return out
+
+
+def predict_patch(P, cfg, h, actions, images=None):
+    """Patch tokens: each patch token predicts its cell of the next frame, the drives token the next drives, from
+    [token output, executed action]. h: token outputs [S,T,ntok,d]."""
+    dt = h.dtype
+    S, T = h.shape[:2]
+    ps, g, npch, cell = patch_dims(cfg)
+    a = np.asarray(actions, np.float64)
+    ae = np.stack([np.clip(a[..., 0], -1, 1), np.clip(a[..., 1], -1, 1), (a[..., 2] > 0.5).astype(np.float64)], -1)
+    aet = torch.tensor(ae, dtype=dt)[:, :, None].expand(-1, -1, npch + 1, -1)
+    h1 = F.relu(F.linear(torch.cat([h[:, :, :npch + 1], aet], dim=-1), P["pr1w"], P["pr1b"]))
+    dl = F.linear(h1[:, :, :npch], P["pr2w"], P["pr2b"])                          # [S,T,np,cell*cell*3], (y, x, c)
+    p = cfg["pred_img"]
+    out = dl.reshape(S, T, g, g, cell, cell, 3).permute(0, 1, 6, 2, 4, 3, 5).reshape(S, T, 3, p, p)
+    if cfg.get("pred_residual", 0):
+        cur = downsample_u8(np.asarray(images), cfg["img"] // p)                    # [S,T,p,p,3]
+        frames = out + torch.tensor(cur, dtype=dt).permute(0, 1, 4, 2, 3) / 255.0
+    else:
+        frames = torch.sigmoid(out)
+    return dict(pred_frames=frames, pred_drives=torch.sigmoid(F.linear(h1[:, :, npch], P["drw"], P["drb"])))
+
+
+def forward(P, cfg, images, drives, prev_action, prev_reward, ep_start, pred_actions=None):
+    """images u8 [S,T,H,W,3]; returns dict of torch tensors (z, pi, value, pred_frames CHW, pred_drives)."""
+    if cfg.get("patch", 0):
+        return forward_patch(P, cfg, images, drives, prev_action, prev_reward, ep_start, pred_actions)
+    dt = P["in_w"].dtype
+    S, T = images.shape[:2]
     x = torch.tensor(images, dtype=dt).reshape(S * T, *images.shape[2:]).permute(0, 3, 1, 2) / 255.0
     if cfg.get("coord", 0):
         x = torch.cat([x, coord_maps(S * T, x.shape[-1], dt)], dim=1)
@@ -174,23 +285,8 @@ def forward(P, cfg, images, drives, prev_action, prev_reward, ep_start, pred_act
     h = F.linear(tin, P["in_w"], P["in_b"]) + P["wpe"][torch.tensor(pos)]
     t_idx = np.arange(T)
     mask = (t_idx[None, None, :] <= t_idx[None, :, None]) & (t_idx[None, None, :] >= ss[:, :, None])  # [S,T,T]
-    mask = torch.tensor(mask)[:, None, :, :]
-    for l in range(L):
-        y = F.layer_norm(h, (d,), P["ln1w"][l], P["ln1b"][l], eps=1e-5)
-        qkv = F.linear(y, P["qkvw"][l], P["qkvb"][l])
-        q, k, v = qkv.split(d, dim=-1)
-        q = q.reshape(S, T, nh, hs).transpose(1, 2)
-        k = k.reshape(S, T, nh, hs).transpose(1, 2)
-        v = v.reshape(S, T, nh, hs).transpose(1, 2)
-        att = (q @ k.transpose(-1, -2)) / math.sqrt(hs)
-        att = att.masked_fill(~mask, float("-inf")).softmax(dim=-1)
-        y = (att @ v).transpose(1, 2).reshape(S, T, d)
-        h = h + F.linear(y, P["attprojw"][l], P["attprojb"][l])
-        y = F.layer_norm(h, (d,), P["ln2w"][l], P["ln2b"][l], eps=1e-5)
-        y = F.gelu(F.linear(y, P["fcw"][l], P["fcb"][l]), approximate="tanh")
-        h = h + F.linear(y, P["fcprojw"][l], P["fcprojb"][l])
-    z = F.layer_norm(h, (d,), P["lnfw"], P["lnfb"], eps=1e-5)
-    out = dict(z=z, pi=F.linear(z, P["pi_w"], P["pi_b"]), value=z @ P["v_w"] + P["v_b"][0], a2=a2, a3=a3, vf=vf)
+    z = transformer(P, cfg, h, torch.tensor(mask)[:, None, :, :])
+    out = dict(z=z, pi=policy(P, cfg, z), value=z @ P["v_w"] + P["v_b"][0], a2=a2, a3=a3, vf=vf)
     if pred_actions is not None:
         out.update(predict(P, cfg, z, pred_actions, images, a2, a3))
     return out
@@ -269,7 +365,7 @@ def ppo_loss(P, cfg, pc, batch):
     move_coef = pc.get("move_coef", 0.0)
     if pc["use_ppo"] or move_coef > 0:
         a = torch.tensor(batch["action"], dtype=dt)
-        pi = out["pi"]
+        pi = policy(P, cfg, z.detach()) if pc.get("pi_detach", 0) else out["pi"]
         mu = torch.tanh(pi[..., :2])
         ls = torch.clamp(P["logstd"], LS_MIN, LS_MAX)
         sd = torch.exp(ls)
@@ -296,10 +392,14 @@ def ppo_loss(P, cfg, pc, batch):
         terms.update(pg=pg.mean().item(), v=vloss.mean().item(), ent=ent.mean().item())
     if have_pred:
         s = pc["pred_backbone_scale"]
-        zp = z if s == 1.0 else s * z + (1 - s) * z.detach()
-        a2 = out["a2"] if s == 1.0 else s * out["a2"] + (1 - s) * out["a2"].detach()
-        a3 = out["a3"] if s == 1.0 else s * out["a3"] + (1 - s) * out["a3"].detach()
-        pr = predict(P, cfg, zp, batch["action"], batch["images"], a2, a3)
+        if cfg.get("patch", 0):
+            hp = out["h"] if s == 1.0 else s * out["h"] + (1 - s) * out["h"].detach()
+            pr = predict_patch(P, cfg, hp, batch["action"], batch["images"])
+        else:
+            zp = z if s == 1.0 else s * z + (1 - s) * z.detach()
+            a2 = out["a2"] if s == 1.0 else s * out["a2"] + (1 - s) * out["a2"].detach()
+            a3 = out["a3"] if s == 1.0 else s * out["a3"] + (1 - s) * out["a3"].detach()
+            pr = predict(P, cfg, zp, batch["action"], batch["images"], a2, a3)
         tgt = torch.tensor(batch["next_small"], dtype=dt).permute(0, 1, 4, 2, 3) / 255.0
         f = cfg["img"] // cfg["pred_img"]
         cur = downsample_u8(np.asarray(batch["images"]), f)

@@ -92,16 +92,16 @@ def compare_grads(agent, P, tol=3e-3):
     return worst
 
 
-@pytest.fixture(scope="module", params=[(0, 0, 0, 0, 0, 0), (1, 0, 0, 0, 0, 0), (1, 1, 0, 0, 0, 0),
-                                        (1, 1, 1, 0, 0, 0), (0, 0, 1, 0, 0, 0), (1, 1, 1, 6, 0, 0),
-                                        (1, 1, 1, 6, 8, 0), (1, 1, 1, 6, 8, 1)],
+@pytest.fixture(scope="module", params=[(0, 0, 0, 0, 0, 0, 0), (1, 0, 0, 0, 0, 0, 0), (1, 1, 0, 0, 0, 0, 0),
+                                        (1, 1, 1, 0, 0, 0, 0), (0, 0, 1, 0, 0, 0, 0), (1, 1, 1, 6, 0, 0, 0),
+                                        (1, 1, 1, 6, 8, 0, 0), (1, 1, 1, 6, 8, 1, 0), (1, 1, 1, 6, 0, 0, 5)],
                 ids=["plain", "coord", "coord_residual", "coord_residual_skip", "skip", "skip_inverse",
-                     "skip_inverse_dyn", "one_frame"])
+                     "skip_inverse_dyn", "one_frame", "policy_hidden"])
 def agent(request):
     agent_lib.set_threads(4)
-    coord, residual, skip, inv, dyn, one = request.param
+    coord, residual, skip, inv, dyn, one, pih = request.param
     return agent_lib.Agent(dict(SMALL, coord=coord, pb=4, pred_residual=residual, pred_skip=skip, inv_hidden=inv,
-                                dyn_hidden=dyn, one_frame=one), seed=3)
+                                dyn_hidden=dyn, one_frame=one, pi_hidden=pih), seed=3)
 
 
 @pytest.mark.parametrize("pc_over", [
@@ -118,6 +118,8 @@ def agent(request):
          dyn_horizon=4, dyn_h_horizon=1),                                   # hunger head on real latents only
     dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.5),          # next frame + drives + next move
     dict(pred_coef=1.0, drive_coef=0.5, move_coef=0.5),                     # PPO + move prediction
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=1.0, move_coef=1.5, pi_detach=1),  # head-only move loss
+    dict(pred_coef=1.0, drive_coef=0.5, move_coef=0.5, pi_detach=1),        # PPO + move, policy head detached
 ])
 @pytest.mark.parametrize("threads", [4, 16])   # 4 sequences: one thread per sequence (4) or frame-parallel (16)
 def test_loss_and_grads_match_reference(agent, pc_over, threads):
@@ -140,6 +142,49 @@ def test_loss_and_grads_match_reference(agent, pc_over, threads):
         # fresh rollout: ratio == 1 exactly, so the KL estimate and clip fraction are zero
         assert abs(st["approx_kl"]) < 1e-6 and st["clipfrac"] == 0.0
     compare_grads(agent, P)
+
+
+@pytest.mark.parametrize("threads", [4, 16])
+def test_pi_detach_trains_the_policy_head_only(agent, threads):
+    """The move loss alone with pi_detach: every gradient outside the policy head is exactly zero."""
+    agent_lib.set_threads(threads)
+    ro, data, last_value = make_rollout(agent, T=16, N=3, seed=5)
+    pc = dict(agent_lib.DEFAULT_PPO, use_ppo=0, pred_coef=0.0, drive_coef=0.0, move_coef=1.0, pi_detach=1)
+    agent.debug_grads(ro, last_value, pc, [0, 2, 4, 5])
+    g = agent.grads()
+    for name, off, size in agent.param_layout():
+        nz = int(np.count_nonzero(g[off:off + size]))
+        if name in ("pi_w", "pi_b", "pi_h_w", "pi_h_b"):
+            assert nz > 0 or size == 0, name
+        elif name != "logstd":
+            assert nz == 0, (name, nz)
+
+
+@pytest.mark.parametrize("own_clip", [1, 0])
+def test_pi_own_clip_isolates_a_detached_head(own_clip):
+    """With pi_detach and pi_own_clip, a move loss cannot change the update of anything outside the policy/value
+    heads (bitwise); without pi_own_clip it does, through the shared gradient-norm clip."""
+    agent_lib.set_threads(4)
+    cfg = dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, inv_hidden=6)
+    a, b = agent_lib.Agent(cfg, seed=4), agent_lib.Agent(cfg, seed=4)
+    ro, _, last_value = make_rollout(a, T=16, N=4, seed=9)
+    base = dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=1.0, epochs=1, minibatches=1, max_grad_norm=0.01,
+                pi_own_clip=own_clip)
+    a.update(ro, last_value, dict(base, move_coef=0.0))
+    b.update(ro, last_value, dict(base, move_coef=1.5, pi_detach=1))
+    pa, pb = a.params(), b.params()
+    lay = {n: (o, s) for n, o, s in a.param_layout()}
+    head = np.zeros(len(pa), bool)
+    for n in ("pi_w", "pi_b", "pi_h_w", "pi_h_b", "logstd", "v_w", "v_b"):
+        o, s = lay[n]
+        head[o:o + s] = True
+    assert not np.array_equal(pa[head], pb[head])               # the heads learned the moves in b
+    if own_clip:
+        np.testing.assert_array_equal(pa[~head], pb[~head])
+    else:
+        assert not np.array_equal(pa[~head], pb[~head])
+    a.close()
+    b.close()
 
 
 def test_perturbed_policy_ratio_clipping_matches(agent):

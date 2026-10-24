@@ -28,8 +28,15 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `online.memory=gated` (vm-00007): 8-step chunks enter long-term memory by relief and surprise
     (`GatedMemory`). The default `stream` is the plain ring buffer, unchanged.
     `analyze_self_actor.py`: why the self actor does or does not aim (aim, probe, relief, inputs,
-    momentum).
-  - `reference/torch_reference.py`: float64 PyTorch re-implementation, used only by tests.
+    momentum). `ppo.pi_detach=1`: the move loss trains the policy head only (vm-00008);
+    `model.pi_hidden`: a hidden layer in the policy head.
+  - `model.patch=16` (vm-00010): patch tokens instead of the CNN. Each step is 16 patch tokens plus one
+    token each for drives, previous move and command; each predicts its own part of the next state.
+    `env.distractors=K`: grey dots that move on their own (separate random streams: the episodes stay
+    the same). `analyze_patch.py`: coupling (attention between patches), action sensitivity and probes
+    per kind of token.
+  - `reference/torch_reference.py`: float64 PyTorch re-implementation, used by the tests (and by
+    `analyze_patch.py tokens` for all token outputs).
   - `configs/*.json`: runs from the plan's experiment matrix (A–F) plus reward-free babbling (P_*).
 - **`NNNNN-experiment-name/`**: experiment snapshots (README.md + Makefile only; the git tag
   `exp/vm-NNNNN` preserves the source).
@@ -88,7 +95,12 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
   encoder features blow up (norm 10²–10⁵ by 100k steps in 5 of 6 runs, vm-00006), and the drives
   and command vanish from the tokens. There is no weight decay (`ppo.weight_decay=0`). Even with
   replay, its features lose the cursor over training (vm-00007); check with
-  `analyze_self_actor.py probe`.
+  `analyze_self_actor.py probe`. The cause is the move loss: detach it (`ppo.pi_detach=1`). To aim, the
+  head needs a hidden layer (`model.pi_hidden=128`), so the hindsight command can steer it: with inverse
+  dynamics the basic agent then reaches test success 0.63–0.82 at 50k (vm-00008 DMI).
+- **A detached head still shares the gradient-norm clip** with the rest (`ppo.max_grad_norm`): its large
+  move-loss gradient scales every other update down. `ppo.pi_own_clip=1` clips the heads by their own norm
+  (found in vm-00009: a detached move loss slowed the planner agent's early learning).
 - **Frozen checkpoints understate an online learner** (vm-00005). L's frozen planner misses 1–19%
   of episodes, while the same weights, still learning, miss almost none: errors are corrected
   within steps. To measure the agent, continue it with learning on (`online.py --init CKPT`; lr 0
@@ -97,7 +109,11 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
   it so their analysis globs find the runs.
 - **Checkpoint header.** Config ints sit in slots 2–19 and n_params/has_opt/step in 20–22.
   Extension fields go at 32+ (`pred_residual` 32, `pred_skip` 33, `inv_hidden` 34, `dyn_hidden` 35,
-  `one_frame` 36). Never append into slot 20.
+  `one_frame` 36, `pi_hidden` 37, `patch` 38). Never append into slot 20.
+- **Patch tokens act through `vm_forward`** on the context window (the basic agent already does), so
+  they need no KV cache: `vm_act` and `vm_encode` refuse patch mode, and so does the planner (it imagines
+  with the CNN model's latent dynamics). Attention is block-causal: a token sees all tokens of its own
+  step and of earlier steps.
 - `make` builds `libvmagent.so` under a temporary name and renames it, so running trainers are not
   disturbed by a rebuild.
 - **Small updates are frame-parallel.** With fewer sequences than threads, `loss_and_grads_frames`

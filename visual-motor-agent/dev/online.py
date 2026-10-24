@@ -413,6 +413,9 @@ def main():
     self_actor = on["actor"] == "self"
     if on["actor"] not in ("planner", "self"):
         raise ValueError("online.actor must be 'planner' or 'self'")
+    if agent.config["patch"] and not self_actor:
+        raise ValueError("model.patch (patch tokens) supports online.actor=self only: the planner imagines with the "
+                         "CNN model's latent dynamics")
     goal_k = on["goal_k"] if (self_actor and on["goal"]) else 0
     if goal_k and not agent.config["use_prev_reward"]:
         raise ValueError("online.goal=1 needs model.use_prev_reward=1 (the scalar token slot carries the goal)")

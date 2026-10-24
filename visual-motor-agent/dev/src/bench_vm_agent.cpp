@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
     const int T = argc > 2 ? atoi(argv[2]) : 128;
     const int pred = argc > 3 ? atoi(argv[3]) : 1;
     const int coord = argc > 4 ? atoi(argv[4]) : 0;
-    VMConfig c;
+    VMConfig c{};
     c.img = 64; c.c1 = 16; c.c2 = 32; c.c3 = 32; c.feat = 128; c.d_model = 128; c.n_layer = 2; c.n_head = 4;
     c.d_ff = 512; c.ctx = 32; c.pred_img = 32; c.pc1 = 16; c.pc2 = 32; c.pred_hidden = 256; c.use_prev_reward = 0;
     c.logstd_init = -0.5f;
@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     }
     double t_act = now_s() - t0;
     printf("act:    %.1f ms/step for %d envs  (%.0f env-steps/s)\n", 1e3 * t_act / T, N, N * T / t_act);
-    PPOConfig p;
+    PPOConfig p{};
     p.gamma = 0.99f; p.lam = 0.95f; p.clip_eps = 0.2f; p.vf_coef = 0.5f; p.ent_coef = 0.01f;
     p.pred_coef = pred ? 1.0f : 0.f; p.drive_coef = pred ? 0.5f : 0.f; p.pred_backbone_scale = 1.0f;
     p.max_grad_norm = 0.5f; p.lr = 2.5e-4f; p.beta1 = 0.9f; p.beta2 = 0.999f; p.adam_eps = 1e-5f;

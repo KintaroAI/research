@@ -34,6 +34,10 @@ typedef struct {
                         //     h' = sigmoid(MLP([v, h, a])) and a coarse decoder MLP(v) -> (pred_img/2)^2 x 3 frame
     int one_frame;      // 1 = each token attends only to itself: every prediction uses the current frame only
                         //     (training sequences stay ctx long, for inverse dynamics and latent-chain targets)
+    int pi_hidden;      // >0: policy head with one ReLU hidden layer of this size on z (0 = linear head)
+    int patch;          // >0: patch tokens (vm-00010). Each step is (img/patch)^2 patch tokens plus one token each for
+                        //     the drives, the previous move and the command; each token predicts its own part of the
+                        //     next state (patch: its cell of the next frame; drives; move). 0 = the CNN model
 } VMConfig;
 
 typedef struct {
@@ -60,6 +64,10 @@ typedef struct {
     int dyn_horizon;            // imagined steps per chain in the latent-dynamics losses (0 = off)
     int dyn_h_horizon;          // chain steps that train the hunger head (0 = all; 1 = real latents only)
     float move_coef;            // next-move prediction: -log pi(a_t | context) of the move actually made (0 = off)
+    int pi_detach;              // 1 = the policy head's gradient stops at its input z: it trains the head only,
+                                //     never the Transformer or the encoder
+    int pi_own_clip;            // 1 = the policy/value heads' gradient is clipped by its own norm and left out of
+                                //     the rest's (with pi_detach, the head then cannot change the rest's update)
 } PPOConfig;
 
 typedef struct {
@@ -134,6 +142,11 @@ void  vm_forward(void* agent, int S, int T, const uint8_t* images, const float* 
                  const float* prev_action, const float* prev_reward, const uint8_t* ep_start,
                  const float* pred_actions, float* z, float* value, float* mu, float* click_p,
                  float* pred_frames, float* pred_drives);
+
+// Attention weights of one sequence of T steps: att [n_layer, n_head, Tt, Tt] with Tt = T (CNN model) or
+// T * tokens per step (patch tokens); row = the attending token, zero outside the tokens it attends to.
+void  vm_attention(void* agent, int T, const uint8_t* images, const float* drives, const float* prev_action,
+                   const float* prev_reward, const uint8_t* ep_start, float* att);
 
 // Encoder features of n frames: conv-3 map [n, c3*(img/8)^2] and visual feature [n, feat] (NULL to skip).
 void  vm_encode(void* agent, int n, const uint8_t* images, float* a3, float* vf);

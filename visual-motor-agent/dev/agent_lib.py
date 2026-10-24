@@ -22,7 +22,8 @@ class VMConfig(C.Structure):
     _fields_ = [(n, C.c_int) for n in ("img", "c1", "c2", "c3", "feat", "d_model", "n_layer", "n_head", "d_ff",
                                        "ctx", "pred_img", "pc1", "pc2", "pred_hidden", "use_prev_reward")]
     _fields_ += [("logstd_init", C.c_float), ("coord", C.c_int), ("pb", C.c_int), ("pred_residual", C.c_int),
-                 ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int), ("one_frame", C.c_int)]
+                 ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int), ("one_frame", C.c_int),
+                 ("pi_hidden", C.c_int), ("patch", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -33,7 +34,7 @@ class PPOConfig(C.Structure):
                                          "dyn_x_coef")]
     _fields_ += [(n, C.c_int) for n in ("epochs", "minibatches", "use_ppo", "norm_adv", "clip_vloss", "dyn_horizon",
                                         "dyn_h_horizon")]
-    _fields_ += [("move_coef", C.c_float)]
+    _fields_ += [("move_coef", C.c_float), ("pi_detach", C.c_int), ("pi_own_clip", C.c_int)]
 
 
 class PPOStats(C.Structure):
@@ -49,14 +50,14 @@ class PPOStats(C.Structure):
 
 DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer=2, n_head=4, d_ff=512, ctx=32,
                      pred_img=32, pc1=16, pc2=32, pred_hidden=256, use_prev_reward=0, logstd_init=-0.5, coord=0, pb=32,
-                     pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0)
+                     pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
                    weight_decay=0.0, target_kl=0.0, reward_scale=0.1, vclip_eps=0.2, pred_changed_weight=0.0, inv_coef=0.0,
                    dyn_coef=0.0, dyn_h_coef=0.0, dyn_x_coef=0.0,
                    epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0, dyn_horizon=0, dyn_h_horizon=0,
-                   move_coef=0.0)
+                   move_coef=0.0, pi_detach=0, pi_own_clip=0)
 
 
 def _struct(cls, values):
@@ -98,6 +99,7 @@ def _load_lib(path=LIB_PATH):
         "vm_update": (None, [vp, vp, vp, C.POINTER(PPOConfig), C.POINTER(PPOStats)]),
         "vm_debug_grads": (f32, [vp, vp, vp, C.POINTER(PPOConfig), vp, i32, C.POINTER(PPOStats)]),
         "vm_forward": (None, [vp, i32, i32, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp]),
+        "vm_attention": (None, [vp, i32, vp, vp, vp, vp, vp, vp]),
         "vm_encode": (None, [vp, i32, vp, vp, vp]),
         "vm_inverse": (None, [vp, i32, vp, vp, vp]),
         "vm_imagine": (None, [vp, i32, i32, vp, vp, vp, vp, vp, vp]),
@@ -267,6 +269,8 @@ class Agent:
     def act(self, ctx, images, drives, prev_action, prev_reward, ep_start=None, deterministic=False, peek=False,
             rollout=None, t=0):
         """One step for all envs of ctx. Returns dict(action [N,3] raw, logp, value, mu [N,2], click_p)."""
+        if self.config["patch"]:
+            raise ValueError("act: the patch-token model acts through forward() on its context window")
         N = ctx.n_envs
         img = _arr(images, np.uint8)
         drv = _arr(drives, np.float32)
@@ -326,8 +330,22 @@ class Agent:
                          _ptr(out.get("pred_drives"), np.float32))
         return out
 
+    def attention(self, images, drives, prev_action, prev_reward, ep_start=None):
+        """Attention weights of one sequence of T steps ([T,...] inputs): [n_layer, n_head, Tt, Tt], Tt = T, or
+        T * tokens per step with patch tokens (tokens of a step: the patches row by row, drives, move, command)."""
+        img = _arr(images, np.uint8)
+        T, c = img.shape[0], self.config
+        tt = T * ((c["img"] // c["patch"]) ** 2 + 3 if c["patch"] else 1)
+        att = np.empty((c["n_layer"], c["n_head"], tt, tt), np.float32)
+        lib().vm_attention(self.handle, T, _ptr(img, np.uint8), _ptr(_arr(drives, np.float32), np.float32),
+                           _ptr(_arr(prev_action, np.float32), np.float32), _ptr(_arr(prev_reward, np.float32), np.float32),
+                           _ptr(_arr(ep_start, np.uint8), np.uint8), _ptr(att, np.float32))
+        return att
+
     def encode(self, images):
         """Encoder features of [n,H,W,3] u8 frames: dict(a3 [n, c3*(img/8)^2], vf [n, feat])."""
+        if self.config["patch"]:
+            raise ValueError("encode: the patch-token model has no CNN encoder")
         img = _arr(images, np.uint8)
         n = img.shape[0]
         c = self.config

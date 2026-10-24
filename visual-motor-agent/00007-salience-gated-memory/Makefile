@@ -17,6 +17,11 @@
 #   make diagnostics — basic agent (dev/analyze_self_actor.py): aiming and walls at 30k/50k, feature probes
 #                    at 10k/30k/50k, the aiming signal of hindsight-labelled steps (babbling; R s2, U s1),
 #                    momentum at 30k
+#   make planner-control — follow-up after the tag (same code): the planner agent's size controls U10 (runs
+#                    021-024) and U50 (029-032, every chunk with probability 0.5: about R's memory size), seeds 1-4,
+#                    plus seeds 3-4 of U and R (025-028). Is relief storage faster by what it keeps, or because a
+#                    smaller memory is replayed more often?
+#   make planner-control-analysis — planner success at 10k/20k/30k and imagination tests at 30k, runs 021-032
 #
 # Arms (online.store_*): U stores every chunk (the control); R stores relief chunks, S the top 10% by
 # surprise, RS both; all other chunks with probability 0.1. The first 1,000 steps are stored in full.
@@ -30,11 +35,12 @@ R  = --set online.store_relief=1 --set online.store_surprise=0 --set online.stor
 S  = --set online.store_relief=0 --set online.store_surprise=0.1 --set online.store_base=0.1
 RS = --set online.store_relief=1 --set online.store_surprise=0.1 --set online.store_base=0.1
 U10 = --set online.store_relief=0 --set online.store_surprise=0 --set online.store_base=0.1
+U50 = --set online.store_relief=0 --set online.store_surprise=0 --set online.store_base=0.5
 BASIC = cd $(DEV) && nohup $(PY) online.py --config configs/AHR_gated.json
 INV = --set model.inv_hidden=128 --set ppo.inv_coef=0.1
 PLAN = cd $(DEV) && nohup $(PY) online.py --config configs/L_gated.json --set online.threads=4
 
-.PHONY: all runs basic planner control inverse analysis diagnostics
+.PHONY: all runs basic planner control inverse analysis diagnostics planner-control planner-control-analysis
 
 all: runs analysis diagnostics
 
@@ -90,3 +96,19 @@ diagnostics:
 	cd $(DEV) && $(PY) analyze_self_actor.py relief $(OUT)/004_AHR_R_s2 $(OUT)/001_AHR_U_s1 --step 50000
 	cd $(DEV) && $(PY) analyze_self_actor.py momentum $(OUT)/001_AHR_U_s1 $(OUT)/003_AHR_R_s1 $(OUT)/005_AHR_S_s1 \
 	  $(OUT)/008_AHR_RS_s2 --step 30000
+
+planner-control:
+	mkdir -p $(OUT)
+	for s in 1 2 3 4; do d=$(OUT)/$$(printf %03d $$((s+20)))_L_U10_s$$s; mkdir -p $$d; \
+	  $(PLAN) --seed $$s --set name=L_U10 $(U10) -o $$d > $$d/stdout.log 2>&1 & done; \
+	for s in 3 4; do d=$(OUT)/$$(printf %03d $$((s+22)))_L_U_s$$s; mkdir -p $$d; \
+	  $(PLAN) --seed $$s --set name=L_U $(U) -o $$d > $$d/stdout.log 2>&1 & done; \
+	for s in 3 4; do d=$(OUT)/$$(printf %03d $$((s+24)))_L_R_s$$s; mkdir -p $$d; \
+	  $(PLAN) --seed $$s --set name=L_R $(R) -o $$d > $$d/stdout.log 2>&1 & done; \
+	for s in 1 2 3 4; do d=$(OUT)/$$(printf %03d $$((s+28)))_L_U50_s$$s; mkdir -p $$d; \
+	  $(PLAN) --seed $$s --set name=L_U50 $(U50) -o $$d > $$d/stdout.log 2>&1 & done; \
+	wait
+
+planner-control-analysis:
+	cd $(DEV) && for r in $(OUT)/0[23][0-9]_L_*_s*; do $(PY) plan.py $$r --ckpts 10000 20000 30000 --threads 16; \
+	  $(PY) analyze_imagination.py $$r --ckpt ckpt_00030000.bin --threads 12; done

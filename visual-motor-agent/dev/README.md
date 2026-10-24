@@ -225,6 +225,47 @@ are used for scoring only):
 ./venv/bin/python analyze_self_actor.py aim RUN_DIR [RUN_DIR ...] --step 50000
 ```
 
+**The policy head (vm-00008):**
+- `ppo.pi_detach=1`: the policy head's gradient stops at its input z. The move loss then trains the
+  head (and the move std) only, never the Transformer or the encoder.
+- `model.pi_hidden=H`: the head gets one ReLU hidden layer, π = W2 relu(W1 z + b1) + b2. With 0 (the
+  default) it is linear, and the layout and old checkpoints are unchanged.
+- `ppo.pi_own_clip=1`: the policy and value heads' gradient is clipped by its own norm and left out of
+  the rest's. Without it, a detached head still scales every other update through the shared
+  `max_grad_norm` clip.
+- With a detached head with a hidden layer and inverse dynamics, the basic agent aims (vm-00008 DMI).
+
+```bash
+./venv/bin/python online.py --config configs/AHR_gated.json --set ppo.pi_detach=1 --set model.pi_hidden=128
+```
+
+**Patch tokens and moving dots (vm-00010):**
+- `model.patch=16`: no CNN. Each step is 16 patch tokens (a 4×4 grid of 16×16 px: one shared linear
+  embedding of the raw pixels, plus a learned position vector that starts as a 2D sine-cosine code), plus
+  one token each for the drives, the previous move and the command, with type and time embeddings.
+  - Attention is block-causal over the window.
+  - Each patch token predicts the change of its cell of the next frame, and the drives token the next
+    drives, from [its output, the executed move]. The move token's output is the policy.
+  - The self actor only: the model acts through `vm_forward` on its window, so `vm_act`, `vm_encode` and
+    the planner refuse patch mode. `agent.attention(...)` returns the attention weights of one sequence.
+- `env.distractors=8`: grey 2×2-px dots (brightness 60–180) moving at 0.5–2 px per step, bouncing off the
+  walls, drawn under the circle and the cursor. They never affect the task, and their random streams are
+  separate, so the episodes are identical with and without them. Positions: `info["gt_dots"]` (scoring
+  only).
+- `analyze_patch.py coupling`: when the cursor or a dot crosses from patch A to B, B's attention on A
+  relative to the other patches, against the same ratio for an unrelated patch C looking at A (otherwise
+  a salient A looks like coupling). `analyze_patch.py sensitivity`: where the predicted next frame changes
+  when the move is reversed (near the cursor, near the dots). `analyze_patch.py tokens`: ridge probes from
+  each kind of token output (move, drives, command, patches; via the PyTorch reference). With a detached
+  policy head, no loss trains the move token's output: in vm-00010 it holds little, while the patch tokens
+  side by side hold nearly everything, already at birth.
+
+```bash
+./venv/bin/python online.py --config configs/AHR_gated.json --set ppo.pi_detach=1 --set model.patch=16 \
+    --set env.distractors=8 --set online.threads=8
+./venv/bin/python analyze_patch.py coupling RUN_DIR --step 50000
+```
+
 ## Performance (this machine: 128 vCPUs, SSE4.2, no GPU)
 
 **Small updates spread frames over threads.** When a minibatch has fewer sequences than threads, the

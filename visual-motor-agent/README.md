@@ -50,7 +50,10 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00004](00004-learning-from-own-plans/README.md) | Learning from its own plans: the world model keeps training on the planner's experience, with the same reward-free losses | Complete | From two babblers, the planner's own experience brings it to 100% hits in a median of 5–6 steps, PPO's level, with no reward. It hits 384/384 and 379/384 over the last three checkpoints. Babbling for as long: 338/384 and 308/384. Mechanism: failed near-edge clicks enter the training chains, so the imagined relief after them fades. A hunger head trained only on real latents is less stable. |
 | [00005](00005-one-lifetime-online-learning/README.md) | One lifetime: a single world, one agent, a gradient step after every step, one-frame model, no reward | Complete | With memory (L), online it misses only 3–5 of 14–15k episodes after 50k steps, hitting in 9–12 steps, with no reward. Frozen checkpoints score only 0.82–0.99: from the same weights, learning during play hits every episode, while frozen it misses far starts. Without memory (P): below babbling online, test 0.02–0.56. |
 | [00006](00006-basic-next-state-predictor/README.md) | The basic agent: predict the next state (frame, drives, move) from the last 8 real ones, make that move, learn every step; no planning, no reward | Complete | On average, no arm beats the random initial model (0.44–0.48); the best arm averages 0.27–0.33 over its checkpoints and ends at 0.34–0.38. Without replay, the encoder features blow up (norm 10²–10⁵), which hides the hunger input. |
-| [00007](00007-salience-gated-memory/README.md) | Salience-gated memory: 8-step chunks enter long-term memory when they lead to hunger relief or were surprising (error in predicting the whole next state); basic and planner agents | Complete | Planner agent: storing relief speeds up early learning (test success 0.90–0.95 at 10k, against 0.70–0.93), with no optimism; an equal-size control is still missing. Basic agent: no gate helps, with or without inverse dynamics; its features lose the cursor during training, so it cannot aim. |
+| [00007](00007-salience-gated-memory/README.md) | Salience-gated memory: 8-step chunks enter long-term memory when they lead to hunger relief or were surprising (error in predicting the whole next state); basic and planner agents | Complete | Planner agent: storing relief speeds up early learning (test success 0.90–0.95 at 10k, against 0.70–0.93), with no optimism. Follow-up with 4 seeds: a random memory of the same size learns more slowly than storing everything, so the gain comes from what is stored. Basic agent: no gate helps, with or without inverse dynamics; its features lose the cursor during training, so it cannot aim. |
+| [00008](00008-detached-policy-head/README.md) | Detached policy head: the basic agent's move loss trains only the policy head, so its features learn from prediction alone; with and without inverse dynamics, and with a hidden layer in the head | Complete (pending tag) | The move loss eroded the features: detached, the cursor and the direction hold (with inverse dynamics, cursor R² 0.79–0.91 vs 0.42–0.52). A linear head still barely aims. With one hidden layer the hindsight command steers it, and **the basic agent aims for the first time**: test success 0.63–0.82 at 50k vs 0.45 at birth, no reward, no planner. |
+| [00009](00009-planner-as-teacher/README.md) | Planner as teacher: the planner agent's policy head also learns the executed moves (a habit), through the features or detached, linear or with a hidden layer; then it acts alone, without the planner | Complete (pending tag) | **A habit learned from the planner's own moves acts alone**: a detached linear head hits in 0.80–0.96 of the test episodes at 30k (birth 0.52–0.56), aiming at the circle, without reward or planner; slower than the planner (26–44 vs 8–14 steps). With its own clip (`ppo.pi_own_clip`) it leaves the world model bitwise unchanged. Through the features the move loss erodes them (cursor R² 0.25 vs 0.9) and both planner and habit suffer. A hidden layer does not help. |
+| [00010](00010-patch-tokens-and-distractors/README.md) | Patch tokens: one token per 16×16 patch and per input (drives, move, command), each predicting its own part of the next state; moving grey dots the agent does not cause | Complete (pending tag) | **Patch tokens hold the scene but the policy's token does not**: all patch tokens together give cursor R² 0.94–0.98 (0.81–0.93 already at birth), the move token, which no loss trains when the head is detached, 0.21–0.33; no patch agent aims, even with a hidden layer. Patches couple only weakly and only without dots. Both models learn where their own move acts; the CNN separates self from the dots more cleanly. Moving dots delay vm-00008's DMI by 20k–30k steps (0.87–0.90 at 40k–50k in one seed). |
 
 ## Open Questions
 
@@ -71,17 +74,22 @@ of, reward. Then test whether that knowledge helps it learn the task.
   exploration genuinely hard (smaller targets, short episodes, click cost)?
 - Drives as inputs/costs vs exploration bonuses (vm-00003, one seed per arm): the hunger cost speeds
   up PPO, and bonuses do not. More seeds are needed.
-- **Open: moving the decision into the network.** In vm-00002 to vm-00005, the network only
+- **Partly answered: moving the decision into the network.** In vm-00002 to vm-00005, the network only
   predicts. The goal (lower predicted hunger, summed over 12 imagined steps) and the search (CEM)
   are hand-written code outside it (`dev/plan.py`). A pure predictor has no preference: in vm-00006
   A, its own moves just drift. Ideas to try:
   1. **Planner as teacher (habit).** Run vm-00005's L with `ppo.move_coef=1`, so the policy head
      also learns to predict the planner's executed moves. Then evaluate the head's own moves without
      the planner (`online.py --eval`, as in vm-00006). Search would then be needed only while
-     learning. To decide: whether the babbled moves (5%) enter the move loss, and whether the move
-     loss may train the shared encoder.
+     learning. **Done in vm-00009:** a detached linear head acts alone at 0.80–0.96 test success at 30k
+     (its planners 0.88–0.95), in 26–44 steps against the planner's 8–14. The babbled moves enter the move
+     loss. The move loss must not train the shared encoder: through it, it erodes the features. Open:
+     does the habit hold once the planner is switched off?
   2. **Hindsight hunger input, no search** (vm-00006 A+H). Hits are rare (1–4 per 1,000 steps), so
      only a few percent of the training steps carry the signal. **Tried in vm-00007:** memory gated
      by relief raises the labelled share to 9–14%, but the agent still does not aim, because its
      features lose the cursor during training. Next: stop the move loss's gradient at the policy
-     head, or start from a world model learned by babbling or by L.
+     head, or start from a world model learned by babbling or by L. **Done in vm-00008:** detached, the
+     features hold; with one hidden layer in the head, the command steers it, and the basic agent aims
+     (0.63–0.82 at 50k against 0.45 at birth), without reward or planner. Moving dots delay it by
+     20k–30k steps (vm-00010).

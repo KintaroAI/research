@@ -142,7 +142,9 @@ def probe(run, st):
     cmd = obs["drives"][:, :1].astype(np.float32) if info["config"]["online"].get("goal") else np.zeros((n, 1), np.float32)
     out = a.forward(obs["image"][:, None], obs["drives"][:, None].astype(np.float32), np.zeros((n, 1, 3), np.float32),
                     cmd, np.ones((n, 1), np.uint8))
-    feats = dict(z=out["z"][:, -1], v=a.encode(obs["image"])["vf"])
+    feats = dict(z=out["z"][:, -1])
+    if not a.config["patch"]:      # patch tokens have no visual feature vector v
+        feats["v"] = a.encode(obs["image"])["vf"]
     a.close()
     return {"%s_%s" % (f, k): ridge_r2(X, Y) for f, X in feats.items() for k, Y in gt.items()}
 
@@ -304,7 +306,8 @@ def main():
             r = probe(run, args.step)
             print("%-20s %7d  R^2 from z: cursor %.2f  circle %.2f  direction %.2f   from v: cursor %.2f  circle %.2f"
                   "  direction %.2f" % (name(run), args.step, r["z_cursor"], r["z_circle"], r["z_direction"],
-                                        r["v_cursor"], r["v_circle"], r["v_direction"]), flush=True)
+                                        r.get("v_cursor", np.nan), r.get("v_circle", np.nan),
+                                        r.get("v_direction", np.nan)), flush=True)
         elif args.what == "relief":
             r = relief(run, args.step if run else None, args.n, args.steps)
             print("%s: hits per episode %.2f, labelled steps %.3f, of which babbled %.2f" % (
