@@ -12,7 +12,7 @@ import os
 
 import numpy as np
 
-LIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libvmagent.so")
+LIB_PATH = os.environ.get("VM_AGENT_LIB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "libvmagent.so")
 
 ACT_DETERMINISTIC = 1
 ACT_PEEK = 2
@@ -22,7 +22,7 @@ class VMConfig(C.Structure):
     _fields_ = [(n, C.c_int) for n in ("img", "c1", "c2", "c3", "feat", "d_model", "n_layer", "n_head", "d_ff",
                                        "ctx", "pred_img", "pc1", "pc2", "pred_hidden", "use_prev_reward")]
     _fields_ += [("logstd_init", C.c_float), ("coord", C.c_int), ("pb", C.c_int), ("pred_residual", C.c_int),
-                 ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int)]
+                 ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int), ("one_frame", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -33,6 +33,7 @@ class PPOConfig(C.Structure):
                                          "dyn_x_coef")]
     _fields_ += [(n, C.c_int) for n in ("epochs", "minibatches", "use_ppo", "norm_adv", "clip_vloss", "dyn_horizon",
                                         "dyn_h_horizon")]
+    _fields_ += [("move_coef", C.c_float)]
 
 
 class PPOStats(C.Structure):
@@ -43,17 +44,19 @@ class PPOStats(C.Structure):
                                          "gn_policy", "gn_pred", "inv_mse", "inv_r2", "dyn_mse", "dyn_hunger_mse",
                                          "dyn_recon_mse")]
     _fields_ += [(n, C.c_int) for n in ("epochs_done", "updates_done")]
+    _fields_ += [("move_nll", C.c_float)]
 
 
 DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer=2, n_head=4, d_ff=512, ctx=32,
                      pred_img=32, pc1=16, pc2=32, pred_hidden=256, use_prev_reward=0, logstd_init=-0.5, coord=0, pb=32,
-                     pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0)
+                     pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
                    weight_decay=0.0, target_kl=0.0, reward_scale=0.1, vclip_eps=0.2, pred_changed_weight=0.0, inv_coef=0.0,
                    dyn_coef=0.0, dyn_h_coef=0.0, dyn_x_coef=0.0,
-                   epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0, dyn_horizon=0, dyn_h_horizon=0)
+                   epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0, dyn_horizon=0, dyn_h_horizon=0,
+                   move_coef=0.0)
 
 
 def _struct(cls, values):
@@ -91,6 +94,7 @@ def _load_lib(path=LIB_PATH):
         "vm_rollout_free": (None, [vp]),
         "vm_rollout_outcome": (None, [vp, i32, vp, vp, vp, vp]),
         "vm_rollout_set_action": (None, [vp, i32, vp]),
+        "vm_rollout_store": (None, [vp, i32, vp, vp, vp, vp, vp, vp]),
         "vm_update": (None, [vp, vp, vp, C.POINTER(PPOConfig), C.POINTER(PPOStats)]),
         "vm_debug_grads": (f32, [vp, vp, vp, C.POINTER(PPOConfig), vp, i32, C.POINTER(PPOStats)]),
         "vm_forward": (None, [vp, i32, i32, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp]),
@@ -176,6 +180,18 @@ class Rollout:
         nd = _arr(next_drives, np.float32)
         lib().vm_rollout_outcome(self.handle, t, _ptr(r, np.float32), _ptr(d, np.uint8), _ptr(ni, np.uint8),
                                  _ptr(nd, np.float32))
+
+    def store(self, t, images, drives, prev_action, prev_reward, ep_start, action):
+        """Write the inputs of step t for all N sequences (training from replayed experience)."""
+        img = _arr(images, np.uint8)
+        drv = _arr(drives, np.float32)
+        pa = _arr(prev_action, np.float32)
+        pr = _arr(prev_reward, np.float32)
+        es = _arr(ep_start, np.uint8)
+        act = _arr(action, np.float32)
+        assert img.shape[0] == self.N and drv.shape == (self.N, 2) and pa.shape == (self.N, 3) and act.shape == (self.N, 3)
+        lib().vm_rollout_store(self.handle, t, _ptr(img, np.uint8), _ptr(drv, np.float32), _ptr(pa, np.float32),
+                               _ptr(pr, np.float32), _ptr(es, np.uint8), _ptr(act, np.float32))
 
     def set_action(self, t, action):
         """Replace the stored action of step t ([N,3] raw) by one chosen outside the policy (needs ppo.use_ppo=0)."""

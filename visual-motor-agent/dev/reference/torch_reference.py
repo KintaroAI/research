@@ -168,6 +168,8 @@ def forward(P, cfg, images, drives, prev_action, prev_reward, ep_start, pred_act
     pr = torch.tensor(prev_reward, dtype=dt)[..., None] * float(cfg["use_prev_reward"])
     tin = torch.cat([vf, torch.tensor(drives, dtype=dt), torch.tensor(prev_action, dtype=dt), pr], dim=-1)
     ss = segment_starts(np.asarray(ep_start, bool))
+    if cfg.get("one_frame", 0):                 # every token is its own context: attends only to itself
+        ss = np.broadcast_to(np.arange(T)[None, :], ss.shape).copy()
     pos = np.arange(T)[None, :] - ss
     h = F.linear(tin, P["in_w"], P["in_b"]) + P["wpe"][torch.tensor(pos)]
     t_idx = np.arange(T)
@@ -264,7 +266,8 @@ def ppo_loss(P, cfg, pc, batch):
     z = out["z"]
     terms = {}
     total = torch.zeros((), dtype=dt)
-    if pc["use_ppo"]:
+    move_coef = pc.get("move_coef", 0.0)
+    if pc["use_ppo"] or move_coef > 0:
         a = torch.tensor(batch["action"], dtype=dt)
         pi = out["pi"]
         mu = torch.tanh(pi[..., :2])
@@ -275,6 +278,10 @@ def ppo_loss(P, cfg, pc, batch):
         l = pi[..., 2]
         c = a[..., 2] > 0.5
         logp = logp + torch.where(c, -F.softplus(-l), -F.softplus(l))
+    if move_coef > 0:                           # next-move prediction: the move actually made
+        total = total + move_coef * (-logp).mean()
+        terms.update(move_nll=(-logp).mean().item())
+    if pc["use_ppo"]:
         p = torch.sigmoid(l)
         ent = (0.5 + 0.5 * math.log(2 * math.pi) + ls).sum() + p * F.softplus(-l) + (1 - p) * F.softplus(l)
         A = torch.tensor(batch["adv"], dtype=dt)

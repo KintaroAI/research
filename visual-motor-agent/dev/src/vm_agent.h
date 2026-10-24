@@ -32,6 +32,8 @@ typedef struct {
     int inv_hidden;     // >0: inverse-dynamics head MLP([v_t, v_t+1]) -> executed (dx, dy), hidden size
     int dyn_hidden;     // >0: latent dynamics on the visual feature v: transition v' = v + MLP([v, a]), hunger
                         //     h' = sigmoid(MLP([v, h, a])) and a coarse decoder MLP(v) -> (pred_img/2)^2 x 3 frame
+    int one_frame;      // 1 = each token attends only to itself: every prediction uses the current frame only
+                        //     (training sequences stay ctx long, for inverse dynamics and latent-chain targets)
 } VMConfig;
 
 typedef struct {
@@ -57,6 +59,7 @@ typedef struct {
     int clip_vloss;             // clipped value loss
     int dyn_horizon;            // imagined steps per chain in the latent-dynamics losses (0 = off)
     int dyn_h_horizon;          // chain steps that train the hunger head (0 = all; 1 = real latents only)
+    float move_coef;            // next-move prediction: -log pi(a_t | context) of the move actually made (0 = off)
 } PPOConfig;
 
 typedef struct {
@@ -67,6 +70,7 @@ typedef struct {
     float inv_mse, inv_r2;                   // inverse dynamics: MSE of (dx, dy) and R^2 vs predicting 0
     float dyn_mse, dyn_hunger_mse, dyn_recon_mse;   // latent dynamics: latent MSE, hunger MSE, decoder MSE
     int epochs_done, updates_done;
+    float move_nll;             // next-move prediction: mean -log pi(a_t) of the moves actually made
 } PPOStats;
 
 // ---- model lifecycle ----
@@ -107,6 +111,10 @@ void  vm_rollout_free(void* rollout);
 // Outcome of step t: reward [N], done [N], next_images [N,img,img,3] (terminal frame when done), next_drives [N,2]
 void  vm_rollout_outcome(void* rollout, int t, const float* reward, const uint8_t* done,
                          const uint8_t* next_images, const float* next_drives);
+// Store the inputs of step t for all N sequences directly (training from replayed experience): images [N,img,img,3],
+// drives [N,2], prev_action [N,3], prev_reward [N], ep_start [N] (may be NULL), action [N,3] raw. logp / value are 0.
+void  vm_rollout_store(void* rollout, int t, const uint8_t* images, const float* drives, const float* prev_action,
+                       const float* prev_reward, const uint8_t* ep_start, const float* action);
 // Replace the action stored for step t (raw [N,3]) by one chosen outside the policy, e.g. by a planner.
 // Only for ppo.use_ppo = 0: logp and value of the stored step are not recomputed.
 void  vm_rollout_set_action(void* rollout, int t, const float* action);

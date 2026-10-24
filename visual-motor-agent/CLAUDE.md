@@ -23,6 +23,12 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
   - `plan.py`: CEM planner on the latent dynamics (acting without reward). `analyze_imagination.py`:
     imagined vs real rollouts, read out by retrieval. `analyze_planner.py`: where the planner fails.
     `train.py --set train.actor=planner`: the model learns from the planner's own experience.
+  - `online.py`: one lifetime in one world, with a gradient step after every step from its own
+    (replayed) experience. `model.one_frame=1`: each prediction uses only the current frame.
+    `online.memory=gated` (vm-00007): 8-step chunks enter long-term memory by relief and surprise
+    (`GatedMemory`). The default `stream` is the plain ring buffer, unchanged.
+    `analyze_self_actor.py`: why the self actor does or does not aim (aim, probe, relief, inputs,
+    momentum).
   - `reference/torch_reference.py`: float64 PyTorch re-implementation, used only by tests.
   - `configs/*.json`: runs from the plan's experiment matrix (A–F) plus reward-free babbling (P_*).
 - **`NNNNN-experiment-name/`**: experiment snapshots (README.md + Makefile only; the git tag
@@ -78,13 +84,28 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
   encoded latents with gradients into the encoder collapses the features. Even a decoder on real
   latents alone shrank them until the cursor was no longer decodable (exp vm-00002). The heads
   read a detached v.
+- **The self actor (`online.actor=self`) needs replay.** With the newest window only (batch 1), its
+  encoder features blow up (norm 10²–10⁵ by 100k steps in 5 of 6 runs, vm-00006), and the drives
+  and command vanish from the tokens. There is no weight decay (`ppo.weight_decay=0`). Even with
+  replay, its features lose the cursor over training (vm-00007); check with
+  `analyze_self_actor.py probe`.
+- **Frozen checkpoints understate an online learner** (vm-00005). L's frozen planner misses 1–19%
+  of episodes, while the same weights, still learning, miss almost none: errors are corrected
+  within steps. To measure the agent, continue it with learning on (`online.py --init CKPT`; lr 0
+  is the frozen control). `plan.py --explore-gain/--explore-eps` adds online.py's acting rule.
 - **Run names:** `train.py --set name=X` overrides the config's name. Experiment Makefiles use
   it so their analysis globs find the runs.
 - **Checkpoint header.** Config ints sit in slots 2–19 and n_params/has_opt/step in 20–22.
-  Extension fields go at 32+ (`pred_residual` 32, `pred_skip` 33, `inv_hidden` 34). Never append
-  into slot 20.
+  Extension fields go at 32+ (`pred_residual` 32, `pred_skip` 33, `inv_hidden` 34, `dyn_hidden` 35,
+  `one_frame` 36). Never append into slot 20.
 - `make` builds `libvmagent.so` under a temporary name and renames it, so running trainers are not
   disturbed by a rebuild.
+- **Small updates are frame-parallel.** With fewer sequences than threads, `loss_and_grads_frames`
+  and `vm_forward` spread per-frame encoder and decoder work over threads, for any `ctx`. Larger
+  minibatches use one thread per sequence. Both paths are covered by the reference gradient tests
+  (run at 4 and 16 threads).
+- **Testing a new build while experiments run:** build it to another path, run
+  `VM_AGENT_LIB=that.so pytest`, and only then `make`.
 
 ## Conventions
 

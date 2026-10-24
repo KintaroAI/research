@@ -160,7 +160,88 @@ planner's action in place of the policy's. Run it from a babbler with `--init`.
     --set train.actor=planner --set train.eval_every=0
 ```
 
+## One lifetime: a single world, learning on every step (vm-00005)
+
+`online.py` runs one agent in one world and does a gradient step after every step:
+- **What it learns from:** its newest 8 steps, plus `online.batch − 1` sequences replayed from a
+  memory of its own past (`online.replay` steps).
+- **How it acts:** the CEM planner, with babbling with probability `online.explore_eps`.
+  `explore_eps=1` gives a pure online babbler.
+- **What it never uses:** reward. The losses are the reward-free ones (`ppo.use_ppo=0`).
+- **One frame:** `model.one_frame=1` makes every token attend only to itself, so each prediction uses
+  only the current frame. Training sequences stay `ctx` long, for the inverse-dynamics and
+  latent-chain targets.
+- **Training batches:** `vm_rollout_store` fills a training rollout from stored experience.
+
+```bash
+./venv/bin/python online.py --config configs/L_online.json --seed 1 --exp 5
+./venv/bin/python online.py --config configs/L_online.json --set online.batch=1 --set online.replay=8  # no memory
+./venv/bin/python plan.py RUN_DIR --ckpts 10000 50000 200000      # the planner of lifetime checkpoints
+./venv/bin/python plan.py RUN_DIR --ckpt ckpt_00200000.bin --explore-gain 0.02 --explore-eps 0.05  # + the acting rule
+./venv/bin/python online.py --config configs/L_online.json --seed 101 --init RUN_DIR/ckpt_00200000.bin \
+    --set online.steps=5000 [--set ppo.lr=0]      # continue from saved weights, learning or frozen
+```
+
+**Frozen checkpoints understate an online learner.** In vm-00005, L's frozen planner misses 1–19%
+of the episodes, while the learning agent misses almost none from the same weights. It corrects its
+errors within steps of making them. So measure with learning on (`online.py --init`) when the
+question is the agent's competence. `plan.py --explore-gain/--explore-eps` adds online.py's
+acting rule (babble when the plan promises too little relief, or at random) to the frozen test, and
+`--env-seed` picks other episodes. `--init` starts with a fresh optimizer and an empty memory.
+
+Per step on a quiet machine: the planner takes about 40 ms (4-way parallel). The update on 8 sequences of 8
+steps takes 36–52 ms (8–32 threads). The basic agent (`actor=self`, one window) takes about 23 ms (43 steps/s)
+with 8 threads.
+
+**Gated memory (vm-00007, `online.memory=gated`).** Experience enters long-term memory by salience:
+- **Two memories:** a short-term buffer of the last `online.stm` steps, and a long-term memory of
+  `online.replay` steps kept as whole chunks of `ctx` steps.
+- **The gate:** each chunk is decided `relief_k − 1` steps after it ends. It is stored:
+  - in full during the first `store_warmup` steps;
+  - when it leads to relief (`store_relief`: a hit in it or in the next `relief_k − 1` steps);
+  - when it is in the top `store_surprise` fraction of recent chunks by surprise;
+  - otherwise with probability `store_base`.
+- **Surprise:** the error of the model's prediction of the next state, each part divided by its
+  recent mean and summed: frame, drives and, for the self actor, the move. It is measured before the
+  model learns from the step.
+- **Training:** the newest sequence plus `batch − 1` chunks drawn uniformly from long-term memory.
+- **The default `memory=stream`** is the vm-00005/6 ring buffer (bitwise unchanged).
+
+```bash
+./venv/bin/python online.py --config configs/AHR_gated.json --set online.store_relief=1 --set online.store_base=0.1
+```
+
+**Why the self actor does or does not aim** (`analyze_self_actor.py`, vm-00006/7; the true positions
+are used for scoring only):
+- `aim`: on the test episodes, the cosine between the predicted mean move and the direction to the
+  circle (away from the walls), and the share of steps at a wall.
+- `probe`: linear R² of the cursor, the circle and the direction between them, from z and from v.
+- `relief`: how well the moves of the hindsight-labelled steps point at the circle (random
+  babbling, or an agent replayed as it lives online).
+- `inputs`: how much the move changes with the image, the command and the drives, and the norm of v.
+- `momentum`: whether the move follows the previous one.
+
+```bash
+./venv/bin/python analyze_self_actor.py aim RUN_DIR [RUN_DIR ...] --step 50000
+```
+
 ## Performance (this machine: 128 vCPUs, SSE4.2, no GPU)
+
+**Small updates spread frames over threads.** When a minibatch has fewer sequences than threads, the
+update and the batched forward split each sequence into per-frame work. That covers the convolutional
+encoder and the frame decoder, the bulk of the compute: n_seq × ctx items over all threads. The
+Transformer and the heads run one thread per sequence. This works for any context length. Gradients
+match the PyTorch reference on both paths, and the result is deterministic for a given thread count.
+Large minibatches keep one thread per sequence.
+
+| One online step (8-step window), quiet machine | Before | After |
+|---|---:|---:|
+| Basic agent, 8 threads: forward + update | 6.2 + 43.3 ms | 1.6 + 21.5 ms |
+| Basic agent, window of 32, 16 threads | 25.2 + 122.3 ms | 5.3 + 37.3 ms |
+| Update on 8 windows, 32 threads | 54 ms | 36 ms |
+
+`VM_AGENT_LIB=/path/to/lib.so` makes `agent_lib` load another build. Use it to test a new build while
+experiments run on the installed one.
 
 | | 64 threads |
 |---|---|
@@ -179,5 +260,7 @@ planner's action in place of the policy's. Run it from a babbler with `--init`.
 | `world/` | CircleWorld, recorder, browser demo |
 | `train.py`, `run_queue.py`, `output_name.py` | training |
 | `evaluate.py`, `analyze_dynamics.py`, `dynamics_over_training.py`, `compare_dynamics.py`, `plot_runs.py`, `record_episodes.py`, `make_video.py` | evaluation and analysis |
+| `online.py` | one lifetime: single world, a gradient step after every step, replay memory |
+| `analyze_self_actor.py` | the self actor: aiming, walls, feature probes, the aiming signal of labelled steps, input sensitivity |
 | `plan.py`, `analyze_imagination.py`, `analyze_planner.py` | acting without reward (CEM planner on the latent model); imagination accuracy; planner failures |
 | `reference/torch_reference.py`, `tests/` | PyTorch reference and tests |

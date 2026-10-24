@@ -94,9 +94,10 @@ static std::vector<float> fill_rollout(Model* M, ActCtx* C, Rollout* R, uint64_t
     return val;
 }
 
-static void test_act_equals_train_and_ratio_one() {
-    printf("test_act_equals_train_and_ratio_one\n");
+static void test_act_equals_train_and_ratio_one(int one_frame) {
+    printf("test_act_equals_train_and_ratio_one (one_frame=%d)\n", one_frame);
     VMConfig cfg = small_config();
+    cfg.one_frame = one_frame;
     Model* M = (Model*)vm_create(&cfg, 42);
     const int N = 5, T = 3 * cfg.ctx;
     ActCtx* C = (ActCtx*)vm_ctx_create(M, N, 7);
@@ -198,7 +199,8 @@ static void test_peek_does_not_advance() {
 int main() {
     omp_set_num_threads(4);
     test_gemm();
-    test_act_equals_train_and_ratio_one();
+    test_act_equals_train_and_ratio_one(0);
+    test_act_equals_train_and_ratio_one(1);
     test_update_deterministic_and_learns();
     test_checkpoint();
     test_peek_does_not_advance();

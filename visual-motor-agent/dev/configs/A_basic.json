@@ -1,0 +1,36 @@
+{
+  "name": "A_basic",
+  "description": "The basic agent (vm-00006): a single world, one agent. The model reads its last 8 real states (frame, drives, previous move) and predicts the next one: the next move, and the next frame and drives given that move. It makes the predicted move and, every step, learns from what actually happened (one window of the last 8 steps). No planning, no latent world model, no inverse dynamics, no replay, no reward.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "move_coef": 1.0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 1,
+    "pred_skip": 1,
+    "ctx": 8
+  },
+  "online": {
+    "actor": "self",
+    "steps": 100000,
+    "batch": 1,
+    "replay": 64,
+    "click_bias": -2.197,
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4
+  }
+}

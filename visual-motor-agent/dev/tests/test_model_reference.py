@@ -92,15 +92,16 @@ def compare_grads(agent, P, tol=3e-3):
     return worst
 
 
-@pytest.fixture(scope="module", params=[(0, 0, 0, 0, 0), (1, 0, 0, 0, 0), (1, 1, 0, 0, 0), (1, 1, 1, 0, 0),
-                                        (0, 0, 1, 0, 0), (1, 1, 1, 6, 0), (1, 1, 1, 6, 8)],
+@pytest.fixture(scope="module", params=[(0, 0, 0, 0, 0, 0), (1, 0, 0, 0, 0, 0), (1, 1, 0, 0, 0, 0),
+                                        (1, 1, 1, 0, 0, 0), (0, 0, 1, 0, 0, 0), (1, 1, 1, 6, 0, 0),
+                                        (1, 1, 1, 6, 8, 0), (1, 1, 1, 6, 8, 1)],
                 ids=["plain", "coord", "coord_residual", "coord_residual_skip", "skip", "skip_inverse",
-                     "skip_inverse_dyn"])
+                     "skip_inverse_dyn", "one_frame"])
 def agent(request):
     agent_lib.set_threads(4)
-    coord, residual, skip, inv, dyn = request.param
+    coord, residual, skip, inv, dyn, one = request.param
     return agent_lib.Agent(dict(SMALL, coord=coord, pb=4, pred_residual=residual, pred_skip=skip, inv_hidden=inv,
-                                dyn_hidden=dyn), seed=3)
+                                dyn_hidden=dyn, one_frame=one), seed=3)
 
 
 @pytest.mark.parametrize("pc_over", [
@@ -115,8 +116,12 @@ def agent(request):
     dict(pred_coef=1.0, drive_coef=0.5, dyn_coef=0.7, dyn_h_coef=1.0, dyn_x_coef=0.5, dyn_horizon=8),  # PPO + dynamics
     dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=1.0, dyn_coef=1.0, dyn_h_coef=2.0, dyn_x_coef=1.0,
          dyn_horizon=4, dyn_h_horizon=1),                                   # hunger head on real latents only
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.5),          # next frame + drives + next move
+    dict(pred_coef=1.0, drive_coef=0.5, move_coef=0.5),                     # PPO + move prediction
 ])
-def test_loss_and_grads_match_reference(agent, pc_over):
+@pytest.mark.parametrize("threads", [4, 16])   # 4 sequences: one thread per sequence (4) or frame-parallel (16)
+def test_loss_and_grads_match_reference(agent, pc_over, threads):
+    agent_lib.set_threads(threads)
     cfg = agent.config
     T, N = 16, 3
     ro, data, last_value = make_rollout(agent, T=T, N=N, seed=7)
@@ -284,3 +289,62 @@ def test_rollout_set_action():
         ro_other.set_action(t, a)
     other, st2 = agent.debug_grads(ro_other, lv, pc, seqs)
     assert other != base and st2["inv_mse"] != st0["inv_mse"]
+
+
+def test_rollout_store_reproduces_acting():
+    """A rollout filled from stored experience (vm_rollout_store + outcome) trains exactly like the one acting wrote."""
+    agent_lib.set_threads(4)
+    agent = agent_lib.Agent(dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, inv_hidden=6, dyn_hidden=8,
+                                 one_frame=1), seed=13)
+    pc = dict(use_ppo=0, pred_coef=1.0, drive_coef=1.0, inv_coef=1.0, dyn_coef=1.0, dyn_h_coef=1.0,
+              dyn_x_coef=1.0, dyn_horizon=3)
+    ro, data, lv = make_rollout(agent)
+    T, N = data["action"].shape[:2]
+    ro2 = agent.new_rollout(T, N)
+    for t in range(T):
+        ro2.store(t, data["images"][t], data["drives"][t], data["prev_action"][t], data["prev_reward"][t],
+                  data["ep_start"][t], data["action"][t])
+        ro2.outcome(t, data["reward"][t], data["done"][t], data["next_images"][t], data["next_drives"][t])
+    seqs = np.arange(N * (T // agent.config["ctx"]))
+    a, st_a = agent.debug_grads(ro, lv, pc, seqs)
+    g_a = agent.grads().copy()
+    b, st_b = agent.debug_grads(ro2, lv, pc, seqs)
+    assert a == b
+    np.testing.assert_array_equal(agent.grads(), g_a)
+    value_stats = {"explained_var", "value_mean", "return_mean", "adv_mean", "adv_std"}   # from stored values only
+    assert {k: v for k, v in st_a.items() if k not in value_stats} == {k: v for k, v in st_b.items() if k not in value_stats}
+
+
+def test_frame_parallel_matches_and_is_deterministic():
+    """Few sequences on many threads: gradients spread over frames match one thread per sequence (to rounding), and
+    repeat bitwise; the frame-parallel batched forward equals the serial one bitwise."""
+    agent = agent_lib.Agent(dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, inv_hidden=6, dyn_hidden=8),
+                            seed=21)
+    pc = dict(agent_lib.DEFAULT_PPO, use_ppo=0, pred_coef=1.0, drive_coef=1.0, inv_coef=1.0, dyn_coef=1.0,
+              dyn_h_coef=1.0, dyn_x_coef=1.0, dyn_horizon=3, move_coef=1.0)
+    agent_lib.set_threads(4)
+    ro, data, lv = make_rollout(agent, T=16, N=3, seed=5)
+    ids = [1, 4, 2]
+    agent_lib.set_threads(3)                     # 3 sequences, 3 threads: one thread per sequence
+    loss_s, _ = agent.debug_grads(ro, lv, pc, ids)
+    g_s = agent.grads().copy()
+    agent_lib.set_threads(16)                    # frame-parallel
+    loss_f, _ = agent.debug_grads(ro, lv, pc, ids)
+    g_f = agent.grads().copy()
+    agent.debug_grads(ro, lv, pc, ids)
+    np.testing.assert_array_equal(agent.grads(), g_f)
+    assert abs(loss_f - loss_s) < 1e-6 * max(1.0, abs(loss_s))
+    np.testing.assert_allclose(g_f, g_s, rtol=1e-4, atol=1e-7)
+    S, T = 2, agent.config["ctx"]
+    rng = np.random.default_rng(3)
+    inp = (rng.integers(0, 256, (S, T, 32, 32, 3), dtype=np.uint8), rng.random((S, T, 2), dtype=np.float32),
+           rng.normal(size=(S, T, 3)).astype(np.float32), rng.normal(size=(S, T)).astype(np.float32),
+           (rng.random((S, T)) < 0.2).astype(np.uint8))
+    acts = rng.normal(size=(S, T, 3)).astype(np.float32)
+    agent_lib.set_threads(1)
+    serial = agent.forward(*inp, pred_actions=acts)
+    agent_lib.set_threads(16)
+    parallel = agent.forward(*inp, pred_actions=acts)
+    for k in serial:
+        np.testing.assert_array_equal(parallel[k], serial[k])
+    agent_lib.set_threads(4)

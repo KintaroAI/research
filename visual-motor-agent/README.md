@@ -48,6 +48,9 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00002](00002-acting-without-reward/README.md) | Acting without reward: latent world model from babbling + CEM planner on predicted hunger | Complete | The planner hits 89% of test episodes (median 11 steps) using only the babbler's model and its hunger. The same planner with random costs hits 23%; random actions 46–54%; PPO with reward 100%. Failures: the planner exploits the blurred inside/outside edge of the hunger head and clicks just outside the circle. |
 | [00003](00003-small-targets-drives-coordconv/README.md) | Small targets (radius 4–8) transfer; arms B, E, F, D; plain architecture seeds | Complete | • Radius 4–8: babbler-initialized PPO reaches 95% success 3.9–4.1× faster (2 seeds); from scratch, PPO sits near the random level for about 0.5M steps. <br>• The hunger cost and prediction speed up PPO (D: 262k vs A 508–590k); bonuses alone do not (one seed per arm). <br>• CoordConv slows pure PPO 2–3× (plain 180–262k vs 508–590k, 3 seeds each). |
 | [00004](00004-learning-from-own-plans/README.md) | Learning from its own plans: the world model keeps training on the planner's experience, with the same reward-free losses | Complete | From two babblers, the planner's own experience brings it to 100% hits in a median of 5–6 steps, PPO's level, with no reward. It hits 384/384 and 379/384 over the last three checkpoints. Babbling for as long: 338/384 and 308/384. Mechanism: failed near-edge clicks enter the training chains, so the imagined relief after them fades. A hunger head trained only on real latents is less stable. |
+| [00005](00005-one-lifetime-online-learning/README.md) | One lifetime: a single world, one agent, a gradient step after every step, one-frame model, no reward | Complete (pending tag) | With memory (L), online it misses only 3–5 of 14–15k episodes after 50k steps, hitting in 9–12 steps, with no reward. Frozen checkpoints score only 0.82–0.99: from the same weights, learning during play hits every episode, while frozen it misses far starts. Without memory (P): below babbling online, test 0.02–0.56. |
+| [00006](00006-basic-next-state-predictor/README.md) | The basic agent: predict the next state (frame, drives, move) from the last 8 real ones, make that move, learn every step; no planning, no reward | Complete (pending tag) | On average, no arm beats the random initial model (0.44–0.48); the best arm averages 0.27–0.33 over its checkpoints and ends at 0.34–0.38. Without replay, the encoder features blow up (norm 10²–10⁵), which hides the hunger input. |
+| [00007](00007-salience-gated-memory/README.md) | Salience-gated memory: 8-step chunks enter long-term memory when they lead to hunger relief or were surprising (error in predicting the whole next state); basic and planner agents | Complete (pending tag) | Planner agent: storing relief speeds up early learning (test success 0.90–0.95 at 10k, against 0.70–0.93), with no optimism; an equal-size control is still missing. Basic agent: no gate helps, with or without inverse dynamics; its features lose the cursor during training, so it cannot aim. |
 
 ## Open Questions
 
@@ -68,3 +71,17 @@ of, reward. Then test whether that knowledge helps it learn the task.
   exploration genuinely hard (smaller targets, short episodes, click cost)?
 - Drives as inputs/costs vs exploration bonuses (vm-00003, one seed per arm): the hunger cost speeds
   up PPO, and bonuses do not. More seeds are needed.
+- **Open: moving the decision into the network.** In vm-00002 to vm-00005, the network only
+  predicts. The goal (lower predicted hunger, summed over 12 imagined steps) and the search (CEM)
+  are hand-written code outside it (`dev/plan.py`). A pure predictor has no preference: in vm-00006
+  A, its own moves just drift. Ideas to try:
+  1. **Planner as teacher (habit).** Run vm-00005's L with `ppo.move_coef=1`, so the policy head
+     also learns to predict the planner's executed moves. Then evaluate the head's own moves without
+     the planner (`online.py --eval`, as in vm-00006). Search would then be needed only while
+     learning. To decide: whether the babbled moves (5%) enter the move loss, and whether the move
+     loss may train the shared encoder.
+  2. **Hindsight hunger input, no search** (vm-00006 A+H). Hits are rare (1–4 per 1,000 steps), so
+     only a few percent of the training steps carry the signal. **Tried in vm-00007:** memory gated
+     by relief raises the labelled share to 9–14%, but the agent still does not aim, because its
+     features lose the cursor during training. Next: stop the move loss's gradient at the policy
+     head, or start from a world model learned by babbling or by L.

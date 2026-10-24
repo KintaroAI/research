@@ -1,0 +1,47 @@
+{
+  "name": "AHR_gated",
+  "description": "vm-00007: the basic agent with the hindsight hunger input and replay (vm-00006 A+H+R: eps 0.2, batch 8, memory 100k), with a gated memory: a short-term buffer of the last 256 steps, and a long-term memory of 8-step chunks that enter it when they lead to hunger relief, when they were surprising (the model's prediction of the next frame, drives and move was unusually wrong), or by a draw. Arms set online.store_*; the defaults store everything (the uniform control).",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "move_coef": 1.0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 1,
+    "pred_skip": 1,
+    "ctx": 8,
+    "use_prev_reward": 1
+  },
+  "online": {
+    "actor": "self",
+    "steps": 50000,
+    "batch": 8,
+    "replay": 100000,
+    "click_bias": -2.197,
+    "explore_eps": 0.2,
+    "goal": 1,
+    "goal_k": 12,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4
+  }
+}

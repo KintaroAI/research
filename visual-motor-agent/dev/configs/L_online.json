@@ -1,0 +1,43 @@
+{
+  "name": "L_online",
+  "description": "One lifetime: a single world, one agent, a gradient step after every step from its own experience (the newest 8 steps plus 7 replayed sequences of 8). One-frame model (each prediction uses only the current frame), reward-free losses as P_dyn. Acts with the CEM planner when it imagines a way to lower hunger, babbles otherwise.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "inv_coef": 0.1,
+    "dyn_coef": 1.0,
+    "dyn_h_coef": 10.0,
+    "dyn_x_coef": 1.0,
+    "dyn_horizon": 7,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 1,
+    "pred_skip": 1,
+    "ctx": 8,
+    "inv_hidden": 128,
+    "dyn_hidden": 256,
+    "one_frame": 1
+  },
+  "online": {
+    "steps": 200000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_gain": 0.02,
+    "explore_eps": 0.05,
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 8
+  }
+}

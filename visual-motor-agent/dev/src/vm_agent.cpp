@@ -752,7 +752,7 @@ static bool config_valid(const VMConfig& c) {
     if (c.ctx <= 0 || c.n_layer <= 0 || c.c1 <= 0 || c.c2 <= 0 || c.c3 <= 0 || c.feat <= 0) return false;
     if (c.d_ff <= 0 || c.pc1 <= 0 || c.pc2 <= 0 || c.pred_hidden <= 0) return false;
     if (c.coord && c.pb < 0) return false;
-    if (c.dyn_hidden < 0) return false;
+    if (c.dyn_hidden < 0 || c.one_frame < 0 || c.one_frame > 1) return false;
     if (c.pred_skip && (c.img / 4 != c.pred_img / 2 || c.img / 8 != c.pred_img / 4)) return false;  // map sizes
     return true;
 }
@@ -799,7 +799,7 @@ static void fill_coords(float* dst, int S) {
         }
 }
 
-static void encode_frame(const Model* M, Workspace* W, const uint8_t* img, int t) {
+static void encode_frame(const Model* M, Workspace* W, float* scr, const uint8_t* img, int t) {
     const Dims& D = M->D;
     const float* P = M->params.data();
     const int S = D.img;
@@ -811,9 +811,9 @@ static void encode_frame(const Model* M, Workspace* W, const uint8_t* img, int t
     float* a1 = W->a1.data() + (size_t)t * D.c1 * D.h1 * D.h1;
     float* a2 = W->a2.data() + (size_t)t * D.c2 * D.h2 * D.h2;
     float* a3 = W->a3.data() + (size_t)t * D.enc_flat;
-    conv_fwd(x0, D.in_ch, S, P + M->off[C1W], P + M->off[C1B], D.c1, a1, W->scr.data());
-    conv_fwd(a1, D.c1, D.h1, P + M->off[C2W], P + M->off[C2B], D.c2, a2, W->scr.data());
-    conv_fwd(a2, D.c2, D.h2, P + M->off[C3W], P + M->off[C3B], D.c3, a3, W->scr.data());
+    conv_fwd(x0, D.in_ch, S, P + M->off[C1W], P + M->off[C1B], D.c1, a1, scr);
+    conv_fwd(a1, D.c1, D.h1, P + M->off[C2W], P + M->off[C2B], D.c2, a2, scr);
+    conv_fwd(a2, D.c2, D.h2, P + M->off[C3W], P + M->off[C3B], D.c3, a3, scr);
 }
 
 static void build_token_input(const Model* M, Workspace* W, int t, const float* drv, const float* pa, float pr) {
@@ -829,17 +829,28 @@ static void build_token_input(const Model* M, Workspace* W, int t, const float* 
     u[D.feat + 5] = M->cfg.use_prev_reward ? pr : 0.f;
 }
 
-static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool want_pred) {
+// The forward and backward passes of one sequence are split into per-frame parts (the convolutional encoder and
+// frame decoder: the bulk of the work) and per-sequence parts (the Transformer, heads and losses). A per-frame part
+// writes only frame t's slots of the sequence's workspace W and uses the scratch of the calling thread's workspace X
+// (X == W when run serially), so the frames of one sequence can run on different threads (loss_and_grads_frames).
+static void seq_fwd_setup(const Model* M, Workspace* W, const SeqView& sv) {
+    for (int t = 0; t < sv.T; t++) {
+        bool st = (t == 0) || M->cfg.one_frame || (sv.ep_start && sv.ep_start[(size_t)t * sv.es_st]);
+        W->ss[t] = st ? t : W->ss[t - 1];
+        W->pos[t] = t - W->ss[t];
+    }
+}
+
+static void seq_fwd_encode(const Model* M, Workspace* W, Workspace* X, const SeqView& sv, int t) {
+    encode_frame(M, W, X->scr.data(), sv.img + (size_t)t * sv.img_st, t);
+}
+
+// From the encoder's conv-3 maps to the heads and the decoder MLP (everything but the per-frame decoder convs).
+static void seq_fwd_core(const Model* M, Workspace* W, const SeqView& sv, bool want_pred) {
     const Dims& D = M->D;
     const int T = sv.T, K = D.K, d = D.d;
     const float* P = M->params.data();
     const float* WT = M->wt.data();
-    for (int t = 0; t < T; t++) {
-        bool st = (t == 0) || (sv.ep_start && sv.ep_start[(size_t)t * sv.es_st]);
-        W->ss[t] = st ? t : W->ss[t - 1];
-        W->pos[t] = t - W->ss[t];
-    }
-    for (int t = 0; t < T; t++) encode_frame(M, W, sv.img + (size_t)t * sv.img_st, t);
     linear_fwd(W->vf.data(), W->a3.data(), WT + M->off[EFW], P + M->off[EFB], T, D.enc_flat, D.feat);
     for (int i = 0; i < T * D.feat; i++) W->vf[i] = W->vf[i] > 0.f ? W->vf[i] : 0.f;
     for (int t = 0; t < T; t++)
@@ -897,12 +908,21 @@ static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool wa
     for (int i = 0; i < T * D.ph; i++) W->ph1[i] = W->ph1[i] > 0.f ? W->ph1[i] : 0.f;
     linear_fwd(W->ph2.data(), W->ph1.data(), WT + M->off[PR2W], P + M->off[PR2B], T, D.ph, D.pred_flat);
     for (int i = 0; i < T * D.pred_flat; i++) W->ph2[i] = W->ph2[i] > 0.f ? W->ph2[i] : 0.f;
-    const int p1n = D.pc1 * D.p1 * D.p1, q0 = D.p0 * D.p0, q1 = D.p1 * D.p1;
     if (D.coord && D.pb > 0) {
         linear_fwd(W->ub.data(), W->ph1.data(), WT + M->off[PBW], P + M->off[PBB], T, D.ph, D.pb);
         for (int i = 0; i < T * D.pb; i++) W->ub[i] = W->ub[i] > 0.f ? W->ub[i] : 0.f;
     }
-    for (int t = 0; t < T; t++) {
+    linear_fwd(W->pdrv.data(), W->ph1.data(), WT + M->off[DRW], P + M->off[DRB], T, D.ph, 2);
+    for (int i = 0; i < T * 2; i++) W->pdrv[i] = sigmoidf_(W->pdrv[i]);
+}
+
+// The decoder convolutions of frame t (needs seq_fwd_core with want_pred).
+static void seq_fwd_decode(const Model* M, Workspace* W, Workspace* X, const SeqView& sv, int t) {
+    const Dims& D = M->D;
+    const float* P = M->params.data();
+    const float* WT = M->wt.data();
+    const int p1n = D.pc1 * D.p1 * D.p1, q0 = D.p0 * D.p0, q1 = D.p1 * D.p1;
+    {
         float* pd1 = W->pd1.data() + (size_t)t * p1n;
         float* pout = W->pout.data() + (size_t)t * D.small_px;
         const float* in1 = W->ph2.data() + (size_t)t * D.pred_flat;
@@ -925,7 +945,7 @@ static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool wa
             }
             in1 = x1;
         }
-        deconv_fwd(in1, D.d1_in, D.p0, WT + M->off[D1W], P + M->off[D1B], D.pc1, pd1, W->scr.data());
+        deconv_fwd(in1, D.d1_in, D.p0, WT + M->off[D1W], P + M->off[D1B], D.pc1, pd1, X->scr.data());
         for (int i = 0; i < p1n; i++) pd1[i] = pd1[i] > 0.f ? pd1[i] : 0.f;
         if (D.coord || D.skip) {
             float* x2 = W->d2in.data() + (size_t)t * D.d2_in * q1;
@@ -941,7 +961,7 @@ static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool wa
             }
             in2 = x2;
         }
-        deconv_fwd(in2, D.d2_in, D.p1, WT + M->off[D2W], P + M->off[D2B], 3, pout, W->scr.data());
+        deconv_fwd(in2, D.d2_in, D.p1, WT + M->off[D2W], P + M->off[D2B], 3, pout, X->scr.data());
         if (D.residual) {
             uint8_t* cs = W->cur_small_seq.data() + (size_t)t * D.small_px;   // HWC u8
             downsample_u8(sv.img + (size_t)t * sv.img_st, D.img, D.ds, cs);
@@ -954,8 +974,14 @@ static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool wa
             for (int i = 0; i < D.small_px; i++) pout[i] = sigmoidf_(pout[i]);
         }
     }
-    linear_fwd(W->pdrv.data(), W->ph1.data(), WT + M->off[DRW], P + M->off[DRB], T, D.ph, 2);
-    for (int i = 0; i < T * 2; i++) W->pdrv[i] = sigmoidf_(W->pdrv[i]);
+}
+
+static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool want_pred) {
+    seq_fwd_setup(M, W, sv);
+    for (int t = 0; t < sv.T; t++) seq_fwd_encode(M, W, W, sv, t);
+    seq_fwd_core(M, W, sv, want_pred);
+    if (want_pred)
+        for (int t = 0; t < sv.T; t++) seq_fwd_decode(M, W, W, sv, t);
 }
 
 struct LossAcc {
@@ -963,6 +989,7 @@ struct LossAcc {
     double pred_se = 0, pred_n = 0, pred_ch_se = 0, copy_se = 0, copy_ch_se = 0, ch_n = 0, drive_se = 0;
     double inv_se = 0, inv_n = 0, inv_var = 0;
     double dyn_se = 0, dyn_n = 0, dynh_se = 0, dynh_n = 0, dynx_se = 0, dynx_n = 0;
+    double move = 0;
     double total = 0;
     void add(const LossAcc& o) {
         pg += o.pg; v += o.v; ent += o.ent; kl += o.kl; clip += o.clip; n += o.n; clickp += o.clickp;
@@ -971,6 +998,7 @@ struct LossAcc {
         inv_se += o.inv_se; inv_n += o.inv_n; inv_var += o.inv_var;
         dyn_se += o.dyn_se; dyn_n += o.dyn_n; dynh_se += o.dynh_se; dynh_n += o.dynh_n;
         dynx_se += o.dynx_se; dynx_n += o.dynx_n;
+        move += o.move;
     }
 };
 
@@ -1013,6 +1041,15 @@ static void seq_loss(const Model* M, Workspace* W, const SeqView& sv, const PPOC
             acc.kl += (ratio - 1.f) - lr;
             acc.clip += fabsf(ratio - 1.f) > pc.clip_eps ? 1 : 0;
             acc.total += pg + pc.vf_coef * vloss - pc.ent_coef * e.ent;
+        }
+        if (pc.move_coef > 0.f) {   // next-move prediction: -log pi(a_t | context) of the move actually made
+            PolicyEval e;
+            policy_eval(W->pi.data() + (size_t)t * 3, logstd, sv.action + (size_t)t * sv.act_st, e);
+            for (int k = 0; k < 3; k++) dpi[k] -= inv_B * pc.move_coef * e.dlogp_dpi[k];
+            for (int k = 0; k < 2; k++) dls[k] -= inv_B * pc.move_coef * e.dlogp_dls[k];
+            acc.move -= e.logp;
+            acc.total -= pc.move_coef * e.logp;
+            if (!pc.use_ppo) acc.clickp += e.p;
         }
         acc.n += 1;
         if (!have_pred) continue;
@@ -1264,12 +1301,48 @@ static void seq_dyn(const Model* M, Workspace* W, const SeqView& sv, const PPOCo
     }
 }
 
-static void seq_backward(const Model* M, Workspace* W, const SeqView& sv, float* G, bool have_pred, float pred_scale,
+// Decoder backward of frame t: parameter gradients of the decoder convolutions, and the gradients of its inputs
+// (decoder MLP output dph2, tiled latent dub, skip maps dskip / dskip3) in frame t's slots of W.
+static void seq_bwd_decode(const Model* M, Workspace* W, Workspace* X, int t, float* G) {
+    const Dims& D = M->D;
+    const float* P = M->params.data();
+    float* scr = X->scr.data();
+    const int p1n = D.pc1 * D.p1 * D.p1, q0 = D.p0 * D.p0, q1 = D.p1 * D.p1;
+    float* dph2 = W->dph2.data();
+    const float* pd1 = W->pd1.data() + (size_t)t * p1n;
+    float* dpd1 = X->dpd1.data();
+    const bool ext1 = D.coord || D.skip;
+    const float* in1 = ext1 ? W->d1in.data() + (size_t)t * D.d1_in * q0 : W->ph2.data() + (size_t)t * D.pred_flat;
+    const bool ext2 = D.coord || D.skip;
+    const float* in2 = ext2 ? W->d2in.data() + (size_t)t * D.d2_in * q1 : pd1;
+    float* dx2 = ext2 ? X->dd2in.data() : dpd1;
+    deconv_bwd(in2, D.d2_in, D.p1, P + M->off[D2W], 3, W->dpout.data() + (size_t)t * D.small_px,
+               G + M->off[D2W], G + M->off[D2B], dx2, scr);
+    if (ext2) memcpy(dpd1, dx2, sizeof(float) * p1n);   // coordinate / action channels get no gradient
+    if (D.skip)
+        memcpy(W->dskip.data() + (size_t)t * D.c2 * q1, dx2 + (size_t)D.skip_off * q1, sizeof(float) * D.c2 * q1);
+    for (int i = 0; i < p1n; i++) if (pd1[i] <= 0.f) dpd1[i] = 0.f;
+    float* dx1 = ext1 ? X->dd1in.data() : dph2 + (size_t)t * D.pred_flat;
+    deconv_bwd(in1, D.d1_in, D.p0, P + M->off[D1W], D.pc1, dpd1, G + M->off[D1W], G + M->off[D1B], dx1, scr);
+    if (D.skip)
+        memcpy(W->dskip3.data() + (size_t)t * D.enc_flat, dx1 + (size_t)D.skip1_off * q0, sizeof(float) * D.enc_flat);
+    if (ext1) {
+        memcpy(dph2 + (size_t)t * D.pred_flat, dx1, sizeof(float) * D.pred_flat);
+        for (int k = 0; k < D.pb; k++) {
+            float sum = 0.f;
+            for (int i = 0; i < q0; i++) sum += dx1[(size_t)(D.pc2 + k) * q0 + i];
+            W->dub[(size_t)t * D.pb + k] = W->ub[(size_t)t * D.pb + k] > 0.f ? sum : 0.f;
+        }
+    }
+}
+
+// Backward from the heads (policy, value, decoder MLP from dph2 / dub of every frame) through the Transformer to
+// the encoder's conv-3 maps (da3 of every frame).
+static void seq_bwd_core(const Model* M, Workspace* W, const SeqView& sv, float* G, bool have_pred, float pred_scale,
                          bool have_inv) {
     const Dims& D = M->D;
     const int T = sv.T, K = D.K, d = D.d;
     const float* P = M->params.data();
-    const float* WT = M->wt.data();
     float* scr = W->scr.data();
     float* dz = W->dz.data();
     memset(dz, 0, sizeof(float) * T * d);
@@ -1285,35 +1358,7 @@ static void seq_backward(const Model* M, Workspace* W, const SeqView& sv, float*
         G[M->off[VB]] += dv;
     }
     if (have_pred) {
-        const int p1n = D.pc1 * D.p1 * D.p1, q0 = D.p0 * D.p0, q1 = D.p1 * D.p1;
         float* dph2 = W->dph2.data();
-        for (int t = 0; t < T; t++) {
-            const float* pd1 = W->pd1.data() + (size_t)t * p1n;
-            float* dpd1 = W->dpd1.data();
-            const bool ext1 = D.coord || D.skip;
-            const float* in1 = ext1 ? W->d1in.data() + (size_t)t * D.d1_in * q0 : W->ph2.data() + (size_t)t * D.pred_flat;
-            const bool ext2 = D.coord || D.skip;
-            const float* in2 = ext2 ? W->d2in.data() + (size_t)t * D.d2_in * q1 : pd1;
-            float* dx2 = ext2 ? W->dd2in.data() : dpd1;
-            deconv_bwd(in2, D.d2_in, D.p1, P + M->off[D2W], 3, W->dpout.data() + (size_t)t * D.small_px,
-                       G + M->off[D2W], G + M->off[D2B], dx2, scr);
-            if (ext2) memcpy(dpd1, dx2, sizeof(float) * p1n);   // coordinate / action channels get no gradient
-            if (D.skip)
-                memcpy(W->dskip.data() + (size_t)t * D.c2 * q1, dx2 + (size_t)D.skip_off * q1, sizeof(float) * D.c2 * q1);
-            for (int i = 0; i < p1n; i++) if (pd1[i] <= 0.f) dpd1[i] = 0.f;
-            float* dx1 = ext1 ? W->dd1in.data() : dph2 + (size_t)t * D.pred_flat;
-            deconv_bwd(in1, D.d1_in, D.p0, P + M->off[D1W], D.pc1, dpd1, G + M->off[D1W], G + M->off[D1B], dx1, scr);
-            if (D.skip)
-                memcpy(W->dskip3.data() + (size_t)t * D.enc_flat, dx1 + (size_t)D.skip1_off * q0, sizeof(float) * D.enc_flat);
-            if (ext1) {
-                memcpy(dph2 + (size_t)t * D.pred_flat, dx1, sizeof(float) * D.pred_flat);
-                for (int k = 0; k < D.pb; k++) {
-                    float sum = 0.f;
-                    for (int i = 0; i < q0; i++) sum += dx1[(size_t)(D.pc2 + k) * q0 + i];
-                    W->dub[(size_t)t * D.pb + k] = W->ub[(size_t)t * D.pb + k] > 0.f ? sum : 0.f;
-                }
-            }
-        }
         for (int i = 0; i < T * D.pred_flat; i++) if (W->ph2[i] <= 0.f) dph2[i] = 0.f;
         float* dph1 = W->dph1.data();
         linear_bwd(W->dpdrv.data(), W->ph1.data(), P + M->off[DRW], T, D.ph, 2, dph1, false, G + M->off[DRW],
@@ -1391,30 +1436,45 @@ static void seq_backward(const Model* M, Workspace* W, const SeqView& sv, float*
         }
     linear_bwd(W->dvf.data(), W->a3.data(), P + M->off[EFW], T, D.enc_flat, D.feat, W->da3.data(), false,
                G + M->off[EFW], G + M->off[EFB], scr);
-    for (int t = 0; t < T; t++) {
-        const float* x0 = W->x0.data() + (size_t)t * D.in_ch * D.img * D.img;
-        const float* a1 = W->a1.data() + (size_t)t * D.c1 * D.h1 * D.h1;
-        const float* a2 = W->a2.data() + (size_t)t * D.c2 * D.h2 * D.h2;
-        const float* a3 = W->a3.data() + (size_t)t * D.enc_flat;
-        float* da3 = W->da3.data() + (size_t)t * D.enc_flat;
-        if (have_pred && D.skip && pred_scale != 0.f) {
-            const float* ds = W->dskip3.data() + (size_t)t * D.enc_flat;
-            for (int i = 0; i < D.enc_flat; i++) da3[i] += pred_scale * ds[i];
-        }
-        for (int i = 0; i < D.enc_flat; i++) if (a3[i] <= 0.f) da3[i] = 0.f;
-        conv_bwd(a2, D.c2, D.h2, WT + M->off[C3W], D.c3, da3, G + M->off[C3W], G + M->off[C3B], W->da2.data(), scr);
-        const int n2 = D.c2 * D.h2 * D.h2;
-        if (have_pred && D.skip && pred_scale != 0.f) {
-            const float* ds = W->dskip.data() + (size_t)t * n2;
-            for (int i = 0; i < n2; i++) W->da2[i] += pred_scale * ds[i];
-        }
-        for (int i = 0; i < n2; i++) if (a2[i] <= 0.f) W->da2[i] = 0.f;
-        conv_bwd(a1, D.c1, D.h1, WT + M->off[C2W], D.c2, W->da2.data(), G + M->off[C2W], G + M->off[C2B],
-                 W->da1.data(), scr);
-        const int n1 = D.c1 * D.h1 * D.h1;
-        for (int i = 0; i < n1; i++) if (a1[i] <= 0.f) W->da1[i] = 0.f;
-        conv_bwd(x0, D.in_ch, D.img, nullptr, D.c1, W->da1.data(), G + M->off[C1W], G + M->off[C1B], nullptr, scr);
+}
+
+// Encoder backward of frame t, from da3 (plus the decoder's skip gradients) to the convolution parameters.
+static void seq_bwd_encode(const Model* M, Workspace* W, Workspace* X, int t, float* G, bool have_pred,
+                           float pred_scale) {
+    const Dims& D = M->D;
+    const float* WT = M->wt.data();
+    float* scr = X->scr.data();
+    float* da2 = X->da2.data();
+    float* da1 = X->da1.data();
+    const float* x0 = W->x0.data() + (size_t)t * D.in_ch * D.img * D.img;
+    const float* a1 = W->a1.data() + (size_t)t * D.c1 * D.h1 * D.h1;
+    const float* a2 = W->a2.data() + (size_t)t * D.c2 * D.h2 * D.h2;
+    const float* a3 = W->a3.data() + (size_t)t * D.enc_flat;
+    float* da3 = W->da3.data() + (size_t)t * D.enc_flat;
+    if (have_pred && D.skip && pred_scale != 0.f) {
+        const float* ds = W->dskip3.data() + (size_t)t * D.enc_flat;
+        for (int i = 0; i < D.enc_flat; i++) da3[i] += pred_scale * ds[i];
     }
+    for (int i = 0; i < D.enc_flat; i++) if (a3[i] <= 0.f) da3[i] = 0.f;
+    conv_bwd(a2, D.c2, D.h2, WT + M->off[C3W], D.c3, da3, G + M->off[C3W], G + M->off[C3B], da2, scr);
+    const int n2 = D.c2 * D.h2 * D.h2;
+    if (have_pred && D.skip && pred_scale != 0.f) {
+        const float* ds = W->dskip.data() + (size_t)t * n2;
+        for (int i = 0; i < n2; i++) da2[i] += pred_scale * ds[i];
+    }
+    for (int i = 0; i < n2; i++) if (a2[i] <= 0.f) da2[i] = 0.f;
+    conv_bwd(a1, D.c1, D.h1, WT + M->off[C2W], D.c2, da2, G + M->off[C2W], G + M->off[C2B], da1, scr);
+    const int n1 = D.c1 * D.h1 * D.h1;
+    for (int i = 0; i < n1; i++) if (a1[i] <= 0.f) da1[i] = 0.f;
+    conv_bwd(x0, D.in_ch, D.img, nullptr, D.c1, da1, G + M->off[C1W], G + M->off[C1B], nullptr, scr);
+}
+
+static void seq_backward(const Model* M, Workspace* W, const SeqView& sv, float* G, bool have_pred, float pred_scale,
+                         bool have_inv) {
+    if (have_pred)
+        for (int t = 0; t < sv.T; t++) seq_bwd_decode(M, W, W, t, G);
+    seq_bwd_core(M, W, sv, G, have_pred, pred_scale, have_inv);
+    for (int t = 0; t < sv.T; t++) seq_bwd_encode(M, W, W, t, G, have_pred, pred_scale);
 }
 
 // =====================================================================================
@@ -1438,7 +1498,7 @@ static void act_one(const Model* M, Workspace* W, ActCtx* C, int n, const uint8_
     const float* WT = M->wt.data();
     const int pos = C->len[n];
     CK(pos < K);
-    encode_frame(M, W, img, 0);
+    encode_frame(M, W, W->scr.data(), img, 0);
     linear_fwd(W->vf.data(), W->a3.data(), WT + M->off[EFW], P + M->off[EFB], 1, D.enc_flat, D.feat);
     for (int i = 0; i < D.feat; i++) W->vf[i] = W->vf[i] > 0.f ? W->vf[i] : 0.f;
     build_token_input(M, W, 0, drv, pa, pr);
@@ -1547,25 +1607,30 @@ static void compute_gae(Rollout* R, const float* last_value, const PPOConfig& pc
 }
 
 // Loss + gradient (into M->grads) over the given sequences. Returns accumulated loss terms.
-static LossAcc loss_and_grads(Model* M, Rollout* R, const int* ids, int n_seq, const PPOConfig& pc) {
+// Advantage normalization statistics over the minibatch (PPO only).
+static void adv_stats(Rollout* R, const int* ids, int n_seq, const PPOConfig& pc, double& am, double& as) {
+    am = 0; as = 0;
+    if (!(pc.use_ppo && pc.norm_adv)) return;
+    double s = 0, s2 = 0;
+    long cnt = 0;
+    for (int q = 0; q < n_seq; q++) {
+        SeqView sv = rollout_view(R, ids[q]);
+        for (int t = 0; t < sv.T; t++) { double a = sv.adv[(size_t)t * sv.sc_st]; s += a; s2 += a * a; cnt++; }
+    }
+    am = s / cnt;
+    double var = cnt > 1 ? (s2 - cnt * am * am) / (cnt - 1) : 0.0;
+    as = sqrt(var > 0 ? var : 0);
+}
+
+// One thread per sequence (minibatches with at least as many sequences as threads).
+static LossAcc loss_and_grads_seqs(Model* M, Rollout* R, const int* ids, int n_seq, const PPOConfig& pc) {
     const Dims& D = M->D;
-    ensure_threads(M);
     const bool have_pred = pc.pred_coef > 0.f || pc.drive_coef > 0.f;
     const bool have_inv = pc.inv_coef > 0.f && D.ih > 0;
     const bool have_dyn = D.dh > 0 && pc.dyn_horizon > 0 && (pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f);
     const float inv_B = 1.0f / (float)((long)n_seq * D.K);
-    double am = 0, as = 0;
-    if (pc.use_ppo && pc.norm_adv) {
-        double s = 0, s2 = 0;
-        long cnt = 0;
-        for (int q = 0; q < n_seq; q++) {
-            SeqView sv = rollout_view(R, ids[q]);
-            for (int t = 0; t < sv.T; t++) { double a = sv.adv[(size_t)t * sv.sc_st]; s += a; s2 += a * a; cnt++; }
-        }
-        am = s / cnt;
-        double var = cnt > 1 ? (s2 - cnt * am * am) / (cnt - 1) : 0.0;
-        as = sqrt(var > 0 ? var : 0);
-    }
+    double am, as;
+    adv_stats(R, ids, n_seq, pc, am, as);
     const int nt = omp_get_max_threads();
     std::vector<LossAcc> accs(nt);
     #pragma omp parallel
@@ -1593,18 +1658,99 @@ static LossAcc loss_and_grads(Model* M, Rollout* R, const int* ids, int n_seq, c
         M->tused[tid] = used;
         if (used) M->tdirty[tid] = 1;
     }
-    std::vector<int> used_ids;
-    for (int t = 0; t < nt; t++) if (M->tused[t]) used_ids.push_back(t);
+    std::vector<const float*> bufs;
+    for (int t = 0; t < nt; t++) if (M->tused[t]) bufs.push_back(M->tg[t].data());
     float* G = M->grads.data();
     const long np = M->n_params;
-    const int nu = (int)used_ids.size();
+    const int nu = (int)bufs.size();
     #pragma omp parallel for schedule(static)
     for (long i0 = 0; i0 < np; i0 += 4096) {
-        long i1 = std::min(np, i0 + 4096);
-        for (long i = i0; i < i1; i++) G[i] = 0.f;
-        for (int u = 0; u < nu; u++) {
-            const float* tg = M->tg[used_ids[u]].data();
-            for (long i = i0; i < i1; i++) G[i] += tg[i];
+        const long i1 = std::min(np, i0 + 4096);
+        if (nu == 0) { for (long i = i0; i < i1; i++) G[i] = 0.f; continue; }
+        for (long i = i0; i < i1; i++) G[i] = bufs[0][i];
+        for (int u = 1; u < nu; u++)
+            for (long i = i0; i < i1; i++) G[i] += bufs[u][i];
+    }
+    LossAcc tot;
+    for (int t = 0; t < nt; t++) tot.add(accs[t]);
+    return tot;
+}
+
+// Few sequences, many threads: the per-frame convolutional work of all sequences is spread over the threads
+// (n_seq * T work items, for any context length T); the per-sequence parts run one thread per sequence.
+// Sequence q keeps its activations in workspace ws[q]; a thread uses its own workspace's scratch for frame items.
+// Gradient buffers: threads that run sequence work zero and use their whole buffer; threads that only run frame
+// items zero and use only the encoder / decoder convolution ranges. Static scheduling: deterministic for a given
+// thread count.
+static LossAcc loss_and_grads_frames(Model* M, Rollout* R, const int* ids, int n_seq, const PPOConfig& pc) {
+    const Dims& D = M->D;
+    const bool have_pred = pc.pred_coef > 0.f || pc.drive_coef > 0.f;
+    const bool have_inv = pc.inv_coef > 0.f && D.ih > 0;
+    const bool have_dyn = D.dh > 0 && pc.dyn_horizon > 0 && (pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f);
+    const float inv_B = 1.0f / (float)((long)n_seq * D.K);
+    const float scale = pc.pred_backbone_scale;
+    double am, as;
+    adv_stats(R, ids, n_seq, pc, am, as);
+    const int nt = omp_get_max_threads();
+    const int T = D.K, nitems = n_seq * T;
+    const int nfr = std::min(nt, nitems);              // threads with frame items
+    const long enc0 = M->off[C1W], enc1 = M->off[C3B] + M->sz[C3B];
+    const long dec0 = M->off[D1W], dec1 = M->off[D2B] + M->sz[D2B];
+    std::vector<SeqView> sv(n_seq);
+    for (int q = 0; q < n_seq; q++) sv[q] = rollout_view(R, ids[q]);
+    std::vector<LossAcc> accs(nt);
+    #pragma omp parallel
+    {
+        const int tid = omp_get_thread_num();
+        float* G = M->tg[tid].data();
+        if (tid < n_seq) memset(G, 0, sizeof(float) * M->n_params);
+        else if (tid < nfr) {
+            memset(G + enc0, 0, sizeof(float) * (enc1 - enc0));
+            memset(G + dec0, 0, sizeof(float) * (dec1 - dec0));
+        }
+        Workspace* X = M->ws[tid];
+        #pragma omp for schedule(static, 1)
+        for (int q = 0; q < n_seq; q++) seq_fwd_setup(M, M->ws[q], sv[q]);
+        #pragma omp for schedule(static, 1)
+        for (int i = 0; i < nitems; i++) seq_fwd_encode(M, M->ws[i / T], X, sv[i / T], i % T);
+        #pragma omp for schedule(static, 1)
+        for (int q = 0; q < n_seq; q++) seq_fwd_core(M, M->ws[q], sv[q], have_pred);
+        if (have_pred) {
+            #pragma omp for schedule(static, 1)
+            for (int i = 0; i < nitems; i++) seq_fwd_decode(M, M->ws[i / T], X, sv[i / T], i % T);
+        }
+        #pragma omp for schedule(static, 1)
+        for (int q = 0; q < n_seq; q++) {
+            Workspace* W = M->ws[q];
+            float dls[2] = {0.f, 0.f};
+            seq_loss(M, W, sv[q], pc, inv_B, (float)am, (float)as, have_pred, dls, accs[tid]);
+            if (have_inv) seq_inverse(M, W, sv[q], pc, inv_B, accs[tid]);
+            if (have_dyn) seq_dyn(M, W, sv[q], pc, inv_B, G, accs[tid]);
+            G[M->off[LOGSTD] + 0] += dls[0];
+            G[M->off[LOGSTD] + 1] += dls[1];
+        }
+        if (have_pred) {
+            #pragma omp for schedule(static, 1)
+            for (int i = 0; i < nitems; i++) seq_bwd_decode(M, M->ws[i / T], X, i % T, G);
+        }
+        #pragma omp for schedule(static, 1)
+        for (int q = 0; q < n_seq; q++) seq_bwd_core(M, M->ws[q], sv[q], G, have_pred, scale, have_inv);
+        #pragma omp for schedule(static, 1)
+        for (int i = 0; i < nitems; i++) seq_bwd_encode(M, M->ws[i / T], X, i % T, G, have_pred, scale);
+    }
+    for (int t = 0; t < nt; t++) { M->tdirty[t] = 1; M->tused[t] = t < std::max(n_seq, nfr); }
+    float* G = M->grads.data();
+    const long np = M->n_params;
+    const int nall = std::max(n_seq, nfr);
+    #pragma omp parallel for schedule(static)
+    for (long i0 = 0; i0 < np; i0 += 4096) {
+        const long i1 = std::min(np, i0 + 4096);
+        for (long i = i0; i < i1; i++) {
+            const bool conv = (i >= enc0 && i < enc1) || (i >= dec0 && i < dec1);
+            const int nu = conv ? nall : n_seq;
+            float g = M->tg[0][i];
+            for (int u = 1; u < nu; u++) g += M->tg[u][i];
+            G[i] = g;
         }
     }
     LossAcc tot;
@@ -1612,40 +1758,48 @@ static LossAcc loss_and_grads(Model* M, Rollout* R, const int* ids, int n_seq, c
     return tot;
 }
 
-// Squared gradient norms of three parameter groups: [0] shared backbone (encoder + Transformer),
-// [1] policy/value heads, [2] prediction heads. Heads only receive their own loss's gradient.
-static void group_sq_norms(const Model* M, double* out) {
-    const float* G = M->grads.data();
-    out[0] = out[1] = out[2] = 0;
-    for (int p = 0; p < NUM_P; p++) {
-        int g = (p >= PIW && p <= VB) ? 1 : (p >= PR1W ? 2 : 0);
-        double s = 0;
-        for (long i = M->off[p]; i < M->off[p] + M->sz[p]; i++) s += (double)G[i] * G[i];
-        out[g] += s;
-    }
+static LossAcc loss_and_grads(Model* M, Rollout* R, const int* ids, int n_seq, const PPOConfig& pc) {
+    ensure_threads(M);
+    return n_seq < omp_get_max_threads() ? loss_and_grads_frames(M, R, ids, n_seq, pc)
+                                         : loss_and_grads_seqs(M, R, ids, n_seq, pc);
 }
 
-static float grad_norm_and_clip(Model* M, float max_norm, double* group_acc) {
-    double s = 0;
-    const long np = M->n_params;
-    float* G = M->grads.data();
-    if (group_acc) {
-        double gs[3];
-        group_sq_norms(M, gs);
+// Squared gradient norms of three parameter groups: [0] shared backbone (encoder + Transformer),
+// [1] policy/value heads, [2] prediction heads (heads only receive their own loss's gradient), and of all
+// parameters. Fixed chunks summed in parallel, then combined in order: deterministic for any thread count.
+static double grad_sq_norms(const Model* M, double* group) {
+    struct Chunk { long b, e; int g; };
+    std::vector<Chunk> chunks;
+    for (int p = 0; p < NUM_P; p++) {
+        const int g = (p >= PIW && p <= VB) ? 1 : (p >= PR1W ? 2 : 0);
+        for (long b = M->off[p]; b < M->off[p] + M->sz[p]; b += 16384)
+            chunks.push_back({b, std::min(M->off[p] + M->sz[p], b + 16384), g});
+    }
+    std::vector<double> part(chunks.size());
+    const float* G = M->grads.data();
+    #pragma omp parallel for schedule(static)
+    for (int c = 0; c < (int)chunks.size(); c++) {
+        double s = 0;
+        for (long i = chunks[c].b; i < chunks[c].e; i++) s += (double)G[i] * G[i];
+        part[c] = s;
+    }
+    double all = 0;
+    group[0] = group[1] = group[2] = 0;
+    for (size_t c = 0; c < chunks.size(); c++) { group[chunks[c].g] += part[c]; all += part[c]; }
+    return all;
+}
+
+// Global gradient norm; *clip is the factor AdamW applies to the gradient (1 unless the norm exceeds max_norm).
+static float grad_norm_and_clip(Model* M, float max_norm, double* group_acc, float* clip) {
+    double gs[3];
+    const float norm = (float)sqrt(grad_sq_norms(M, gs));
+    if (group_acc)
         for (int k = 0; k < 3; k++) group_acc[k] += sqrt(gs[k]);
-    }
-    #pragma omp parallel for reduction(+ : s) schedule(static)
-    for (long i = 0; i < np; i++) s += (double)G[i] * G[i];
-    float norm = (float)sqrt(s);
-    if (max_norm > 0.f && norm > max_norm) {
-        float c = max_norm / (norm + 1e-6f);
-        #pragma omp parallel for schedule(static)
-        for (long i = 0; i < np; i++) G[i] *= c;
-    }
+    *clip = (max_norm > 0.f && norm > max_norm) ? max_norm / (norm + 1e-6f) : 1.0f;
     return norm;
 }
 
-static void adamw_step(Model* M, const PPOConfig& pc) {
+static void adamw_step(Model* M, const PPOConfig& pc, float clip) {
     M->step++;
     const float b1 = pc.beta1, b2 = pc.beta2;
     const float bc1 = 1.0f - powf(b1, (float)M->step), bc2 = 1.0f - powf(b2, (float)M->step);
@@ -1653,7 +1807,7 @@ static void adamw_step(Model* M, const PPOConfig& pc) {
     float *P = M->params.data(), *G = M->grads.data(), *m = M->m.data(), *v = M->v.data();
     #pragma omp parallel for schedule(static)
     for (long i = 0; i < np; i++) {
-        float g = G[i];
+        const float g = clip == 1.0f ? G[i] : G[i] * clip;
         m[i] = b1 * m[i] + (1.0f - b1) * g;
         v[i] = b2 * v[i] + (1.0f - b2) * g * g;
         float mh = m[i] / bc1, vh = v[i] / bc2;
@@ -1676,6 +1830,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[33] = c.pred_skip;
     h[34] = c.inv_hidden;
     h[35] = c.dyn_hidden;
+    h[36] = c.one_frame;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -1688,6 +1843,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.pred_skip = h[33];
     c.inv_hidden = h[34];
     c.dyn_hidden = h[35];
+    c.one_frame = h[36];
 }
 
 // =====================================================================================
@@ -1810,7 +1966,7 @@ void vm_act(void* a, void* c, const uint8_t* images, const float* drives, const 
     // Context starts: block boundary (every ctx committed steps) and episode starts.
     std::vector<int> saved;
     if (peek) saved = C->len;
-    if (C->step % D.K == 0) for (int n = 0; n < N; n++) C->len[n] = 0;
+    if (C->step % D.K == 0 || M->cfg.one_frame) for (int n = 0; n < N; n++) C->len[n] = 0;
     if (ep_start) for (int n = 0; n < N; n++) if (ep_start[n]) C->len[n] = 0;
     if (rollout) CK(!peek && t % D.K == (int)(C->step % D.K));
     #pragma omp parallel for schedule(static)
@@ -1876,6 +2032,23 @@ void vm_rollout_outcome(void* r, int t, const float* reward, const uint8_t* done
         downsample_u8(next_images + (size_t)n * D.img_px, D.img, D.ds, R->next_small.data() + (b + n) * D.small_px);
 }
 
+void vm_rollout_store(void* r, int t, const uint8_t* images, const float* drives, const float* prev_action,
+                      const float* prev_reward, const uint8_t* ep_start, const float* action) {
+    Rollout* R = (Rollout*)r;
+    const Dims& D = R->M->D;
+    const int N = R->N;
+    CK(t >= 0 && t < R->T);
+    const size_t b = (size_t)t * N;
+    memcpy(R->images.data() + b * D.img_px, images, (size_t)N * D.img_px);
+    memcpy(R->drives.data() + b * 2, drives, sizeof(float) * 2 * N);
+    memcpy(R->prev_action.data() + b * 3, prev_action, sizeof(float) * 3 * N);
+    memcpy(R->prev_reward.data() + b, prev_reward, sizeof(float) * N);
+    for (int n = 0; n < N; n++) R->ep_start[b + n] = ep_start ? (ep_start[n] ? 1 : 0) : 0;
+    memcpy(R->action.data() + b * 3, action, sizeof(float) * 3 * N);
+    std::fill(R->logp.begin() + b, R->logp.begin() + b + N, 0.f);
+    std::fill(R->value.begin() + b, R->value.begin() + b + N, 0.f);
+}
+
 void vm_rollout_set_action(void* r, int t, const float* action) {
     Rollout* R = (Rollout*)r;
     CK(t >= 0 && t < R->T);
@@ -1901,6 +2074,7 @@ static void fill_stats(PPOStats* st, const LossAcc& acc, int n_updates, const Mo
     st->dyn_mse = acc.dyn_n > 0 ? (float)(acc.dyn_se / acc.dyn_n) : 0.f;
     st->dyn_hunger_mse = acc.dynh_n > 0 ? (float)(acc.dynh_se / acc.dynh_n) : 0.f;
     st->dyn_recon_mse = acc.dynx_n > 0 ? (float)(acc.dynx_se / acc.dynx_n) : 0.f;
+    st->move_nll = (float)(acc.move / n);
     st->updates_done = n_updates;
     const float* ls = M->params.data() + M->off[LOGSTD];
     st->std_x = expf(clampf_(ls[0], LS_MIN, LS_MAX));
@@ -1947,8 +2121,9 @@ void vm_update(void* a, void* r, const float* last_value, const PPOConfig* pcp, 
         LossAcc ep_acc;
         for (int k = 0; k < nmb; k++) {
             LossAcc acc = loss_and_grads(M, R, ids.data() + (size_t)k * mb, mb, pc);
-            gn_sum += grad_norm_and_clip(M, pc.max_grad_norm, gn_groups);
-            adamw_step(M, pc);
+            float clip;
+            gn_sum += grad_norm_and_clip(M, pc.max_grad_norm, gn_groups, &clip);
+            adamw_step(M, pc, clip);
             ep_acc.add(acc);
             n_upd++;
         }
@@ -1982,11 +2157,10 @@ void vm_forward(void* a, int S, int T, const uint8_t* images, const float* drive
     CK(T >= 1 && T <= D.K);
     ensure_threads(M);
     const bool want_pred = pred_actions != nullptr;
-    #pragma omp parallel for schedule(dynamic, 1)
+    std::vector<SeqView> svs(S);
     for (int s = 0; s < S; s++) {
-        Workspace* W = M->ws[omp_get_thread_num()];
         const size_t b = (size_t)s * T;
-        SeqView sv;
+        SeqView& sv = svs[s];
         sv.T = T;
         sv.img = images + b * D.img_px; sv.img_st = D.img_px;
         sv.drives = drives + b * 2; sv.drv_st = 2;
@@ -1994,9 +2168,10 @@ void vm_forward(void* a, int S, int T, const uint8_t* images, const float* drive
         sv.prev_reward = prev_reward + b; sv.pr_st = 1;
         sv.ep_start = ep_start ? ep_start + b : nullptr; sv.es_st = 1;
         sv.pred_action = want_pred ? pred_actions + b * 3 : nullptr; sv.pact_st = 3;
-        seq_forward(M, W, sv, want_pred);
+    }
+    auto outputs = [&](const Workspace* W, int s) {
         for (int t = 0; t < T; t++) {
-            const size_t i = b + t;
+            const size_t i = (size_t)s * T + t;
             if (z) memcpy(z + i * D.d, W->lnf.data() + (size_t)t * D.d, sizeof(float) * D.d);
             if (value) value[i] = W->val[t];
             if (mu) { mu[2 * i] = tanhf(W->pi[3 * t]); mu[2 * i + 1] = tanhf(W->pi[3 * t + 1]); }
@@ -2011,6 +2186,32 @@ void vm_forward(void* a, int S, int T, const uint8_t* images, const float* drive
             }
             if (want_pred && pred_drives) { pred_drives[2 * i] = W->pdrv[2 * t]; pred_drives[2 * i + 1] = W->pdrv[2 * t + 1]; }
         }
+    };
+    if (S < omp_get_max_threads()) {        // few sequences: spread the frames over the threads, as in training
+        const int n = S * T;
+        #pragma omp parallel
+        {
+            Workspace* X = M->ws[omp_get_thread_num()];
+            #pragma omp for schedule(static, 1)
+            for (int s = 0; s < S; s++) seq_fwd_setup(M, M->ws[s], svs[s]);
+            #pragma omp for schedule(static, 1)
+            for (int i = 0; i < n; i++) seq_fwd_encode(M, M->ws[i / T], X, svs[i / T], i % T);
+            #pragma omp for schedule(static, 1)
+            for (int s = 0; s < S; s++) seq_fwd_core(M, M->ws[s], svs[s], want_pred);
+            if (want_pred) {
+                #pragma omp for schedule(static, 1)
+                for (int i = 0; i < n; i++) seq_fwd_decode(M, M->ws[i / T], X, svs[i / T], i % T);
+            }
+            #pragma omp for schedule(static, 1)
+            for (int s = 0; s < S; s++) outputs(M->ws[s], s);
+        }
+        return;
+    }
+    #pragma omp parallel for schedule(dynamic, 1)
+    for (int s = 0; s < S; s++) {
+        Workspace* W = M->ws[omp_get_thread_num()];
+        seq_forward(M, W, svs[s], want_pred);
+        outputs(W, s);
     }
 }
 
@@ -2022,7 +2223,7 @@ void vm_encode(void* a, int n, const uint8_t* images, float* a3_out, float* vf_o
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; i++) {
         Workspace* W = M->ws[omp_get_thread_num()];
-        encode_frame(M, W, images + (size_t)i * D.img_px, 0);
+        encode_frame(M, W, W->scr.data(), images + (size_t)i * D.img_px, 0);
         if (a3_out) memcpy(a3_out + (size_t)i * D.enc_flat, W->a3.data(), sizeof(float) * D.enc_flat);
         if (vf_out) {
             linear_fwd(W->vf.data(), W->a3.data(), M->wt.data() + M->off[EFW], M->params.data() + M->off[EFB], 1,
@@ -2044,7 +2245,7 @@ void vm_inverse(void* a, int n, const uint8_t* img0, const uint8_t* img1, float*
         const float* P = M->params.data();
         const float* WT = M->wt.data();
         for (int f = 0; f < 2; f++) {
-            encode_frame(M, W, (f ? img1 : img0) + (size_t)i * D.img_px, 0);
+            encode_frame(M, W, W->scr.data(), (f ? img1 : img0) + (size_t)i * D.img_px, 0);
             float* v = W->iv_in.data() + (size_t)f * D.feat;
             linear_fwd(v, W->a3.data(), WT + M->off[EFW], P + M->off[EFB], 1, D.enc_flat, D.feat);
             for (int k = 0; k < D.feat; k++) v[k] = v[k] > 0.f ? v[k] : 0.f;

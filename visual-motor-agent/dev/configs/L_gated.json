@@ -1,0 +1,50 @@
+{
+  "name": "L_gated",
+  "description": "vm-00007: vm-00005's L (one lifetime, CEM planner on the latent world model, a gradient step after every step from the newest 8 steps plus 7 replayed sequences), with a gated memory: a short-term buffer of the last 256 steps, and a long-term memory of 8-step chunks that enter it when they lead to hunger relief, when they were surprising (the model's prediction of the next frame and drives was unusually wrong), or by a draw. Arms set online.store_*; the defaults store everything (the uniform control).",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "inv_coef": 0.1,
+    "dyn_coef": 1.0,
+    "dyn_h_coef": 10.0,
+    "dyn_x_coef": 1.0,
+    "dyn_horizon": 7,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 1,
+    "pred_skip": 1,
+    "ctx": 8,
+    "inv_hidden": 128,
+    "dyn_hidden": 256,
+    "one_frame": 1
+  },
+  "online": {
+    "steps": 30000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_gain": 0.02,
+    "explore_eps": 0.05,
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 8,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000
+  }
+}
