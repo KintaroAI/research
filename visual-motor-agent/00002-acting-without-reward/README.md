@@ -1,8 +1,8 @@
 # vm-00002: Acting Without Reward: Planning With a Self-Taught World Model
 
 **Date:** 2026-10-23
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00002`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00002` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00002/`
 **Task plan:** [`../tasks/00002-latent-dynamics-and-planning.md`](../tasks/00002-latent-dynamics-and-planning.md)
 
