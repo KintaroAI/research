@@ -1,8 +1,8 @@
 # vm-00010: Patch Tokens: One Token per Image Patch and per Input, in a World With Moving Dots
 
 **Date:** 2026-10-24
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00010`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00010` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00010/`
 **Task plan:** [`../tasks/00010-patch-tokens-and-distractors.md`](../tasks/00010-patch-tokens-and-distractors.md)
 
