@@ -1,8 +1,8 @@
 # vm-00005: One Lifetime: a Single World, Learning on Every Step
 
 **Date:** 2026-10-23
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00005`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00005` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00005/`
 **Task plan:** [`../tasks/00005-one-lifetime-online-learning.md`](../tasks/00005-one-lifetime-online-learning.md)
 
