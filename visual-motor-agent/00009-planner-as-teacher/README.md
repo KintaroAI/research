@@ -1,8 +1,8 @@
 # vm-00009: Planner as Teacher: a Habit Learned From the Planner's Own Moves
 
 **Date:** 2026-10-24
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00009`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00009` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00009/`
 **Task plan:** [`../tasks/00009-planner-as-teacher.md`](../tasks/00009-planner-as-teacher.md)
 
