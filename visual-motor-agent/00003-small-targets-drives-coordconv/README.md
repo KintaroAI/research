@@ -1,8 +1,8 @@
 # vm-00003: Small-Target Transfer, Drives and Bonuses, CoordConv Seeds
 
 **Date:** 2026-10-23
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00003`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00003` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00003/`
 
 ## Goal
