@@ -1,8 +1,8 @@
 # vm-00008: Detached Policy Head: Keep the Move Loss Out of the Shared Features
 
 **Date:** 2026-10-24
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00008`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00008` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00008/`
 **Task plan:** [`../tasks/00008-detached-policy-head.md`](../tasks/00008-detached-policy-head.md)
 
