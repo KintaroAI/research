@@ -1,8 +1,8 @@
 # vm-00006: The Basic Agent: Predict the Next State, Make That Move
 
 **Date:** 2026-10-23
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00006`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00006` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00006/`
 **Task plan:** [`../tasks/00006-basic-next-state-predictor.md`](../tasks/00006-basic-next-state-predictor.md)
 
