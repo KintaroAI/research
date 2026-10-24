@@ -1,8 +1,8 @@
 # vm-00007: Salience-Gated Memory: Remember What Relieves Hunger or Surprises
 
 **Date:** 2026-10-24
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00007`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00007` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00007/`
 **Task plan:** [`../tasks/00007-salience-gated-memory.md`](../tasks/00007-salience-gated-memory.md)
 
