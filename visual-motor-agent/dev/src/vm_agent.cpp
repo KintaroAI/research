@@ -487,13 +487,15 @@ static inline float value_head(const float* z, const float* w, float b, int d) {
 enum ParamId {
     C1W, C1B, C2W, C2B, C3W, C3B, EFW, EFB, INW, INB, WPE,
     LN1W, LN1B, QKVW, QKVB, APW, APB, LN2W, LN2B, FCW, FCB, FPW, FPB, LNFW, LNFB,
-    PIW, PIB, LOGSTD, VW, VB, PR1W, PR1B, PR2W, PR2B, PBW, PBB, D1W, D1B, D2W, D2B, DRW, DRB, IV1W, IV1B, IV2W, IV2B, NUM_P
+    PIW, PIB, LOGSTD, VW, VB, PR1W, PR1B, PR2W, PR2B, PBW, PBB, D1W, D1B, D2W, D2B, DRW, DRB, IV1W, IV1B, IV2W, IV2B,
+    T1W, T1B, T2W, T2B, H1W, H1B, H2W, H2B, X1W, X1B, X2W, X2B, NUM_P   // latent dynamics (dyn_hidden > 0)
 };
 static const char* PNAME[NUM_P] = {
     "enc_c1w", "enc_c1b", "enc_c2w", "enc_c2b", "enc_c3w", "enc_c3b", "enc_fcw", "enc_fcb", "in_w", "in_b", "wpe",
     "ln1w", "ln1b", "qkvw", "qkvb", "attprojw", "attprojb", "ln2w", "ln2b", "fcw", "fcb", "fcprojw", "fcprojb",
     "lnfw", "lnfb", "pi_w", "pi_b", "logstd", "v_w", "v_b", "pr1w", "pr1b", "pr2w", "pr2b", "pbw", "pbb", "dc1w", "dc1b",
-    "dc2w", "dc2b", "drw", "drb", "iv1w", "iv1b", "iv2w", "iv2b"};
+    "dc2w", "dc2b", "drw", "drb", "iv1w", "iv1b", "iv2w", "iv2b",
+    "dt1w", "dt1b", "dt2w", "dt2b", "dh1w", "dh1b", "dh2w", "dh2b", "dx1w", "dx1b", "dx2w", "dx2b"};
 
 struct Dims {
     int img, c1, c2, c3, h1, h2, h3, enc_flat, feat, d, L, nh, hs, dff, K, in_dim;
@@ -502,6 +504,7 @@ struct Dims {
     int residual;                         // prediction = current frame + decoder output
     int skip, skip_off, skip1_off;        // encoder skips + tiled action; channel offsets in deconv 2 / deconv 1
     int ih;                               // inverse-dynamics hidden size (0 = no inverse head)
+    int dh, rimg, rpx;                    // latent dynamics hidden size (0 = off); decoder frame side / values
 };
 static Dims make_dims(const VMConfig& c) {
     Dims D;
@@ -526,6 +529,9 @@ static Dims make_dims(const VMConfig& c) {
     D.skip = c.pred_skip ? 1 : 0;
     D.skip_off = D.pc1 + 2 * D.coord;
     D.d2_in = D.pc1 + 2 * D.coord + D.skip * (D.c2 + 3);
+    D.dh = c.dyn_hidden > 0 ? c.dyn_hidden : 0;
+    D.rimg = c.pred_img / 2;
+    D.rpx = D.rimg * D.rimg * 3;
     return D;
 }
 
@@ -541,6 +547,11 @@ struct Workspace {
     std::vector<float> dph2, dph1, dpin, dpd1, dskip, dskip3;
     std::vector<float> iv_in, iv_h, iv_out, div_out, div_h, div_in, dvf_extra;
     std::vector<uint8_t> cur_small, cur_small_seq;
+    // latent dynamics: chain steps (pairs) stored level by level; y_* forward, g_* gradients
+    std::vector<int> y_t, y_j, y_par, y_lev;
+    std::vector<float> y_uT, y_hT, y_s, y_uH, y_hH, y_h, y_hX, y_x, y_hX0, y_x0;
+    std::vector<float> g_s, g_hT, g_uT, g_hH, g_uH, g_h, g_hX, g_x, g_hX0, g_x0;
+    std::vector<uint8_t> y_small, y_tgt;
 };
 static Workspace* ws_create(const Dims& D) {
     Workspace* W = new Workspace();
@@ -596,6 +607,21 @@ static Workspace* ws_create(const Dims& D) {
         W->iv_out.resize(K * 2); W->div_out.resize(K * 2);
     }
     W->dvf_extra.resize(K * (size_t)D.feat);
+    if (D.dh) {
+        const size_t F = D.feat, Hd = D.dh, R = D.rpx, NP = K * (K + 1) / 2;   // chain steps per sequence <= K(K+1)/2
+        W->y_t.resize(NP); W->y_j.resize(NP); W->y_par.resize(NP); W->y_lev.resize(K + 1);
+        for (auto* v : {&W->y_uT, &W->g_uT}) v->resize(NP * (F + 3));
+        for (auto* v : {&W->y_uH, &W->g_uH}) v->resize(NP * (F + 4));
+        for (auto* v : {&W->y_hT, &W->y_hH, &W->y_hX, &W->g_hT, &W->g_hH, &W->g_hX}) v->resize(NP * Hd);
+        for (auto* v : {&W->y_s, &W->g_s}) v->resize(NP * F);
+        for (auto* v : {&W->y_h, &W->g_h}) v->resize(NP);
+        for (auto* v : {&W->y_x, &W->g_x}) v->resize(NP * R);
+        for (auto* v : {&W->y_hX0, &W->g_hX0}) v->resize(K * Hd);
+        for (auto* v : {&W->y_x0, &W->g_x0}) v->resize(K * R);
+        W->y_small.resize(D.small_px);
+        W->y_tgt.resize(R);
+        W->scr.resize(std::max(W->scr.size(), NP * std::max(std::max(R, Hd), F + 4)));
+    }
     return W;
 }
 
@@ -634,6 +660,10 @@ static void model_layout(Model* M) {
     s[D2W] = (long)D.d2_in * 3 * KK; s[D2B] = 3;
     s[DRW] = 2L * D.ph; s[DRB] = 2;
     s[IV1W] = (long)D.ih * 2 * D.feat; s[IV1B] = D.ih; s[IV2W] = 2L * D.ih; s[IV2B] = D.ih ? 2 : 0;
+    const long dh = D.dh, F = D.feat;
+    s[T1W] = dh * (F + 3); s[T1B] = dh; s[T2W] = F * dh; s[T2B] = dh ? F : 0;
+    s[H1W] = dh * (F + 4); s[H1B] = dh; s[H2W] = dh; s[H2B] = dh ? 1 : 0;
+    s[X1W] = dh * F; s[X1B] = dh; s[X2W] = (long)D.rpx * dh; s[X2B] = dh ? D.rpx : 0;
     long o = 0;
     for (int i = 0; i < NUM_P; i++) { M->off[i] = o; M->sz[i] = s[i]; o += s[i]; }
     M->n_params = o;
@@ -642,7 +672,9 @@ static void model_layout(Model* M) {
         {FCW, D.dff, D.d, D.L}, {FPW, D.d, D.dff, D.L}, {PIW, 3, D.d, 1}, {PR1W, D.ph, D.pin_dim, 1},
         {PR2W, D.pred_flat, D.ph, 1}, {DRW, 2, D.ph, 1}, {C2W, D.c2, D.c1 * KK, 1}, {C3W, D.c3, D.c2 * KK, 1},
         {D1W, D.d1_in, D.pc1 * KK, 1}, {D2W, D.d2_in, 3 * KK, 1}, {PBW, D.pb, D.ph, 1},
-        {IV1W, D.ih, 2 * D.feat, 1}, {IV2W, D.ih ? 2 : 0, D.ih, 1}};
+        {IV1W, D.ih, 2 * D.feat, 1}, {IV2W, D.ih ? 2 : 0, D.ih, 1},
+        {T1W, D.dh, D.feat + 3, 1}, {T2W, D.dh ? D.feat : 0, D.dh, 1}, {H1W, D.dh, D.feat + 4, 1},
+        {H2W, D.dh ? 1 : 0, D.dh, 1}, {X1W, D.dh, D.feat, 1}, {X2W, D.dh ? D.rpx : 0, D.dh, 1}};
 }
 
 static void refresh_wt(Model* M) {
@@ -703,6 +735,14 @@ static void model_init_params(Model* M, uint64_t seed) {
         fill_normal(r, P + M->off[IV1W], M->sz[IV1W], sqrtf(2.0f / (2 * D.feat)));
         fill_normal(r, P + M->off[IV2W], M->sz[IV2W], sqrtf(1.0f / D.ih));
     }
+    if (D.dh) {
+        fill_normal(r, P + M->off[T1W], M->sz[T1W], sqrtf(2.0f / (D.feat + 3)));
+        fill_normal(r, P + M->off[T2W], M->sz[T2W], 0.1f * sqrtf(1.0f / D.dh));   // near-identity transition
+        fill_normal(r, P + M->off[H1W], M->sz[H1W], sqrtf(2.0f / (D.feat + 4)));
+        fill_normal(r, P + M->off[H2W], M->sz[H2W], sqrtf(1.0f / D.dh));
+        fill_normal(r, P + M->off[X1W], M->sz[X1W], sqrtf(2.0f / D.feat));
+        fill_normal(r, P + M->off[X2W], M->sz[X2W], sqrtf(1.0f / D.dh));
+    }
 }
 
 static bool config_valid(const VMConfig& c) {
@@ -712,6 +752,7 @@ static bool config_valid(const VMConfig& c) {
     if (c.ctx <= 0 || c.n_layer <= 0 || c.c1 <= 0 || c.c2 <= 0 || c.c3 <= 0 || c.feat <= 0) return false;
     if (c.d_ff <= 0 || c.pc1 <= 0 || c.pc2 <= 0 || c.pred_hidden <= 0) return false;
     if (c.coord && c.pb < 0) return false;
+    if (c.dyn_hidden < 0) return false;
     if (c.pred_skip && (c.img / 4 != c.pred_img / 2 || c.img / 8 != c.pred_img / 4)) return false;  // map sizes
     return true;
 }
@@ -921,12 +962,15 @@ struct LossAcc {
     double pg = 0, v = 0, ent = 0, kl = 0, clip = 0, n = 0, clickp = 0;
     double pred_se = 0, pred_n = 0, pred_ch_se = 0, copy_se = 0, copy_ch_se = 0, ch_n = 0, drive_se = 0;
     double inv_se = 0, inv_n = 0, inv_var = 0;
+    double dyn_se = 0, dyn_n = 0, dynh_se = 0, dynh_n = 0, dynx_se = 0, dynx_n = 0;
     double total = 0;
     void add(const LossAcc& o) {
         pg += o.pg; v += o.v; ent += o.ent; kl += o.kl; clip += o.clip; n += o.n; clickp += o.clickp;
         pred_se += o.pred_se; pred_n += o.pred_n; pred_ch_se += o.pred_ch_se; copy_se += o.copy_se;
         copy_ch_se += o.copy_ch_se; ch_n += o.ch_n; drive_se += o.drive_se; total += o.total;
         inv_se += o.inv_se; inv_n += o.inv_n; inv_var += o.inv_var;
+        dyn_se += o.dyn_se; dyn_n += o.dyn_n; dynh_se += o.dynh_se; dynh_n += o.dynh_n;
+        dynx_se += o.dynx_se; dynx_n += o.dynx_n;
     }
 };
 
@@ -1053,6 +1097,170 @@ static void seq_inverse(const Model* M, Workspace* W, const SeqView& sv, const P
         acc.inv_se += se;
         acc.inv_n += 1;
         acc.total += pc.inv_coef * se;
+    }
+}
+
+// Executed action, as the world applies it: clipped dx, dy and click in {0, 1}.
+static inline void executed3(const float* a, float* e) {
+    e[0] = clampf_(a[0], -1.f, 1.f);
+    e[1] = clampf_(a[1], -1.f, 1.f);
+    e[2] = a[2] > 0.5f ? 1.f : 0.f;
+}
+
+// One batched step of the latent dynamics for n rows: hunger and transition from inputs uT = [s, a] and
+// uH = [s, h, a] (s = uT[:feat]). Writes hT, hH (post-ReLU), h (post-sigmoid) and s_out = s + T2 hT.
+static void dyn_step(const Model* M, int n, const float* uT, const float* uH, float* hT, float* hH, float* h,
+                     float* s_out) {
+    const Dims& D = M->D;
+    const int F = D.feat, Hd = D.dh;
+    const float* P = M->params.data();
+    const float* WT = M->wt.data();
+    linear_fwd(hH, uH, WT + M->off[H1W], P + M->off[H1B], n, F + 4, Hd);
+    for (int i = 0; i < n * Hd; i++) hH[i] = hH[i] > 0.f ? hH[i] : 0.f;
+    linear_fwd(h, hH, WT + M->off[H2W], P + M->off[H2B], n, Hd, 1);
+    for (int i = 0; i < n; i++) h[i] = sigmoidf_(h[i]);
+    linear_fwd(hT, uT, WT + M->off[T1W], P + M->off[T1B], n, F + 3, Hd);
+    for (int i = 0; i < n * Hd; i++) hT[i] = hT[i] > 0.f ? hT[i] : 0.f;
+    linear_fwd(s_out, hT, WT + M->off[T2W], P + M->off[T2B], n, Hd, F);
+    for (int r = 0; r < n; r++)
+        for (int i = 0; i < F; i++) s_out[(size_t)r * F + i] += uT[(size_t)r * (F + 3) + i];
+}
+
+// Coarse decoder for n latents: hX (post-ReLU) and x = X2 relu(X1 s) [n, rpx] (HWC order).
+static void dyn_decode(const Model* M, int n, const float* s, float* hX, float* x) {
+    const Dims& D = M->D;
+    const float* P = M->params.data();
+    const float* WT = M->wt.data();
+    linear_fwd(hX, s, WT + M->off[X1W], P + M->off[X1B], n, D.feat, D.dh);
+    for (int i = 0; i < n * D.dh; i++) hX[i] = hX[i] > 0.f ? hX[i] : 0.f;
+    linear_fwd(x, hX, WT + M->off[X2W], P + M->off[X2B], n, D.dh, D.rpx);
+}
+
+// Latent dynamics losses (dyn_hidden > 0). Chains of imagined steps start at every token's visual feature v_t.
+// Step k of the chain from t ("pair" (t, k)) uses the action of token j = t + k - 1; chains stop at the horizon,
+// at the end of the sequence and after a terminal step. Losses, scaled by inv_B like the other per-token losses:
+//   latent  dyn_coef   * mean_i (s_hat - v_{j+1})^2    when token j+1 continues the episode (no gradient to v_{j+1})
+//   hunger  dyn_h_coef * (h_hat - next_drives[j][0])^2 input [s_hat_{k-1}, true hunger at j, action j]
+//   decoder dyn_x_coef * mean (x(s_hat) - next_small[j] / 2 / 255)^2, and x(v_t) vs token t's own frame
+// The heads are trained on top of the encoder and never change it (v is detached everywhere). With gradients into
+// the encoder the latent loss collapsed the features, and the decoder on real latents alone still shrank them
+// (exp vm-00002: 32 and 61 of 128 dims active, inverse-dynamics R^2 stuck at 0). Accumulates the head gradients
+// into G.
+static void seq_dyn(const Model* M, Workspace* W, const SeqView& sv, const PPOConfig& pc, float inv_B, float* G,
+                    LossAcc& acc) {
+    const Dims& D = M->D;
+    const int T = sv.T, F = D.feat, Hd = D.dh, R = D.rpx, UT = F + 3, UH = F + 4;
+    const float* P = M->params.data();
+    float* scr = W->scr.data();
+    const int Hmax = std::min(pc.dyn_horizon, T);
+    // ---- chain layout: level k holds the pairs (t, k) at indices [y_lev[k-1], y_lev[k])
+    int np = 0, nl = 0;
+    W->y_lev[0] = 0;
+    for (int k = 1; k <= Hmax; k++) {
+        const int begin = np;
+        if (k == 1) {
+            for (int t = 0; t < T; t++) { W->y_t[np] = t; W->y_j[np] = t; W->y_par[np] = -1; np++; }
+        } else {
+            for (int q = W->y_lev[k - 2]; q < W->y_lev[k - 1]; q++) {
+                const int t = W->y_t[q], j = t + k - 1;
+                if (j > T - 1) continue;
+                if (sv.ep_start && sv.ep_start[(size_t)j * sv.es_st]) continue;   // step j-1 ended the episode
+                W->y_t[np] = t; W->y_j[np] = j; W->y_par[np] = q; np++;
+            }
+        }
+        if (np == begin) break;
+        W->y_lev[k] = np;
+        nl = k;
+    }
+    // ---- forward, level by level (each level depends on the previous one)
+    for (int k = 1; k <= nl; k++) {
+        const int p0 = W->y_lev[k - 1], n = W->y_lev[k] - p0;
+        for (int p = p0; p < p0 + n; p++) {
+            const int t = W->y_t[p], j = W->y_j[p];
+            const float* sp = W->y_par[p] < 0 ? W->vf.data() + (size_t)t * F : W->y_s.data() + (size_t)W->y_par[p] * F;
+            float e[3];
+            executed3(sv.action + (size_t)j * sv.act_st, e);
+            float* ut = W->y_uT.data() + (size_t)p * UT;
+            float* uh = W->y_uH.data() + (size_t)p * UH;
+            memcpy(ut, sp, sizeof(float) * F);
+            memcpy(uh, sp, sizeof(float) * F);
+            ut[F] = e[0]; ut[F + 1] = e[1]; ut[F + 2] = e[2];
+            uh[F] = sv.drives[(size_t)j * sv.drv_st]; uh[F + 1] = e[0]; uh[F + 2] = e[1]; uh[F + 3] = e[2];
+        }
+        dyn_step(M, n, W->y_uT.data() + (size_t)p0 * UT, W->y_uH.data() + (size_t)p0 * UH,
+                 W->y_hT.data() + (size_t)p0 * Hd, W->y_hH.data() + (size_t)p0 * Hd, W->y_h.data() + p0,
+                 W->y_s.data() + (size_t)p0 * F);
+    }
+    dyn_decode(M, np, W->y_s.data(), W->y_hX.data(), W->y_x.data());
+    dyn_decode(M, T, W->vf.data(), W->y_hX0.data(), W->y_x0.data());
+    // ---- losses and output gradients
+    const float cs = inv_B * pc.dyn_coef * 2.0f / F, ch = inv_B * pc.dyn_h_coef * 2.0f, cx = inv_B * pc.dyn_x_coef * 2.0f / R;
+    std::fill(W->g_s.begin(), W->g_s.begin() + (size_t)np * F, 0.f);
+    for (int p = 0; p < np; p++) {
+        const int j = W->y_j[p];
+        const float* sh = W->y_s.data() + (size_t)p * F;
+        if (j + 1 <= T - 1 && !(sv.ep_start && sv.ep_start[(size_t)(j + 1) * sv.es_st])) {
+            const float* tg = W->vf.data() + (size_t)(j + 1) * F;
+            float* gs = W->g_s.data() + (size_t)p * F;
+            double se = 0;
+            for (int i = 0; i < F; i++) { const float e = sh[i] - tg[i]; se += (double)e * e; gs[i] = cs * e; }
+            acc.dyn_se += se / F; acc.dyn_n += 1; acc.total += pc.dyn_coef * se / F;
+        }
+        W->g_h[p] = 0.f;
+        if (pc.dyn_h_horizon <= 0 || j - W->y_t[p] + 1 <= pc.dyn_h_horizon) {   // chain step k = j - t + 1
+            const float hh = W->y_h[p], eh = hh - sv.next_drives[(size_t)j * sv.nd_st];
+            W->g_h[p] = ch * eh * hh * (1.0f - hh);
+            acc.dynh_se += (double)eh * eh; acc.dynh_n += 1; acc.total += pc.dyn_h_coef * (double)eh * eh;
+        }
+        downsample_u8(sv.next_small + (size_t)j * sv.ns_st, D.pimg, 2, W->y_tgt.data());
+        const float* x = W->y_x.data() + (size_t)p * R;
+        float* gx = W->g_x.data() + (size_t)p * R;
+        double se = 0;
+        for (int i = 0; i < R; i++) { const float e = x[i] - W->y_tgt[i] / 255.0f; se += (double)e * e; gx[i] = cx * e; }
+        acc.dynx_se += se / R; acc.dynx_n += 1; acc.total += pc.dyn_x_coef * se / R;
+    }
+    for (int t = 0; t < T; t++) {
+        downsample_u8(sv.img + (size_t)t * sv.img_st, D.img, D.ds, W->y_small.data());
+        downsample_u8(W->y_small.data(), D.pimg, 2, W->y_tgt.data());
+        const float* x = W->y_x0.data() + (size_t)t * R;
+        float* gx = W->g_x0.data() + (size_t)t * R;
+        double se = 0;
+        for (int i = 0; i < R; i++) { const float e = x[i] - W->y_tgt[i] / 255.0f; se += (double)e * e; gx[i] = cx * e; }
+        acc.dynx_se += se / R; acc.dynx_n += 1; acc.total += pc.dyn_x_coef * se / R;
+    }
+    // ---- backward: decoders first (no dependencies), then the chains from the last level down
+    linear_bwd(W->g_x.data(), W->y_hX.data(), P + M->off[X2W], np, Hd, R, W->g_hX.data(), false, G + M->off[X2W],
+               G + M->off[X2B], scr);
+    for (int i = 0; i < np * Hd; i++) if (W->y_hX[i] <= 0.f) W->g_hX[i] = 0.f;
+    linear_bwd(W->g_hX.data(), W->y_s.data(), P + M->off[X1W], np, F, Hd, W->g_s.data(), true, G + M->off[X1W],
+               G + M->off[X1B], scr);
+    linear_bwd(W->g_x0.data(), W->y_hX0.data(), P + M->off[X2W], T, Hd, R, W->g_hX0.data(), false, G + M->off[X2W],
+               G + M->off[X2B], scr);
+    for (int i = 0; i < T * Hd; i++) if (W->y_hX0[i] <= 0.f) W->g_hX0[i] = 0.f;
+    linear_bwd(W->g_hX0.data(), W->vf.data(), P + M->off[X1W], T, F, Hd, nullptr, false, G + M->off[X1W],
+               G + M->off[X1B], scr);
+    for (int k = nl; k >= 1; k--) {
+        const int p0 = W->y_lev[k - 1], n = W->y_lev[k] - p0;
+        float* ghH = W->g_hH.data() + (size_t)p0 * Hd;
+        float* ghT = W->g_hT.data() + (size_t)p0 * Hd;
+        linear_bwd(W->g_h.data() + p0, W->y_hH.data() + (size_t)p0 * Hd, P + M->off[H2W], n, Hd, 1, ghH, false,
+                   G + M->off[H2W], G + M->off[H2B], scr);
+        for (int i = 0; i < n * Hd; i++) if (W->y_hH[(size_t)p0 * Hd + i] <= 0.f) ghH[i] = 0.f;
+        linear_bwd(ghH, W->y_uH.data() + (size_t)p0 * UH, P + M->off[H1W], n, UH, Hd, W->g_uH.data() + (size_t)p0 * UH,
+                   false, G + M->off[H1W], G + M->off[H1B], scr);
+        linear_bwd(W->g_s.data() + (size_t)p0 * F, W->y_hT.data() + (size_t)p0 * Hd, P + M->off[T2W], n, Hd, F, ghT,
+                   false, G + M->off[T2W], G + M->off[T2B], scr);
+        for (int i = 0; i < n * Hd; i++) if (W->y_hT[(size_t)p0 * Hd + i] <= 0.f) ghT[i] = 0.f;
+        linear_bwd(ghT, W->y_uT.data() + (size_t)p0 * UT, P + M->off[T1W], n, UT, Hd, W->g_uT.data() + (size_t)p0 * UT,
+                   false, G + M->off[T1W], G + M->off[T1B], scr);
+        for (int p = p0; p < p0 + n; p++) {   // gradient wrt the previous latent: residual + transition + hunger inputs
+            if (W->y_par[p] < 0) continue;     // chain start: v_t is detached
+            float* dst = W->g_s.data() + (size_t)W->y_par[p] * F;
+            const float* gs = W->g_s.data() + (size_t)p * F;
+            const float* gut = W->g_uT.data() + (size_t)p * UT;
+            const float* guh = W->g_uH.data() + (size_t)p * UH;
+            for (int i = 0; i < F; i++) dst[i] += gs[i] + gut[i] + guh[i];
+        }
     }
 }
 
@@ -1344,6 +1552,7 @@ static LossAcc loss_and_grads(Model* M, Rollout* R, const int* ids, int n_seq, c
     ensure_threads(M);
     const bool have_pred = pc.pred_coef > 0.f || pc.drive_coef > 0.f;
     const bool have_inv = pc.inv_coef > 0.f && D.ih > 0;
+    const bool have_dyn = D.dh > 0 && pc.dyn_horizon > 0 && (pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f);
     const float inv_B = 1.0f / (float)((long)n_seq * D.K);
     double am = 0, as = 0;
     if (pc.use_ppo && pc.norm_adv) {
@@ -1376,6 +1585,7 @@ static LossAcc loss_and_grads(Model* M, Rollout* R, const int* ids, int n_seq, c
             float dls[2] = {0.f, 0.f};
             seq_loss(M, W, sv, pc, inv_B, (float)am, (float)as, have_pred, dls, accs[tid]);
             if (have_inv) seq_inverse(M, W, sv, pc, inv_B, accs[tid]);
+            if (have_dyn) seq_dyn(M, W, sv, pc, inv_B, G, accs[tid]);
             G[M->off[LOGSTD] + 0] += dls[0];
             G[M->off[LOGSTD] + 1] += dls[1];
             seq_backward(M, W, sv, G, have_pred, pc.pred_backbone_scale, have_inv);
@@ -1465,6 +1675,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[32] = c.pred_residual;            // extension fields live at 32+ (zero in older checkpoints)
     h[33] = c.pred_skip;
     h[34] = c.inv_hidden;
+    h[35] = c.dyn_hidden;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -1476,6 +1687,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.pred_residual = h[32];
     c.pred_skip = h[33];
     c.inv_hidden = h[34];
+    c.dyn_hidden = h[35];
 }
 
 // =====================================================================================
@@ -1664,6 +1876,12 @@ void vm_rollout_outcome(void* r, int t, const float* reward, const uint8_t* done
         downsample_u8(next_images + (size_t)n * D.img_px, D.img, D.ds, R->next_small.data() + (b + n) * D.small_px);
 }
 
+void vm_rollout_set_action(void* r, int t, const float* action) {
+    Rollout* R = (Rollout*)r;
+    CK(t >= 0 && t < R->T);
+    memcpy(R->action.data() + (size_t)t * R->N * 3, action, sizeof(float) * 3 * R->N);
+}
+
 static void fill_stats(PPOStats* st, const LossAcc& acc, int n_updates, const Model* M) {
     const double n = acc.n > 0 ? acc.n : 1, pn = acc.pred_n > 0 ? acc.pred_n : 1, cn = acc.ch_n > 0 ? acc.ch_n : 1;
     st->pg_loss = (float)(acc.pg / n);
@@ -1680,6 +1898,9 @@ static void fill_stats(PPOStats* st, const LossAcc& acc, int n_updates, const Mo
     st->click_p = (float)(acc.clickp / n);
     st->inv_mse = acc.inv_n > 0 ? (float)(acc.inv_se / acc.inv_n) : 0.f;
     st->inv_r2 = acc.inv_var > 0 ? (float)(1.0 - acc.inv_se / acc.inv_var) : 0.f;
+    st->dyn_mse = acc.dyn_n > 0 ? (float)(acc.dyn_se / acc.dyn_n) : 0.f;
+    st->dyn_hunger_mse = acc.dynh_n > 0 ? (float)(acc.dynh_se / acc.dynh_n) : 0.f;
+    st->dyn_recon_mse = acc.dynx_n > 0 ? (float)(acc.dynx_se / acc.dynx_n) : 0.f;
     st->updates_done = n_updates;
     const float* ls = M->params.data() + M->off[LOGSTD];
     st->std_x = expf(clampf_(ls[0], LS_MIN, LS_MAX));
@@ -1831,6 +2052,66 @@ void vm_inverse(void* a, int n, const uint8_t* img0, const uint8_t* img1, float*
         linear_fwd(W->iv_h.data(), W->iv_in.data(), WT + M->off[IV1W], P + M->off[IV1B], 1, 2 * D.feat, D.ih);
         for (int k = 0; k < D.ih; k++) W->iv_h[k] = W->iv_h[k] > 0.f ? W->iv_h[k] : 0.f;
         linear_fwd(out + 2 * i, W->iv_h.data(), WT + M->off[IV2W], P + M->off[IV2B], 1, D.ih, 2);
+    }
+}
+
+// Latent-dynamics imagination (see vm_agent.h). Rollouts are processed in chunks of up to 64 per batched step.
+void vm_imagine(void* a, int n, int H, const float* s0, const float* h0, const float* actions, float* hunger,
+                float* latents, float* frames) {
+    Model* M = (Model*)a;
+    const Dims& D = M->D;
+    CK(D.dh > 0 && H >= 1);
+    const int F = D.feat, Hd = D.dh, R = D.rpx, UT = F + 3, UH = F + 4, CH = 64;
+    const int nch = (n + CH - 1) / CH;
+    #pragma omp parallel
+    {
+        std::vector<float> s((size_t)CH * F), s2((size_t)CH * F), uT((size_t)CH * UT), uH((size_t)CH * UH);
+        std::vector<float> hT((size_t)CH * Hd), hH((size_t)CH * Hd), h(CH), hX((size_t)CH * Hd), x((size_t)CH * R);
+        #pragma omp for schedule(dynamic, 1)
+        for (int c = 0; c < nch; c++) {
+            const int i0 = c * CH, m = std::min(CH, n - i0);
+            memcpy(s.data(), s0 + (size_t)i0 * F, sizeof(float) * m * F);
+            for (int i = 0; i < m; i++) h[i] = h0[i0 + i];
+            for (int k = 0; k < H; k++) {
+                for (int i = 0; i < m; i++) {
+                    float e[3];
+                    executed3(actions + ((size_t)(i0 + i) * H + k) * 3, e);
+                    float* ut = uT.data() + (size_t)i * UT;
+                    float* uh = uH.data() + (size_t)i * UH;
+                    memcpy(ut, s.data() + (size_t)i * F, sizeof(float) * F);
+                    memcpy(uh, s.data() + (size_t)i * F, sizeof(float) * F);
+                    ut[F] = e[0]; ut[F + 1] = e[1]; ut[F + 2] = e[2];
+                    uh[F] = h[i]; uh[F + 1] = e[0]; uh[F + 2] = e[1]; uh[F + 3] = e[2];
+                }
+                dyn_step(M, m, uT.data(), uH.data(), hT.data(), hH.data(), h.data(), s2.data());
+                std::swap(s, s2);
+                for (int i = 0; i < m; i++) hunger[(size_t)(i0 + i) * H + k] = h[i];
+                if (latents)
+                    for (int i = 0; i < m; i++)
+                        memcpy(latents + ((size_t)(i0 + i) * H + k) * F, s.data() + (size_t)i * F, sizeof(float) * F);
+                if (frames) {
+                    dyn_decode(M, m, s.data(), hX.data(), x.data());
+                    for (int i = 0; i < m; i++)
+                        memcpy(frames + ((size_t)(i0 + i) * H + k) * R, x.data() + (size_t)i * R, sizeof(float) * R);
+                }
+            }
+        }
+    }
+}
+
+void vm_decode(void* a, int n, const float* latents, float* frames) {
+    Model* M = (Model*)a;
+    const Dims& D = M->D;
+    CK(D.dh > 0);
+    const int CH = 64, nch = (n + CH - 1) / CH;
+    #pragma omp parallel
+    {
+        std::vector<float> hX((size_t)CH * D.dh);
+        #pragma omp for schedule(dynamic, 1)
+        for (int c = 0; c < nch; c++) {
+            const int i0 = c * CH, m = std::min(CH, n - i0);
+            dyn_decode(M, m, latents + (size_t)i0 * D.feat, hX.data(), frames + (size_t)i0 * D.rpx);
+        }
     }
 }
 

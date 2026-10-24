@@ -11,7 +11,7 @@ static int g_fail = 0;
     } while (0)
 
 static VMConfig small_config() {
-    VMConfig c;
+    VMConfig c{};
     c.img = 32; c.c1 = 4; c.c2 = 8; c.c3 = 8; c.feat = 16; c.d_model = 16; c.n_layer = 2; c.n_head = 4;
     c.d_ff = 32; c.ctx = 8; c.pred_img = 16; c.pc1 = 4; c.pc2 = 8; c.pred_hidden = 16; c.use_prev_reward = 1;
     c.logstd_init = -0.5f;
@@ -20,15 +20,17 @@ static VMConfig small_config() {
     c.pred_residual = 1;
     c.pred_skip = 1;
     c.inv_hidden = 8;
+    c.dyn_hidden = 8;   // latent dynamics heads (gradients are checked against PyTorch in tests/)
     return c;
 }
 
 static PPOConfig default_ppo() {
-    PPOConfig p;
+    PPOConfig p{};
     p.gamma = 0.99f; p.lam = 0.95f; p.clip_eps = 0.2f; p.vf_coef = 0.5f; p.ent_coef = 0.01f; p.pred_coef = 1.0f;
     p.drive_coef = 0.5f; p.pred_backbone_scale = 1.0f; p.max_grad_norm = 0.5f; p.lr = 3e-4f; p.beta1 = 0.9f;
     p.beta2 = 0.999f; p.adam_eps = 1e-5f; p.weight_decay = 0.f; p.target_kl = 0.f; p.reward_scale = 0.1f;
     p.vclip_eps = 0.2f; p.pred_changed_weight = 0.f; p.inv_coef = 0.5f; p.epochs = 2; p.minibatches = 2; p.use_ppo = 1; p.norm_adv = 1; p.clip_vloss = 0;
+    p.dyn_coef = 1.0f; p.dyn_h_coef = 1.0f; p.dyn_x_coef = 1.0f; p.dyn_horizon = 3;
     return p;
 }
 

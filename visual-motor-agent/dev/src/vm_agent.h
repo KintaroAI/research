@@ -30,6 +30,8 @@ typedef struct {
     int pred_residual;  // 1 = predict the change: next frame = current frame (downsampled) + decoder output
     int pred_skip;      // 1 = U-Net skips (encoder conv-3/conv-2 maps of the current frame + tiled action) into the decoder
     int inv_hidden;     // >0: inverse-dynamics head MLP([v_t, v_t+1]) -> executed (dx, dy), hidden size
+    int dyn_hidden;     // >0: latent dynamics on the visual feature v: transition v' = v + MLP([v, a]), hunger
+                        //     h' = sigmoid(MLP([v, h, a])) and a coarse decoder MLP(v) -> (pred_img/2)^2 x 3 frame
 } VMConfig;
 
 typedef struct {
@@ -46,10 +48,15 @@ typedef struct {
     float vclip_eps;            // value clipping range (used if clip_vloss)
     float pred_changed_weight;  // extra loss weight on pixels that differ between consecutive frames (0 = plain MSE)
     float inv_coef;             // inverse-dynamics loss coefficient (needs inv_hidden > 0; 0 = off)
+    float dyn_coef;             // latent dynamics (needs dyn_hidden > 0): imagined vs encoded latent MSE
+    float dyn_h_coef;           //   imagined next-hunger MSE
+    float dyn_x_coef;           //   coarse decoder MSE (real and imagined latents)
     int epochs, minibatches;    // PPO epochs per update, minibatches per epoch (over sequences)
     int use_ppo;                // 0 = skip policy/value/entropy losses (prediction-only learning)
     int norm_adv;               // normalize advantages per minibatch
     int clip_vloss;             // clipped value loss
+    int dyn_horizon;            // imagined steps per chain in the latent-dynamics losses (0 = off)
+    int dyn_h_horizon;          // chain steps that train the hunger head (0 = all; 1 = real latents only)
 } PPOConfig;
 
 typedef struct {
@@ -58,6 +65,7 @@ typedef struct {
     float grad_norm, std_x, std_y, click_p, value_mean, return_mean, adv_mean, adv_std;
     float gn_backbone, gn_policy, gn_pred;   // pre-clip grad norms: shared backbone, policy/value heads, prediction heads
     float inv_mse, inv_r2;                   // inverse dynamics: MSE of (dx, dy) and R^2 vs predicting 0
+    float dyn_mse, dyn_hunger_mse, dyn_recon_mse;   // latent dynamics: latent MSE, hunger MSE, decoder MSE
     int epochs_done, updates_done;
 } PPOStats;
 
@@ -99,6 +107,9 @@ void  vm_rollout_free(void* rollout);
 // Outcome of step t: reward [N], done [N], next_images [N,img,img,3] (terminal frame when done), next_drives [N,2]
 void  vm_rollout_outcome(void* rollout, int t, const float* reward, const uint8_t* done,
                          const uint8_t* next_images, const float* next_drives);
+// Replace the action stored for step t (raw [N,3]) by one chosen outside the policy, e.g. by a planner.
+// Only for ppo.use_ppo = 0: logp and value of the stored step are not recomputed.
+void  vm_rollout_set_action(void* rollout, int t, const float* action);
 void  vm_update(void* agent, void* rollout, const float* last_value, const PPOConfig* pc, PPOStats* stats);
 // Debug/test: loss + gradients (into vm_grads) for the given rollout sequences, no optimizer step.
 // Sequence s covers env (s % N), steps [(s / N) * ctx, (s / N + 1) * ctx). Returns total loss.
@@ -120,6 +131,14 @@ void  vm_forward(void* agent, int S, int T, const uint8_t* images, const float* 
 void  vm_encode(void* agent, int n, const uint8_t* images, float* a3, float* vf);
 // Inverse-dynamics predictions of the executed (dx, dy) for n frame pairs (img0 -> img1), out [n,2].
 void  vm_inverse(void* agent, int n, const uint8_t* img0, const uint8_t* img1, float* out);
+// Latent dynamics (dyn_hidden > 0). Free-running imagination: n rollouts of H steps from latents s0 [n,feat]
+// (visual features, e.g. from vm_encode) and hunger h0 [n] along raw actions [n,H,3], executed as the world
+// does (clipped dx, dy; click if > 0.5). Step k feeds the hunger predicted at step k-1 back in.
+// Outputs: hunger [n,H]; optional latents [n,H,feat] and decoded frames [n,H,(pred_img/2)^2*3] (HWC, float).
+void  vm_imagine(void* agent, int n, int H, const float* s0, const float* h0, const float* actions, float* hunger,
+                 float* latents, float* frames);
+// Coarse decoder: frames [n,(pred_img/2)^2*3] (HWC, float) from latents [n,feat].
+void  vm_decode(void* agent, int n, const float* latents, float* frames);
 
 #ifdef __cplusplus
 }

@@ -20,6 +20,9 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `dynamics_over_training.py` and `compare_dynamics.py`). `plot_runs.py`: learning curves.
     `record_episodes.py`: GIFs, replay JSON and imagination strips. `make_video.py`: MP4s and
     screenshot sheets across checkpoints (needs dense checkpoints via `train.milestones`).
+  - `plan.py`: CEM planner on the latent dynamics (acting without reward). `analyze_imagination.py`:
+    imagined vs real rollouts, read out by retrieval. `analyze_planner.py`: where the planner fails.
+    `train.py --set train.actor=planner`: the model learns from the planner's own experience.
   - `reference/torch_reference.py`: float64 PyTorch re-implementation, used only by tests.
   - `configs/*.json`: runs from the plan's experiment matrix (A–F) plus reward-free babbling (P_*).
 - **`NNNNN-experiment-name/`**: experiment snapshots (README.md + Makefile only; the git tag
@@ -71,6 +74,12 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
     faster. It predicts the own executed (dx, dy) from consecutive *visual features*, never from
     tokens, which contain the previous action.
   See `configs/P_babble_inv.json`.
+- **Latent dynamics heads (`model.dyn_hidden`) must not train the encoder.** Matching imagined to
+  encoded latents with gradients into the encoder collapses the features. Even a decoder on real
+  latents alone shrank them until the cursor was no longer decodable (exp vm-00002). The heads
+  read a detached v.
+- **Run names:** `train.py --set name=X` overrides the config's name. Experiment Makefiles use
+  it so their analysis globs find the runs.
 - **Checkpoint header.** Config ints sit in slots 2–19 and n_params/has_opt/step in 20–22.
   Extension fields go at 32+ (`pred_residual` 32, `pred_skip` 33, `inv_hidden` 34). Never append
   into slot 20.

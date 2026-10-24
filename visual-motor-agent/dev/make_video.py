@@ -11,14 +11,20 @@ Writes into OUT_DIR:
   2_babbling.mp4      a reward-free babbler's predicted next frame for 9 actions vs the true
                       outcome, checkpoint by checkpoint                                 (--babbler)
   3_transfer.mp4      PPO from scratch vs PPO from the babbler, side by side              (--run2)
-  all.mp4             the three parts with title cards
-  learning_paths.png, transfer_paths.png
+  4_acting.mp4        acting without reward: the planner with the world model of a reward-free babbler,
+                      checkpoint by checkpoint; dotted = the moves it plans               (--planner)
+  5_learning_from_plans.mp4
+                      the same for a run whose model learns from the planner's own experience
+                      (--planner RUN with train.actor=planner, vm-00004; use --only-planner)
+  all.mp4             the parts with title cards
+  learning_paths.png, transfer_paths.png, acting_paths.png, learning_from_plans_paths.png
                       screenshot sheets: one picture per episode (start frame, whole cursor path,
                       every click): the first episode of each view, played to its end
   babbling_<steps>.png  the prediction card of each babbler checkpoint
 
 Usage:
     ./venv/bin/python make_video.py --run RUN --run2 RUN_FROM_BABBLER --babbler BABBLER_RUN -o OUT_DIR
+    ./venv/bin/python make_video.py --planner PLANNER_RUN --only-planner -o OUT_DIR
 """
 import argparse
 import dataclasses
@@ -45,7 +51,7 @@ W, H, FPS = 1280, 720, 15
 ITER = 16384                                   # env steps per PPO iteration (128 envs x 128 steps)
 BG, PANEL = (12, 12, 18), (26, 26, 36)
 TEXT, MUTED = (232, 232, 238), (150, 152, 168)
-HIT, MISS, TRAIL = (90, 225, 125), (255, 95, 75), (255, 205, 60)
+HIT, MISS, TRAIL, PLAN = (90, 225, 125), (255, 95, 75), (255, 205, 60), (120, 200, 255)
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 _fonts = {}
 
@@ -252,6 +258,12 @@ def view(ep, k, cfg, s, label, note=None):
         t, r = ep["target"][j] * s, ep["radius"][j] * s
         ring(d, t[0], t[1], r, HIT + (150,), max(1, s // 3))
     draw_path(d, ep, k, s, fresh_k=k)
+    if "plan" in ep and k < len(ep["plan"]):            # the planner's intended moves from this frame
+        pos = np.clip(ep["cursor"][k] + np.cumsum(ep["plan"][k] * cfg.max_step_px, 0), 0, cfg.size - 1e-3)
+        r = max(2, s // 2)
+        for q, pq in enumerate(pos):
+            x, y = hot(pq, s)
+            d.ellipse([x - r, y - r, x + r, y + r], fill=PLAN + (max(70, 230 - 13 * q),))
     paste_cursor(im, bare, full, s)
     draw_hit(d, ep, k, s, fresh_k=k)
     tag(d, (0, 0), label, font(max(12, 3 * s)))
@@ -316,7 +328,7 @@ def chart(series, size, xmax, ylim, title, log=False):
     from matplotlib.ticker import FuncFormatter, NullFormatter
 
     w, h = size
-    c = lambda rgb: np.array(rgb) / 255.0  # noqa: E731
+    c = lambda rgb: tuple(np.array(rgb) / 255.0)  # noqa: E731
     fig = plt.figure(figsize=(w / 100, h / 100), dpi=100, facecolor=c(PANEL))
     ax = fig.add_axes([0.1, 0.17, 0.86, 0.68], facecolor=c(PANEL))
     for xs, ys, rgb, label in series:
@@ -366,14 +378,14 @@ def title_bar(d, text, right=""):
     d.text((W - 24 - (r - l), 20), right, font=f, fill=MUTED)
 
 
-def legend(d, x, y):
+def legend(d, x, y, hit_text="click on the circle: +10 reward, episode ends"):
     f = font(16)
     d.line([(x, y + 10), (x + 34, y + 10)], fill=TRAIL + (200,), width=3)
     d.text((x + 46, y), "cursor path (circle = start)", font=f, fill=TEXT)
     cross(d, x + 17, y + 40, 7, MISS + (255,), 3)
     d.text((x + 46, y + 30), "click that missed", font=f, fill=TEXT)
     ring(d, x + 17, y + 70, 10, HIT + (255,), 3)
-    d.text((x + 46, y + 60), "click on the circle: +10 reward, episode ends", font=f, fill=TEXT)
+    d.text((x + 46, y + 60), hit_text, font=f, fill=TEXT)
 
 
 def card(title, lines):
@@ -625,6 +637,144 @@ def part_transfer(dl, dr, cfg, out, frames, hold, names):
         out.write(frame, hold)
 
 
+# ----------------------------------------------------------------------------- part 4: acting without reward
+
+def play_planner_stream(path, cfg, n, seed, steps):
+    """n envs played continuously (new random circle after every hit or timeout) by the CEM planner with the
+    world model of a checkpoint. Episodes carry "plan" [T, horizon, 2]: the mean planned moves at each step."""
+    from plan import CEMPlanner
+    agent = agent_lib.Agent.load(path)
+    env = CircleWorld(n, dataclasses.replace(cfg, auto_reset=True, drives=True), seed=seed)
+    planner = CEMPlanner(agent, n, seed=seed)
+    obs = env.observe()
+    recs = [EpisodeRecorder(env.config, i) for i in range(n)]
+    for r in recs:
+        r.begin(env)
+    eps, plans = [[] for _ in range(n)], [[] for _ in range(n)]
+    for _ in range(steps):
+        a, _ = planner.act(obs["image"], obs["drives"][:, 0], np.ones(n, bool))
+        for i in range(n):
+            plans[i].append(planner.plan[i].copy())
+        obs, rew, done, inf = env.step(a)
+        for i in range(n):
+            recs[i].record(a, rew, done, inf)
+            if done[i]:
+                eps[i].append(dict(recs[i].arrays(), plan=np.array(plans[i])))
+                plans[i] = []
+                recs[i].begin(env)
+        planner.reset(done)
+    agent.close()
+    for i in range(n):
+        if len(recs[i]):
+            eps[i].append(dict(recs[i].arrays(), plan=np.array(plans[i])))
+    return eps
+
+
+def acting_frame(d4, f, s, last, cfg, ch, run_name, rand, self_mode=False):
+    img = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(img, "RGBA")
+    title_bar(d, "5 · Learning from its own plans (still no reward)" if self_mode else
+              "4 · Acting without reward: planning with the self-taught world model", run_name)
+    total = 0
+    for i, (eps, seq) in enumerate(zip(d4["stream"], d4["seqs"])):
+        v, hits = stream_view(eps, seq, f, cfg, 5, "ABCD"[i])
+        total += hits
+        img.paste(v, (24 + (i % 2) * 332, 62 + (i // 2) * 332))
+    x = 700
+    d.text((x, 66), steps_label(s).replace("env steps", "steps" if self_mode else "reward-free steps"),
+           font=font(28, True), fill=TEXT)
+    d.text((x, 104), ("of acting with its planner and learning from it   ·   hits in this clip: %d" if self_mode else
+                      "of babbling: the world model the planner uses   ·   hits in this clip: %d") % total,
+           font=font(15), fill=MUTED)
+    if ch:
+        put_chart(img, d, ch, (x, 132), s, [d4["eval"]["success"]] if d4.get("eval") else [], [HIT])
+    y = 330
+    lines = ("Each step it imagines 256 sequences of 12 moves and clicks, scores", "them by predicted hunger, "
+             "and executes the first action of the best plan.", "No reward, no value function, no trained policy.",
+             "Random babbling on the same episodes: %.0f%% hit." % (100 * rand))
+    if self_mode:
+        lines = ("Same planner. Its world model (from 2.1M babbling steps) keeps", "training on what the planner "
+                 "does, with the same prediction losses:", "a click that does not relieve hunger corrects it.",
+                 "No reward, no value function, no trained policy.")
+    for line in lines:
+        d.text((x, y), line, font=font(15), fill=MUTED)
+        y += 22
+    legend(d, x, 430, "click on the circle: hunger relieved, episode ends")
+    d.line([(x + 4, y + 162), (x + 30, y + 162)], fill=PLAN + (200,), width=1)
+    for q in range(4):
+        d.ellipse([x + 4 + 8 * q - 3, y + 159, x + 4 + 8 * q + 3, y + 165], fill=PLAN + (220 - 30 * q,))
+    d.text((x + 46, y + 152), "the moves the planner intends (its plan)", font=font(16), fill=TEXT)
+    d.text((x, 668), "The agent sees only these 64×64 pixels and its hunger,", font=font(15), fill=MUTED)
+    d.text((x, 690), "and learned what its actions do without any reward (part 2).", font=font(15), fill=MUTED)
+    return np.asarray(img)
+
+
+def planner_first_episodes(path, cfg, n, seed):
+    """The first episode of n envs, played to its end by the planner (for the screenshot sheet)."""
+    from plan import CEMPlanner, run_episodes
+    agent = agent_lib.Agent.load(path)
+    planner = CEMPlanner(agent, n, seed=seed)
+    res = run_episodes(lambda img, h, act: planner.act(img, h, act)[0],
+                       dataclasses.replace(cfg, auto_reset=False, drives=True), n, seed=seed, record=True)
+    agent.close()
+    return [r.arrays() for r in res["recordings"]]
+
+
+def is_self_run(run):
+    """True for a run whose actions came from the planner (train.actor=planner, vm-00004)."""
+    with open(os.path.join(run, "info.json")) as f:
+        return json.load(f)["config"]["train"].get("actor") == "planner"
+
+
+def part_acting(planner_run, cfg, out, frames, hold, seed, ckpt_steps=None, out_dir=None):
+    """The planner at successive checkpoints of a babbling run (or of a run that learns from its own plans);
+    chart from RUN/plan/ckpt_*.json evaluations. With out_dir, also a screenshot sheet: per checkpoint, the first
+    episode of each view played to its end."""
+    self_mode = is_self_run(planner_run)
+    ck = checkpoints(planner_run)
+    if ckpt_steps:
+        ck = [c for c in ck if c[0] in ckpt_steps]
+    evals = {}
+    for s_, _ in ck:
+        p = os.path.join(planner_run, "plan", "ckpt_%08d.json" % s_)
+        if os.path.exists(p):
+            with open(p) as f:
+                evals[s_] = json.load(f)
+    def base(name):
+        exp = os.path.dirname(planner_run.rstrip("/"))
+        if self_mode:           # the baselines live with the babbling runs
+            exp = os.path.join(os.path.dirname(exp), "exp_00002")
+        p = os.path.join(exp, name)
+        return json.load(open(p))["success"] if os.path.exists(p) else float("nan")
+    rand, rcost = base("plan_random_click0.1.json"), base("plan_random_cost.json")
+    last = ck[-1][0]
+    ch = None
+    if evals:
+        xs = sorted(evals)
+        ch = chart([(xs, [evals[x]["success"] for x in xs], HIT, "planner"),
+                    ([0, last], [rand, rand], MUTED, "random actions"),
+                    ([0, last], [rcost, rcost], PLAN, "planner, random costs")],
+                   (556, 186), last, (0, 1.03), "test episodes the planner hits (fraction of 128)")
+    rows = []
+    for s_, path in ck:
+        stream = play_planner_stream(path, cfg, 4, 1000 * seed + s_ // ITER, frames)
+        ev = evals.get(s_)
+        if out_dir and ev:
+            rows.append(("{:,} steps".format(s_), [dict(success=ev["success"], median_len=ev["median_steps"])],
+                         [planner_first_episodes(path, cfg, 4, 1000 * seed + s_ // ITER)]))
+        d4 = dict(stream=stream, seqs=[stream_seq(st) for st in stream], eval=evals.get(s_))
+        hits = sum(int(e["success"].any()) for st in stream for e in st)
+        print("  planner %8d  clip hits %d" % (s_, hits), flush=True)
+        for f in range(frames):
+            frame = acting_frame(d4, f, s_, last, cfg, ch, os.path.basename(planner_run.rstrip("/")), rand,
+                                 self_mode)
+            out.write(frame)
+        out.write(frame, hold)
+    if rows:
+        sheet(rows, cfg, 3, os.path.join(out_dir, "learning_from_plans_paths.png" if self_mode else "acting_paths.png"),
+              ["planner learning from its own plans" if self_mode else "planner on the babbler's world model"])
+
+
 # ----------------------------------------------------------------------------- screenshot sheets
 
 def sheet(rows, cfg, s, path, groups, n=4):
@@ -655,9 +805,12 @@ def sheet(rows, cfg, s, path, groups, n=4):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--run", required=True, help="PPO run from scratch (dense checkpoints)")
+    ap.add_argument("--run", help="PPO run from scratch (dense checkpoints); required unless --only-planner")
     ap.add_argument("--run2", help="PPO run initialized from the babbler (same seed and config)")
     ap.add_argument("--babbler", help="reward-free babbling run")
+    ap.add_argument("--planner", help="reward-free babbling run with latent dynamics (model.dyn_hidden) for part 4")
+    ap.add_argument("--planner-steps", type=int, nargs="*", help="checkpoints (env steps) shown in part 4")
+    ap.add_argument("--only-planner", action="store_true", help="render part 4 only")
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--seed", type=int, default=3, help="env seed of the replayed start states")
     ap.add_argument("--episodes", type=int, default=128, help="episodes per checkpoint for the statistics")
@@ -669,6 +822,15 @@ def main():
     agent_lib.set_threads(args.threads)
     os.makedirs(args.out, exist_ok=True)
     name = lambda r: os.path.basename(os.path.normpath(r))  # noqa: E731
+    if args.only_planner:
+        pcfg, _ = load_run(args.planner)
+        v = Video(os.path.join(args.out, "5_learning_from_plans.mp4" if is_self_run(args.planner) else
+                               "4_acting.mp4"))
+        part_acting(args.planner, pcfg, Tee(v), args.frames, 10, args.seed, args.planner_steps, args.out)
+        v.close()
+        return
+    if not args.run:
+        ap.error("--run is required unless --only-planner")
     cfg, rs = load_run(args.run)
     cache = {}
     print("evaluating", args.run, flush=True)
@@ -717,6 +879,16 @@ def main():
         rows = [("{:,} steps".format(s), [d1t[s]["stats"], d2[s]["stats"]], [d1t[s]["first"], d2[s]["first"]])
                 for s in sorted(d1t) if s in d2]
         sheet(rows, cfg, 2, os.path.join(args.out, "transfer_paths.png"), ["PPO from scratch", "PPO from the babbler"])
+    if args.planner:
+        pcfg, _ = load_run(args.planner)
+        full.write(card("4 · Acting without reward", [
+            "A babbler that also learned a compact world model (no reward) now acts on purpose:",
+            "it imagines the outcome of candidate moves and clicks and picks those that lower",
+            "its predicted hunger. Nothing it does has ever been rewarded."]), 4 * FPS)
+        v = Video(os.path.join(args.out, "5_learning_from_plans.mp4" if is_self_run(args.planner) else
+                               "4_acting.mp4"))
+        part_acting(args.planner, pcfg, Tee(v, full), args.frames, 10, args.seed, args.planner_steps, args.out)
+        v.close()
     full.close()
 
     steps = sorted(d1)

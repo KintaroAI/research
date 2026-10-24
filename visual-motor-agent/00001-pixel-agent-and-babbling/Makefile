@@ -41,19 +41,19 @@ babble:
 rl:
 	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 1 --total-steps 1000000 $(T64)
 	cd $(DEV) && for s in 1 2 3; do \
-	  $(PY) train.py --config configs/A_baseline.json --seed $$s --total-steps 1000000 $(ARCH) $(T64); \
-	  $(PY) train.py --config configs/C_prediction_w10.json --seed $$s --total-steps 1000000 $(ARCH) $(T64); \
+	  $(PY) train.py --config configs/A_baseline.json --seed $$s --total-steps 1000000 $(ARCH) $(T64) --set name=A_arch; \
+	  $(PY) train.py --config configs/C_prediction_w10.json --seed $$s --total-steps 1000000 $(ARCH) $(T64) --set name=C_arch; \
 	done
 	# transfer: PPO from scratch vs PPO initialized from the 1M babbler of the same seed (needs make babble)
 	@test -n "$(BABBLE1)" -a -n "$(BABBLE2)" || { echo "babbler checkpoints not found: run make babble"; exit 1; }
-	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 1 --total-steps 800000 $(ARCH8) $(T64)
-	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 1 --total-steps 800000 $(ARCH8) $(T64) --init $(BABBLE1)
-	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 2 --total-steps 600000 $(ARCH8) $(T64)
-	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 2 --total-steps 600000 $(ARCH8) $(T64) --init $(BABBLE2)
+	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 1 --total-steps 800000 $(ARCH8) $(T64) --set name=A_ctx8inv
+	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 1 --total-steps 800000 $(ARCH8) $(T64) --set name=T_from_babble_inv --init $(BABBLE1)
+	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 2 --total-steps 600000 $(ARCH8) $(T64) --set name=A_ctx8inv
+	cd $(DEV) && $(PY) train.py --config configs/A_baseline.json --seed 2 --total-steps 600000 $(ARCH8) $(T64) --set name=T_from_babble_inv --init $(BABBLE2)
 
 small:
-	cd $(DEV) && $(PY) train.py --config configs/A_small.json --seed 1 --total-steps 2000000 $(ARCH) $(T64)
-	cd $(DEV) && $(PY) train.py --config configs/C_small_w10.json --seed 1 --total-steps 2000000 $(ARCH) $(T64)
+	cd $(DEV) && $(PY) train.py --config configs/A_small.json --seed 1 --total-steps 2000000 $(ARCH) $(T64) --set name=A_small_arch
+	cd $(DEV) && $(PY) train.py --config configs/C_small_w10.json --seed 1 --total-steps 2000000 $(ARCH) $(T64) --set name=C_small_arch
 
 analysis:
 	cd $(DEV) && for r in $(OUT)/*P_babble*; do $(PY) dynamics_over_training.py $$r; done

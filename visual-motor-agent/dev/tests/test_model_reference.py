@@ -92,14 +92,15 @@ def compare_grads(agent, P, tol=3e-3):
     return worst
 
 
-@pytest.fixture(scope="module", params=[(0, 0, 0, 0), (1, 0, 0, 0), (1, 1, 0, 0), (1, 1, 1, 0), (0, 0, 1, 0),
-                                        (1, 1, 1, 6)],
-                ids=["plain", "coord", "coord_residual", "coord_residual_skip", "skip", "skip_inverse"])
+@pytest.fixture(scope="module", params=[(0, 0, 0, 0, 0), (1, 0, 0, 0, 0), (1, 1, 0, 0, 0), (1, 1, 1, 0, 0),
+                                        (0, 0, 1, 0, 0), (1, 1, 1, 6, 0), (1, 1, 1, 6, 8)],
+                ids=["plain", "coord", "coord_residual", "coord_residual_skip", "skip", "skip_inverse",
+                     "skip_inverse_dyn"])
 def agent(request):
     agent_lib.set_threads(4)
-    coord, residual, skip, inv = request.param
-    return agent_lib.Agent(dict(SMALL, coord=coord, pb=4, pred_residual=residual, pred_skip=skip, inv_hidden=inv),
-                           seed=3)
+    coord, residual, skip, inv, dyn = request.param
+    return agent_lib.Agent(dict(SMALL, coord=coord, pb=4, pred_residual=residual, pred_skip=skip, inv_hidden=inv,
+                                dyn_hidden=dyn), seed=3)
 
 
 @pytest.mark.parametrize("pc_over", [
@@ -109,6 +110,11 @@ def agent(request):
     dict(pred_coef=1.0, drive_coef=0.5, pred_backbone_scale=0.3),          # scaled prediction gradient
     dict(pred_coef=1.0, drive_coef=0.5, pred_changed_weight=9.0),          # changed-pixel weighted loss
     dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=2.0),          # prediction + inverse dynamics
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=1.0, dyn_coef=1.0, dyn_h_coef=2.0, dyn_x_coef=1.5,
+         dyn_horizon=3),                                                   # + latent dynamics (short chains)
+    dict(pred_coef=1.0, drive_coef=0.5, dyn_coef=0.7, dyn_h_coef=1.0, dyn_x_coef=0.5, dyn_horizon=8),  # PPO + dynamics
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=1.0, dyn_coef=1.0, dyn_h_coef=2.0, dyn_x_coef=1.0,
+         dyn_horizon=4, dyn_h_horizon=1),                                   # hunger head on real latents only
 ])
 def test_loss_and_grads_match_reference(agent, pc_over):
     cfg = agent.config
@@ -222,3 +228,59 @@ def test_checkpoint_roundtrip(agent, tmp_path):
     b = agent_lib.Agent.load(path)
     assert b.config == agent.config
     np.testing.assert_array_equal(b.params(), agent.params())
+
+
+def test_imagine_and_decode_match_reference():
+    """Free-running imagination (predicted hunger fed back) and the coarse decoder vs the PyTorch reference."""
+    agent_lib.set_threads(4)
+    agent = agent_lib.Agent(dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, inv_hidden=6, dyn_hidden=8),
+                            seed=11)
+    cfg = agent.config
+    rng = np.random.default_rng(0)
+    n, H = 70, 5                                   # n > 64 exercises two chunks
+    s0 = rng.random((n, cfg["feat"])).astype(np.float32)
+    h0 = rng.random(n).astype(np.float32)
+    act = rng.normal(0, 1, (n, H, 3)).astype(np.float32)
+    act[..., 2] = rng.random((n, H))
+    out = agent.imagine(s0, h0, act, latents=True, frames=True)
+    P = ref.params_from_flat(agent.params(), agent.param_layout(), cfg)
+    s = torch.tensor(s0, dtype=torch.float64)
+    h = torch.tensor(h0, dtype=torch.float64)
+    ex = torch.tensor(ref.executed(act))
+    r = cfg["pred_img"] // 2
+    with torch.no_grad():
+        for k in range(H):
+            s, h = ref.dyn_step(P, s, h, ex[:, k])
+            np.testing.assert_allclose(out["hunger"][:, k], h.numpy(), rtol=1e-4, atol=1e-5)
+            np.testing.assert_allclose(out["latents"][:, k], s.numpy(), rtol=1e-4, atol=1e-4)
+            np.testing.assert_allclose(out["frames"][:, k].reshape(n, -1), ref.dyn_decode(P, s).numpy(),
+                                       rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(agent.decode(s0).reshape(n, -1),
+                                   ref.dyn_decode(P, torch.tensor(s0, dtype=torch.float64)).numpy(),
+                                   rtol=1e-4, atol=1e-4)
+    assert out["frames"].shape == (n, H, r, r, 3)
+
+
+def test_rollout_set_action():
+    """Replacing the stored actions (planner as actor) by the same actions changes nothing; other actions change
+    the action-conditioned losses."""
+    agent_lib.set_threads(4)
+    agent = agent_lib.Agent(dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, inv_hidden=6, dyn_hidden=8),
+                            seed=12)
+    pc = dict(use_ppo=0, pred_coef=1.0, drive_coef=1.0, inv_coef=1.0, dyn_coef=1.0, dyn_h_coef=1.0,
+              dyn_x_coef=1.0, dyn_horizon=3)
+    seqs = np.arange(6)
+    ro, data, lv = make_rollout(agent)
+    base, st0 = agent.debug_grads(ro, lv, pc, seqs)
+    ro_same, data2, _ = make_rollout(agent)
+    for t in range(data2["action"].shape[0]):
+        ro_same.set_action(t, data2["action"][t])
+    same, st1 = agent.debug_grads(ro_same, lv, pc, seqs)
+    assert same == base and st1 == st0
+    ro_other, data3, _ = make_rollout(agent)
+    for t in range(data3["action"].shape[0]):
+        a = data3["action"][t].copy()
+        a[:, :2] *= -1
+        ro_other.set_action(t, a)
+    other, st2 = agent.debug_grads(ro_other, lv, pc, seqs)
+    assert other != base and st2["inv_mse"] != st0["inv_mse"]

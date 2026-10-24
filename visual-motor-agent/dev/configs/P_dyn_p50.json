@@ -1,0 +1,34 @@
+{
+  "name": "P_dyn_p50",
+  "description": "Reward-free babbling (as P_babble_inv) plus latent dynamics for planning: transition s' = s + MLP([s, a]) on the visual feature, next-hunger head and coarse 16x16 decoder, trained on chains of up to 7 imagined steps. click probability 0.5 as in vm-00001 (coverage control).",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "pred_coef": 1.0,
+    "drive_coef": 1.0,
+    "pred_changed_weight": 10.0,
+    "minibatches": 32,
+    "lr": 0.001,
+    "inv_coef": 0.1,
+    "dyn_coef": 1.0,
+    "dyn_h_coef": 10.0,
+    "dyn_x_coef": 1.0,
+    "dyn_horizon": 7
+  },
+  "model": {
+    "coord": 1,
+    "pb": 32,
+    "pred_residual": 1,
+    "pred_skip": 1,
+    "ctx": 8,
+    "inv_hidden": 128,
+    "dyn_hidden": 256
+  },
+  "train": {
+    "lr_anneal": false
+  }
+}

@@ -22,15 +22,17 @@ class VMConfig(C.Structure):
     _fields_ = [(n, C.c_int) for n in ("img", "c1", "c2", "c3", "feat", "d_model", "n_layer", "n_head", "d_ff",
                                        "ctx", "pred_img", "pc1", "pc2", "pred_hidden", "use_prev_reward")]
     _fields_ += [("logstd_init", C.c_float), ("coord", C.c_int), ("pb", C.c_int), ("pred_residual", C.c_int),
-                 ("pred_skip", C.c_int), ("inv_hidden", C.c_int)]
+                 ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int)]
 
 
 class PPOConfig(C.Structure):
     _fields_ = [(n, C.c_float) for n in ("gamma", "lam", "clip_eps", "vf_coef", "ent_coef", "pred_coef",
                                          "drive_coef", "pred_backbone_scale", "max_grad_norm", "lr", "beta1",
                                          "beta2", "adam_eps", "weight_decay", "target_kl", "reward_scale",
-                                         "vclip_eps", "pred_changed_weight", "inv_coef")]
-    _fields_ += [(n, C.c_int) for n in ("epochs", "minibatches", "use_ppo", "norm_adv", "clip_vloss")]
+                                         "vclip_eps", "pred_changed_weight", "inv_coef", "dyn_coef", "dyn_h_coef",
+                                         "dyn_x_coef")]
+    _fields_ += [(n, C.c_int) for n in ("epochs", "minibatches", "use_ppo", "norm_adv", "clip_vloss", "dyn_horizon",
+                                        "dyn_h_horizon")]
 
 
 class PPOStats(C.Structure):
@@ -38,18 +40,20 @@ class PPOStats(C.Structure):
                                          "pred_mse", "pred_changed_mse", "copy_mse", "copy_changed_mse",
                                          "changed_frac", "drive_mse", "grad_norm", "std_x", "std_y", "click_p",
                                          "value_mean", "return_mean", "adv_mean", "adv_std", "gn_backbone",
-                                         "gn_policy", "gn_pred", "inv_mse", "inv_r2")]
+                                         "gn_policy", "gn_pred", "inv_mse", "inv_r2", "dyn_mse", "dyn_hunger_mse",
+                                         "dyn_recon_mse")]
     _fields_ += [(n, C.c_int) for n in ("epochs_done", "updates_done")]
 
 
 DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer=2, n_head=4, d_ff=512, ctx=32,
                      pred_img=32, pc1=16, pc2=32, pred_hidden=256, use_prev_reward=0, logstd_init=-0.5, coord=0, pb=32,
-                     pred_residual=0, pred_skip=0, inv_hidden=0)
+                     pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
                    weight_decay=0.0, target_kl=0.0, reward_scale=0.1, vclip_eps=0.2, pred_changed_weight=0.0, inv_coef=0.0,
-                   epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0)
+                   dyn_coef=0.0, dyn_h_coef=0.0, dyn_x_coef=0.0,
+                   epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0, dyn_horizon=0, dyn_h_horizon=0)
 
 
 def _struct(cls, values):
@@ -86,11 +90,14 @@ def _load_lib(path=LIB_PATH):
         "vm_rollout_create": (vp, [vp, i32, i32]),
         "vm_rollout_free": (None, [vp]),
         "vm_rollout_outcome": (None, [vp, i32, vp, vp, vp, vp]),
+        "vm_rollout_set_action": (None, [vp, i32, vp]),
         "vm_update": (None, [vp, vp, vp, C.POINTER(PPOConfig), C.POINTER(PPOStats)]),
         "vm_debug_grads": (f32, [vp, vp, vp, C.POINTER(PPOConfig), vp, i32, C.POINTER(PPOStats)]),
         "vm_forward": (None, [vp, i32, i32, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp]),
         "vm_encode": (None, [vp, i32, vp, vp, vp]),
         "vm_inverse": (None, [vp, i32, vp, vp, vp]),
+        "vm_imagine": (None, [vp, i32, i32, vp, vp, vp, vp, vp, vp]),
+        "vm_decode": (None, [vp, i32, vp, vp]),
     }
     for name, (res, args) in sig.items():
         fn = getattr(lib, name)
@@ -169,6 +176,12 @@ class Rollout:
         nd = _arr(next_drives, np.float32)
         lib().vm_rollout_outcome(self.handle, t, _ptr(r, np.float32), _ptr(d, np.uint8), _ptr(ni, np.uint8),
                                  _ptr(nd, np.float32))
+
+    def set_action(self, t, action):
+        """Replace the stored action of step t ([N,3] raw) by one chosen outside the policy (needs ppo.use_ppo=0)."""
+        a = _arr(action, np.float32)
+        assert a.shape == (self.N, 3)
+        lib().vm_rollout_set_action(self.handle, t, _ptr(a, np.float32))
 
     def close(self):
         if getattr(self, "handle", None):
@@ -313,6 +326,33 @@ class Agent:
         a1 = _arr(img1, np.uint8)
         out = np.empty((a0.shape[0], 2), np.float32)
         lib().vm_inverse(self.handle, a0.shape[0], _ptr(a0, np.uint8), _ptr(a1, np.uint8), _ptr(out, np.float32))
+        return out
+
+    def imagine(self, s0, h0, actions, latents=False, frames=False):
+        """Latent-dynamics rollouts (dyn_hidden > 0): s0 [n,feat] visual features, h0 [n] hunger, actions [n,H,3] raw.
+        Returns dict(hunger [n,H], optional latents [n,H,feat], frames [n,H,r,r,3] with r = pred_img // 2)."""
+        s0 = _arr(s0, np.float32)
+        h0 = _arr(h0, np.float32)
+        act = _arr(actions, np.float32)
+        n, H = act.shape[:2]
+        c = self.config
+        r = c["pred_img"] // 2
+        out = dict(hunger=np.empty((n, H), np.float32))
+        if latents:
+            out["latents"] = np.empty((n, H, c["feat"]), np.float32)
+        if frames:
+            out["frames"] = np.empty((n, H, r, r, 3), np.float32)
+        lib().vm_imagine(self.handle, n, H, _ptr(s0, np.float32), _ptr(h0, np.float32), _ptr(act, np.float32),
+                         _ptr(out["hunger"], np.float32), _ptr(out.get("latents"), np.float32),
+                         _ptr(out.get("frames"), np.float32))
+        return out
+
+    def decode(self, latents):
+        """Coarse frames [n,r,r,3] (float) decoded from latents [n,feat] (dyn_hidden > 0)."""
+        s = _arr(latents, np.float32)
+        r = self.config["pred_img"] // 2
+        out = np.empty((s.shape[0], r, r, 3), np.float32)
+        lib().vm_decode(self.handle, s.shape[0], _ptr(s, np.float32), _ptr(out, np.float32))
         return out
 
     def close(self):

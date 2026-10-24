@@ -38,7 +38,78 @@ def param_shapes(cfg):
         "iv1w": (cfg.get("inv_hidden", 0), 2 * feat), "iv1b": (cfg.get("inv_hidden", 0),),
         "iv2w": (2 if cfg.get("inv_hidden", 0) else 0, cfg.get("inv_hidden", 0)),
         "iv2b": (2 if cfg.get("inv_hidden", 0) else 0,),
+        **dyn_shapes(cfg),
     }
+
+
+def dyn_shapes(cfg):
+    dh, feat = cfg.get("dyn_hidden", 0), cfg["feat"]
+    rpx = (cfg["pred_img"] // 2) ** 2 * 3
+    on = 1 if dh else 0
+    return {"dt1w": (dh, feat + 3), "dt1b": (dh,), "dt2w": (feat * on, dh), "dt2b": (feat * on,),
+            "dh1w": (dh, feat + 4), "dh1b": (dh,), "dh2w": (on, dh), "dh2b": (on,),
+            "dx1w": (dh, feat), "dx1b": (dh,), "dx2w": (rpx * on, dh), "dx2b": (rpx * on,)}
+
+
+def executed(a):
+    """Raw actions [..., 3] -> executed (clipped dx, dy; click 0/1), float64 numpy."""
+    a = np.asarray(a, np.float64)
+    return np.stack([np.clip(a[..., 0], -1, 1), np.clip(a[..., 1], -1, 1), (a[..., 2] > 0.5).astype(np.float64)], -1)
+
+
+def dyn_step(P, s, h, a):
+    """One latent-dynamics step: latent s [..., feat], hunger h [...], executed action a [..., 3] ->
+    (next latent, predicted next hunger)."""
+    hh = torch.sigmoid(F.linear(F.relu(F.linear(torch.cat([s, h[..., None], a], -1), P["dh1w"], P["dh1b"])),
+                                P["dh2w"], P["dh2b"]))[..., 0]
+    s2 = s + F.linear(F.relu(F.linear(torch.cat([s, a], -1), P["dt1w"], P["dt1b"])), P["dt2w"], P["dt2b"])
+    return s2, hh
+
+
+def dyn_decode(P, s):
+    """Coarse decoder: latent [..., feat] -> flattened HWC frame [..., (pred_img/2)^2 * 3]."""
+    return F.linear(F.relu(F.linear(s, P["dx1w"], P["dx1b"])), P["dx2w"], P["dx2b"])
+
+
+def dyn_losses(P, cfg, pc, batch, vf):
+    """Latent-dynamics losses (sums over chain steps / tokens divided by S*T), as in C++ seq_dyn.
+
+    The heads are trained on top of the encoder: v is detached everywhere. Chains start at every token t; step k
+    uses the action of token j = t + k - 1 and stops at the horizon, at the end of the sequence or after a terminal
+    step. Latent targets are the (detached) features of token j + 1 when
+    it continues the episode; hunger targets next_drives[j]; decoder targets next_small[j] downsampled by 2, plus
+    every token's own frame for its real latent. With dyn_h_horizon > 0, only the first dyn_h_horizon steps of a
+    chain train the hunger head.
+    """
+    vf = vf.detach()
+    S, T, _ = vf.shape
+    dt = vf.dtype
+    H = min(pc["dyn_horizon"], T)
+    Hh = pc.get("dyn_h_horizon", 0)          # chain steps that train the hunger head (0 = all)
+    es = np.asarray(batch["ep_start"], bool)
+    ex = torch.tensor(executed(batch["action"]), dtype=dt)
+    drv = torch.tensor(np.asarray(batch["drives"], np.float64), dtype=dt)
+    nd = torch.tensor(np.asarray(batch["next_drives"], np.float64), dtype=dt)
+    tgt_next = torch.tensor(downsample_u8(np.asarray(batch["next_small"]), 2), dtype=dt).reshape(S, T, -1) / 255.0
+    cur = downsample_u8(downsample_u8(np.asarray(batch["images"]), cfg["img"] // cfg["pred_img"]), 2)
+    tgt_cur = torch.tensor(cur, dtype=dt).reshape(S, T, -1) / 255.0
+    lat = hun = rec = torch.zeros((), dtype=dt)
+    for si in range(S):
+        for t in range(T):
+            s = vf[si, t]
+            for k in range(1, H + 1):
+                j = t + k - 1
+                if j > T - 1 or (k > 1 and es[si, j]):
+                    break
+                s, hh = dyn_step(P, s, drv[si, j, 0], ex[si, j])
+                if j + 1 <= T - 1 and not es[si, j + 1]:
+                    lat = lat + ((s - vf[si, j + 1].detach()) ** 2).mean()
+                if Hh <= 0 or k <= Hh:
+                    hun = hun + (hh - nd[si, j, 0]) ** 2
+                rec = rec + ((dyn_decode(P, s) - tgt_next[si, j]) ** 2).mean()
+            rec = rec + ((dyn_decode(P, vf[si, t]) - tgt_cur[si, t]) ** 2).mean()
+    n = S * T
+    return lat / n, hun / n, rec / n
 
 
 def params_from_flat(flat, layout, cfg, dtype=torch.float64):
@@ -241,4 +312,9 @@ def ppo_loss(P, cfg, pc, batch):
         inv = (valid * 0.5 * ((o - tgt) ** 2).sum(-1)).sum() / (S * T)
         total = total + pc["inv_coef"] * inv
         terms.update(inv=inv.item())
+    dyn_on = pc.get("dyn_coef", 0) > 0 or pc.get("dyn_h_coef", 0) > 0 or pc.get("dyn_x_coef", 0) > 0
+    if cfg.get("dyn_hidden", 0) > 0 and pc.get("dyn_horizon", 0) > 0 and dyn_on:
+        lat, hun, rec = dyn_losses(P, cfg, pc, batch, out["vf"])
+        total = total + pc["dyn_coef"] * lat + pc["dyn_h_coef"] * hun + pc["dyn_x_coef"] * rec
+        terms.update(dyn=lat.item(), dyn_hunger=hun.item(), dyn_recon=rec.item())
     return total, terms

@@ -104,6 +104,62 @@ the same state and compares predicted and true outcomes of counterfactual action
 - predicted hunger relief
 - linear probes of cursor and target position from z
 
+## Latent dynamics and planning (vm-00002)
+
+`model.dyn_hidden > 0` adds a world model on the encoder's visual feature v (128-d):
+- a transition `v' = v + MLP([v, a])`;
+- a hunger head `h' = sigmoid(MLP([v, h, a]))`;
+- a coarse decoder `MLP(v) -> (pred_img/2)^2 x 3` frame.
+
+It is trained during babbling on chains of up to `ppo.dyn_horizon` imagined steps. The losses
+(`ppo.dyn_coef`, `dyn_h_coef`, `dyn_x_coef`) compare the chains with the encoder's latents of the
+real future frames, the real next hunger and the real next frames. `ppo.dyn_h_horizon` limits which chain steps train
+the hunger head (0 = all; 1 = only the first step, from the real latent). Chains stop at a terminal
+step, so the imagined hunger *after* a successful click is never trained. After a failed click the
+episode goes on, so that part is learned.
+
+The heads never change the encoder (v is detached). With gradients into the encoder, the features
+collapsed: 32 of 128 dims active after 65k steps, and the cursor was no longer decodable.
+
+`train.click_bias` sets the initial click-logit bias of a fresh agent. During babbling the policy
+stays frozen, so −2.197 means click probability 0.1.
+
+```bash
+./venv/bin/python train.py --config configs/P_dyn.json --exp 2 --set train.threads=64
+./venv/bin/python plan.py RUN_DIR --ckpt ckpt_01048576.bin            # CEM planner on 128 test episodes
+./venv/bin/python plan.py RUN_DIR --ckpts 0 262144 1048576            # -> RUN_DIR/plan/ckpt_*.json
+./venv/bin/python plan.py RUN_DIR --policy random --click-p 0.1       # baseline on the same episodes
+./venv/bin/python analyze_imagination.py RUN_DIR --ckpt ckpt_01048576.bin   # imagined vs real rollouts
+```
+
+`plan.py` acts without reward: at every step it imagines sampled action sequences with the latent
+model and picks the one with the lowest summed predicted hunger (cross-entropy method). `--beta`
+colors the sampling noise (iCEM); `--random-cost` is the control with uninformative costs.
+`make_video.py --planner RUN` adds part 4, the planner at each checkpoint with its planned moves
+drawn.
+
+`analyze_imagination.py` reads the imagined cursor by retrieval: the nearest latent among frames of
+the same circle with the cursor on a 2-px grid. A linear probe misreads imagined latents that leave
+the manifold of real ones. It also runs four tests:
+- **approach:** a straight path to the circle, then a click;
+- **edge:** imagined relief of one click at a signed distance from the circle's edge;
+- **straight paths:** imagined vs true displacement;
+- **over the circle:** one imagined move with the cursor on the background vs over the circle.
+
+`analyze_planner.py RUN --ckpt CK` traces the planner on the test episodes: success by starting
+distance, and per failed episode the closest approach, clicks outside the circle and the relief its
+plan expected.
+
+**Learning from its own plans (vm-00004).** With `train.actor=planner`, the planner picks every
+action of a reward-free run (`ppo.use_ppo=0`, drives on), using the current weights. The model
+trains on that experience with the usual prediction losses; `vm_rollout_set_action` stores the
+planner's action in place of the policy's. Run it from a babbler with `--init`.
+
+```bash
+./venv/bin/python train.py --config configs/P_dyn.json --init BABBLER/ckpt_02097152.bin --exp 4 \
+    --set train.actor=planner --set train.eval_every=0
+```
+
 ## Performance (this machine: 128 vCPUs, SSE4.2, no GPU)
 
 | | 64 threads |
@@ -123,4 +179,5 @@ the same state and compares predicted and true outcomes of counterfactual action
 | `world/` | CircleWorld, recorder, browser demo |
 | `train.py`, `run_queue.py`, `output_name.py` | training |
 | `evaluate.py`, `analyze_dynamics.py`, `dynamics_over_training.py`, `compare_dynamics.py`, `plot_runs.py`, `record_episodes.py`, `make_video.py` | evaluation and analysis |
+| `plan.py`, `analyze_imagination.py`, `analyze_planner.py` | acting without reward (CEM planner on the latent model); imagination accuracy; planner failures |
 | `reference/torch_reference.py`, `tests/` | PyTorch reference and tests |

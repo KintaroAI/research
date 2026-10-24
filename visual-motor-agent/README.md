@@ -45,6 +45,9 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | # | Experiment | Status | Key result |
 |---|---|---|---|
 | [00001](00001-pixel-agent-and-babbling/README.md) | World + C++ agent; sparse-reward PPO; reward-free motor babbling; transfer | Complete | Reward-free babbling (forward + inverse prediction, random policy, no reward) learns: <br>• movement semantics on the background (retrieval 0.91 vs 0.11 chance; over the circle, not yet) <br>• the click contingency (circle vanishes on inside clicks 0.97, outside 0.04) <br>• hunger relief <br>Replicated over 2 seeds. PPO initialized from the babbler reaches 95% success 3.3–3.5× faster (2 seeds). |
+| [00002](00002-acting-without-reward/README.md) | Acting without reward: latent world model from babbling + CEM planner on predicted hunger | Complete (pending tag) | The planner hits 89% of test episodes (median 11 steps) using only the babbler's model and its hunger. The same planner with random costs hits 23%; random actions 46–54%; PPO with reward 100%. Failures: the planner exploits the blurred inside/outside edge of the hunger head and clicks just outside the circle. |
+| [00003](00003-small-targets-drives-coordconv/README.md) | Small targets (radius 4–8) transfer; arms B, E, F, D; plain architecture seeds | Complete (pending tag) | • Radius 4–8: babbler-initialized PPO reaches 95% success 3.9–4.1× faster (2 seeds); from scratch, PPO sits near the random level for about 0.5M steps. <br>• The hunger cost and prediction speed up PPO (D: 262k vs A 508–590k); bonuses alone do not (one seed per arm). <br>• CoordConv slows pure PPO 2–3× (plain 180–262k vs 508–590k, 3 seeds each). |
+| [00004](00004-learning-from-own-plans/README.md) | Learning from its own plans: the world model keeps training on the planner's experience, with the same reward-free losses | Complete (pending tag) | From two babblers, the planner's own experience brings it to 100% hits in a median of 5–6 steps, PPO's level, with no reward. It hits 384/384 and 379/384 over the last three checkpoints. Babbling for as long: 338/384 and 308/384. Mechanism: failed near-edge clicks enter the training chains, so the imagined relief after them fades. A hunger head trained only on real latents is less stable. |
 
 ## Open Questions
 
@@ -55,11 +58,13 @@ of, reward. Then test whether that knowledge helps it learn the task.
   - Inverse dynamics speeds it up 2–4×.
 - **Partly answered.** Babbling pre-training transfers: PPO is 3.3–3.5× faster (2 seeds). Open: how much of the gain comes from the encoder (cursor localization) vs the
   decoder/latent, and does it hold for small targets?
-- Can the learned forward + drive model *act* without reward, by planning to minimize predicted
-  hunger? One-step predictions are accurate (0.8 px), but pixel-space rollouts diverge after one
-  step, so latent dynamics are needed.
+- **Answered: yes (vm-00002).** The learned model can *act* without reward, by planning to minimize
+  predicted hunger. A latent dynamics model trained during babbling supports a CEM planner: 89% hits
+  against 23% for the control. Open: why the planner falls short of 100% (it exploits model errors at
+  the circle's edge), and whether learning from its own failed clicks closes the gap. **It does**
+  (vm-00004, two babblers): 100% hits in a median of 5–6 steps.
 - At radius 12–16 the task is close to non-sparse for random clicking. At radius 4–8, PPO stays at
   the random level for about 0.6M steps before learning (vm-00001 R5). Which conditions make
   exploration genuinely hard (smaller targets, short episodes, click cost)?
-- Drives as inputs/costs vs exploration bonuses: confounded unless controlled (plan §9). Runs B, D,
-  E and F are configured but not yet run on the final architecture.
+- Drives as inputs/costs vs exploration bonuses (vm-00003, one seed per arm): the hunger cost speeds
+  up PPO, and bonuses do not. More seeds are needed.
