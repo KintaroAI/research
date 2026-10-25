@@ -541,6 +541,25 @@ __global__ void k_adamw(float* P, const float* G, float* m, float* v, long n, fl
     }
 }
 
+// Forward outputs per token: o[b*4 + 0..1] = tanh(pi[0..1]), o[b*4 + 2] = sigmoid(pi[2]), o[b*4 + 3] = value
+__global__ void k_fwd_out(const float* pi, const float* z, const float* vw, const float* vb, float* o, int B, int d) {
+    const int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B) return;
+    float v = vb[0];
+    for (int i = 0; i < d; i++) v += z[(long)b * d + i] * vw[i];
+    o[b * 4 + 0] = tanhf(pi[b * 3]); o[b * 4 + 1] = tanhf(pi[b * 3 + 1]);
+    o[b * 4 + 2] = sigmoid_(pi[b * 3 + 2]); o[b * 4 + 3] = v;
+}
+// Predicted frames, channel-major [3, B, P] -> HWC [B, P, 3]
+__global__ void k_to_hwc(const float* cm, float* hwc, int B, int P) {
+    const long n = 3L * B * P;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int c = i % 3;
+        const long bp = i / 3;
+        hwc[i] = cm[(long)c * B * P + bp];
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------------------------------------------
@@ -559,7 +578,7 @@ struct Model {
     float *P = nullptr, *G = nullptr, *m = nullptr, *v = nullptr;
     long step = 0;
     cublasHandle_t cb = nullptr;
-    int S = 0, B = 0;
+    int S = 0, T = 0, B = 0;   // the batch: S sequences of T <= ctx steps
     // batch
     uint8_t *img = nullptr, *ns = nullptr, *cs = nullptr, *nfull = nullptr;
     int *start = nullptr, *pos = nullptr;
@@ -568,6 +587,7 @@ struct Model {
     // activations and gradients
     Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, xin, ln1, ln1m, ln1r, qkv, att, atty, res1, ln2, ln2m, ln2r,
         fch, fchg, res2, lnf, lnfm, lnfr, pih, pi, pin, ph1, ph2, ub, pdrv, d1in, dc1, d2in, dc2, pout;
+    Buf fout, fhwc;   // forward outputs: [B, 4] mu, click p, value; predicted frames HWC
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
         dtin, dvf, da3, da2, da1, dY;
     double* acc = nullptr;    // [0] weighted frame SE, [1] frame SE, [2] drive SE, [3] -logp, [4] click p, [5..7] norms,
@@ -664,59 +684,71 @@ void vmc_free(void* h) {
     delete M;
 }
 
+}   // extern "C"
+
+// The inputs of S sequences of T steps (ep_start and action may be NULL: no episode starts after t = 0, zero
+// actions); the current frames downsampled on the device.
+static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const float* drives, const float* prev_action,
+                         const float* prev_reward, const uint8_t* ep_start, const float* action) {
+    const Dims& D = M->D;
+    if (S < 1 || T < 1 || T > D.K) return -1;
+    const int B = S * T;
+    alloc_batch(M, B);
+    M->S = S; M->T = T; M->B = B;
+    std::vector<int> start(B), pos(B);
+    for (int s = 0; s < S; s++)
+        for (int t = 0; t < T; t++) {
+            const int b = s * T + t;
+            const bool st = t == 0 || M->cfg.one_frame || (ep_start && ep_start[b]);
+            start[b] = st ? b : start[b - 1];
+            pos[b] = b - start[b];
+        }
+    CK(cudaMemcpy(M->img, images, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->start, start.data(), B * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->pos, pos.data(), B * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->drv, drives, B * 2 * sizeof(float), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->pa, prev_action, B * 3 * sizeof(float), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->pr, prev_reward, B * sizeof(float), cudaMemcpyHostToDevice));
+    if (action) CK(cudaMemcpy(M->act, action, B * 3 * sizeof(float), cudaMemcpyHostToDevice));
+    else CK(cudaMemset(M->act, 0, B * 3 * sizeof(float)));
+    k_downsample<<<GRID((long)B * D.small_px)>>>(M->img, M->cs, B, D.img);
+    CK(cudaGetLastError());
+    return 0;
+}
+
+extern "C" {
+
 int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, const float* prev_action,
                   const float* prev_reward, const uint8_t* ep_start, const float* action, const uint8_t* next_small,
                   const float* next_drives, int next_full) {
     Model* M = (Model*)h;
     const Dims& D = M->D;
-    const int K = D.K, B = S * K;
-    alloc_batch(M, B);
-    M->S = S; M->B = B;
-    std::vector<int> start(B), pos(B);
-    for (int s = 0; s < S; s++)
-        for (int t = 0; t < K; t++) {
-            const int b = s * K + t;
-            const bool st = t == 0 || M->cfg.one_frame || ep_start[b];
-            start[b] = st ? b : start[b - 1];
-            pos[b] = b - start[b];
-        }
-    CK(cudaMemcpy(M->img, images, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
+    if (upload_inputs(M, S, D.K, images, drives, prev_action, prev_reward, ep_start, action)) return -1;
+    const int B = M->B;
     if (next_full) {   // full-size next frames: downsampled here
         CK(cudaMemcpy(M->nfull, next_small, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
         k_downsample<<<GRID((long)B * D.small_px)>>>(M->nfull, M->ns, B, D.img);
     } else {
         CK(cudaMemcpy(M->ns, next_small, (size_t)B * D.small_px, cudaMemcpyHostToDevice));
     }
-    CK(cudaMemcpy(M->start, start.data(), B * sizeof(int), cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(M->pos, pos.data(), B * sizeof(int), cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(M->drv, drives, B * 2 * sizeof(float), cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(M->pa, prev_action, B * 3 * sizeof(float), cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(M->pr, prev_reward, B * sizeof(float), cudaMemcpyHostToDevice));
-    CK(cudaMemcpy(M->act, action, B * 3 * sizeof(float), cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->ndrv, next_drives, B * 2 * sizeof(float), cudaMemcpyHostToDevice));
-    k_downsample<<<GRID((long)B * D.small_px)>>>(M->img, M->cs, B, D.img);
     CK(cudaGetLastError());
     return 0;
 }
 
-int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
-    Model* M = (Model*)h;
-    const PPOConfig& pc = *pcp;
-    if (pc.use_ppo || pc.inv_coef > 0.f || pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f) {
-        fprintf(stderr, "vm_cuda: only the prediction-only update (use_ppo=0, no inverse or latent dynamics)\n");
-        return -1;
-    }
+}   // extern "C"
+
+// The forward pass of the uploaded batch (train = false: up to the outputs; the prediction head and decoder only
+// if want_pred), or the forward pass, the losses and the gradients (train = true).
+static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred) {
     if (!M->B) return -1;
     const Dims& D = M->D;
-    const int B = M->B, K = D.K, d = D.d, L = D.L;
+    const int B = M->B, K = M->T, d = D.d, L = D.L;   // K: the batch's sequence length (ctx when training)
     const float* P = M->P;
     float* G = M->G;
     const long* off = M->off;
     const int P1 = D.h1 * D.h1, P2 = D.h2 * D.h2, P3 = D.h3 * D.h3, q0 = D.p0 * D.p0, q1 = D.p1 * D.p1;
     const int sp = D.pimg * D.pimg;
-    CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
-    CK(cudaMemsetAsync(M->acc, 0, 10 * sizeof(double)));
-    M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef;
 
     // ---- encoder (all frames) ----
     float* x0 = M->x0.get((size_t)B * 5 * D.img * D.img);
@@ -787,11 +819,13 @@ int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
     float* ph2 = M->ph2.get((size_t)B * D.pred_flat);
     float* ub = M->ub.get((size_t)B * D.pb);
     float* pdrv = M->pdrv.get((size_t)B * 2);
+    if (want_pred) {
     k_pin<<<GRID((long)B * D.pin_dim)>>>(lnf, M->act, pin, B, d);
     linear(M, ph1, pin, P + off[PR1W], P + off[PR1B], B, D.pin_dim, D.ph, 1);
     linear(M, ph2, ph1, P + off[PR2W], P + off[PR2B], B, D.ph, D.pred_flat, 1);
     linear(M, ub, ph1, P + off[PBW], P + off[PBB], B, D.ph, D.pb, 1);
     linear(M, pdrv, ph1, P + off[DRW], P + off[DRB], B, D.ph, 2, 2);
+    }
 
     // ---- decoder (all frames, channel-major) ----
     float* d1in = M->d1in.get((size_t)D.d1_in * B * q0);
@@ -799,6 +833,7 @@ int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
     float* d2in = M->d2in.get((size_t)D.d2_in * B * q1);
     float* dc2 = M->dc2.get((size_t)3 * KK * B * q1);
     float* pout = M->pout.get((size_t)3 * B * sp);
+    if (want_pred) {
     k_dec1_in<<<GRID((long)D.d1_in * B * q0)>>>(ph2, ub, a3, pin, d1in, B, D.p0, D.pc2, D.pb, D.c3, d);
     gemm(M, true, false, D.pc1 * KK, B * q0, D.d1_in, P + off[D1W], D.pc1 * KK, d1in, B * q0, 0.f, dc1, B * q0);
     k_col2im<<<GRID((long)B * D.pc1 * q1)>>>(dc1, D.pc1, D.p1, B, d2in, q1, (long)B * q1, P + off[D1B], 1);
@@ -806,6 +841,12 @@ int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
     gemm(M, true, false, 3 * KK, B * q1, D.d2_in, P + off[D2W], 3 * KK, d2in, B * q1, 0.f, dc2, B * q1);
     k_col2im<<<GRID((long)B * 3 * sp)>>>(dc2, 3, D.pimg, B, pout, sp, (long)B * sp, P + off[D2B], 0);
     k_residual<<<GRID(3L * B * sp)>>>(pout, M->cs, B, sp);
+    }
+    if (!train) { CK(cudaGetLastError()); return 0; }
+    const PPOConfig& pc = *pcp;
+    CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
+    CK(cudaMemsetAsync(M->acc, 0, 10 * sizeof(double)));
+    M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef;
 
     // ---- losses ----
     const float inv_B = 1.0f / B;
@@ -924,6 +965,54 @@ int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
     gemm(M, false, true, D.c1, 5 * KK, B * P1, dY, B * P1, cols1, B * P1, 1.f, G + off[C1W], 5 * KK);
     k_rowsum<<<D.c1, 256>>>(dY, (long)B * P1, G + off[C1B]);
     CK(cudaGetLastError());
+    return 0;
+}
+
+extern "C" {
+
+int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
+    Model* M = (Model*)h;
+    const PPOConfig& pc = *pcp;
+    if (pc.use_ppo || pc.inv_coef > 0.f || pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f) {
+        fprintf(stderr, "vm_cuda: only the prediction-only update (use_ppo=0, no inverse or latent dynamics)\n");
+        return -1;
+    }
+    if (M->T != M->D.K) { fprintf(stderr, "vm_cuda: training sequences are ctx steps (vmc_set_batch)\n"); return -1; }
+    return run_model(M, pcp, true, true);
+}
+
+int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drives, const float* prev_action,
+                const float* prev_reward, const uint8_t* ep_start, const float* pred_actions, float* z, float* value,
+                float* mu, float* click_p, float* pred_frames, float* pred_drives) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (upload_inputs(M, S, T, images, drives, prev_action, prev_reward, ep_start, pred_actions)) return -1;
+    const bool want_pred = pred_actions != nullptr;
+    if (run_model(M, nullptr, false, want_pred)) return -1;
+    const int B = M->B, sp = D.pimg * D.pimg;
+    float* o = M->fout.get((size_t)B * 4);
+    k_fwd_out<<<(B + 127) / 128, 128>>>(M->pi.p, M->lnf.p, M->P + M->off[VW], M->P + M->off[VB], o, B, D.d);
+    std::vector<float> ho((size_t)B * 4);
+    CK(cudaMemcpy(ho.data(), o, ho.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    for (int b = 0; b < B; b++) {
+        if (mu) { mu[2 * b] = ho[4 * b]; mu[2 * b + 1] = ho[4 * b + 1]; }
+        if (click_p) click_p[b] = ho[4 * b + 2];
+        if (value) value[b] = ho[4 * b + 3];
+    }
+    if (z) CK(cudaMemcpy(z, M->lnf.p, (size_t)B * D.d * sizeof(float), cudaMemcpyDeviceToHost));
+    if (want_pred && pred_frames) {
+        float* f = M->fhwc.get((size_t)B * 3 * sp);
+        k_to_hwc<<<GRID(3L * B * sp)>>>(M->pout.p, f, B, sp);
+        CK(cudaMemcpy(pred_frames, f, (size_t)B * 3 * sp * sizeof(float), cudaMemcpyDeviceToHost));
+    }
+    if (want_pred && pred_drives) CK(cudaMemcpy(pred_drives, M->pdrv.p, (size_t)B * 2 * sizeof(float), cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+int vmc_get_range(void* h, long offset, long n, float* out) {
+    Model* M = (Model*)h;
+    if (offset < 0 || n < 0 || offset + n > M->n_params) return -1;
+    CK(cudaMemcpy(out, M->P + offset, n * sizeof(float), cudaMemcpyDeviceToHost));
     return 0;
 }
 

@@ -129,3 +129,45 @@ def test_rollout_matches_cpp_rollout(setup):
     m.close()
     assert abs(st["loss"] - loss_cpu) < 1e-4 * max(1.0, abs(loss_cpu))
     compare(agent, g_cpu, g_gpu, 1e-3)
+
+
+@pytest.mark.parametrize("T", [1, 5, 8])
+@pytest.mark.parametrize("pred", [False, True], ids=["act", "with_prediction"])
+def test_forward_matches_cpp(setup, T, pred):
+    """The GPU forward against vm_forward: windows of T <= ctx steps, episodes starting inside them."""
+    agent, ro, data, lv, N = setup
+    T = min(T, agent.config["ctx"])
+    sl = slice(3, 3 + T)                       # windows that do not start at a block boundary
+    x = [np.ascontiguousarray(data[k][sl].swapaxes(0, 1)) for k in ("images", "drives", "prev_action", "prev_reward",
+                                                                    "ep_start")]
+    x[4] = x[4].copy()
+    x[4][:, 0] = 1
+    pa = np.ascontiguousarray(data["action"][sl].swapaxes(0, 1)) if pred else None
+    ref = agent.forward(*x, pred_actions=pa)
+    m = cuda_lib.CudaModel(agent)
+    out = m.forward(*x, pred_actions=pa)
+    m.close()
+    assert set(out) == set(ref)
+    for k in ref:
+        np.testing.assert_allclose(out[k], ref[k], rtol=1e-4, atol=2e-5, err_msg=k)
+
+
+def test_forward_follows_updates(setup):
+    """After a GPU update, the GPU forward equals the C++ forward of the synced weights."""
+    agent, ro, data, lv, N = setup
+    a2 = agent_lib.Agent(agent.config, seed=4)
+    a2.params()[:] = agent.params()
+    a2.params_changed()
+    m = cuda_lib.CudaModel(a2)
+    nseq = N * (data["images"].shape[0] // agent.config["ctx"])
+    for _ in range(3):
+        m.set_batch(*cuda_batch(a2, data, list(range(nseq)), N))
+        m.update(dict(PC, max_grad_norm=0.5), stats=False)
+    m.sync_to(a2)
+    x = [np.ascontiguousarray(data[k][:4].swapaxes(0, 1)) for k in ("images", "drives", "prev_action", "prev_reward",
+                                                                   "ep_start")]
+    ref, out = a2.forward(*x), m.forward(*x)
+    m.close()
+    a2.close()
+    for k in ref:
+        np.testing.assert_allclose(out[k], ref[k], rtol=1e-4, atol=2e-5, err_msg=k)

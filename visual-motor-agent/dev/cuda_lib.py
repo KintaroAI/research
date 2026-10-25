@@ -9,8 +9,10 @@ them); prev_reward is the command slot.
     stats = m.update(ppo_cfg)          # forward, backward, clip, AdamW on the device
     params = m.params()                # back to the host (agent.params()[:] = params; agent.params_changed())
 
-online.py (online.device=cuda) fills a cuda_lib.Rollout like the C++ one, updates with update_rollout() and copies
-the weights back to the C++ agent, which keeps acting on the CPU. The optimizer state stays on the device.
+online.py (online.device=cuda) runs the whole lifetime on the GPU: it acts and computes the surprise with
+forward() (the outputs of agent_lib.Agent.forward), fills a cuda_lib.Rollout like the C++ one and updates with
+update_rollout(). After an update only the log-std goes back to the C++ agent (moves are sampled with it);
+sync_to(agent) copies all the weights before a checkpoint. The optimizer state stays on the device.
 """
 import ctypes as C
 import os
@@ -48,6 +50,8 @@ def lib():
             "vmc_grads": (i32, [vp, fp]),
             "vmc_set_params": (i32, [vp, fp]),
             "vmc_sync": (i32, [vp]),
+            "vmc_forward": (i32, [vp, i32, i32, u8p, fp, fp, fp, u8p, fp, fp, fp, fp, fp, fp, fp]),
+            "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
         }
         for name, (res, args) in sig.items():
             f = getattr(_lib, name)
@@ -111,6 +115,8 @@ class CudaModel:
         if not self.handle:
             raise ValueError("vm_cuda does not support this model config")
         self.ctx = agent.config["ctx"]
+        self.config = dict(agent.config)
+        self.logstd_off = {name: o for name, o, _ in layout}["logstd"]
 
     def set_batch(self, images, drives, prev_action, prev_reward, ep_start, action, next_small, next_drives):
         """next_small: [S, ctx, pred_img, pred_img, 3], or the full-size next frames (downsampled on the GPU)."""
@@ -139,18 +145,49 @@ class CudaModel:
         _check(lib().vmc_update(self.handle, C.byref(self._pc(ppo_cfg))), "update")
         return self.stats() if stats else None
 
-    def update_rollout(self, ro, ppo_cfg, agent):
-        """One update from a filled Rollout; the weights are copied back to the C++ agent. Returns the stats under
-        agent.update()'s names (inverse and latent dynamics: 0, as the C++ model reports them when absent)."""
+    def update_rollout(self, ro, ppo_cfg, agent, sync=True):
+        """One update from a filled Rollout. sync: all the weights are copied back to the C++ agent; else only the
+        log-std (for sampling moves; call sync_to(agent) before saving it). Returns the stats under agent.update()'s
+        names (inverse and latent dynamics: 0, as the C++ model reports them when absent)."""
         self.set_batch(*ro.batch())
         st = self.update(ppo_cfg)
         p = agent.params()
-        p[:] = self.params()
-        agent.params_changed()
-        off = {name: o for name, o, _ in agent.param_layout()}["logstd"]
+        if sync:
+            self.sync_to(agent)
+        else:
+            ls = np.empty(2, np.float32)
+            _check(lib().vmc_get_range(self.handle, self.logstd_off, 2, _p(ls, C.c_float)), "get_range")
+            p[self.logstd_off:self.logstd_off + 2] = ls
         st.update(inv_mse=0.0, inv_r2=0.0, dyn_mse=0.0, dyn_hunger_mse=0.0, dyn_recon_mse=0.0,
-                  std_x=float(np.exp(np.clip(p[off], -5.0, 1.0))))
+                  std_x=float(np.exp(np.clip(p[self.logstd_off], -5.0, 1.0))))
         return st
+
+    def sync_to(self, agent):
+        """Copies all the weights to the C++ agent."""
+        agent.params()[:] = self.params()
+        agent.params_changed()
+
+    def forward(self, images, drives, prev_action, prev_reward, ep_start=None, pred_actions=None):
+        """agent_lib.Agent.forward on the GPU: S sequences of T <= ctx steps ([S, T, ...] inputs)."""
+        img = np.ascontiguousarray(images, np.uint8)
+        S, T = img.shape[:2]
+        drv, pa = np.ascontiguousarray(drives, np.float32), np.ascontiguousarray(prev_action, np.float32)
+        pr = np.ascontiguousarray(prev_reward, np.float32)
+        es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
+        act = None if pred_actions is None else np.ascontiguousarray(pred_actions, np.float32)
+        d, p = self.config["d_model"], self.config["pred_img"]
+        out = dict(z=np.empty((S, T, d), np.float32), value=np.empty((S, T), np.float32),
+                   mu=np.empty((S, T, 2), np.float32), click_p=np.empty((S, T), np.float32))
+        if act is not None:
+            out["pred_frames"] = np.empty((S, T, p, p, 3), np.float32)
+            out["pred_drives"] = np.empty((S, T, 2), np.float32)
+        opt = lambda a, ct: None if a is None else _p(a, ct)   # noqa: E731
+        _check(lib().vmc_forward(self.handle, S, T, _p(img, C.c_uint8), _p(drv, C.c_float), _p(pa, C.c_float),
+                                 _p(pr, C.c_float), opt(es, C.c_uint8), opt(act, C.c_float),
+                                 _p(out["z"], C.c_float), _p(out["value"], C.c_float), _p(out["mu"], C.c_float),
+                                 _p(out["click_p"], C.c_float), opt(out.get("pred_frames"), C.c_float),
+                                 opt(out.get("pred_drives"), C.c_float)), "forward")
+        return out
 
     def stats(self):
         st = VMCStats()

@@ -271,7 +271,7 @@ are used for scoring only):
 **The update on the GPU (task 00011, `libvmcuda.so`).** A CUDA port of the basic agent's update (the CNN model
 with coord, residual frames and U-Net skips; frame, drives and move losses; clip and AdamW). Its gradients match
 the C++ model's to about 1e-7 (`tests/test_cuda_model.py`). Run a lifetime with `--set online.device=cuda`: the
-update runs on the GPU, the weights are copied back, and acting stays on the CPU.
+update and the forward passes run on the GPU (below).
 
 | vm-00008 D-U, sequences × 8 steps | C++, 16 threads | C++, 64 threads | CUDA (with the batch upload) |
 |---|---:|---:|---:|
@@ -279,9 +279,12 @@ update runs on the GPU, the weights are copied back, and acting stays on the CPU
 | 32 | 73.4 ms | 52.9 ms | 4.2 ms (4.6) |
 | 128 | 263.6 ms | 141.0 ms | 14.4 ms (16.0) |
 
-The basic agent's online loop, 16 threads: 24 steps/s on the CPU, 62 with `online.device=cuda`. Per step, the CPU
-forward passes (6.3 ms) and the weight copy and refresh (4.3 ms) are now the largest parts. Not supported yet:
-PPO, inverse dynamics (DMI), the planner's latent dynamics, patch tokens.
+**The forward pass too (task 00012).** With `online.device=cuda` the lifetime acts, computes the surprise and learns
+on the GPU; the weights come back to the C++ agent only for checkpoints. The basic agent's online loop: 24 steps/s on
+the CPU (16 threads), 62 with the GPU update alone, **202** with both (two lifetimes sharing the GPU: 137 each). A 50k
+lifetime takes 6 minutes. Reruns of vm-00008 D-U learn as the CPU runs did (test success, hit rate and probes in the
+same range; task 00012), but not bitwise. Not supported yet: PPO, inverse dynamics (DMI), the planner's latent
+dynamics, patch tokens.
 
 
 **The GPU, first check (2026-10-24), before the port.** One update of vm-00008's DMI model (forward, backward and AdamW;

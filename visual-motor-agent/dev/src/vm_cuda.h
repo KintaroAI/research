@@ -36,6 +36,14 @@ int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, co
 int vmc_loss_and_grads(void* h, const PPOConfig* pc);
 // loss_and_grads, the gradient-norm clip and an AdamW step.
 int vmc_update(void* h, const PPOConfig* pc);
+// The forward pass of S sequences of T <= ctx steps ([S, T, ...] inputs; ep_start may be NULL), with the outputs of
+// vm_forward ([S, T, ...]; any may be NULL): z, value, mu = tanh of the mean move, click probability, and with
+// pred_actions the predicted next frames (HWC at pred_img) and drives. Waits for the device.
+int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drives, const float* prev_action,
+                const float* prev_reward, const uint8_t* ep_start, const float* pred_actions, float* z, float* value,
+                float* mu, float* click_p, float* pred_frames, float* pred_drives);
+// Copies n parameters starting at offset to the host (for example the log-std after an update).
+int vmc_get_range(void* h, long offset, long n, float* out);
 // Waits for the device and returns the statistics of the last loss_and_grads / update.
 int vmc_stats(void* h, VMCStats* out);
 int vmc_params(void* h, float* out);   // device -> host copies of n_params floats

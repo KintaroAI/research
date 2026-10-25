@@ -440,10 +440,11 @@ def main():
         sd_off = {name: o for name, o, _ in agent.param_layout()}["logstd"]
     else:
         mem = Replay(on["replay"], env_cfg.size)
-    gpu = None
-    if on["device"] == "cuda":   # the update on the GPU (task 00011); acting stays on the C++ agent
+    gpu, fwd = None, agent.forward
+    if on["device"] == "cuda":   # the lifetime on the GPU (tasks 00011, 00012): forward passes and updates
         import cuda_lib
         gpu = cuda_lib.CudaModel(agent)
+        fwd = gpu.forward
         ro = cuda_lib.Rollout(L, B, agent.config["img"])
     elif on["device"] != "cpu":
         raise ValueError("online.device must be 'cpu' or 'cuda'")
@@ -475,7 +476,7 @@ def main():
         if self_actor:
             # 1. act: the move the model predicts from its last L real states (this one included)
             idx = mem.last(min(mem.n, L - 1))
-            out = agent.forward(np.concatenate([mem.img[idx], obs["image"]])[None],
+            out = fwd(np.concatenate([mem.img[idx], obs["image"]])[None],
                                 np.concatenate([mem.drv[idx], obs["drives"]])[None],
                                 np.concatenate([mem.pa[idx], prev_a])[None],
                                 np.concatenate([mem.cmd[idx], [cmd]]).astype(np.float32)[None],
@@ -520,7 +521,7 @@ def main():
             i = mem.last(1)[0]
             if self_actor:     # the window the move was predicted from (this step's token last)
                 idx = mem.last(min(mem.n, L))
-                po = agent.forward(mem.img[idx][None], mem.drv[idx][None], mem.pa[idx][None], mem.cmd[idx][None],
+                po = fwd(mem.img[idx][None], mem.drv[idx][None], mem.pa[idx][None], mem.cmd[idx][None],
                                    mem.es[idx][None], pred_actions=mem.act[idx][None])
                 sd = np.exp(np.clip(agent.params()[sd_off:sd_off + 2], -5.0, 1.0))
                 parts = surprise_parts(po, len(idx) - 1, mem.img[i], mem.nimg[i], mem.ndrv[i], mem.act[i], sd, ds,
@@ -542,8 +543,10 @@ def main():
                 fill_rollout(ro, gm.rows(B, rng, lag), L)
             else:
                 mem.fill(ro, mem.starts(L, B, rng, lag), L, goal_k)
-            win["stats"].append(gpu.update_rollout(ro, ppo, agent) if gpu else agent.update(ro, zeros_b, ppo))
+            win["stats"].append(gpu.update_rollout(ro, ppo, agent, sync=False) if gpu else agent.update(ro, zeros_b, ppo))
         if step % on["save_every"] == 0:
+            if gpu:
+                gpu.sync_to(agent)
             agent.save(os.path.join(out_dir, "ckpt_%08d.bin" % step), with_optimizer=False)
         if step % on["log_every"] == 0:
             eps = win["eps"]
@@ -572,6 +575,8 @@ def main():
                                                row.get("pred_mse", float("nan")), row.get("inv_r2", float("nan")),
                                                row.get("dyn_hunger_mse", float("nan"))) + gate, flush=True)
             win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], t=time.time())
+    if gpu:
+        gpu.sync_to(agent)
     agent.save(os.path.join(out_dir, "ckpt_final.bin"), with_optimizer=gpu is None)   # GPU: the optimizer state stays there
     mf.close()
 
