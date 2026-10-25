@@ -67,6 +67,41 @@ def test_hazards_raise_hunger_and_are_drawn_under_the_circle():
     np.testing.assert_allclose(env.hunger, 0.35)
 
 
+def test_poison_click_sets_hunger_and_food_still_relieves():
+    """env.hazard_click (vm-00017): a click inside a hazard sets hunger; a click in the circle relieves it; the poison
+    wins inside both; contact alone costs hazard_cost; the hazard stays."""
+    cfg = dataclasses.replace(RICH, target_speed=0.0, hazard_speed=0.0, h_rate=0.001, hazard_cost=0.0,
+                              hazard_click=1.0)
+    env = CircleWorld(4, cfg, seed=5)
+    base = dict(hunger=np.full(4, 0.3), target=np.full((4, 2), 50.0), radius=np.full(4, 6.0),
+                hz_pos=np.tile([[16.0, 16.0], [40.0, 16.0]], (4, 1, 1)), hz_rad=np.full((4, 2), 6.0))
+    # cursors: in the hazard, in the circle, on the background, in the hazard without a click
+    cur = np.array([[16.2, 16.2], [50.0, 50.0], [30.0, 40.0], [16.2, 16.2]])
+    env.set_state(dict(base, cursor=cur))
+    _, _, _, info = env.step(np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 0]], float))
+    np.testing.assert_allclose(env.hunger, [1.0, 0.0, 0.301, 0.301])
+    np.testing.assert_array_equal(info["gt_hazard_click"], [True, False, False, False])
+    np.testing.assert_array_equal(info["success"], [False, True, False, False])
+    np.testing.assert_allclose(env.hz_pos, base["hz_pos"])                     # the hazards stay
+    env.set_state(dict(base, cursor=np.tile([50.0, 50.0], (4, 1)), hz_pos=np.tile([[50.0, 50.0], [40.0, 16.0]],
+                                                                                    (4, 1, 1))))
+    _, _, _, info = env.step(np.tile([0.0, 0.0, 1.0], (4, 1)))
+    assert info["success"].all() and info["gt_hazard_click"].all()
+    np.testing.assert_allclose(env.hunger, 1.0)                                # inside both: the poison wins
+
+
+def test_poison_click_off_by_default():
+    cfg = dataclasses.replace(RICH, hazard_cost=0.0)
+    a = CircleWorld(32, cfg, seed=6)
+    b = CircleWorld(32, dataclasses.replace(cfg, hazard_click=-1.0), seed=6)
+    rng = np.random.default_rng(1)
+    for _ in range(200):
+        act = random_actions(rng, 32, p_click=0.5)
+        ra, rb = a.step(act), b.step(act)
+        np.testing.assert_array_equal(ra[0]["drives"], rb[0]["drives"])
+        assert "gt_hazard_click" not in ra[3]
+
+
 def test_state_round_trip_with_every_feature():
     env = CircleWorld(8, RICH, seed=5)
     rng = np.random.default_rng(1)

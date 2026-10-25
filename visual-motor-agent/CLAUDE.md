@@ -39,6 +39,9 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     the same). vm-00011: `env.respawn` (with `end_on_success=false`, a large `max_steps`: a world that never
     resets), `env.target_speed`, `env.hazards`, `env.wrap` (a torus) and `env.egocentric` (the view centered
     on the cursor). In a continual world with walls the basic agent starves at a wall: use `wrap`.
+    Hunger is capped at 1: at the cap a hazard step leaves no trace; use slow hunger (`env.h_rate=0.001`, vm-00015).
+    `env.hazard_click=1` (vm-00017): a click inside a hazard sets hunger to 1 (poison); `analyze_hazards.py click`
+    tests whether a model predicts what each kind of click does.
   - `lifetime.py` (task 00020, `../ARCHITECTURE.md`): the self actor with N parallel bodies early in life
     (`online.bodies`, `bodies_hold`, `bodies_halve`; one shared long-term memory, `ChunkStore`), the signed hindsight
     command (`online.goal_mode=delta`) and exploration decay. With one body it reproduces `online.py` bit for bit.
