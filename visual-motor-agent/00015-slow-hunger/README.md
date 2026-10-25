@@ -1,8 +1,8 @@
 # vm-00015: Slow Hunger, So That Hazard Contact Shows in the Drives
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00015`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00015` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00015/`
 **Task plan:** [`../tasks/00019-slow-hunger.md`](../tasks/00019-slow-hunger.md)
 
