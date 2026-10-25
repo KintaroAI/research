@@ -1,8 +1,8 @@
 # vm-00011: A Continual World: No Resets, Moving Circles, Hazards, a Wrap-Around and an Egocentric View
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00011`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00011` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00011/`
 **Task plan:** [`../tasks/00014-continual-world.md`](../tasks/00014-continual-world.md)
 
