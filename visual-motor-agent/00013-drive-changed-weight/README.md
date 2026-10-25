@@ -1,8 +1,8 @@
 # vm-00013: Weighting Unusual Drive Changes, So That Hazard Contact Is Learned
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00013`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00013` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00013/`
 **Task plan:** [`../tasks/00017-drive-changed-weight.md`](../tasks/00017-drive-changed-weight.md)
 
