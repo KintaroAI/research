@@ -1,8 +1,8 @@
 # vm-00017: Poison Circles: Does the Prediction Get Both Kinds of Click Right?
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00017`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00017` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00017/`
 **Task plan:** [`../tasks/00021-poison-click.md`](../tasks/00021-poison-click.md)
 
