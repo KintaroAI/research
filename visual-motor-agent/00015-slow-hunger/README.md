@@ -1,7 +1,7 @@
 # vm-00015: Slow Hunger, So That Hazard Contact Shows in the Drives
 
 **Date:** 2026-10-25
-**Status:** In Progress
+**Status:** Complete (pending tag)
 **Source:** *tagged on completion as `exp/vm-00015`* (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00015/`
 **Task plan:** [`../tasks/00019-slow-hunger.md`](../tasks/00019-slow-hunger.md)
@@ -63,4 +63,50 @@ step, so the cap is rarely reached and most hazard steps leave a trace.
   and the planner's Transformer drives head sees it early (20k) but not stably. The 8×8 patch models do not learn it
   at all, even though the cursor's patch token holds contact (R² ≈ 0.7) and the weight on unusual changes pushes the
   drives token's R² to 0.38–0.54. The planner's imagination (from v) stays blind. No arm avoids hazards.
+- **Token probes and aim for S8D at 60k** (for vm-00016's comparison): the move token's R² of cursor / circle /
+  direction 0.06–0.11 / 0.70–0.76 / 0.13–0.16; all patch tokens 0.86–0.91 / 0.96–0.97 / 0.74–0.77; aim (cos(μ, to the
+  circle)) +0.070, +0.181, +0.120.
+
+## Results
+
+| Arm (seeds 1, 2, 3) | hits per 1k, last 10k | in a hazard, last 10k | drives head inside − outside at 60k (world +0.020) | episodic test at 60k |
+|---|---|---|---|---|
+| S8D (8×8 patches) | 6.0, 8.0, 8.3 | 0.074, 0.061, 0.110 | +0.004, +0.001, +0.002 | 0.77, 0.81, 0.89 |
+| S8DW (+ drive_changed_weight 10) | 4.9, 5.2, 7.1 | 0.074, 0.059, 0.095 | +0.005, +0.007, 0.000 | 0.63, 0.77, 0.71 |
+| SD (DMI, CNN) | 6.0, 8.3, 7.0 | 0.081, 0.068, 0.079 | **+0.019, +0.012, +0.016** | 0.77, 0.88, 0.81 |
+| SL (planner, 40k) | 17.0, 17.8, 16.9 | 0.060, 0.050, 0.062 | +0.041, +0.028, +0.033 at 20k; −0.005, +0.013, +0.022 at 40k | — |
+
+The planner's imagined extra hunger inside a hazard (12 still steps; world +0.183): +0.020, +0.013, −0.009 at 20k;
+−0.012, −0.002, −0.010 at 40k. Hunger at the cap: 0.00–0.19 of steps (online, last 10k).
+
+## Analysis
+
+- **Without the cap, the CNN agent learns contact** (hypothesis 1, partly supported). DMI's drives head predicts
+  +0.012 to +0.019 more hunger inside a hazard at 60k, most of the world's +0.020, after nothing at 20k–40k. Its
+  features hold contact more than at the old rates without the weight (R² from v 0.12–0.17, against at most 0.10 in
+  vm-00012's DTH10; vm-00013's W10D reached 0.28 in one seed). The planner's
+  Transformer drives head sees it early (+0.03–0.04 at 20k, more than the world) but not stably.
+- **The patch models do not**, with or without the weight on unusual changes, although the token under the cursor
+  holds contact (R² 0.59–0.72) and the weight raises the drives token's R² to 0.38–0.54. The information is in the
+  tokens; the drives head does not use it. A hazard step costs 0.02 hunger, an error of 4·10⁻⁴ in squared terms beside
+  a hit's 0.1–0.2: too small a gradient for the drives head to route attention to the cursor's patch.
+- **The planner's imagination stays blind** (hypothesis 2, not supported): it imagines from the CNN features, and
+  the hunger model on them sees no extra rise. No arm avoids hazards (0.050–0.110 of steps, chance 0.063).
+- **Slow hunger slows the planner** (17 hits per 1k against 25–28 at the old rates): with less hunger to relieve,
+  the imagined gain of its plans halves (0.030–0.042 per step against 0.071–0.079 in vm-00012's LTH), so more plans
+  fall below its fixed threshold and it babbles instead (plans on 0.44–0.47 of steps against 0.69–0.76).
+
+## Conclusions
+
+1. **The hunger cap hid hazard contact from every earlier experiment**; with slow hunger 82% of hazard steps show in
+   the drives at birth, against 28%.
+2. **With the trace present, the CNN agent's drives head learns contact by 60k**, the first model to do so. The
+   8×8 patch models hold contact in the right token but do not predict its cost.
+3. **Representing contact is not enough for avoidance:** the planner imagines from features that do not change their
+   hunger prediction, and the basic agents' command marks only relief.
+
+## Next Steps
+
+- The signed hindsight command and an act token the policy reads (vm-00016).
+- Let the hunger loss reach the planner's features (a `dyn_h_backbone_scale`), now that the trace is present.
 

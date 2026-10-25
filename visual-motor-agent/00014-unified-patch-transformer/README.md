@@ -1,7 +1,7 @@
 # vm-00014: One Transformer for Everything: Fine Patch Tokens, Nothing Detached, in the Hazard World
 
 **Date:** 2026-10-25
-**Status:** In Progress
+**Status:** Complete (pending tag)
 **Source:** *tagged on completion as `exp/vm-00014`* (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00014/`
 **Task plan:** [`../tasks/00018-unified-patch-transformer.md`](../tasks/00018-unified-patch-transformer.md)
@@ -76,4 +76,100 @@ anywhere; acting by the basic agent's hindsight command.
 - **Online, last 10k steps** (P8 arms at 52k): hits per 1,000 steps P8D 5.0, 6.0, 6.5; P8A 4.0, 6.0, 7.5; P16A 4.7,
   3.5, 5.9; P64A 6.6, 4.9, 8.4 (random agents on the torus 4.4–5.0, vm-00011; DMI 7.6–10). In a hazard 0.053–0.110
   (0–5k: 0.049–0.092).
+- **All 12 finished at about 10:00.** The aim analysis never ended: it ran the test episodes for the world's
+  `max_steps`, 10⁹ in a continual world. Fixed (`analyze_self_actor.py` now uses the episodic test episodes, as
+  `online.py --eval`) and rerun on the GPU (`--device cuda`, 11 s per run instead of 330).
+
+## Results
+
+### R1. Online and the frozen tests (seeds 1, 2, 3)
+
+| Arm | hits per 1,000 steps, last 10k | in a hazard, last 10k | episodic test 0 → 20k → 60k | forage test at 60k (hits per 1k) |
+|---|---|---|---|---|
+| P8D (8×8, detached) | 6.1, 5.6, 6.9 | 0.065, 0.072, 0.082 | 0.60 → 0.77 → 0.74; 0.62 → 0.65 → 0.73; 0.59 → 0.74 → 0.79 | 7.1, 6.3, 7.7 |
+| P8A (8×8, through) | 4.5, 4.9, 7.7 | 0.065, 0.050, 0.103 | 0.60 → 0.60 → 0.73; 0.62 → 0.71 → 0.61; 0.59 → 0.91 → 0.84 | 5.5, 5.9, 8.9 |
+| P16A (16×16, through) | 4.7, 3.5, 5.9 | 0.110, 0.057, 0.081 | 0.59 → 0.55 → 0.60; 0.61 → 0.56 → 0.65; 0.60 → 0.81 → 0.80 | 4.5, 3.5, 8.7 |
+| P64A (whole frame, through) | 6.6, 4.9, 8.4 | 0.080, 0.053, 0.088 | 0.59 → 0.91 → 0.78; 0.62 → 0.64 → 0.61; 0.61 → 0.91 → 0.93 | 6.4, 5.7, 10.4 |
+
+Random agents on the torus: 4.4–5.0 hits per 1,000 steps (vm-00011); chance share in a hazard about 0.065; DMI (CNN) in
+the same world (vm-00012 DTH10): 6.7–8.2.
+
+### R2. Hazard contact (`analyze_hazards.py contact`, 60k)
+
+| Arm | drives head, inside − outside (world +0.100) | R² of contact: cursor's patch token | drives token | move token (z) |
+|---|---|---|---|---|
+| P8D | +0.011, +0.011, +0.025 | 0.72, 0.70, 0.69 | 0.11, 0.45, 0.35 | 0.16, 0.46, 0.32 |
+| P8A | −0.007, +0.006, −0.010 | 0.32, 0.42, 0.42 | −0.01 to 0.06 | 0.00 to 0.05 |
+| P16A | +0.018, −0.015, −0.030 | 0.33, 0.31, 0.36 | 0.01–0.02 | −0.01 to 0.01 |
+| P64A | −0.002, +0.010, −0.001 | 0.03, 0.01, 0.02 | ≤ 0 | ≤ 0 |
+
+### R3. What the tokens hold at 60k (`analyze_patch.py tokens`: R² of cursor / circle / direction to the circle)
+
+| Arm | all patch tokens side by side | move token (the policy's input) |
+|---|---|---|
+| P8D | 0.87–0.93 / 0.97 / 0.75–0.79 | 0.04–0.11 / 0.65–0.74 / 0.11–0.19 |
+| P8A | **−0.34 to −0.06** / 0.94–0.96 / −0.22 to 0.00 | 0.00–0.01 / 0.15–0.39 / 0.03–0.08 |
+| P16A | 0.21–0.25 / 0.97–0.98 / 0.28–0.31 | 0.00 / 0.08–0.12 / 0.01–0.02 |
+| P64A | 0.02–0.03 / 0.94–0.95 / 0.19–0.20 | 0.01 / 0.81–0.82 / 0.16–0.17 |
+
+vm-00010 (16×16, detached, episodic world): all patch tokens cursor 0.94–0.98.
+
+### R4. Aim at 60k (`analyze_self_actor.py aim`: cos(μ, direction to the circle), away from the walls)
+
+P8D +0.142, +0.032, +0.157; P8A +0.041, +0.003, +0.030; P16A +0.014, +0.011, +0.025; P64A +0.057, +0.000, +0.065.
+
+## Analysis
+
+### No contact learned (hypothesis 1, not supported, and confounded)
+
+No arm's drives head predicts more hunger inside a hazard (at most +0.025 of the world's +0.100, mostly about 0). In
+P8D the information is there: the token under the cursor reads contact at R² 0.69–0.72 (0.57 at birth, from its raw blue
+pixels), and in two seeds the drives and move tokens pick it up too (0.35–0.46). But at these rates hunger sat at its
+cap of 1 on about half of the steps, where a hazard step leaves no trace in the drives (found during this
+experiment). vm-00015 repeats the question without the cap.
+
+### The move loss through the Transformer erases the cursor (hypothesis 2: the opposite)
+
+The clearest case yet of the effect vm-00007/8 found in the CNN. Letting the move loss train the Transformer (P8A)
+does not make the move token aim: it holds less (circle 0.15–0.39, against 0.65–0.74 detached), and it erases the
+cursor from the patch tokens themselves (R² −0.34 to −0.06, against 0.87–0.93 detached). Imitating its own moves
+pushes the representation toward what predicts the agent's next move, and the cursor's position does not. The aim
+falls with it (+0.003 to +0.041, against up to +0.157 detached). Detaching remains necessary.
+
+### Patch size (hypothesis 3, not supported)
+
+All three sizes were run with the move loss attached, so they are compared in its presence. Contact under the cursor:
+8×8 0.32–0.42, 16×16 0.31–0.36, the whole frame 0.01–0.03. The cursor from all patch tokens: 16×16 keeps 0.21–0.25
+while 8×8 loses it entirely (below 0), the whole frame 0.02–0.03. So no size is better on every measure, and the move
+loss dominates the comparison. The whole frame as one token never locates the cursor but finds the large red circle
+(0.94). Its episodic test in seed 3 (0.93 at 60k) comes without aim (+0.065) or a cursor: the hindsight command's
+click timing and drift, not steering. Detached, 8×8 patches hold the cursor as well as vm-00010's detached 16×16 did
+(0.87–0.93 against 0.94–0.98, different worlds).
+
+### The design's promise and its limit
+
+The document's unified Transformer keeps the scene in its patch tokens (P8D) as vm-00010 did. Nothing in it makes the
+token the policy reads gather the scene: detached, the move token is trained by nothing; attached, its loss destroys
+the scene. That is the gap the act token (vm-00016) tries to close.
+
+### Caveats
+
+- The hunger cap (above); hazard results here are superseded by vm-00015.
+- The frozen tests vary widely between seeds (0.61–0.93 at 60k in P64A); three seeds per arm.
+- P8A, P16A and P64A share the attached move loss; P8D is the only detached arm, so patch size is compared attached.
+
+## Conclusions
+
+1. **A shared Transformer on 8×8 RGB patches keeps the scene, including contact, in its patch tokens**, but did not
+   learn that contact raises hunger (confounded by the hunger cap; see vm-00015).
+2. **Letting the move loss train the Transformer erases the cursor from the patch tokens** (R² 0.87–0.93 → below 0)
+   and the agent stops aiming. The move loss must stay detached.
+3. **Patch size matters less than the move loss.** With it attached, 8×8 and 16×16 patches hold contact about
+   equally and 16×16 keeps more of the cursor; the whole frame as one token never locates the cursor.
+4. **No arm forages much above chance** (3.5–8.4 hits per 1,000 steps against 4.4–5.0) and none avoids hazards.
+
+## Next Steps
+
+- Slow hunger, so that hazard contact shows in the drives (vm-00015).
+- A token the policy reads that a prediction loss trains (the act token, vm-00016).
 

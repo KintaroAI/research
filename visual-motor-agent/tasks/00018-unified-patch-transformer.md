@@ -1,7 +1,7 @@
 # Task 00018: One Transformer for Everything: Fine Patch Tokens, Nothing Detached, in the Hazard World (experiment vm-00014)
 
 **Date:** 2026-10-25
-**Status:** In Progress
+**Status:** Complete (results in vm-00014)
 
 ## Context
 

@@ -1,7 +1,7 @@
 # Task 00020: Build the Target Architecture: Act Token, Signed Command, Parallel Bodies (experiment vm-00016)
 
 **Date:** 2026-10-25
-**Status:** Implemented; vm-00016 running
+**Status:** Complete (results in vm-00016)
 
 ## Context
 

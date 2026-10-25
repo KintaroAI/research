@@ -126,7 +126,7 @@ every tick:
   weights, each with its own window and short-term buffer. Every update sees N fresh windows instead of one: about
   N times the experience per update, less correlated, from many situations at once. Early learning is the expensive
   part: vm-00001 needed 0.5M–1M random steps before movement and clicks were predicted.
-  - Schedule: N = 32 for the first 10k ticks, halving every 5k ticks down to 1 (about 35k ticks in all), then one body
+  - Schedule: N = 32 for the first 10k ticks, halving every 5k ticks down to 1 (one body from tick 30k), then one body
     for the rest of the lifetime. The weights, optimizer state and long-term memory carry straight through: it is the
     same model, now with one body.
   - Cost on the GPU: the forward pass of N windows is one batched call. The update grows with the batch: about 25 ms

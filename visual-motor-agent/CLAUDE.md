@@ -30,7 +30,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `analyze_hazards.py` (vm-00012): whether a planner agent's hunger model imagines the hazards' cost; `contact`
     also probes patch-token models (per kind of token, and the token of the patch under the cursor).
     `analyze_self_actor.py`: why the self actor does or does not aim (aim, probe, relief, inputs,
-    momentum). `ppo.pi_detach=1`: the move loss trains the policy head only (vm-00008);
+    momentum; `--device cuda` runs its forward passes on the GPU, 30× faster). `ppo.pi_detach=1`: the move loss
+    trains the policy head only (vm-00008);
     `model.pi_hidden`: a hidden layer in the policy head.
   - `model.patch=16` (vm-00010): patch tokens instead of the CNN. Each step is 16 patch tokens plus one
     token each for drives, previous move and command; each predicts its own part of the next state.
@@ -145,7 +146,7 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
   it so their analysis globs find the runs.
 - **Checkpoint header.** Config ints sit in slots 2–19 and n_params/has_opt/step in 20–22.
   Extension fields go at 32+ (`pred_residual` 32, `pred_skip` 33, `inv_hidden` 34, `dyn_hidden` 35,
-  `one_frame` 36, `pi_hidden` 37, `patch` 38). Never append into slot 20.
+  `one_frame` 36, `pi_hidden` 37, `patch` 38, `act_token` 39). Never append into slot 20.
 - **Patch tokens act through `vm_forward`** on the context window (the basic agent already does), so
   they need no KV cache: `vm_act` and `vm_encode` refuse patch mode, and so does the planner (it imagines
   with the CNN model's latent dynamics). Attention is block-causal: a token sees all tokens of its own
