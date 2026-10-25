@@ -20,6 +20,7 @@ typedef struct {
     float grad_norm, gn_backbone, gn_policy, gn_pred;   // pre-clip gradient norms (after an update)
     float inv_mse, inv_r2;    // inverse dynamics: MSE of (dx, dy) and R^2 against predicting 0 (as vm_agent)
     float dyn_mse, dyn_hunger_mse, dyn_recon_mse;   // latent dynamics (task 00014): latent, hunger, decoder MSE
+    float act_drive_mse, act_frame_mse;   // act token (task 00020): its next-drives and coarse-next-frame MSE
 } VMCStats;
 
 // Creates the model from a config and the flat parameters (n_params floats, the layout of vm_param_layout: offsets

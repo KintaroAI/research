@@ -43,12 +43,33 @@ WALL = 2.0           # closer than this to a wall counts as at the wall (px)
 LABEL_K = 12         # hindsight label: a hit within the next LABEL_K steps
 
 
+DEVICE = "cpu"       # --device: where the forward passes run (cuda: the GPU model, the same function)
+
+
+class GpuForward:
+    """The C++ agent with its forward passes on the GPU (cuda_lib.CudaModel.forward); everything else (config,
+    params, encode, ...) is the C++ agent's."""
+
+    def __init__(self, agent):
+        import cuda_lib
+        self._agent, self._gpu = agent, cuda_lib.CudaModel(agent)
+        self.forward = self._gpu.forward
+
+    def __getattr__(self, k):
+        return getattr(self._agent, k)
+
+    def close(self):
+        self._gpu.close()
+        self._agent.close()
+
+
 def load(run, st):
     info = json.load(open(os.path.join(run, "info.json")))
     ec = dict(info["env_config"])
     for k in ("bg_color", "target_color", "cursor_color", "cursor_outline"):
         ec[k] = tuple(ec[k])
-    return info, EnvConfig(**ec), agent_lib.Agent.load(os.path.join(run, "ckpt_%08d.bin" % st))
+    a = agent_lib.Agent.load(os.path.join(run, "ckpt_%08d.bin" % st))
+    return info, EnvConfig(**ec), GpuForward(a) if DEVICE == "cuda" else a
 
 
 def name(run):
@@ -64,7 +85,8 @@ def forward(agent, win, cmd=None):
 
 def aim(run, st, n=128):
     info, cfg, a = load(run, st)
-    cfg = dataclasses.replace(cfg, auto_reset=False, bonuses=False)
+    # the test episodes (as online.py's eval_self): the first hit within 200 steps, also in a continual world
+    cfg = dataclasses.replace(cfg, auto_reset=False, bonuses=False, end_on_success=True, respawn=False, max_steps=200)
     goal = info["config"]["online"]["goal"]
     env = CircleWorld(n, cfg, seed=EVAL_SEED)
     rng = np.random.default_rng(0)
@@ -223,7 +245,8 @@ def relief(run=None, st=None, n=None, T=None):
 
 def inputs(run, st, n=128):
     info, cfg, a = load(run, st)
-    cfg = dataclasses.replace(cfg, auto_reset=False, bonuses=False)
+    # the test episodes (as online.py's eval_self): the first hit within 200 steps, also in a continual world
+    cfg = dataclasses.replace(cfg, auto_reset=False, bonuses=False, end_on_success=True, respawn=False, max_steps=200)
     obs = CircleWorld(n, cfg, seed=EVAL_SEED).observe()
     img, drv = obs["image"][:, None], obs["drives"][:, None].astype(np.float32)
     pa, es = np.zeros((n, 1, 3), np.float32), np.ones((n, 1), np.uint8)
@@ -243,7 +266,8 @@ def inputs(run, st, n=128):
 
 def momentum(run, st, n=128):
     info, cfg, a = load(run, st)
-    cfg = dataclasses.replace(cfg, auto_reset=False, bonuses=False)
+    # the test episodes (as online.py's eval_self): the first hit within 200 steps, also in a continual world
+    cfg = dataclasses.replace(cfg, auto_reset=False, bonuses=False, end_on_success=True, respawn=False, max_steps=200)
     goal = info["config"]["online"]["goal"]
     env = CircleWorld(n, cfg, seed=EVAL_SEED)
     rng = np.random.default_rng(0)
@@ -284,7 +308,11 @@ def main():
     ap.add_argument("--n", type=int, default=None, help="relief: worlds (default 512 babbling, 256 agent)")
     ap.add_argument("--steps", type=int, default=None, help="relief: steps (default 4000 babbling, 1000 agent)")
     ap.add_argument("--threads", type=int, default=16)
+    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
+                    help="where the forward passes run (cuda: the GPU model, as online.py --eval-device cuda)")
     args = ap.parse_args()
+    global DEVICE
+    DEVICE = args.device
     agent_lib.set_threads(args.threads)
     if args.what == "relief" and not args.runs:
         args.runs = [None]

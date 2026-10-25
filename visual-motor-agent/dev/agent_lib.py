@@ -23,7 +23,7 @@ class VMConfig(C.Structure):
                                        "ctx", "pred_img", "pc1", "pc2", "pred_hidden", "use_prev_reward")]
     _fields_ += [("logstd_init", C.c_float), ("coord", C.c_int), ("pb", C.c_int), ("pred_residual", C.c_int),
                  ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int), ("one_frame", C.c_int),
-                 ("pi_hidden", C.c_int), ("patch", C.c_int)]
+                 ("pi_hidden", C.c_int), ("patch", C.c_int), ("act_token", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -35,7 +35,7 @@ class PPOConfig(C.Structure):
     _fields_ += [(n, C.c_int) for n in ("epochs", "minibatches", "use_ppo", "norm_adv", "clip_vloss", "dyn_horizon",
                                         "dyn_h_horizon")]
     _fields_ += [("move_coef", C.c_float), ("pi_detach", C.c_int), ("pi_own_clip", C.c_int),
-                ("drive_changed_weight", C.c_float), ("drive_change_eps", C.c_float)]
+                ("drive_changed_weight", C.c_float), ("drive_change_eps", C.c_float), ("act_coef", C.c_float)]
 
 
 class PPOStats(C.Structure):
@@ -46,12 +46,13 @@ class PPOStats(C.Structure):
                                          "gn_policy", "gn_pred", "inv_mse", "inv_r2", "dyn_mse", "dyn_hunger_mse",
                                          "dyn_recon_mse")]
     _fields_ += [(n, C.c_int) for n in ("epochs_done", "updates_done")]
-    _fields_ += [("move_nll", C.c_float)]
+    _fields_ += [("move_nll", C.c_float), ("act_drive_mse", C.c_float), ("act_frame_mse", C.c_float)]
 
 
 DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer=2, n_head=4, d_ff=512, ctx=32,
                      pred_img=32, pc1=16, pc2=32, pred_hidden=256, use_prev_reward=0, logstd_init=-0.5, coord=0, pb=32,
-                     pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0)
+                     pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
+                     act_token=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
@@ -59,7 +60,7 @@ DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.0
                    dyn_coef=0.0, dyn_h_coef=0.0, dyn_x_coef=0.0,
                    epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0, dyn_horizon=0, dyn_h_horizon=0,
                    move_coef=0.0, pi_detach=0, pi_own_clip=0, drive_changed_weight=0.0,
-                   drive_change_eps=0.01)
+                   drive_change_eps=0.01, act_coef=0.0)
 
 
 def _struct(cls, values):

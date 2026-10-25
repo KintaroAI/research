@@ -491,7 +491,8 @@ enum ParamId {
     PIW, PIB, PHW, PHB, LOGSTD, VW, VB,   // PHW/PHB: policy hidden layer (pi_hidden > 0)
     PR1W, PR1B, PR2W, PR2B, PBW, PBB, D1W, D1B, D2W, D2B, DRW, DRB, IV1W, IV1B, IV2W, IV2B,
     T1W, T1B, T2W, T2B, H1W, H1B, H2W, H2B, X1W, X1B, X2W, X2B,   // latent dynamics (dyn_hidden > 0)
-    PEW, PEB, POS2D, TYP, DEW, DEB, MEW, MEB, CEW, CEB, NUM_P       // patch tokens (patch > 0)
+    PEW, PEB, POS2D, TYP, DEW, DEB, MEW, MEB, CEW, CEB,       // patch tokens (patch > 0)
+    ACTE, AX1W, AX1B, AXDW, AXDB, AXFW, AXFB, NUM_P             // act token (act_token = 1) and its auxiliary heads
 };
 static const char* PNAME[NUM_P] = {
     "enc_c1w", "enc_c1b", "enc_c2w", "enc_c2b", "enc_c3w", "enc_c3b", "enc_fcw", "enc_fcb", "in_w", "in_b", "wpe",
@@ -499,7 +500,10 @@ static const char* PNAME[NUM_P] = {
     "lnfw", "lnfb", "pi_w", "pi_b", "pi_h_w", "pi_h_b", "logstd", "v_w", "v_b", "pr1w", "pr1b", "pr2w", "pr2b", "pbw", "pbb", "dc1w", "dc1b",
     "dc2w", "dc2b", "drw", "drb", "iv1w", "iv1b", "iv2w", "iv2b",
     "dt1w", "dt1b", "dt2w", "dt2b", "dh1w", "dh1b", "dh2w", "dh2b", "dx1w", "dx1b", "dx2w", "dx2b",
-    "pt_w", "pt_b", "pos2d", "tok_type", "drv_w", "drv_b", "mv_w", "mv_b", "cmd_w", "cmd_b"};
+    "pt_w", "pt_b", "pos2d", "tok_type", "drv_w", "drv_b", "mv_w", "mv_b", "cmd_w", "cmd_b",
+    "act_e", "ax1w", "ax1b", "axdw", "axdb", "axfw", "axfb"};
+
+static const int ACT_CG = 8;   // act token: side of the coarse next frame it predicts
 
 struct Dims {
     int img, c1, c2, c3, h1, h2, h3, enc_flat, feat, d, L, nh, hs, dff, K, in_dim;
@@ -513,6 +517,7 @@ struct Dims {
     int patch, gp, npch, ntok, pdim;      // patch tokens: patch side (0 = off), grid side, patches, tokens per step,
                                           // values per patch
     int cell, cpx, KT;                    // predicted cell side / values per patch; tokens per context (K * ntok)
+    int act, cds, cfx;                    // act token on/off; prediction frame -> coarse frame block side; coarse values
 };
 static Dims make_dims(const VMConfig& c) {
     Dims D;
@@ -544,7 +549,10 @@ static Dims make_dims(const VMConfig& c) {
     D.patch = c.patch > 0 ? c.patch : 0;
     D.gp = D.patch ? c.img / D.patch : 0;
     D.npch = D.gp * D.gp;
-    D.ntok = D.patch ? D.npch + 3 : 1;
+    D.act = (D.patch && c.act_token) ? 1 : 0;
+    D.ntok = D.patch ? D.npch + 3 + D.act : 1;
+    D.cds = c.pred_img / ACT_CG;
+    D.cfx = ACT_CG * ACT_CG * 3;
     D.pdim = D.patch * D.patch * 3;
     D.cell = D.patch ? c.pred_img / D.gp : 0;
     D.cpx = D.cell * D.cell * 3;
@@ -574,6 +582,9 @@ struct Workspace {
     // outputs; per-patch predicted cell changes
     std::vector<int> tss, tse;
     std::vector<float> tpx, pemb, dpemb, zm, dzm, pdel, dpdel;
+    // act token: rows [its output, executed move]; hidden; predicted drives and coarse frame; gradients; coarse frames
+    std::vector<float> ax_in, ax_h, ax_drv, ax_frm, dax_in, dax_h, dax_drv, dax_frm;
+    std::vector<uint8_t> ax_cur;
 };
 static Workspace* ws_create(const Dims& D) {
     Workspace* W = new Workspace();
@@ -611,6 +622,7 @@ static Workspace* ws_create(const Dims& D) {
     scr = std::max(scr, (size_t)D.p1 * D.p1 * 3 * KK);
     int maxoc = std::max(std::max(3 * D.d, D.dff), std::max(std::max(D.feat, D.d), std::max(D.ph, D.pred_flat)));
     maxoc = std::max(maxoc, std::max(D.pb, std::max(D.ih, std::max(D.pih, D.cpx))));
+    if (D.act) maxoc = std::max(maxoc, std::max(D.cfx, D.pin_dim));
     scr = std::max(scr, KT * (size_t)maxoc);
     W->scr.resize(scr);
     W->proj.resize(KT * std::max(d, (size_t)D.dff));
@@ -626,6 +638,13 @@ static Workspace* ws_create(const Dims& D) {
         W->pemb.resize(K * D.npch * d); W->dpemb.resize(K * D.npch * d);
         W->zm.resize(K * d); W->dzm.resize(K * d);
         W->pdel.resize(K * D.npch * (size_t)D.cpx); W->dpdel.resize(K * D.npch * (size_t)D.cpx);
+    }
+    if (D.act) {
+        for (auto* v : {&W->ax_in, &W->dax_in}) v->resize(K * (size_t)D.pin_dim);
+        for (auto* v : {&W->ax_h, &W->dax_h}) v->resize(K * (size_t)D.ph);
+        for (auto* v : {&W->ax_drv, &W->dax_drv}) v->resize(K * 2);
+        for (auto* v : {&W->ax_frm, &W->dax_frm}) v->resize(K * (size_t)D.cfx);
+        W->ax_cur.resize(K * (size_t)D.cfx);
     }
     W->dpd1.resize((size_t)D.pc1 * D.p1 * D.p1);
     W->cur_small.resize(D.small_px);
@@ -704,6 +723,10 @@ static void model_layout(Model* M) {
     s[PEW] = pm ? d * D.pdim : 0; s[PEB] = pm ? d : 0; s[POS2D] = pm ? (long)D.npch * d : 0; s[TYP] = pm ? 4 * d : 0;
     s[DEW] = pm ? 2 * d : 0; s[DEB] = pm ? d : 0; s[MEW] = pm ? 3 * d : 0; s[MEB] = pm ? d : 0;
     s[CEW] = pm ? d : 0; s[CEB] = pm ? d : 0;
+    const long ac = D.act;
+    s[TYP] = pm ? (4 + ac) * d : 0;
+    s[ACTE] = ac * d; s[AX1W] = ac * D.ph * D.pin_dim; s[AX1B] = ac * D.ph; s[AXDW] = ac * 2 * D.ph; s[AXDB] = ac * 2;
+    s[AXFW] = ac * D.cfx * D.ph; s[AXFB] = ac * D.cfx;
     long o = 0;
     for (int i = 0; i < NUM_P; i++) { M->off[i] = o; M->sz[i] = s[i]; o += s[i]; }
     M->n_params = o;
@@ -712,6 +735,7 @@ static void model_layout(Model* M) {
             {QKVW, 3 * D.d, D.d, D.L}, {APW, D.d, D.d, D.L}, {FCW, D.dff, D.d, D.L}, {FPW, D.d, D.dff, D.L},
             {PIW, 3, D.pih ? D.pih : D.d, 1}, {PHW, D.pih, D.d, 1}, {PR1W, D.ph, D.pin_dim, 1}, {PR2W, D.cpx, D.ph, 1},
             {DRW, 2, D.ph, 1}, {PEW, D.d, D.pdim, 1}};
+        if (D.act) M->tlist.insert(M->tlist.end(), {{AX1W, D.ph, D.pin_dim, 1}, {AXDW, 2, D.ph, 1}, {AXFW, D.cfx, D.ph, 1}});
         return;
     }
     M->tlist = {
@@ -812,6 +836,12 @@ static void model_init_params(Model* M, uint64_t seed) {
             }
         }
     }
+    if (D.act) {   // drawn after everything else: models without the act token are unchanged
+        fill_normal(r, P + M->off[ACTE], M->sz[ACTE], 0.1f);
+        fill_normal(r, P + M->off[AX1W], M->sz[AX1W], sqrtf(2.0f / D.pin_dim));
+        fill_normal(r, P + M->off[AXDW], M->sz[AXDW], sqrtf(1.0f / D.ph));
+        fill_normal(r, P + M->off[AXFW], M->sz[AXFW], 0.1f * sqrtf(1.0f / D.ph));   // residual: near "no change"
+    }
 }
 
 static bool config_valid(const VMConfig& c) {
@@ -828,6 +858,8 @@ static bool config_valid(const VMConfig& c) {
         if (c.img % c.patch || c.pred_img % (c.img / c.patch)) return false;
         if (c.inv_hidden > 0 || c.dyn_hidden > 0) return false;
     }
+    if (c.act_token < 0 || c.act_token > 1) return false;
+    if (c.act_token && (c.patch <= 0 || !c.pred_residual || c.pred_img % ACT_CG)) return false;
     return true;
 }
 static Model* model_new(const VMConfig& cfg) {
@@ -1122,10 +1154,16 @@ static void seq_fwd_patch(const Model* M, Workspace* W, const SeqView& sv, bool 
             xm[i] = mw[i * 3] * pa[0] + mw[i * 3 + 1] * pa[1] + mw[i * 3 + 2] * pa[2] + mb[i] + typ[2 * d + i] + pe[i];
             xc[i] = cw[i] * cmd + cb[i] + typ[3 * d + i] + pe[i];
         }
+        if (D.act) {   // the act token: a learned query
+            const float* ae = P + M->off[ACTE];
+            float* xa = xc + d;
+            for (int i = 0; i < d; i++) xa[i] = ae[i] + typ[4 * d + i] + pe[i];
+        }
     }
     transformer_fwd(M, W, T * nt, W->tss.data(), W->tse.data());
+    const int zi = D.act ? np + 3 : np + 1;   // the token the policy reads: the act token, else the move token
     for (int t = 0; t < T; t++)
-        memcpy(W->zm.data() + (size_t)t * d, W->lnf.data() + ((size_t)t * nt + np + 1) * d, sizeof(float) * d);
+        memcpy(W->zm.data() + (size_t)t * d, W->lnf.data() + ((size_t)t * nt + zi) * d, sizeof(float) * d);
     policy_fwd(M, W->zm.data(), W->pih.data(), W->pi.data(), T);
     for (int t = 0; t < T; t++) W->val[t] = value_head(W->zm.data() + (size_t)t * d, P + M->off[VW], P[M->off[VB]], d);
     if (!want_pred) return;
@@ -1165,6 +1203,20 @@ static void seq_fwd_patch(const Model* M, Workspace* W, const SeqView& sv, bool 
             for (int i = 0; i < D.small_px; i++) pout[i] = sigmoidf_(pout[i]);
         }
     }
+    if (!D.act) return;
+    // the act token's auxiliary heads on [its output, executed move]: next drives, coarse next frame (residual)
+    for (int t = 0; t < T; t++) {
+        float* in = W->ax_in.data() + (size_t)t * D.pin_dim;
+        memcpy(in, W->zm.data() + (size_t)t * d, sizeof(float) * d);
+        memcpy(in + d, W->pin.data() + (size_t)t * np * D.pin_dim + d, sizeof(float) * 3);   // a_t, as the patch rows'
+        downsample_u8(W->cur_small_seq.data() + (size_t)t * D.small_px, D.pimg, D.cds, W->ax_cur.data() + (size_t)t * D.cfx);
+    }
+    linear_fwd(W->ax_h.data(), W->ax_in.data(), WT + M->off[AX1W], P + M->off[AX1B], T, D.pin_dim, D.ph);
+    for (int i = 0; i < T * D.ph; i++) W->ax_h[i] = W->ax_h[i] > 0.f ? W->ax_h[i] : 0.f;
+    linear_fwd(W->ax_drv.data(), W->ax_h.data(), WT + M->off[AXDW], P + M->off[AXDB], T, D.ph, 2);
+    for (int i = 0; i < T * 2; i++) W->ax_drv[i] = sigmoidf_(W->ax_drv[i]);
+    linear_fwd(W->ax_frm.data(), W->ax_h.data(), WT + M->off[AXFW], P + M->off[AXFB], T, D.ph, D.cfx);
+    for (int i = 0; i < T * D.cfx; i++) W->ax_frm[i] += W->ax_cur[i] / 255.0f;
 }
 
 static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool want_pred) {
@@ -1182,11 +1234,13 @@ struct LossAcc {
     double inv_se = 0, inv_n = 0, inv_var = 0;
     double dyn_se = 0, dyn_n = 0, dynh_se = 0, dynh_n = 0, dynx_se = 0, dynx_n = 0;
     double move = 0;
+    double act_dse = 0, act_fse = 0;   // act token: next-drives and coarse-next-frame squared errors (per pred row)
     double total = 0;
     void add(const LossAcc& o) {
         pg += o.pg; v += o.v; ent += o.ent; kl += o.kl; clip += o.clip; n += o.n; clickp += o.clickp;
         pred_se += o.pred_se; pred_n += o.pred_n; pred_ch_se += o.pred_ch_se; copy_se += o.copy_se;
         copy_ch_se += o.copy_ch_se; ch_n += o.ch_n; drive_se += o.drive_se; total += o.total;
+        act_dse += o.act_dse; act_fse += o.act_fse;
         inv_se += o.inv_se; inv_n += o.inv_n; inv_var += o.inv_var;
         dyn_se += o.dyn_se; dyn_n += o.dyn_n; dynh_se += o.dynh_se; dynh_n += o.dynh_n;
         dynx_se += o.dynx_se; dynx_n += o.dynx_n;
@@ -1297,6 +1351,29 @@ static void seq_loss(const Model* M, Workspace* W, const SeqView& sv, const PPOC
         }
         acc.drive_se += dse / 2.0;
         acc.total += pc.drive_coef * wd * dse / 2.0;
+        if (!D.act) continue;
+        // the act token's auxiliary losses: next drives (as the drives head's), coarse next frame (mean squared error)
+        const float* ad = W->ax_drv.data() + (size_t)t * 2;
+        float* dad = W->dax_drv.data() + (size_t)t * 2;
+        double ase = 0;
+        for (int j = 0; j < 2; j++) {
+            float p = ad[j], e = p - nd[j];
+            ase += (double)e * e;
+            dad[j] = wd * inv_B * pc.act_coef * e * p * (1.0f - p);
+        }
+        uint8_t tgt[ACT_CG * ACT_CG * 3];
+        downsample_u8(ns, D.pimg, D.cds, tgt);
+        const float* af = W->ax_frm.data() + (size_t)t * D.cfx;
+        float* daf = W->dax_frm.data() + (size_t)t * D.cfx;
+        double fse = 0;
+        for (int i = 0; i < D.cfx; i++) {
+            const float e = af[i] - tgt[i] / 255.0f;
+            fse += (double)e * e;
+            daf[i] = inv_B * pc.act_coef * 2.0f * e / D.cfx;
+        }
+        acc.act_dse += ase / 2.0;
+        acc.act_fse += fse / D.cfx;
+        acc.total += pc.act_coef * (wd * ase / 2.0 + fse / D.cfx);
     }
 }
 
@@ -1725,8 +1802,22 @@ static void seq_bwd_patch(const Model* M, Workspace* W, const SeqView& sv, float
         for (int i = 0; i < d; i++) { gz[i] += dv * vw[i]; gw[i] += dv * z[i]; }
         G[M->off[VB]] += dv;
     }
+    const int zi = D.act ? np + 3 : np + 1;   // the token the policy reads
+    if (have_pred && D.act) {   // the act token's auxiliary heads -> its output (with the prediction scale)
+        float* dh = W->dax_h.data();
+        linear_bwd(W->dax_drv.data(), W->ax_h.data(), P + M->off[AXDW], T, D.ph, 2, dh, false, G + M->off[AXDW],
+                   G + M->off[AXDB], scr);
+        linear_bwd(W->dax_frm.data(), W->ax_h.data(), P + M->off[AXFW], T, D.ph, D.cfx, dh, true, G + M->off[AXFW],
+                   G + M->off[AXFB], scr);
+        for (int i = 0; i < T * D.ph; i++) if (W->ax_h[i] <= 0.f) dh[i] = 0.f;
+        linear_bwd(dh, W->ax_in.data(), P + M->off[AX1W], T, D.pin_dim, D.ph, W->dax_in.data(), false,
+                   G + M->off[AX1W], G + M->off[AX1B], scr);
+        if (pred_scale != 0.f)
+            for (int t = 0; t < T; t++)
+                for (int i = 0; i < d; i++) dzm[(size_t)t * d + i] += pred_scale * W->dax_in[(size_t)t * D.pin_dim + i];
+    }
     for (int t = 0; t < T; t++)
-        for (int i = 0; i < d; i++) dz[((size_t)t * nt + np + 1) * d + i] += dzm[(size_t)t * d + i];
+        for (int i = 0; i < d; i++) dz[((size_t)t * nt + zi) * d + i] += dzm[(size_t)t * d + i];
     if (have_pred) {
         const int R = T * (np + 1), pp = D.pimg * D.pimg, cs = D.cell;
         for (int t = 0; t < T; t++) {   // dpout (CHW) -> each patch's cell
@@ -1784,6 +1875,11 @@ static void seq_bwd_patch(const Model* M, Workspace* W, const SeqView& sv, float
             gmw[i * 3] += rm[i] * pa[0]; gmw[i * 3 + 1] += rm[i] * pa[1]; gmw[i * 3 + 2] += rm[i] * pa[2];
             gmb[i] += rm[i];
             gcw[i] += rc[i] * cmd; gcb[i] += rc[i];
+        }
+        if (D.act) {
+            const float* ra = rc + d;
+            float* gae = G + M->off[ACTE];
+            for (int i = 0; i < d; i++) gae[i] += ra[i];
         }
     }
     linear_bwd(W->dpemb.data(), W->tpx.data(), P + M->off[PEW], T * np, D.pdim, d, nullptr, false, G + M->off[PEW],
@@ -2094,7 +2190,7 @@ static double grad_sq_norms(const Model* M, double* group) {
     struct Chunk { long b, e; int g; };
     std::vector<Chunk> chunks;
     for (int p = 0; p < NUM_P; p++) {
-        const int g = (p >= PIW && p <= VB) ? 1 : ((p >= PR1W && p < PEW) ? 2 : 0);
+        const int g = (p >= PIW && p <= VB) ? 1 : (((p >= PR1W && p < PEW) || p >= AX1W) ? 2 : 0);
         for (long b = M->off[p]; b < M->off[p] + M->sz[p]; b += 16384)
             chunks.push_back({b, std::min(M->off[p] + M->sz[p], b + 16384), g});
     }
@@ -2163,6 +2259,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[36] = c.one_frame;
     h[37] = c.pi_hidden;
     h[38] = c.patch;
+    h[39] = c.act_token;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2178,6 +2275,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.one_frame = h[36];
     c.pi_hidden = h[37];
     c.patch = h[38];
+    c.act_token = h[39];
 }
 
 // =====================================================================================
@@ -2410,6 +2508,8 @@ static void fill_stats(PPOStats* st, const LossAcc& acc, int n_updates, const Mo
     st->dyn_hunger_mse = acc.dynh_n > 0 ? (float)(acc.dynh_se / acc.dynh_n) : 0.f;
     st->dyn_recon_mse = acc.dynx_n > 0 ? (float)(acc.dynx_se / acc.dynx_n) : 0.f;
     st->move_nll = (float)(acc.move / n);
+    st->act_drive_mse = (float)(acc.act_dse / pn);
+    st->act_frame_mse = (float)(acc.act_fse / pn);
     st->updates_done = n_updates;
     const float* ls = M->params.data() + M->off[LOGSTD];
     st->std_x = expf(clampf_(ls[0], LS_MIN, LS_MAX));

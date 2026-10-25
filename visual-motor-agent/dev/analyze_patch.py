@@ -149,11 +149,14 @@ def tokens(run, st, n=16384, chunk=2048):
         for i in range(0, n, chunk):
             hs.append(ref.forward_patch(P, c, *[v[i:i + chunk] for v in x])["h"][:, -1].numpy())
     h = np.concatenate(hs)                                                      # [n, ntok, d]
-    npch = h.shape[1] - 3
+    npch = (c["img"] // c["patch"]) ** 2
+    zi = npch + 3 if c.get("act_token") else npch + 1          # the token the policy reads (act token, else move)
     feats = dict(move=h[:, npch + 1], drives=h[:, npch], command=h[:, npch + 2], patch_mean=h[:, :npch].mean(1),
                  patches=h[:, :npch].reshape(n, -1))
+    if c.get("act_token"):
+        feats["act"] = h[:, zi]
     res = {"%s_%s" % (f, k): ridge_r2(X, Y, ntr=3 * n // 4) for f, X in feats.items() for k, Y in gt.items()}
-    res["z_max_abs_diff"] = float(np.abs(h[:, npch + 1] - z_cpp).max())
+    res["z_max_abs_diff"] = float(np.abs(h[:, zi] - z_cpp).max())
     return res
 
 
@@ -185,7 +188,8 @@ def main():
             print("%-20s %7d  R^2 (cursor circle direction) from the token outputs:%s   (z vs C++: %.1e)" % (
                 name(run), args.step, "".join("  %s %.2f %.2f %.2f" % (f, r[f + "_cursor"], r[f + "_circle"],
                                                                         r[f + "_direction"])
-                                               for f in ("move", "drives", "command", "patch_mean", "patches")),
+                                               for f in ("act", "move", "drives", "command", "patch_mean", "patches")
+                                               if f + "_cursor" in r),
                 r["z_max_abs_diff"]), flush=True)
         else:
             print("%-20s %7d  reversing the move changes the prediction by %.4f per pixel; near the cursor %.2f of it"

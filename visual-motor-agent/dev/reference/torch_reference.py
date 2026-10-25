@@ -65,9 +65,20 @@ def patch_shapes(cfg):
     d = cfg["d_model"]
     ps, g, npch, _ = patch_dims(cfg)
     on = 1 if ps else 0
-    return {"pt_w": (d * on, ps * ps * 3), "pt_b": (d * on,), "pos2d": (npch, d), "tok_type": (4 * on, d),
+    ac = act_on(cfg)
+    ph, cfx = cfg["pred_hidden"], ACT_CG * ACT_CG * 3
+    return {"pt_w": (d * on, ps * ps * 3), "pt_b": (d * on,), "pos2d": (npch, d), "tok_type": ((4 + ac) * on, d),
             "drv_w": (d * on, 2), "drv_b": (d * on,), "mv_w": (d * on, 3), "mv_b": (d * on,),
-            "cmd_w": (d * on, 1), "cmd_b": (d * on,)}
+            "cmd_w": (d * on, 1), "cmd_b": (d * on,),
+            "act_e": (d * ac,), "ax1w": (ph * ac, d + 3), "ax1b": (ph * ac,), "axdw": (2 * ac, ph), "axdb": (2 * ac,),
+            "axfw": (cfx * ac, ph), "axfb": (cfx * ac,)}
+
+
+ACT_CG = 8   # act token: side of the coarse next frame it predicts
+
+
+def act_on(cfg):
+    return 1 if cfg.get("patch", 0) and cfg.get("act_token", 0) else 0
 
 
 def dyn_shapes(cfg):
@@ -224,7 +235,8 @@ def forward_patch(P, cfg, images, drives, prev_action, prev_reward, ep_start, pr
     S, T = images.shape[:2]
     d = cfg["d_model"]
     ps, g, npch, _ = patch_dims(cfg)
-    nt = npch + 3
+    ac = act_on(cfg)
+    nt = npch + 3 + ac
     x = torch.tensor(images, dtype=dt).reshape(S, T, g, ps, g, ps, 3) / 255.0
     x = x.permute(0, 1, 2, 4, 3, 5, 6).reshape(S, T, npch, ps * ps * 3)          # (y, x, c) within each patch
     tp = F.linear(x, P["pt_w"], P["pt_b"]) + P["pos2d"] + P["tok_type"][0]
@@ -236,13 +248,16 @@ def forward_patch(P, cfg, images, drives, prev_action, prev_reward, ep_start, pr
     if cfg.get("one_frame", 0):
         ss = np.broadcast_to(np.arange(T)[None, :], ss.shape).copy()
     pos = np.arange(T)[None, :] - ss
-    h = torch.cat([tp, td[:, :, None], tm[:, :, None], tc[:, :, None]], dim=2)
+    toks = [tp, td[:, :, None], tm[:, :, None], tc[:, :, None]]
+    if ac:   # the act token: a learned query
+        toks.append((P["act_e"] + P["tok_type"][4]).expand(S, T, 1, d))
+    h = torch.cat(toks, dim=2)
     h = (h + P["wpe"][torch.tensor(pos)][:, :, None]).reshape(S, T * nt, d)
     step = np.repeat(np.arange(T), nt)                                             # token -> its step
     first = np.repeat(ss, nt, axis=1)                                              # [S, T*nt]: first step it sees
     mask = (step[None, None, :] <= step[None, :, None]) & (step[None, None, :] >= first[:, :, None])
     hz = transformer(P, cfg, h, torch.tensor(mask)[:, None]).reshape(S, T, nt, d)
-    z = hz[:, :, npch + 1]
+    z = hz[:, :, npch + 3 if ac else npch + 1]   # the policy reads the act token, else the move token
     out = dict(z=z, h=hz, pi=policy(P, cfg, z), value=z @ P["v_w"] + P["v_b"][0])
     if pred_actions is not None:
         out.update(predict_patch(P, cfg, hz, pred_actions, images))
@@ -267,7 +282,13 @@ def predict_patch(P, cfg, h, actions, images=None):
         frames = out + torch.tensor(cur, dtype=dt).permute(0, 1, 4, 2, 3) / 255.0
     else:
         frames = torch.sigmoid(out)
-    return dict(pred_frames=frames, pred_drives=torch.sigmoid(F.linear(h1[:, :, npch], P["drw"], P["drb"])))
+    res = dict(pred_frames=frames, pred_drives=torch.sigmoid(F.linear(h1[:, :, npch], P["drw"], P["drb"])))
+    if act_on(cfg):   # the act token's auxiliary heads: next drives, coarse next frame (residual, HWC)
+        ha = F.relu(F.linear(torch.cat([h[:, :, npch + 3], aet[:, :, 0]], dim=-1), P["ax1w"], P["ax1b"]))
+        cc = downsample_u8(downsample_u8(np.asarray(images), cfg["img"] // p), p // ACT_CG).reshape(S, T, -1)
+        res.update(act_drives=torch.sigmoid(F.linear(ha, P["axdw"], P["axdb"])),
+                   act_frame=F.linear(ha, P["axfw"], P["axfb"]) + torch.tensor(cc, dtype=dt) / 255.0)
+    return res
 
 
 def forward(P, cfg, images, drives, prev_action, prev_reward, ep_start, pred_actions=None):
@@ -418,6 +439,13 @@ def ppo_loss(P, cfg, pc, batch):
         dmse = ((pr["pred_drives"] - torch.tensor(batch["next_drives"], dtype=dt)) ** 2).mean(-1)
         total = total + pc["pred_coef"] * mse.mean() + pc["drive_coef"] * (drive_weights(pc, batch) * dmse).mean()
         terms.update(pred=mse.mean().item(), drive=dmse.mean().item())
+        if act_on(cfg):
+            p = cfg["pred_img"]
+            tc = downsample_u8(np.asarray(batch["next_small"]), p // ACT_CG).reshape(*tgt.shape[:2], -1)
+            fm = ((pr["act_frame"] - torch.tensor(tc, dtype=dt) / 255.0) ** 2).mean(-1)
+            am = ((pr["act_drives"] - torch.tensor(batch["next_drives"], dtype=dt)) ** 2).mean(-1)
+            total = total + pc.get("act_coef", 0.0) * ((drive_weights(pc, batch) * am).mean() + fm.mean())
+            terms.update(act_drive=am.mean().item(), act_frame=fm.mean().item())
     if pc.get("inv_coef", 0) > 0 and cfg.get("inv_hidden", 0) > 0:
         vf = out["vf"]
         S, T = vf.shape[:2]

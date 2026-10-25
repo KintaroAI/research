@@ -28,7 +28,8 @@ LIB_PATH = os.environ.get("VM_CUDA_LIB") or os.path.join(os.path.dirname(os.path
 class VMCStats(C.Structure):
     _fields_ = [(n, C.c_float) for n in ("loss", "pred_mse", "drive_mse", "move_nll", "click_p", "pred_changed_mse",
                                          "grad_norm", "gn_backbone", "gn_policy", "gn_pred", "inv_mse", "inv_r2",
-                                         "dyn_mse", "dyn_hunger_mse", "dyn_recon_mse")]
+                                         "dyn_mse", "dyn_hunger_mse", "dyn_recon_mse", "act_drive_mse",
+                                         "act_frame_mse")]
 
 
 _lib = None

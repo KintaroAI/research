@@ -37,7 +37,12 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `env.distractors=K`: grey dots that move on their own (separate random streams: the episodes stay
     the same). vm-00011: `env.respawn` (with `end_on_success=false`, a large `max_steps`: a world that never
     resets), `env.target_speed`, `env.hazards`, `env.wrap` (a torus) and `env.egocentric` (the view centered
-    on the cursor). In a continual world with walls the basic agent starves at a wall: use `wrap`. `analyze_patch.py`: coupling (attention between patches), action sensitivity and probes
+    on the cursor). In a continual world with walls the basic agent starves at a wall: use `wrap`.
+  - `lifetime.py` (task 00020, `../ARCHITECTURE.md`): the self actor with N parallel bodies early in life
+    (`online.bodies`, `bodies_hold`, `bodies_halve`; one shared long-term memory, `ChunkStore`), the signed hindsight
+    command (`online.goal_mode=delta`) and exploration decay. With one body it reproduces `online.py` bit for bit.
+    `model.act_token=1` (patch models): a learned query token per step that the policy reads, trained by its own
+    predictions of the next drives and the coarse next frame (`ppo.act_coef`). `analyze_patch.py`: coupling (attention between patches), action sensitivity and probes
     per kind of token.
   - `src/vm_cuda.cu`, `src/vm_cuda.h`, `cuda_lib.py` (tasks 00011, 00012): the basic agent's forward pass and
     update on the GPU (`make libvmcuda.so`, `online.device=cuda`).
@@ -73,7 +78,12 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
 ## Key Design Decisions
 
 - **The agent runs on the CPU** (QEMU VM, 128 vCPUs, SSE4.2 only): C++17 with OpenMP and a hand-written
-  SSE GEMM. Since 2026-10-24 the VM also has an RTX 3090 (24 GB, sm_86, driver 595, nvcc 12.0).
+  SSE GEMM. Since 2026-10-24 the VM also has an RTX 3090 (24 GB, sm_86, driver 595, nvcc 12.0), and since
+  2026-10-25 an RTX 4090 (24 GB, sm_89). `libvmcuda.so` carries native code for both.
+  - **Pick a GPU with `CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=N`.** CUDA numbers devices fastest-first by
+    default, so without the order variable `CUDA_VISIBLE_DEVICES=0` is the 4090, while `nvidia-smi`'s GPU 0 is the
+    3090. The 4090 is about 1.6× faster (8×8-patch update 4.5 ms against 7.0); three 8×8-patch lifetimes per card at
+    once run at 113 ticks/s each on the 4090 and 74 on the 3090. One MPS daemon serves both cards.
   - **The basic agent's lifetime can run on it** (tasks 00011, 00012): `src/vm_cuda.cu` → `make libvmcuda.so`,
     wrapped by `cuda_lib.py`; `online.py --set online.device=cuda`. Forward passes and updates run on the GPU;
     the weights come back to the C++ agent only for checkpoints. The update takes 1.8 ms against 31 ms in C++,

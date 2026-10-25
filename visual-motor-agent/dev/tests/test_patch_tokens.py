@@ -147,6 +147,97 @@ def test_patch_sizes_forward_matches_reference(sized_agent):
     test_patch_forward_matches_reference(sized_agent)
 
 
+# The act token (task 00020): a learned query per step that the policy reads, trained by its own predictions of the
+# next drives and the coarse next frame
+@pytest.fixture(scope="module", params=[0, 5], ids=["act_linear_head", "act_hidden_head"])
+def act_agent(request):
+    agent_lib.set_threads(4)
+    return agent_lib.Agent(dict(PATCH, pred_residual=1, pi_hidden=request.param, act_token=1), seed=9)
+
+
+@pytest.mark.parametrize("pc_over", [
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.5, act_coef=0.7),
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.0, pi_detach=1, act_coef=2.0,
+         drive_changed_weight=4.0, drive_change_eps=0.3),
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.0, pi_detach=1, act_coef=1.0, pred_backbone_scale=0.3),
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.0, act_coef=0.0),
+])
+@pytest.mark.parametrize("threads", [4, 16])
+def test_act_token_loss_and_grads_match_reference(act_agent, pc_over, threads):
+    agent_lib.set_threads(threads)
+    cfg = act_agent.config
+    T, N = 16, 3
+    ro, data = store_rollout(act_agent, T=T, N=N, seed=11)
+    pc = dict(agent_lib.DEFAULT_PPO, **pc_over)
+    ids = [0, 2, 4, 5]
+    loss_cpp, st = act_agent.debug_grads(ro, np.zeros(N, np.float32), pc, ids)
+    zeros = np.zeros((T, N))
+    batch = seq_batch(data, ids, cfg["ctx"], N, zeros, zeros, cfg["img"] // cfg["pred_img"])
+    P = ref.params_from_flat(act_agent.params(), act_agent.param_layout(), cfg)
+    loss_ref, terms = ref.ppo_loss(P, cfg, pc, batch)
+    loss_ref.backward()
+    assert abs(loss_cpp - loss_ref.item()) < 1e-4 * max(1.0, abs(loss_ref.item())), (loss_cpp, loss_ref.item())
+    assert abs(st["act_frame_mse"] - terms["act_frame"]) < 1e-5 and abs(st["act_drive_mse"] - terms["act_drive"]) < 1e-5
+    compare_grads(act_agent, P)
+
+
+def test_act_token_forward_and_causality(act_agent):
+    test_patch_forward_matches_reference(act_agent)
+    cfg = act_agent.config
+    x = random_inputs(cfg)
+    f = lambda im: act_agent.forward(im, x["drives"], x["prev_action"], x["prev_reward"], x["ep_start"],
+                                     pred_actions=x["pred_actions"])
+    base = f(x["images"])
+    im = x["images"].copy()
+    im[:, 6:] = 255 - im[:, 6:]
+    o = f(im)
+    np.testing.assert_array_equal(o["z"][:, :6], base["z"][:, :6])
+    im = x["images"].copy()
+    im[:, 3, :8, :8] = 255 - im[:, 3, :8, :8]     # one patch of step 3: the act token of step 3 sees it
+    o = f(im)
+    assert not np.array_equal(o["z"][:, 3], base["z"][:, 3])
+    np.testing.assert_array_equal(o["z"][:, :3], base["z"][:, :3])
+
+
+def test_act_token_detached_move_loss_trains_the_head_only(act_agent):
+    agent_lib.set_threads(4)
+    ro, _ = store_rollout(act_agent, T=16, N=3, seed=5)
+    pc = dict(agent_lib.DEFAULT_PPO, use_ppo=0, pred_coef=0.0, drive_coef=0.0, move_coef=1.0, pi_detach=1)
+    act_agent.debug_grads(ro, np.zeros(3, np.float32), pc, [0, 2, 4, 5])
+    g = act_agent.grads()
+    for name, off, size in act_agent.param_layout():
+        nz = int(np.count_nonzero(g[off:off + size]))
+        if name in ("pi_w", "pi_b", "pi_h_w", "pi_h_b"):
+            assert nz > 0 or size == 0, name
+        elif name != "logstd":
+            assert nz == 0, (name, nz)
+
+
+def test_act_token_aux_loss_trains_the_transformer(act_agent):
+    """With only the act token's own losses, gradients reach its embedding, the Transformer and the patch embedding,
+    but not the patch prediction heads or the policy."""
+    agent_lib.set_threads(4)
+    ro, _ = store_rollout(act_agent, T=16, N=3, seed=6)
+    pc = dict(agent_lib.DEFAULT_PPO, use_ppo=0, pred_coef=1e-30, drive_coef=0.0, move_coef=0.0, act_coef=1.0)
+    act_agent.debug_grads(ro, np.zeros(3, np.float32), pc, [0, 2, 4, 5])
+    g = act_agent.grads()
+    lay = {name: (off, size) for name, off, size in act_agent.param_layout()}
+    nz = lambda n: np.abs(g[lay[n][0]:lay[n][0] + lay[n][1]]).max() if lay[n][1] else 0.0
+    for n in ("act_e", "ax1w", "axdw", "axfw", "qkvw", "pt_w"):
+        assert nz(n) > 0, n
+    for n in ("pi_w", "drw"):
+        assert nz(n) == 0, n
+
+
+def test_act_token_checkpoint_roundtrip(act_agent, tmp_path):
+    path = str(tmp_path / "ckpt.bin")
+    act_agent.save(path, with_optimizer=True)
+    b = agent_lib.Agent.load(path)
+    assert b.config == act_agent.config and b.config["act_token"] == 1
+    np.testing.assert_array_equal(b.params(), act_agent.params())
+    b.close()
+
+
 def test_patch_causality(patch_agent):
     """A step's outputs depend on its own step and the earlier steps of its context block only."""
     cfg = patch_agent.config

@@ -1,7 +1,7 @@
 # The Target Architecture: One Transformer, One Lifetime
 
 **Date:** 2026-10-25
-**Status:** Design (not yet built as a whole; most parts exist in `dev/` and are referenced below)
+**Status:** Design; all parts built (task 00020), first test vm-00016
 
 This is the design we are aiming for, assembled from what vm-00001–00015 taught us. Each decision names the experiment
 behind it. Where a part is still a hypothesis, it says so, and §10 lists the experiments that would settle it.
@@ -179,7 +179,7 @@ every tick:
 | Continual torus, hazards, slow hunger | exists (`env.respawn`, `env.wrap`, `env.hazards`, `env.h_rate`) |
 | Gated long-term memory, short-term buffer, replay with the newest window | exists (`online.memory=gated`) |
 | Changed-pixel and changed-drive weights | exists |
-| **act token** with auxiliary heads (the policy reads it instead of the move token) | new |
-| **signed hindsight command** | new (small: the label in `online.py`) |
-| **N parallel bodies with a shrinking schedule** | new (`online.py`: the world is already vectorized; the GPU model already takes batches) |
-| exploration ε decay | new (small) |
+| **act token** with auxiliary heads (the policy reads it instead of the move token) | built (task 00020: `model.act_token`, C++, CUDA, reference) |
+| **signed hindsight command** | built (`online.goal_mode=delta`) |
+| **N parallel bodies with a shrinking schedule** | built (`lifetime.py`) |
+| exploration ε decay | built (`online.explore_eps_end`, `explore_decay`) |

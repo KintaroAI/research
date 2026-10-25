@@ -38,6 +38,9 @@ typedef struct {
     int patch;          // >0: patch tokens (vm-00010). Each step is (img/patch)^2 patch tokens plus one token each for
                         //     the drives, the previous move and the command; each token predicts its own part of the
                         //     next state (patch: its cell of the next frame; drives; move). 0 = the CNN model
+    int act_token;      // 1 (patch models with pred_residual): one more token per step, a learned query whose output
+                        //     the policy and value heads read, trained by its own predictions of the next drives and
+                        //     the coarse (8x8) next frame from [its output, executed move] (task 00020)
 } VMConfig;
 
 typedef struct {
@@ -71,6 +74,7 @@ typedef struct {
     float drive_changed_weight; // extra weight of the drives loss (and the latent hunger loss) at steps where hunger
                                 //     changes by more than drive_change_eps (0 = plain MSE; vm-00013)
     float drive_change_eps;
+    float act_coef;             // act token (act_token=1): coefficient of its next-drives + coarse-next-frame losses
 } PPOConfig;
 
 typedef struct {
@@ -82,6 +86,7 @@ typedef struct {
     float dyn_mse, dyn_hunger_mse, dyn_recon_mse;   // latent dynamics: latent MSE, hunger MSE, decoder MSE
     int epochs_done, updates_done;
     float move_nll;             // next-move prediction: mean -log pi(a_t) of the moves actually made
+    float act_drive_mse, act_frame_mse;   // act token: its next-drives MSE and coarse-next-frame MSE
 } PPOStats;
 
 // ---- model lifecycle ----

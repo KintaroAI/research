@@ -11,8 +11,8 @@ place the states (scoring only; the model sees only the rendered frames and its 
            linear probe of "inside a hazard" from v (the encoder's features) and from z (the Transformer output), and
            the drives head's predicted next hunger inside against outside (with no move), against the world's.
            Patch-token models (vm-00014) have no v: the probes read the token outputs instead (from the PyTorch
-           reference, as analyze_patch.py tokens): the move token (z), the drives token, the token of the patch under
-           the cursor and the mean of the patch tokens.
+           reference, as analyze_patch.py tokens): z (the token the policy reads: the act token, else the move
+           token), the move token, the drives token, the token of the patch under the cursor and the patch mean.
 
 usage:
   ./venv/bin/python analyze_hazards.py hazard RUN_DIR [RUN_DIR ...] --step 40000 [--device cuda]
@@ -123,14 +123,16 @@ def contact(run, st, n=4096, seed=5):
     with torch.no_grad():
         h = np.concatenate([ref.forward_patch(P, c, *[v[i:i + 1024] for v in x])["h"][:, -1].numpy()
                             for i in range(0, n, 1024)])                       # [n, ntok, d]
-    g, npch = c["img"] // c["patch"], h.shape[1] - 3
+    g = c["img"] // c["patch"]
+    npch = g * g
+    zi = npch + 3 if c.get("act_token") else npch + 1          # the token the policy reads (act token, else move)
     view = np.full((n, 2), S / 2) if cfg.egocentric else env.cursor
     cell = (np.clip(np.floor(view[:, 1]).astype(int) // c["patch"], 0, g - 1) * g +
             np.clip(np.floor(view[:, 0]).astype(int) // c["patch"], 0, g - 1))
-    res.update(r2_drives=ridge_r2(h[:, npch], lab[:, None]),
+    res.update(r2_drives=ridge_r2(h[:, npch], lab[:, None]), r2_move=ridge_r2(h[:, npch + 1], lab[:, None]),
                r2_cursor_patch=ridge_r2(h[np.arange(n), cell], lab[:, None]),
                r2_patch_mean=ridge_r2(h[:, :npch].mean(1), lab[:, None]),
-               z_max_abs_diff=float(np.abs(h[:, npch + 1] - out["z"][:, 0]).max()))
+               z_max_abs_diff=float(np.abs(h[:, zi] - out["z"][:, 0]).max()))
     return res
 
 
@@ -152,8 +154,10 @@ def main():
             with open(os.path.join(run, "eval", "ckpt_%08d_contact.json" % args.step), "w") as f:
                 json.dump(r, f)
             probes = ("from v %.2f, from z %.2f" % (r["r2_v"], r["r2_z"]) if "r2_v" in r else
-                      "from z (move token) %.2f, drives token %.2f, cursor's patch %.2f, patch mean %.2f (z vs C++ %.0e)"
-                      % (r["r2_z"], r["r2_drives"], r["r2_cursor_patch"], r["r2_patch_mean"], r["z_max_abs_diff"]))
+                      "from z (the policy's token) %.2f, move token %.2f, drives token %.2f, cursor's patch %.2f, "
+                      "patch mean %.2f (z vs C++ %.0e)" % (r["r2_z"], r.get("r2_move", r["r2_z"]), r["r2_drives"],
+                                                           r["r2_cursor_patch"], r["r2_patch_mean"],
+                                                           r["z_max_abs_diff"]))
             print("%-14s %7d  inside a hazard: R^2 %s; drives head next hunger inside %.3f, outside %.3f (world %.3f, "
                   "%.3f)" % (name(run), args.step, probes, r["drives_head_inside"], r["drives_head_outside"],
                              r["true_inside"], r["true_outside"]), flush=True)

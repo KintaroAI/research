@@ -30,7 +30,8 @@ enum ParamId {
     PIW, PIB, PHW, PHB, LOGSTD, VW, VB,
     PR1W, PR1B, PR2W, PR2B, PBW, PBB, D1W, D1B, D2W, D2B, DRW, DRB, IV1W, IV1B, IV2W, IV2B,
     T1W, T1B, T2W, T2B, H1W, H1B, H2W, H2B, X1W, X1B, X2W, X2B,
-    PEW, PEB, POS2D, TYP, DEW, DEB, MEW, MEB, CEW, CEB, NUM_P
+    PEW, PEB, POS2D, TYP, DEW, DEB, MEW, MEB, CEW, CEB,
+    ACTE, AX1W, AX1B, AXDW, AXDB, AXFW, AXFB, NUM_P   // act token (act_token = 1) and its auxiliary heads
 };
 static const float LS_MIN = -5.0f, LS_MAX = 1.0f, LOG_2PI = 1.8378770664093453f;
 static const int KK = 16;   // 4x4 kernels, stride 2, padding 1
@@ -42,13 +43,17 @@ struct Dims {
     int dh, rimg, rpx;   // latent dynamics hidden size (0: none); coarse decoder frame side and values
     int patch, gp, npch, ntok, pdim, cell, cpx;   // patch tokens (0: the CNN model): side, grid, patches, tokens per
                                                   // step, values per patch, predicted cell side and values
+    int act, cds, cfx;   // act token on/off (task 00020); prediction frame -> coarse frame block side; coarse values
 };
+static const int ACT_CG = 8;   // act token: side of the coarse next frame it predicts (as vm_agent.cpp)
 
 static bool make_dims(const VMConfig& c, Dims& D) {
     D.patch = c.patch > 0 ? c.patch : 0;
+    D.act = (D.patch && c.act_token) ? 1 : 0; D.cds = c.pred_img / ACT_CG; D.cfx = ACT_CG * ACT_CG * 3;
+    if (c.act_token && (!D.patch || c.pred_img % ACT_CG)) return false;
     if (D.patch) {   // patch tokens (vm-00010): residual frames; no inverse or latent dynamics (as vm_agent.cpp)
         if (!c.pred_residual || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.img % D.patch) return false;
-        D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3; D.pdim = D.patch * D.patch * 3;
+        D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3 + D.act; D.pdim = D.patch * D.patch * 3;
         if (c.pred_img % D.gp || c.d_model % c.n_head) return false;
         D.cell = c.pred_img / D.gp; D.cpx = D.cell * D.cell * 3;
         D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
@@ -102,8 +107,11 @@ static void expected_sizes(const Dims& D, long* s) {
     if (D.patch) {   // no CNN encoder or decoder; PR2W outputs one patch's cell
         for (int q : {C1W, C1B, C2W, C2B, C3W, C3B, EFW, EFB, INW, INB, PBW, PBB, D1W, D1B, D2W, D2B}) s[q] = 0;
         s[PR2W] = (long)D.cpx * D.ph; s[PR2B] = D.cpx;
-        s[PEW] = d * D.pdim; s[PEB] = d; s[POS2D] = (long)D.npch * d; s[TYP] = 4 * d;
+        s[PEW] = d * D.pdim; s[PEB] = d; s[POS2D] = (long)D.npch * d; s[TYP] = (4 + D.act) * d;
         s[DEW] = 2 * d; s[DEB] = d; s[MEW] = 3 * d; s[MEB] = d; s[CEW] = d; s[CEB] = d;
+        const long ac = D.act;
+        s[ACTE] = ac * d; s[AX1W] = ac * D.ph * D.pin_dim; s[AX1B] = ac * D.ph; s[AXDW] = ac * 2 * D.ph; s[AXDB] = ac * 2;
+        s[AXFW] = ac * D.cfx * D.ph; s[AXFB] = ac * D.cfx;
     }
 }
 
@@ -617,12 +625,12 @@ __global__ void k_inv_loss(const float* out, const float* act, const int* valid,
 }
 // Squared gradient norms of the three groups: [0] backbone, [1] policy/value heads [h0, h1), [2] prediction heads
 // [p0, p1)
-__global__ void k_sqnorm(const float* G, long n, long h0, long h1, long p0, long p1, double* out) {
+__global__ void k_sqnorm(const float* G, long n, long h0, long h1, long p0, long p1, long p2, double* out) {
     __shared__ double sh[3][256];
     double s[3] = {0, 0, 0};
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const double g = (double)G[i] * G[i];
-        s[(i >= h0 && i < h1) ? 1 : ((i >= p0 && i < p1) ? 2 : 0)] += g;
+        s[(i >= h0 && i < h1) ? 1 : (((i >= p0 && i < p1) || i >= p2) ? 2 : 0)] += g;   // p2..: the act token's heads
     }
     for (int k = 0; k < 3; k++) sh[k][threadIdx.x] = s[k];
     __syncthreads();
@@ -787,8 +795,8 @@ __global__ void k_patch_px(const uint8_t* img, float* tpx, int B, int S, int ps,
 __global__ void k_ptok(const float* pemb, const float* pos2d, const float* typ, const float* dw, const float* db,
                        const float* mw, const float* mb, const float* cw, const float* cb, const float* wpe,
                        const int* pos, const float* drv, const float* pa, const float* pr, int use_pr, float* xin,
-                       int B, int np, int d) {
-    const int nt = np + 3;
+                       int B, int np, int d, const float* ae) {
+    const int nt = np + 3 + (ae ? 1 : 0);   // ae: the act token's vector (NULL: no act token)
     const long n = (long)B * nt * d;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % d, k = (i / d) % nt;
@@ -797,9 +805,57 @@ __global__ void k_ptok(const float* pemb, const float* pos2d, const float* typ, 
         if (k < np) v += pemb[(b * np + k) * d + j] + pos2d[(long)k * d + j] + typ[j];
         else if (k == np) v += dw[j * 2] * drv[b * 2] + dw[j * 2 + 1] * drv[b * 2 + 1] + db[j] + typ[d + j];
         else if (k == np + 1) v += mw[j * 3] * pa[b * 3] + mw[j * 3 + 1] * pa[b * 3 + 1] + mw[j * 3 + 2] * pa[b * 3 + 2] + mb[j] + typ[2 * d + j];
-        else v += cw[j] * (use_pr ? pr[b] : 0.f) + cb[j] + typ[3 * d + j];
+        else if (k == np + 2) v += cw[j] * (use_pr ? pr[b] : 0.f) + cb[j] + typ[3 * d + j];
+        else v += ae[j] + typ[4 * d + j];
         xin[i] = v;
     }
+}
+// The act token (task 00020). Coarse frame [b, ACT_CG^2 * 3] (HWC) of prediction-size u8 frames [b, p, p, 3]: block
+// averages over f x f, rounded half up (as downsample_u8), scaled to [0, 1]
+__device__ inline float coarse_px(const uint8_t* fr, int p, int f, int i) {
+    const int c = i % 3, x = (i / 3) % ACT_CG, y = i / (3 * ACT_CG);
+    int s = 0;
+    for (int u = 0; u < f; u++)
+        for (int v = 0; v < f; v++) s += fr[((y * f + u) * p + x * f + v) * 3 + c];
+    return (float)((s + (f * f) / 2) / (f * f)) / 255.0f;
+}
+// frm [B, cfx] += the coarse current frame (the residual)
+__global__ void k_act_residual(float* frm, const uint8_t* cs, int B, int p, int f) {
+    const int cfx = ACT_CG * ACT_CG * 3;
+    const long n = (long)B * cfx;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x)
+        frm[i] += coarse_px(cs + (i / cfx) * p * p * 3, p, f, i % cfx);
+}
+// The act token's losses, one thread per token: next drives (as k_head_loss's, weighted by drive_weight_) and the
+// coarse next frame (MSE). acc[21] += wd SE/2, acc[22] += frame SE/cfx, acc[23] += SE/2
+__global__ void k_act_loss(const float* adrv, const float* afrm, const float* ndrv, const uint8_t* ns, const float* drv,
+                           float* dadrv, float* dafrm, int B, int p, int f, float inv_B, float coef, float dcw,
+                           float deps, double* acc) {
+    const int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B) return;
+    const int cfx = ACT_CG * ACT_CG * 3;
+    const float wd = drive_weight_(drv + b * 2, ndrv + b * 2, dcw, deps);
+    double ase = 0, fse = 0;
+    for (int j = 0; j < 2; j++) {
+        const float q = adrv[b * 2 + j], e = q - ndrv[b * 2 + j];
+        ase += (double)e * e;
+        dadrv[b * 2 + j] = wd * inv_B * coef * e * q * (1.0f - q);
+    }
+    const uint8_t* fr = ns + (long)b * p * p * 3;
+    for (int i = 0; i < cfx; i++) {
+        const float e = afrm[(long)b * cfx + i] - coarse_px(fr, p, f, i);
+        fse += (double)e * e;
+        dafrm[(long)b * cfx + i] = inv_B * coef * 2.0f * e / cfx;
+    }
+    atomicAdd(acc + 21, wd * ase / 2.0);
+    atomicAdd(acc + 22, fse / cfx);
+    atomicAdd(acc + 23, ase / 2.0);
+}
+// dst [B, d] += scale * src [B, w][:, :d]
+__global__ void k_add_cols(float* dst, const float* src, int B, int d, int w, float scale) {
+    const long n = (long)B * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x)
+        dst[i] += scale * src[(i / d) * w + i % d];
 }
 // dst[r] (+)= src[b*nt + k] for r = b (rows of width d): the move token's output z, and its gradient back
 __global__ void k_tok_rows(float* rows, float* tok, int B, int nt, int k, int d, int to_tok) {
@@ -811,8 +867,8 @@ __global__ void k_tok_rows(float* rows, float* tok, int B, int nt, int k, int d,
 }
 // Prediction rows R = B*(np+1): rows b*np + p (patch p of frame b), then B*np + b (the drives token of frame b);
 // pin = [token output, executed action]. back: tok[...] += scale * dpin[r, :d] instead.
-__global__ void k_ppin(float* lnf, const float* act, float* pin, int B, int np, int d, int back, float scale) {
-    const int nt = np + 3, D = d + 3;
+__global__ void k_ppin(float* lnf, const float* act, float* pin, int B, int np, int nt, int d, int back, float scale) {
+    const int D = d + 3;
     const long R = (long)B * (np + 1), n = R * (back ? d : D);
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int w = back ? d : D, j = i % w;
@@ -844,8 +900,8 @@ __global__ void k_cells_frame(float* cells, float* frame, int B, int pimg, int g
 // patch embedding's output gradient dpemb
 __global__ void k_ptok_grad(const float* dres, const int* pos, const float* drv, const float* pa, const float* pr,
                             int use_pr, float* gwpe, float* gtyp, float* gpos2d, float* gdw, float* gdb, float* gmw,
-                            float* gmb, float* gcw, float* gcb, float* dpemb, int B, int np, int d) {
-    const int nt = np + 3;
+                            float* gmb, float* gcw, float* gcb, float* dpemb, int B, int np, int d, float* gae) {
+    const int nt = np + 3 + (gae ? 1 : 0);
     const long n = (long)B * nt * d;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % d, k = (i / d) % nt;
@@ -858,7 +914,8 @@ __global__ void k_ptok_grad(const float* dres, const int* pos, const float* drv,
         else if (k == np + 1) {
             for (int q = 0; q < 3; q++) atomicAdd(gmw + j * 3 + q, g * pa[b * 3 + q]);
             atomicAdd(gmb + j, g);
-        } else { atomicAdd(gcw + j, g * (use_pr ? pr[b] : 0.f)); atomicAdd(gcb + j, g); }
+        } else if (k == np + 2) { atomicAdd(gcw + j, g * (use_pr ? pr[b] : 0.f)); atomicAdd(gcb + j, g); }
+        else atomicAdd(gae + j, g);
     }
 }
 
@@ -919,6 +976,7 @@ struct Model {
     int im_cap = 0;
     Buf fout, fhwc;   // forward outputs: [B, 4] mu, click p, value; predicted frames HWC
     Buf tpx, pemb, dpemb, zm, dzm, pdel, dpdel;   // patch tokens
+    Buf ax_in, ax_h, ax_drv, ax_frm, dax_in, dax_h, dax_drv, dax_frm;   // the act token's auxiliary heads
     int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
     int tcap = 0;
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
@@ -928,7 +986,7 @@ struct Model {
                               // [13..18] latent dynamics: latent SE/F, n; hunger SE, n; decoder SE/R, n;
                               // [19], [20] the drive and hunger SE weighted by drive_changed_weight
     float* clip = nullptr;
-    float coef[7] = {0, 0, 0, 0, 0, 0, 0};   // pred, drive, move, inverse, dyn latent, hunger, decoder coefficients
+    float coef[8] = {0, 0, 0, 0, 0, 0, 0, 0};   // pred, drive, move, inverse, dyn latent, hunger, decoder, act token
 };
 
 static void gemm(Model* M, bool ta, bool tb, int m, int n, int k, const float* A, int lda, const float* B, int ldb,
@@ -1045,11 +1103,11 @@ void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const 
     for (int i = 0; i < NUM_P; i++) { M->off[i] = offsets[i]; M->sz[i] = sizes[i]; }
     const size_t nb = n_params * sizeof(float);
     if (cudaMalloc(&M->P, nb) || cudaMalloc(&M->G, nb) || cudaMalloc(&M->m, nb) || cudaMalloc(&M->v, nb) ||
-        cudaMalloc(&M->acc, 21 * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
+        cudaMalloc(&M->acc, 24 * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
         fprintf(stderr, "vm_cuda: out of device memory\n"); return nullptr;
     }
     cudaMemcpy(M->P, params, nb, cudaMemcpyHostToDevice);
-    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, 21 * sizeof(double));
+    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, 24 * sizeof(double));
     if (cublasCreate(&M->cb) != CUBLAS_STATUS_SUCCESS) return nullptr;
     cublasSetMathMode(M->cb, CUBLAS_PEDANTIC_MATH);   // no TF32
     return M;
@@ -1374,11 +1432,12 @@ static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     linear(M, pemb, tpx, P + off[PEW], P + off[PEB], B * np, D.pdim, d, 0);
     k_ptok<<<GRID((long)Bx * d)>>>(pemb, P + off[POS2D], P + off[TYP], P + off[DEW], P + off[DEB], P + off[MEW],
                                     P + off[MEB], P + off[CEW], P + off[CEB], P + off[WPE], M->pos, M->drv, M->pa, M->pr,
-                                    M->cfg.use_prev_reward, xin, B, np, d);
+                                    M->cfg.use_prev_reward, xin, B, np, d, D.act ? P + off[ACTE] : nullptr);
     transformer_fwd(M, Bx, KT, M->tstart, M->tend);
     float* lnf = M->lnf.p;
     float* zm = M->zm.get((size_t)B * d);
-    k_tok_rows<<<GRID((long)B * d)>>>(zm, lnf, B, nt, np + 1, d, 0);
+    const int zi = D.act ? np + 3 : np + 1;   // the token the policy reads: the act token, else the move token
+    k_tok_rows<<<GRID((long)B * d)>>>(zm, lnf, B, nt, zi, d, 0);
     float* pi = M->pi.get((size_t)B * 3);
     float* pih = D.pih ? M->pih.get((size_t)B * D.pih) : nullptr;
     if (D.pih) {
@@ -1394,19 +1453,30 @@ static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     float* pdrv = M->pdrv.get((size_t)B * 2);
     float* pout = M->pout.get((size_t)3 * B * sp);
     if (want_pred) {
-        k_ppin<<<GRID(R * D.pin_dim)>>>(lnf, M->act, pin, B, np, d, 0, 0.f);
+        k_ppin<<<GRID(R * D.pin_dim)>>>(lnf, M->act, pin, B, np, nt, d, 0, 0.f);
         linear(M, ph1, pin, P + off[PR1W], P + off[PR1B], (int)R, D.pin_dim, D.ph, 1);
         linear(M, pdel, ph1, P + off[PR2W], P + off[PR2B], B * np, D.ph, D.cpx, 0);
         linear(M, pdrv, ph1 + (size_t)B * np * D.ph, P + off[DRW], P + off[DRB], B, D.ph, 2, 2);
         k_cells_frame<<<GRID((long)B * np * D.cpx)>>>(pdel, pout, B, D.pimg, D.gp, 1);
         k_residual<<<GRID(3L * B * sp)>>>(pout, M->cs, B, sp);
     }
+    float *ax_in = nullptr, *ax_h = nullptr, *ax_drv = nullptr, *ax_frm = nullptr;
+    if (want_pred && D.act) {   // the act token's auxiliary heads on [its output, executed move]
+        ax_in = M->ax_in.get((size_t)B * D.pin_dim); ax_h = M->ax_h.get((size_t)B * D.ph);
+        ax_drv = M->ax_drv.get((size_t)B * 2); ax_frm = M->ax_frm.get((size_t)B * D.cfx);
+        k_pin<<<GRID((long)B * D.pin_dim)>>>(zm, M->act, ax_in, B, d);
+        linear(M, ax_h, ax_in, P + off[AX1W], P + off[AX1B], B, D.pin_dim, D.ph, 1);
+        linear(M, ax_drv, ax_h, P + off[AXDW], P + off[AXDB], B, D.ph, 2, 2);
+        linear(M, ax_frm, ax_h, P + off[AXFW], P + off[AXFB], B, D.ph, D.cfx, 0);
+        k_act_residual<<<GRID((long)B * D.cfx)>>>(ax_frm, M->cs, B, D.pimg, D.cds);
+    }
     if (!train) { CK(cudaGetLastError()); return 0; }
     const PPOConfig& pc = *pcp;
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
-    CK(cudaMemsetAsync(M->acc, 0, 21 * sizeof(double)));
+    CK(cudaMemsetAsync(M->acc, 0, 24 * sizeof(double)));
     M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef;
     M->coef[3] = M->coef[4] = M->coef[5] = M->coef[6] = 0.f;
+    M->coef[7] = D.act ? pc.act_coef : 0.f;
     const float inv_B = 1.0f / B;
     float* dpout = M->dpout.get((size_t)3 * B * sp);
     float* dpdrv = M->dpdrv.get((size_t)B * 2);
@@ -1431,8 +1501,21 @@ static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     } else {
         linear_bwd(M, dpi, zm, P + off[PIW], B, d, 3, dzm_pi, true, G + off[PIW], G + off[PIB]);
     }
-    k_tok_rows<<<GRID((long)B * d)>>>(dzm, dz, B, nt, np + 1, d, 1);
     const float sc = pc.pred_backbone_scale;
+    if (have_pred && D.act) {   // the act token's losses -> its heads -> its output (with the prediction scale)
+        float* dax_drv = M->dax_drv.get((size_t)B * 2);
+        float* dax_frm = M->dax_frm.get((size_t)B * D.cfx);
+        float* dax_h = M->dax_h.get((size_t)B * D.ph);
+        float* dax_in = M->dax_in.get((size_t)B * D.pin_dim);
+        k_act_loss<<<(B + 127) / 128, 128>>>(ax_drv, ax_frm, M->ndrv, M->ns, M->drv, dax_drv, dax_frm, B, D.pimg, D.cds,
+                                             inv_B, pc.act_coef, pc.drive_changed_weight, pc.drive_change_eps, M->acc);
+        linear_bwd(M, dax_drv, ax_h, P + off[AXDW], B, D.ph, 2, dax_h, false, G + off[AXDW], G + off[AXDB]);
+        linear_bwd(M, dax_frm, ax_h, P + off[AXFW], B, D.ph, D.cfx, dax_h, true, G + off[AXFW], G + off[AXFB]);
+        k_mask<<<GRID((long)B * D.ph)>>>(dax_h, ax_h, (long)B * D.ph);
+        linear_bwd(M, dax_h, ax_in, P + off[AX1W], B, D.pin_dim, D.ph, dax_in, false, G + off[AX1W], G + off[AX1B]);
+        if (sc != 0.f) k_add_cols<<<GRID((long)B * d)>>>(dzm, dax_in, B, d, D.pin_dim, sc);
+    }
+    k_tok_rows<<<GRID((long)B * d)>>>(dzm, dz, B, nt, zi, d, 1);
     if (have_pred) {
         float* dpdel = M->dpdel.get((size_t)B * np * D.cpx);
         float* dph1 = M->dph1.get((size_t)R * D.ph);
@@ -1443,13 +1526,14 @@ static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
                    G + off[DRW], G + off[DRB]);
         k_mask<<<GRID(R * D.ph)>>>(dph1, ph1, R * D.ph);
         linear_bwd(M, dph1, pin, P + off[PR1W], (int)R, D.pin_dim, D.ph, dpin, false, G + off[PR1W], G + off[PR1B]);
-        if (sc != 0.f) k_ppin<<<GRID(R * d)>>>(dz, nullptr, dpin, B, np, d, 1, sc);
+        if (sc != 0.f) k_ppin<<<GRID(R * d)>>>(dz, nullptr, dpin, B, np, nt, d, 1, sc);
     }
     if (transformer_bwd(M, Bx, KT, M->tstart, M->tend)) return -1;
     float* dpemb = M->dpemb.get((size_t)B * np * d);
     k_ptok_grad<<<GRID((long)Bx * d)>>>(M->dres.p, M->pos, M->drv, M->pa, M->pr, M->cfg.use_prev_reward, G + off[WPE],
                                          G + off[TYP], G + off[POS2D], G + off[DEW], G + off[DEB], G + off[MEW],
-                                         G + off[MEB], G + off[CEW], G + off[CEB], dpemb, B, np, d);
+                                         G + off[MEB], G + off[CEW], G + off[CEB], dpemb, B, np, d,
+                                         D.act ? G + off[ACTE] : nullptr);
     linear_bwd(M, dpemb, tpx, P + off[PEW], B * np, D.pdim, d, nullptr, false, G + off[PEW], G + off[PEB]);
     CK(cudaGetLastError());
     return 0;
@@ -1522,7 +1606,7 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     if (!train) { CK(cudaGetLastError()); return 0; }
     const PPOConfig& pc = *pcp;
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
-    CK(cudaMemsetAsync(M->acc, 0, 21 * sizeof(double)));
+    CK(cudaMemsetAsync(M->acc, 0, 24 * sizeof(double)));
     const bool have_inv = pc.inv_coef > 0.f && D.ih > 0;
     M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef; M->coef[3] = have_inv ? pc.inv_coef : 0.f;
 
@@ -1767,7 +1851,7 @@ int vmc_update(void* h, const PPOConfig* pcp) {
     const PPOConfig& pc = *pcp;
     if (vmc_loss_and_grads(h, pcp)) return -1;
     const long h0 = M->off[PIW], h1 = M->off[VB] + M->sz[VB], p0 = M->off[PR1W], p1 = M->off[PEW];
-    k_sqnorm<<<256, 256>>>(M->G, M->n_params, h0, h1, p0, p1, M->acc + 5);
+    k_sqnorm<<<256, 256>>>(M->G, M->n_params, h0, h1, p0, p1, M->off[AX1W], M->acc + 5);
     k_clip<<<1, 1>>>(M->acc + 5, pc.max_grad_norm, pc.pi_own_clip, M->clip);
     M->step++;
     const float bc1 = 1.0f - powf(pc.beta1, (float)M->step), bc2 = 1.0f - powf(pc.beta2, (float)M->step);
@@ -1779,12 +1863,13 @@ int vmc_update(void* h, const PPOConfig* pcp) {
 
 int vmc_stats(void* h, VMCStats* out) {
     Model* M = (Model*)h;
-    double a[21];
+    double a[24];
     CK(cudaMemcpy(a, M->acc, sizeof(a), cudaMemcpyDeviceToHost));
     const double n = M->B > 0 ? M->B : 1;
     memset(out, 0, sizeof(VMCStats));
     out->loss = (float)((M->coef[0] * a[0] + M->coef[1] * a[19] + M->coef[2] * a[3] + M->coef[3] * a[10] +
-                         M->coef[4] * a[13] + M->coef[5] * a[20] + M->coef[6] * a[17]) / n);   // weighted drive terms
+                         M->coef[4] * a[13] + M->coef[5] * a[20] + M->coef[6] * a[17] +
+                         M->coef[7] * (a[21] + a[22])) / n);   // weighted drive terms
     out->dyn_mse = a[14] > 0 ? (float)(a[13] / a[14]) : 0.f;
     out->dyn_hunger_mse = a[16] > 0 ? (float)(a[15] / a[16]) : 0.f;
     out->dyn_recon_mse = a[18] > 0 ? (float)(a[17] / a[18]) : 0.f;
@@ -1797,6 +1882,8 @@ int vmc_stats(void* h, VMCStats* out) {
     out->pred_changed_mse = a[9] > 0 ? (float)(a[8] / a[9]) : 0.f;
     out->grad_norm = (float)sqrt(a[5] + a[6] + a[7]);
     out->gn_backbone = (float)sqrt(a[5]); out->gn_policy = (float)sqrt(a[6]); out->gn_pred = (float)sqrt(a[7]);
+    out->act_drive_mse = (float)(a[23] / n);
+    out->act_frame_mse = (float)(a[22] / n);
     return 0;
 }
 

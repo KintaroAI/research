@@ -40,3 +40,27 @@ step, so the cap is rarely reached and most hazard steps leave a trace.
   0.095/0.099; S8DW 0.061/0.063, 0.033/0.048, 0.054/0.054; SD 0.100/0.101, 0.031/0.073, 0.094/0.102; SL 0.050/0.050,
   0.066/0.069, 0.098/0.098). Basic-agent lifetimes that hit rarely still reach the cap (up to 0.68 of steps); the planner
   never does.
+- **All 12 finished at about 10:30; analysis at 10:42.** With slow hunger the cap is rarely reached (online, last 10k
+  steps: capped 0.00–0.19 of steps; felt / in a hazard 0.049/0.050 to 0.097/0.110).
+- **Online, last 10k steps:** hits per 1,000 steps S8D 6.0, 8.0, 8.3; S8DW 4.9, 5.2, 7.1; SD 6.0, 8.3, 7.0; SL 17.0,
+  17.8, 16.9 (vm-00012 LTH at the old rates: 25–28). In a hazard: S8D 0.074, 0.061, 0.110; S8DW 0.074, 0.059, 0.095;
+  SD 0.081, 0.068, 0.079; SL 0.060, 0.050, 0.062 (0–5k: 0.054–0.099; chance about 0.063).
+- **Frozen episodic test at 60k:** S8D 0.77, 0.81, 0.89; S8DW 0.63, 0.77, 0.71; SD 0.77, 0.88, 0.81 (birth 0.59–0.64).
+- **Contact, the drives head inside − outside** (the world +0.020):
+
+  | Arm | 20k | 40k | 60k |
+  |---|---|---|---|
+  | S8D | +0.005, 0.000, −0.001 | −0.004, −0.002, −0.001 | +0.004, +0.001, +0.002 |
+  | S8DW | −0.005, −0.002, +0.002 | +0.007, −0.021, 0.000 | +0.005, +0.007, 0.000 |
+  | SD (DMI, CNN) | −0.008, +0.001, +0.004 | 0.000, +0.006, +0.008 | **+0.019, +0.012, +0.016** |
+  | SL (planner) | +0.041, +0.028, +0.033 | −0.005, +0.013, +0.022 | — |
+
+  R² of contact: S8D/S8DW cursor's patch 0.59–0.72, drives token up to 0.54 (S8DW seed 2); SD from v 0.12–0.17 at 60k
+  (0.01–0.06 at 20k–40k); SL from z 0.05–0.15.
+- **The planner's imagined hunger** (12 still steps, inside − outside; world +0.183): 20k +0.020, +0.013, −0.009; 40k
+  −0.012, −0.002, −0.010.
+- **Reading:** with the trace present, the CNN agent's drives head learns contact by 60k (most of the world's +0.020),
+  and the planner's Transformer drives head sees it early (20k) but not stably. The 8×8 patch models do not learn it
+  at all, even though the cursor's patch token holds contact (R² ≈ 0.7) and the weight on unusual changes pushes the
+  drives token's R² to 0.38–0.54. The planner's imagination (from v) stays blind. No arm avoids hazards.
+

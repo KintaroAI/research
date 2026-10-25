@@ -66,7 +66,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       babble_sigma=0.607, babble_click=0.1, save_every=10_000, log_every=1_000, threads=8,
                       planner=None, actor="planner", goal=0, goal_k=12, click_bias=None,
                       memory="stream", stm=256, relief_k=12, store_relief=0, store_surprise=0.0, store_base=1.0,
-                      store_warmup=1_000, surprise_window=1_000, device="cpu")
+                      store_warmup=1_000, surprise_window=1_000, device="cpu",
+                      # task 00020 (lifetime.py; online.py reads goal_mode only): the hindsight command's form, and
+                      # parallel bodies with a shrinking schedule, exploration decay
+                      goal_mode="relief", bodies=1, bodies_hold=0, bodies_halve=0, explore_eps_end=None,
+                      explore_decay=0)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -109,12 +113,18 @@ class Replay:
         logical = np.concatenate([[hi], rng.integers(0, hi + 1, B - 1)])
         return (self.oldest() + logical) % self.cap
 
-    def fill(self, ro, starts, L, goal_k=0):
+    def fill(self, ro, starts, L, goal_k=0, goal_mode="relief"):
         """Write the sequences into a rollout [T=L, N=len(starts)]. With goal_k, the scalar input of each token is
-        its hindsight hunger relief: its hunger if a hit happens within its next goal_k steps, else 0."""
+        its hindsight command (goal_labels): relief, its hunger if a hit happens within its next goal_k steps, else 0;
+        delta, the change of hunger over its next goal_k steps."""
+        if goal_k and goal_mode != "relief":
+            ext = (starts[:, None] + np.arange(L + goal_k - 1)[None]) % self.cap
+            lab = np.stack([goal_labels(self, e, goal_k, goal_mode)[:L] for e in ext])
         for t in range(L):
             i = (starts + t) % self.cap
-            if goal_k:
+            if goal_k and goal_mode != "relief":
+                pr = lab[:, t]
+            elif goal_k:
                 ahead = (i[:, None] + np.arange(goal_k)[None]) % self.cap
                 pr = np.where(self.hit[ahead].any(1), self.drv[i, 0], 0.0).astype(np.float32)
             else:
@@ -143,6 +153,32 @@ def hindsight_labels(hit, done, value, k):
     return out
 
 
+def delta_labels(drv0, ndrv0, done, k):
+    """For each step j of a stretch of consecutive steps: hunger_j minus the hunger after its next k steps (the step
+    j+k-1's outcome), or after the end of j's episode if it ends sooner. Relief is positive, a rise (a hazard, or
+    just time) negative. Labels near the end of the stretch need the k-1 steps after it to be included."""
+    n = len(drv0)
+    out = np.zeros(n, np.float32)
+    end = n - 1                   # the step whose outcome closes j's window
+    for j in range(n - 1, -1, -1):
+        if done[j]:
+            end = j
+        e = min(j + k - 1, end)
+        out[j] = drv0[j] - ndrv0[e]
+        if done[j]:
+            end = j
+    return out
+
+
+def goal_labels(m, idx, k, mode):
+    """The hindsight command of the steps idx (consecutive, physical indices into memory fields m) of form mode."""
+    if mode == "relief":
+        return hindsight_labels(m.hit[idx], m.done[idx], m.drv[idx, 0], k)
+    if mode == "delta":
+        return delta_labels(m.drv[idx, 0], m.ndrv[idx, 0], m.done[idx], k)
+    raise ValueError("online.goal_mode must be 'relief' or 'delta'")
+
+
 def downsample_u8(img, f):
     """Block average of [..., S, S, 3] uint8 frames by f, rounded (the C++ prediction targets)."""
     s = img.shape[-3] // f
@@ -169,6 +205,20 @@ def surprise_parts(out, t, img, nimg, ndrv, act, sd, f, changed_weight, move=Tru
     return frame, drives, 0.5 * float((z * z).sum()) - float(np.log(p) if act[2] > 0.5 else np.log1p(-p))
 
 
+class ChunkStore:
+    """Long-term memory of whole chunks of L steps (a ring of replay // L chunks); several GatedMemory gates (one per
+    body, lifetime.py) can share one."""
+
+    def __init__(self, on, L, fields_like):
+        self.cap = on["replay"] // L
+        self.ltm = {k: np.zeros((self.cap, L) + getattr(fields_like, k).shape[1:], getattr(fields_like, k).dtype)
+                    for k in FIELDS}
+        self.ltm["lbl"] = np.zeros((self.cap, L), np.float32)     # hindsight labels (goal), fixed at writing
+        self.reason = np.zeros(self.cap, np.uint8)
+        self.relief = np.zeros(self.cap, bool)                     # leads to relief, whatever the reason it was stored
+        self.n = self.w = 0                                        # chunks stored, write position
+
+
 class GatedMemory:
     """online.memory = "gated": a short-term buffer of the recent stream (stm), a long-term memory of whole chunks of
     L consecutive steps, and a gate between them. The stream is cut into chunks (steps 1..L, L+1..2L, ...). The chunk
@@ -182,26 +232,28 @@ class GatedMemory:
     A step's surprise is the sum of its surprise_parts, each divided by its mean over the last surprise_window steps.
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
-    def __init__(self, on, L, img, goal_k, seed):
+    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=()):
         self.on, self.L, self.goal_k = on, L, goal_k
+        self.goal_mode = on.get("goal_mode", "relief")
         self.D = max(on["relief_k"], goal_k, 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
         self.stm = Replay(on["stm"], img)
-        self.cap = on["replay"] // L
-        self.ltm = {k: np.zeros((self.cap, L) + getattr(self.stm, k).shape[1:], getattr(self.stm, k).dtype)
-                    for k in FIELDS}
-        self.ltm["lbl"] = np.zeros((self.cap, L), np.float32)     # hindsight labels (goal), fixed at writing
-        self.reason = np.zeros(self.cap, np.uint8)
-        self.relief = np.zeros(self.cap, bool)                     # leads to relief, whatever the reason it was stored
-        self.n = self.w = 0                                        # chunks stored, write position
+        self.store = store or ChunkStore(on, L, self.stm)          # long-term memory (shared between bodies or not)
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part
         self.recent = [collections.deque(maxlen=on["surprise_window"]) for _ in SURPRISE_PARTS]
         self.hist = collections.deque(maxlen=on["surprise_window"])
-        self.rng = np.random.default_rng([seed, 7])                # the gate's own draws
+        self.rng = np.random.default_rng([seed, 7, *rng_key])      # the gate's own draws
         self.thr = float("nan")
         self.counts = collections.Counter()
+
+    # the long-term memory's state, under its earlier names
+    ltm = property(lambda self: self.store.ltm)
+    reason = property(lambda self: self.store.reason)
+    relief = property(lambda self: self.store.relief)
+    n = property(lambda self: self.store.n)
+    cap = property(lambda self: self.store.cap)
 
     def note(self, parts):
         """The surprise parts of the step just added to stm (NaN: not measured)."""
@@ -244,14 +296,15 @@ class GatedMemory:
         self.counts["relief_seen"] += relief
         if not reason:
             return
-        w = self.w
+        st = self.store
+        w = st.w
         for k in FIELDS:
-            self.ltm[k][w] = getattr(s, k)[idx]
+            st.ltm[k][w] = getattr(s, k)[idx]
         if self.goal_k:
-            self.ltm["lbl"][w] = hindsight_labels(s.hit[ext], s.done[ext], s.drv[ext, 0], self.goal_k)[:L]
-        self.reason[w], self.relief[w] = reason, relief
-        self.w = (w + 1) % self.cap
-        self.n = min(self.n + 1, self.cap)
+            st.ltm["lbl"][w] = goal_labels(s, ext, self.goal_k, self.goal_mode)[:L]
+        st.reason[w], st.relief[w] = reason, relief
+        st.w = (w + 1) % st.cap
+        st.n = min(st.n + 1, st.cap)
 
     def _from_stm(self, starts, lag):
         s, L = self.stm, self.L
@@ -259,33 +312,42 @@ class GatedMemory:
         r = {k: getattr(s, k)[idx] for k in FIELDS}
         if self.goal_k:
             ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
-            r["pr"] = np.stack([hindsight_labels(s.hit[e], s.done[e], s.drv[e, 0], self.goal_k)[:L] for e in ext])
+            r["pr"] = np.stack([goal_labels(s, e, self.goal_k, self.goal_mode)[:L] for e in ext])
         return r
+
+    def newest(self, lag):
+        """The newest training sequence of this memory's stream (ending lag steps back), [1, L, ...]."""
+        return self._from_stm(np.array([(self.stm.w - self.L - lag) % self.stm.cap]), lag)
+
+    def replayed(self, n, rng):
+        """n chunks drawn uniformly from long-term memory, [n, L, ...]."""
+        st = self.store
+        ci = rng.integers(0, st.n, n)
+        old = {k: st.ltm[k][ci] for k in FIELDS}
+        if self.goal_k:
+            old["pr"] = st.ltm["lbl"][ci]
+        return old
 
     def rows(self, B, rng, lag):
         """B training sequences [B, L, ...]: the newest one (ending lag steps back), then B - 1 chunks drawn uniformly
         from long-term memory (from stm, as the stream memory does, until the first chunk is stored)."""
         s = self.stm
-        if not self.n:
+        if not self.store.n:
             return self._from_stm(s.starts(self.L, B, rng, lag), lag)
-        new = self._from_stm(np.array([(s.w - self.L - lag) % s.cap]), lag)
-        ci = rng.integers(0, self.n, B - 1)
-        old = {k: self.ltm[k][ci] for k in FIELDS}
-        if self.goal_k:
-            old["pr"] = self.ltm["lbl"][ci]
+        new, old = self.newest(lag), self.replayed(B - 1, rng)
         return {k: np.concatenate([new[k], old[k]]) for k in FIELDS}
 
     def metrics(self):
         """Gate counts since the last call, and the state of long-term memory."""
-        c, n = self.counts, self.n
+        c, n = self.counts, self.store.n
         m = dict(chunks=c["chunks"], stored=c["chunks"] - c["dropped"], relief_seen=c["relief_seen"],
-                 ltm_chunks=n, ltm_relief_share=float(self.relief[:n].mean()) if n else None,
+                 ltm_chunks=n, ltm_relief_share=float(self.store.relief[:n].mean()) if n else None,
                  surprise_thr=self.thr if np.isfinite(self.thr) else None)
         m.update({"stored_" + r: c[r] for r in REASONS[1:]})
         m.update({"surprise_top_" + p: c["top_" + p] for p in SURPRISE_PARTS})
         m.update({"surprise_mean_" + p: float(np.mean(d)) if d else None for p, d in zip(SURPRISE_PARTS, self.recent)})
         if self.goal_k:
-            m["ltm_label_share"] = float((self.ltm["lbl"][:n] > 0).mean()) if n else None
+            m["ltm_label_share"] = float((self.store.ltm["lbl"][:n] > 0).mean()) if n else None
         self.counts = collections.Counter()
         return m
 
@@ -603,7 +665,7 @@ def main():
             if gated:
                 fill_rollout(ro, gm.rows(B, rng, lag), L)
             else:
-                mem.fill(ro, mem.starts(L, B, rng, lag), L, goal_k)
+                mem.fill(ro, mem.starts(L, B, rng, lag), L, goal_k, on["goal_mode"])
             win["stats"].append(gpu.update_rollout(ro, ppo, agent, sync=False) if gpu else agent.update(ro, zeros_b, ppo))
         if step % on["save_every"] == 0:
             if gpu:

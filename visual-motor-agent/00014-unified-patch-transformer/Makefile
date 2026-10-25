@@ -37,4 +37,4 @@ analysis:
 	cd $(DEV) && for r in $(OUT)/0*_s*; do $(PY) online.py --eval $$r --ckpts 0 20000 40000 60000 --eval-device cuda; done
 	cd $(DEV) && for st in 0 20000 40000 60000; do $(PY) analyze_hazards.py contact $(OUT)/0*_s* --step $$st; done
 	cd $(DEV) && $(PY) analyze_patch.py tokens $(OUT)/0*_s* --step 60000 && \
-	  $(PY) analyze_self_actor.py aim $(OUT)/0*_s* --step 60000
+	  $(PY) analyze_self_actor.py aim $(OUT)/0*_s* --step 60000 --device cuda

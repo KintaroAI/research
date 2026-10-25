@@ -60,6 +60,7 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00013](00013-drive-changed-weight/README.md) | Weighting steps where hunger changes unusually (`ppo.drive_changed_weight`) in the drives and latent hunger losses, so hazard contact gets learned | Complete | **Weighting (10×, 100×) does not make hazards learned for the planner**: its imagination starts from the encoder's features, which learn from frame prediction only and never hold contact (R² ≤ 0.08), so its hunger model stays blind and it does not avoid them. The planner can only plan around what its latent state holds. |
 | [00014](00014-unified-patch-transformer/README.md) | One Transformer for everything (`../visual_motor_learning_transformer.md`): 8×8 RGB patch tokens, nothing detached, the move loss through the Transformer or not; 16×16 patches and the whole frame as one token; the hazard world | In progress | |
 | [00015](00015-slow-hunger/README.md) | Slow hunger (0.001 per step, hazards 0.02), so that hunger rarely reaches its cap of 1 and hazard contact shows in the drives; 8×8 patch agents, DMI, the planner | In progress | |
+| [00016](00016-target-architecture/README.md) | The target architecture (`ARCHITECTURE.md`) against its parts: the act token, the signed hindsight command, 32 parallel bodies early in life (`lifetime.py`), 8×8 patch tokens, slow hunger | In progress | |
 
 ## Open Questions
 

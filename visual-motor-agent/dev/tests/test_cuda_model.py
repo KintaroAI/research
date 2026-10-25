@@ -55,7 +55,9 @@ MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
           "patch": dict(BASIC, patch=16),                                                       # vm-00010 P0
           "small_patch_hidden": dict(SMALL, patch=8, pred_residual=1, pi_hidden=5),
           "patch8": dict(BASIC, patch=8, pi_hidden=128),             # vm-00014 P8: 536 tokens per context (> 256)
-          "patch_whole_frame": dict(BASIC, patch=64, pi_hidden=128)}  # vm-00014 P64: the frame as one token
+          "patch_whole_frame": dict(BASIC, patch=64, pi_hidden=128),  # vm-00014 P64: the frame as one token
+          "patch8_act": dict(BASIC, patch=8, pi_hidden=128, act_token=1),          # task 00020: the act token
+          "small_patch_act": dict(SMALL, patch=8, pred_residual=1, pi_hidden=0, act_token=1)}
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
           "no_move": dict(PC, move_coef=0.0),
@@ -64,7 +66,9 @@ LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "dynamics_short_hunger": dict(PC, inv_coef=0.1, dyn_coef=0.7, dyn_h_coef=2.0, dyn_x_coef=0.5, dyn_horizon=4,
                                         dyn_h_horizon=1),
           "drive_weighted": dict(PC, inv_coef=0.1, dyn_coef=1.0, dyn_h_coef=10.0, dyn_x_coef=1.0, dyn_horizon=5,
-                                 drive_changed_weight=9.0, drive_change_eps=0.3)}
+                                 drive_changed_weight=9.0, drive_change_eps=0.3),
+          "act": dict(PC, act_coef=0.7, drive_changed_weight=3.0, drive_change_eps=0.3),
+          "act_move_through_scaled": dict(PC, pi_detach=0, act_coef=1.5, pred_backbone_scale=0.4)}
 
 
 @pytest.fixture(scope="module", params=list(MODELS), ids=list(MODELS))
@@ -95,7 +99,7 @@ def test_loss_and_grads_match_cpp(setup, loss):
     m.close()
     assert abs(st["loss"] - loss_cpu) < 1e-4 * max(1.0, abs(loss_cpu)), (st["loss"], loss_cpu)
     for k in ("pred_mse", "pred_changed_mse", "drive_mse", "move_nll", "inv_mse", "inv_r2", "dyn_mse",
-              "dyn_hunger_mse", "dyn_recon_mse"):
+              "dyn_hunger_mse", "dyn_recon_mse", "act_drive_mse", "act_frame_mse"):
         assert abs(st[k] - st_cpu[k]) < 1e-5 * max(1.0, abs(st_cpu[k])), (k, st[k], st_cpu[k])
     compare(agent, g_cpu, g_gpu, 1e-3)
 

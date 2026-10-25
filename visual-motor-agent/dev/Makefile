@@ -13,11 +13,11 @@ all: libvmagent.so
 libvmagent.so: src/vm_agent.cpp src/vm_agent.h
 	$(CXX) $(CXXFLAGS) -fPIC -shared -o $@.tmp src/vm_agent.cpp && mv $@.tmp $@
 
-# The GPU update (task 00011): nvcc + cuBLAS, RTX 3090 (sm_86). Optional: not part of `all`; its tests skip
+# The GPU update (task 00011): nvcc + cuBLAS, native code for the RTX 3090 (sm_86) and RTX 4090 (sm_89). Optional: not part of `all`; its tests skip
 # without it.
 NVCC = nvcc
 libvmcuda.so: src/vm_cuda.cu src/vm_cuda.h src/vm_agent.h
-	$(NVCC) -O3 -arch=sm_86 -Xcompiler -fPIC -shared -o $@.tmp src/vm_cuda.cu -lcublas && mv $@.tmp $@
+	$(NVCC) -O3 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -Xcompiler -fPIC -shared -o $@.tmp src/vm_cuda.cu -lcublas && mv $@.tmp $@
 
 test_vm_agent: src/test_vm_agent.cpp src/vm_agent.cpp src/vm_agent.h
 	$(CXX) $(CXXFLAGS) -o $@ src/test_vm_agent.cpp
