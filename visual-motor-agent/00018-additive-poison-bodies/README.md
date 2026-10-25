@@ -1,8 +1,8 @@
 # vm-00018: Additive Poison, and One Model in Many Worlds
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00018`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00018` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00018/`
 **Task plan:** [`../tasks/00022-additive-poison-bodies.md`](../tasks/00022-additive-poison-bodies.md)
 
