@@ -1,8 +1,8 @@
 # vm-00016: The Target Architecture Against Its Parts
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00016`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00016` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00016/`
 **Task plan:** [`../tasks/00020-target-architecture.md`](../tasks/00020-target-architecture.md)
 
