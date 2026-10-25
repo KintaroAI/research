@@ -90,6 +90,21 @@ def test_poison_click_sets_hunger_and_food_still_relieves():
     np.testing.assert_allclose(env.hunger, 1.0)                                # inside both: the poison wins
 
 
+def test_additive_poison_click():
+    """env.hazard_click_add (vm-00018): a click inside a hazard adds to hunger, after relief, clipped at 1."""
+    cfg = dataclasses.replace(RICH, target_speed=0.0, hazard_speed=0.0, h_rate=0.001, hazard_cost=0.0,
+                              hazard_click_add=0.5)
+    env = CircleWorld(4, cfg, seed=5)
+    base = dict(target=np.full((4, 2), 50.0), radius=np.full(4, 6.0),
+                hz_pos=np.tile([[16.0, 16.0], [50.0, 50.0]], (4, 1, 1)), hz_rad=np.full((4, 2), 6.0))
+    # in a hazard (hunger 0.3, and 0.8: clipped), in the circle and a hazard at once, on the background
+    env.set_state(dict(base, hunger=np.array([0.3, 0.8, 0.3, 0.3]),
+                       cursor=np.array([[16.2, 16.2], [16.2, 16.2], [50.0, 50.0], [30.0, 40.0]])))
+    _, _, _, info = env.step(np.tile([0.0, 0.0, 1.0], (4, 1)))
+    np.testing.assert_allclose(env.hunger, [0.801, 1.0, 0.5, 0.301])
+    np.testing.assert_array_equal(info["gt_hazard_click"], [True, True, True, False])
+
+
 def test_poison_click_off_by_default():
     cfg = dataclasses.replace(RICH, hazard_cost=0.0)
     a = CircleWorld(32, cfg, seed=6)
@@ -100,6 +115,7 @@ def test_poison_click_off_by_default():
         ra, rb = a.step(act), b.step(act)
         np.testing.assert_array_equal(ra[0]["drives"], rb[0]["drives"])
         assert "gt_hazard_click" not in ra[3]
+    assert CircleWorld(2, cfg, seed=1).config.hazard_click_add == 0.0
 
 
 def test_state_round_trip_with_every_feature():

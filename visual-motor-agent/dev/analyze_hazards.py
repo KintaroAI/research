@@ -177,7 +177,7 @@ def place_click_states(env, cfg, rng, n):
 
 def click(run, st, n=1536, seed=13, device="cpu"):
     info, cfg, a = load(run, st)
-    if cfg.hazard_click < 0:
+    if cfg.hazard_click < 0 and cfg.hazard_click_add <= 0:
         a.close()
         return None
     m = a

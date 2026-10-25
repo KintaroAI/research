@@ -144,6 +144,8 @@ class EnvConfig:
     hazard_cost: float = 0.02           # hunger added per step inside a hazard
     hazard_click: float = -1.0          # >= 0: a click inside a hazard sets hunger to this (poison; after any relief
                                         # from the circle). The hazard stays. < 0: off
+    hazard_click_add: float = 0.0       # > 0: a click inside a hazard adds this to hunger (after any relief, clipped;
+                                        # vm-00018: poison that rarely parks hunger at the cap). 0: off
     hazard_color: RGB = (50, 90, 230)
     wrap: bool = False                  # the screen is a torus: the cursor, circles and dots wrap around the edges
                                         # (no walls); hit tests use the wrap-around distance
@@ -168,7 +170,8 @@ class EnvConfig:
                   "h_init_min", "h_init_max", "h_rate", "h_relief", "hunger_cost",
                   "b_init_min", "b_init_max", "b_rate", "b_relief", "dot_brightness_min",
                   "dot_brightness_max", "dot_speed_min", "dot_speed_max", "target_speed",
-                  "hazard_radius_min", "hazard_radius_max", "hazard_speed", "hazard_cost", "hazard_click")
+                  "hazard_radius_min", "hazard_radius_max", "hazard_speed", "hazard_cost", "hazard_click",
+                  "hazard_click_add")
         for name in floats:
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite, got {getattr(self, name)!r}")
@@ -195,6 +198,8 @@ class EnvConfig:
             raise ValueError("target_speed, hazard_speed and hazard_cost must be >= 0")
         if self.hazard_click > 1:
             raise ValueError("hazard_click must be <= 1 (or < 0: off)")
+        if self.hazard_click_add < 0:
+            raise ValueError("hazard_click_add must be >= 0")
         if int(self.hazards) != self.hazards or self.hazards < 0:
             raise ValueError(f"hazards must be an integer >= 0, got {self.hazards!r}")
         if self.egocentric and not self.wrap:
@@ -769,9 +774,11 @@ class CircleWorld:
         self.clicks += click
         self.path_length += disp
         self.hunger = np.clip(self.hunger + cfg.h_rate - cfg.h_relief * success + cfg.hazard_cost * in_hazard, 0.0, 1.0)
-        poison = click & in_hazard if cfg.hazard_click >= 0 else None
-        if poison is not None:   # a click inside a hazard: hunger is set (it wins over relief from the circle)
+        poison = click & in_hazard if (cfg.hazard_click >= 0 or cfg.hazard_click_add > 0) else None
+        if poison is not None and cfg.hazard_click >= 0:   # a click inside a hazard: hunger is set (it wins over relief)
             self.hunger = np.where(poison, cfg.hazard_click, self.hunger)
+        if poison is not None and cfg.hazard_click_add > 0:   # or raised (after relief)
+            self.hunger = np.clip(self.hunger + cfg.hazard_click_add * poison, 0.0, 1.0)
         self.ep_hits += success
         self.restlessness = np.clip(
             self.restlessness + cfg.b_rate - cfg.b_relief * (disp / cfg.max_step_px) * move_factor,

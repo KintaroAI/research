@@ -583,7 +583,8 @@ def main():
     prev_a = np.zeros((1, 3), np.float32)
     prev_r = np.zeros(1, np.float32)
     ep_start = 1
-    win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], step_hits=0, hazard=0, hazard_felt=0, capped=0)
+    win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], step_hits=0, hazard=0, hazard_felt=0, capped=0,
+               poison=0)
     t0 = time.time()
     for step in range(1, on["steps"] + 1):
         h = obs["drives"][:, 0]
@@ -630,6 +631,7 @@ def main():
         dh = float(inf["terminal_drives"][0, 0] - drv[0])
         win["hazard_felt"] += int(bool(inf["gt_in_hazard"][0]) and dh > 1.5 * env_cfg.h_rate) if "gt_in_hazard" in inf else 0
         win["capped"] += int(drv[0] >= 1.0 - 1e-6)
+        win["poison"] += int(inf["gt_hazard_click"][0]) if "gt_hazard_click" in inf else 0   # scoring only
         if done[0]:
             win["eps"].append((bool(inf["ep_success"][0]), float(inf["ep_length"][0]), float(inf["ep_clicks"][0])))
             planner.reset(np.ones(1, bool))
@@ -680,6 +682,7 @@ def main():
                        planned=win["planned"] / on["log_every"], gain=float(np.mean(win["gain"])),
                        step_hits=win["step_hits"], hazard_frac=win["hazard"] / on["log_every"],
                        hazard_felt=win["hazard_felt"] / on["log_every"], hunger_capped=win["capped"] / on["log_every"],
+                       poison=win["poison"],
                        hunger=float(h[0]))
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in STAT_KEYS})
@@ -703,7 +706,7 @@ def main():
                                                row.get("dyn_hunger_mse", float("nan"))) + gate
                   + ("  in hazard %.3f" % row["hazard_frac"] if env_cfg.hazards else ""), flush=True)
             win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], t=time.time(), step_hits=0, hazard=0,
-                       hazard_felt=0, capped=0)
+                       hazard_felt=0, capped=0, poison=0)
     if gpu:
         gpu.sync_to(agent)
     agent.save(os.path.join(out_dir, "ckpt_final.bin"), with_optimizer=gpu is None)   # GPU: the optimizer state stays there

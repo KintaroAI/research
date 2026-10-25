@@ -140,7 +140,7 @@ def main():
 
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
-                    body_steps=0, babbled=0, t=time.time())
+                    body_steps=0, babbled=0, poison=0, all_poison=0, t=time.time())
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -175,6 +175,9 @@ def main():
         win["hazard_felt"] += int(hz[0] and inf["terminal_drives"][0, 0] - drv[0, 0] > 1.5 * env_cfg.h_rate)
         win["capped"] += int(drv[0, 0] >= 1.0 - 1e-6)
         win["all_hits"] += int(inf["success"][:N].sum())
+        if "gt_hazard_click" in inf:    # poison clicks (scoring only)
+            win["poison"] += int(inf["gt_hazard_click"][0])
+            win["all_poison"] += int(inf["gt_hazard_click"][:N].sum())
         win["all_hazard"] += int(hz.sum())
         win["body_steps"] += N
         win["babbled"] += int(bab.sum())
@@ -214,7 +217,8 @@ def main():
                        step_hits=win["step_hits"], hazard_frac=win["hazard"] / le,
                        hazard_felt=win["hazard_felt"] / le, hunger_capped=win["capped"] / le, hunger=float(h[0]),
                        all_hits_per_1k=1000.0 * win["all_hits"] / bs, all_hazard_frac=win["all_hazard"] / bs,
-                       babbled=win["babbled"] / bs, eps=eps_at(on, tick))
+                       babbled=win["babbled"] / bs, eps=eps_at(on, tick), poison=win["poison"],
+                       all_poison_per_1k=1000.0 * win["all_poison"] / bs)
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

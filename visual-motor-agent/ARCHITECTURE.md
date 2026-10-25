@@ -1,185 +1,179 @@
-# The Target Architecture: One Transformer, One Lifetime
+# The Target Architecture: One Universal Model, One Lifetime
 
 **Date:** 2026-10-25
-**Status:** Design; all parts built (task 00020), first test vm-00016
+**Status:** Design (universal model; not yet built). The earlier design with per-type heads, a detached policy and an
+act token (vm-00016) is preserved in git (`exp/vm-00016`, this file's history); §12 says what changed and why.
 
-This is the design we are aiming for, assembled from what vm-00001–00015 taught us. Each decision names the experiment
-behind it. Where a part is still a hypothesis, it says so, and §10 lists the experiments that would settle it.
+## 1. Goals, in Order
 
-## 1. Principles
+1. **A universal model.** One network that treats everything it senses and does the same way: the same kind of token,
+   the same prediction, the same loss, the same gradient path. No special handling for one kind of token (no detached
+   heads, no per-type losses or weights, no per-type output heads). Special cases are where the earlier designs broke:
+   each fix made the next one necessary (§12).
+2. **Good prediction.** The model predicts the next of everything: the next frame at full resolution, its own next
+   drives, its own next move. Prediction quality is measured directly (vm-00017's click test, frame error where pixels
+   change, token probes).
+3. **Basic motivation (instincts).** A minimal drive, here "lower my hunger", acts through the model's own predictions
+   (§6), not through a separate network, a reward or a special loss.
 
-1. **One network.** A single GPT-style Transformer reads everything the agent senses and produces everything it
-   predicts and does. There is no CNN, no separate vision or motor network, and no planner outside it (§9: later).
-2. **Prediction is the teacher.** The main training signal is the error in predicting the next state: the next frame,
-   the next internal state, and the agent's own next move. Nothing is rewarded. Hunger is a sensed body variable,
-   not a reward (§6).
-3. **One lifetime.** One agent lives in one world that never resets, acts on every step, and learns on every step
-   from its own experience. There are no separate training and acting phases.
-4. **Many bodies early on, one brain throughout.** At the start, the same weights may drive many bodies in parallel
-   worlds, so that early learning sees varied, decorrelated experience. The number of bodies shrinks to one (§7).
-   It is always one model, never an ensemble.
-5. **The model sees only what a body would sense:** the rendered RGB frame, its own drives, and its own previous
-   move. True positions are for scoring only (CLAUDE.md, information hygiene).
+Behaviour is not the primary goal at this stage; whether the predictions are right is.
 
-## 2. The World It Lives In
+## 2. Principles
 
-- 64×64 RGB, a continual torus: a new circle appears after each hit; nothing resets (vm-00011: with walls the agent's
-  drift sticks to an edge, and it starves).
-- Hazards (blue circles that raise hunger inside), optionally moving circles, distractor dots, an egocentric view
-  (vm-00011: the egocentric view made the basic agent hit every test episode by 40k).
-- **Hunger rises slowly and rarely reaches its cap** (vm-00014/15). At the cap of 1, a hazard step changes nothing and
-  leaves no trace to learn from: `h_rate=0.001`, `hazard_cost=0.02` (82% of hazard steps change hunger, against 28%
-  at the old rates).
+- **Prediction is the only teacher.** Every token's output predicts the next token. Nothing is rewarded.
+- **One lifetime.** One agent, one world that never resets; it acts and learns on every tick (§7).
+- **Many bodies early, one brain throughout.** The same weights may drive many bodies in parallel worlds at the
+  start, shrinking to one (vm-00016: the strongest basic agent so far).
+- **The model senses only what a body would:** the RGB frame, its drives, its own previous move. True positions are
+  for scoring only.
 
-## 3. Tokens
+## 3. The World
 
-Every step t becomes one block of tokens. A token is a vector of width d (128). Each kind of token has its own
-learned embedding, a generalization of an LLM's embedding table to continuous inputs, plus learned position
-embeddings:
+- 64×64 RGB, a continual torus: a new red circle appears after each one eaten; nothing resets (vm-00011).
+- Food: clicking the red circle relieves hunger. Poison: clicking a blue circle adds 0.5 to hunger
+  (`env.hazard_click_add`, vm-00018); contact alone costs nothing.
+- Slow hunger (0.001 per step) so that hunger rarely sits at its cap of 1, where changes leave no trace (vm-00015).
 
-```
-x = W_kind · input + b_kind  +  type[kind]  +  step[t − window start]  (+ pos2d[patch] for patch tokens)
-```
+## 4. Tokens: One Format for Everything
 
-| Token | Count per step | Input | Its output predicts |
-|---|---|---|---|
-| **patch** | 64 (8×8 px each) | the patch's raw RGB, 8·8·3 = 192 values in [0, 1] | the change of its own cell of the next frame |
-| **body** | 1 | the drives: hunger, restlessness | the next drives |
-| **move** | 1 | the previous executed move (dx, dy, click) | — |
-| **command** | 1 | the hindsight command (§6) | — |
-| **act** | 1 | none (a learned query vector) | the next move (the policy), plus auxiliary predictions (§5) |
+Every token carries a **value vector** of V = 192 numbers in [0, 1], with a mask for the numbers it does not use:
 
-That is 68 tokens per step and 544 per 8-step window.
-
-- **RGB, not grayscale:** in standard grayscale the red target and the blue hazard are both about 94/255.
-- **Separate embeddings per kind,** not one shared projection over zero-padded vectors. With a shared projection, hunger
-  enters through the same weights as pixel 0 of every patch (vm-00010's design, kept).
-- **8×8 patches:** of 8×8, 16×16 and the whole frame, the token of the patch under the cursor held hazard contact best
-  (R² 0.67–0.69, against 0.31–0.36 and about 0, vm-00014). The whole frame as one token loses local detail.
-- **pos2d** starts as a smooth 2D sine-cosine code of the patch centre (geometry from step one), then is learned.
-
-## 4. Attention and Order
-
-- **Block-causal:** a token sees every token of its own step and of the earlier steps in its window, never the future.
-  Order in time comes from the step embedding, exactly like an LLM's position embedding; order within a step does not
-  matter, so the step is attended as a set.
-- **The window** is the last K = 8 steps (working memory). It restarts every K steps in training, so acting and
-  training compute the same function (CLAUDE.md, "context = block").
-- **Size:** 2–4 layers, 4 heads, d = 128, MLP 512, about 0.5M parameters. On the RTX 3090, attention over windows longer
-  than 32 tokens uses batched cuBLAS products: one P8 update of 8 windows takes 6.7 ms (task 00018).
-
-## 5. Outputs and Losses
-
-All outputs come from the token outputs of step t; the move just executed, a_t, enters the frame and drives heads,
-so they predict the consequence of what the agent actually did:
-
-```
-patch token p  ──[z_p, a_t]──► MLP (shared over patches) ──► Δ cell p of frame t+1 (32×32 target, residual)
-body token     ──[z_b, a_t]──► MLP ──► drives t+1
-act token      ──► policy MLP (detached, hidden 128) ──► μ(dx, dy), σ, p(click)      ← the agent acts on this
-act token      ──► auxiliary heads ──► drives t+1, coarse frame t+1 (8×8)            (hypothesis, §10)
-```
-
-| Loss | Weight | Why |
+| Slot | Per step | Values (in [0, 1]) |
 |---|---|---|
-| frame: squared error per pixel, ×(1 + 10) on pixels that change | 1 | plain error ignores the 1%-of-pixels cursor (vm-00001) |
-| drives: squared error, ×(1 + w) on steps where hunger changes unusually | 1 | rare events matter (vm-00013's weight, `drive_changed_weight`) |
-| move: −log π(executed move \| window, command), into the policy head only | 1 | the move loss erodes the shared representation when it reaches it (vm-00007/8, vm-00014 P8A) |
-| auxiliary on the act token: next drives, coarse next frame | 0.5 | gives the policy's input token a reason to gather the scene (§10) |
+| body | 1 | hunger, restlessness (2 used) |
+| patch 1..64 | 64 | an 8×8 RGB patch of the 64×64 frame, row by row: 8·8·3 = 192 (pixels / 255) |
+| move | 1 | the executed move: (dx + 1)/2, (dy + 1)/2, click (3 used) |
 
-- **Why the act token needs auxiliary losses:** in vm-00010 the policy read a token that no loss trained once the move
-  loss was detached, and it never aimed. Letting the move loss train the Transformer instead eroded the patch tokens
-  (vm-00014). An act token trained to predict the next drives must find the cursor, the circle and the hazards,
-  because those decide the next hunger. The policy reads that token through a detached head.
-- **Residual frames:** the patch heads predict the change from the current frame, starting near "nothing changes".
-- **The policy head is detached and has a hidden layer, with its own gradient clip** (vm-00008: detached plus a hidden
-  layer was the first basic agent to aim; vm-00009: `pi_own_clip`).
+That is 66 tokens per step, 528 per window of 8 steps.
 
-## 6. How It Chooses Moves Without Reward
+**One scale for every value.** Each value is mapped to [0, 1] by its fixed, known range (pixels / 255, hunger and
+restlessness as they are, (dx + 1)/2, the click as 0 or 1; never by data statistics), so no kind of input is larger
+than another: raw 0–255 pixels beside a hunger in [0, 1] would let the pixels dominate the shared weights. At the
+input the values are centred, `values − 0.5`, in [−0.5, 0.5]; unused (masked) entries are 0, and a mask is passed to
+the loss, not to the input. The outputs predict the same [0, 1] values (§5).
 
-The policy is conditional imitation of its own past, steered by a **hindsight command**:
+**One input map for all:** `x = W_in · values + b + slot[s] + step[t − window start]`, with one shared `W_in` (192 → d).
+`slot[s]` is a learned embedding per slot (66 of them: the body, each patch position, the move); the patch slots start
+from a 2D sine-cosine code of the patch centre. The slot embedding is the only thing that says what a token is, as a
+position embedding is in an LLM. The cost of sharing `W_in`: hunger enters through the same weights as pixel 0 of a
+patch, and the network must separate them using the slot embedding.
 
-- **In training,** each remembered step carries, as its command token, what actually happened to hunger over the next
-  k = 12 steps: `c_t = hunger_t − hunger_(t+k)` (signed: relief positive, hazard contact negative). The move loss
-  teaches "moves that led to this outcome look like this".
-- **When acting,** the command asks for a good outcome (the current hunger: "relieve all of it"). Moves that earlier led
-  to relief are favoured; moves that led into hazards, tagged with negative outcomes, are not.
-- **Exploration:** with probability ε (0.2, decaying to 0.05) the agent babbles instead: dx, dy ~ N(0, 0.6), a click
-  with probability 0.1.
-- vm-00008/11 showed that the one-sided form (relief or nothing) makes the basic agent aim. The signed form is new
-  and still to be tested (§10). With it, the agent avoids hazards for the same reason it aims at circles.
-- **No reward, no value function, no policy gradient.** Homeostatic RL (reward = drop in hunger) is kept as a
-  *control* that measures what reinforcement adds, not as part of the design.
+## 5. One Prediction, One Loss
+
+**The sequence is fully causal, as in an LLM:** each step is `body_t, patch_1,t … patch_64,t, move_t`, and every token
+predicts **the next token's values**. That one rule covers everything:
+
+| Token | predicts | which is |
+|---|---|---|
+| body_t | patch_1,t | the first patch of the frame, from the past and the drives |
+| patch_i,t | patch_i+1,t | the rest of the frame, patch by patch |
+| patch_64,t | move_t | **the policy**: the next move, from the whole observation |
+| move_t | body_t+1 | **the consequence for the body**: next hunger, given the move just made |
+| (then) | patch_1..64,t+1 | the next frame, with the move in context, at full resolution |
+
+- **One output head** shared by every position: LayerNorm → linear (d → V·K). Each value gets K = 32 logits, a
+  probability over 32 bins of [0, 1]. Values the next token does not use are masked out of the loss.
+- **One loss: two-hot cross-entropy.** A target value between two bin centres puts its probability on those two bins in
+  proportion to its distance, so values finer than a bin (hunger rises by 0.001 per step) are still learned. Each
+  token's loss is the mean over its used values; the total is the mean over tokens. Every token counts the same; there
+  are no hand-set weights. Cross-entropy also scores a surprising change by its probability, not its size: the small
+  but systematic effects that squared error drowned (hazard contact, vm-00013–15) count.
+- **Predicted values** (for acting and for analysis) are the expected bin centre.
+- **Nothing is detached.** One gradient-norm clip for everything.
+
+Why the move loss should no longer erase the scene (a hypothesis, §10): the erasing (vm-00007/14) came from the move
+loss being a separate objective whose gradient was hundreds of times larger than the pixel loss. Here the move is one
+token of 66 per step, in the same units as every other token.
+
+## 6. Acting: the Model's Own Prediction, Plus One Instinct
+
+- **The policy is the model's prediction of its own next move:** the distribution the token patch_64,t predicts for
+  move_t.
+- **The instinct (hunger) acts by one-step lookahead with the same model:** sample M candidate moves (M = 16) from
+  that distribution; for each, put it in the move_t slot and read the predicted next hunger from the move token's
+  output (the prediction of body_t+1); make the candidate with the lowest predicted hunger. One batched forward pass
+  for the M candidates. Where every candidate predicts the same hunger (most of the time: away from a circle), the
+  choice is the model's first sample, so the agent acts as its policy.
+- **The instinct teaches the policy through ordinary prediction:** the move made is the move_t token in memory, and the
+  model learns to predict its own moves, so what the instinct chose becomes habit (as the planner taught a habit in
+  vm-00009).
+- **Exploration** comes from the model's own uncertainty (its move distribution is broad at birth), with no babbling
+  rule. If the agent's moves collapse (the earlier agents drifted into never clicking without babbling), that is a
+  finding to fix generally, e.g. by an entropy floor that applies to every token's distribution.
+- One step ahead only reaches what one move can change: a click on food or poison, not the approach to a far circle.
+  Longer lookahead is a later step (§9).
 
 ## 7. Learning: One Update per Tick, Many Bodies at First
 
 ```
 every tick:
-  each body b = 1..N(tick):  window_b → act token → move a_b ;  world_b steps ;  store the transition
-  one gradient step on:  the newest window of every body  +  R windows replayed from memory
+  each body b:  its window → the move (policy + instinct) ;  its world steps ;  the transition is stored
+  one gradient step on:  the newest window of every body  +  windows replayed from memory
 ```
 
-- **One update per tick** (AdamW, lr 3e-4, no weight decay). The newest window is always in the batch, so the model
-  learns from what just happened; replayed windows keep it stable (vm-00006: with the newest window alone the features
-  blew up to norm 10²–10⁵).
-- **Parallel bodies at the start ("childhood").** N bodies live in N independent worlds and are driven by the same
-  weights, each with its own window and short-term buffer. Every update sees N fresh windows instead of one: about
-  N times the experience per update, less correlated, from many situations at once. Early learning is the expensive
-  part: vm-00001 needed 0.5M–1M random steps before movement and clicks were predicted.
-  - Schedule: N = 32 for the first 10k ticks, halving every 5k ticks down to 1 (one body from tick 30k), then one body
-    for the rest of the lifetime. The weights, optimizer state and long-term memory carry straight through: it is the
-    same model, now with one body.
-  - Cost on the GPU: the forward pass of N windows is one batched call. The update grows with the batch: about 25 ms
-    for N = 32 at 8×8 patches (estimate from 6.7 ms for 8 windows), so about 1,300 env steps/s in childhood.
-  - This differs from running N independent lifetimes (separate models, as for seeds): those never share weights.
-- **Bodies are interchangeable:** the model has no body identity input; body b's window is only its own past.
+- One AdamW update per tick, lr 3e-4. The newest window is always in the batch; replayed windows keep it stable
+  (vm-00006).
+- Parallel bodies: 32 for the first 10k ticks, halving every 5k down to one (vm-00016: test episodes 0.91–0.98, forage
+  rate 1.8× a single body). The weights, optimizer and memory carry through. vm-00018 separates the extra experience
+  from the bigger batch.
 
 ## 8. Memory
 
-| Kind | What | Size | Where it comes from |
-|---|---|---|---|
-| **working** | the attention window | 8 steps (544 tokens) | the context |
-| **short-term** | ring buffer of each body's recent steps | 256 steps per body | always replayed, recent-first |
-| **long-term** | 8-step chunks kept by salience | 100k steps | vm-00007's gated memory |
-| **weights** | everything learned | ~0.5M parameters | every update |
+| Kind | What | Size |
+|---|---|---|
+| working | the attention window | 8 steps (528 tokens) |
+| short-term | each body's recent steps | 256 steps per body |
+| long-term | 8-step chunks, shared by all bodies | 100k steps |
+| weights | everything learned | about 1.3M parameters (0.8M of them the output head) |
 
-- **Long-term memory is selective, like a hippocampus.** A chunk enters when it leads to a change in hunger (relief or
-  hazard contact), when it was surprising (high error predicting the whole next state: frame, drives, move), or else
-  with a small base probability. In vm-00007, storing relief sped up early learning; a random memory of the same size
-  learned more slowly than storing everything, so what is stored matters.
-- In childhood all bodies write to one shared long-term memory: the model's memory, not a body's.
-- Replayed windows are re-encoded with the current weights; nothing stale is cached.
+- To begin with, long-term memory keeps every chunk (vm-00007's uniform control). A universal salience rule is the
+  model's own surprise: the loss of the chunk's tokens, which counts every kind of token the same way. Gating by
+  hunger relief is a special case and is dropped.
 
-## 9. Deliberately Left Out (For Now)
+## 9. To Do Later
 
-- **A planner.** The CEM planner (vm-00002–05, 12) was the best forager (135–142 hits per 1,000 steps with the
-  egocentric view), but it imagines in the CNN's latent vector. In this design, imagining means rolling the
-  Transformer forward on its own predicted frames: 544 tokens per imagined step, with errors that compound. Planning
-  comes back later either as a teacher for the habit (vm-00009) or in a learned latent.
-- **Reward, a reward token, a value head** (§6; a control only).
-- **A CNN, coordinate channels, U-Net skips:** the patch tokens and pos2d take their place.
+- **Learned discrete tokens (a VQ codebook):** each patch becomes an index into a learned vocabulary, as an LLM's tokens
+  are, and the model predicts a softmax over the codebook. It turns the value vectors into true tokens; the risk is that
+  small things like the cursor are lost in the codebook. After the universal model works on value vectors.
+- **Longer lookahead:** the instinct evaluates a sequence of moves by rolling the model forward (the next body token
+  after several moves). Needs the next frames generated patch by patch, or a cheaper latent.
+- **Salience-gated memory** by the model's own surprise.
+- **Other instincts** (restlessness) through the same one-step lookahead on other body values.
 
 ## 10. Open Questions, Each an Experiment
 
 | # | Question | Test |
 |---|---|---|
-| 1 | Is hazard contact learned once it shows in the drives? | vm-00015 (running): slow hunger |
-| 2 | Does the act token gather the scene when it must predict the next drives and a coarse frame? | probes of cursor, circle, contact from its output; aim |
-| 3 | Does the signed hindsight command produce hazard avoidance? | in a hazard below chance (about 6%), with relief kept |
-| 4 | Does childhood (N bodies, shrinking) speed up learning without hurting the single lifetime after it? | N = 32 → 1 against N = 1 for the same number of updates and of world steps |
-| 5 | Does the frame loss still teach the cursor at 8×8 patches with distractor dots? | vm-00010's coupling and sensitivity analyses |
-| 6 | How much does reinforcement add? | homeostatic RL control on the same model |
+| 1 | Does uniform two-hot cross-entropy learn the cursor without the changed-pixel weight (vm-00001: plain squared error ignored it)? | frame error on the pixels that change; cursor probes |
+| 2 | Does the move token's loss, attached and uniform, leave the scene intact? | patch-token probes against vm-00014's detached (0.87–0.93) and attached (below 0) |
+| 3 | Does the model predict the click outcomes (food, poison, nothing)? | vm-00017's click test, from the move token's prediction of the next body |
+| 4 | Does the one-step instinct eat food and avoid poison clicks? | online food and poison clicks per 1,000 steps against the policy alone |
+| 5 | Does the policy learn the instinct's choices as habit? | the policy alone (instinct off) after a lifetime with it |
+| 6 | Do the agent's own samples keep exploring, without babbling? | click rate and move spread over the lifetime |
 
 ## 11. What Exists and What Is New
 
 | Part | Status |
 |---|---|
-| Patch, body (drives), move and command tokens; block-causal Transformer; per-patch residual frame heads; drives head; detached policy with hidden layer | exists (`model.patch`, vm-00010/14), C++ and CUDA, gradients verified |
-| 8×8 patches, attention over 536 tokens on the GPU | exists (task 00018) |
-| Continual torus, hazards, slow hunger | exists (`env.respawn`, `env.wrap`, `env.hazards`, `env.h_rate`) |
-| Gated long-term memory, short-term buffer, replay with the newest window | exists (`online.memory=gated`) |
-| Changed-pixel and changed-drive weights | exists |
-| **act token** with auxiliary heads (the policy reads it instead of the move token) | built (task 00020: `model.act_token`, C++, CUDA, reference) |
-| **signed hindsight command** | built (`online.goal_mode=delta`) |
-| **N parallel bodies with a shrinking schedule** | built (`lifetime.py`) |
-| exploration ε decay | built (`online.explore_eps_end`, `explore_decay`) |
+| Patch tokens, Transformer, GPU attention for long windows, lifetime with parallel bodies, shared memory, continual world with food and poison, the click test | exists (vm-00010–18) |
+| One value format with masks, one shared input map, slot embeddings | new |
+| Fully causal next-token order (body, patches, move) | new (the current model is block-causal per step) |
+| One shared output head, K-bin two-hot cross-entropy, equal weight per token | new (replaces the per-type heads and losses) |
+| Full-resolution frame prediction (each patch's own 192 values) | new (the current model predicts a 32×32 residual) |
+| The instinct: one-step lookahead on the predicted next hunger | new |
+| Acting by the model's own samples, no babbling | new |
+
+## 12. What Changed From the Earlier Design, and Why
+
+| Earlier (vm-00010–16) | Now | Why |
+|---|---|---|
+| move loss detached from the network; optional separate clip | attached; one clip | a special path; its cause (scale) is removed by the uniform loss |
+| one head per token type (frame MLP + residual, sigmoid drives, Gaussian policy with hidden layer, act-token heads, unused value head) | one shared output head | per-type heads made each type a special case |
+| squared error for pixels and drives (×11 changed pixels, ×(1+w) unusual drives), likelihood for moves; four hand-set weights | two-hot cross-entropy for every value; every token weighted the same | different units forced hand-set weights; squared error drowned small effects |
+| the executed move fed only into the prediction heads | the move is a token in the sequence; what follows sees it | a side channel into the heads |
+| separate input embedding per type | one shared input map plus slot embeddings | per-type maps; the cost is the collision noted in §4 |
+| 32×32 residual targets | each patch predicts its own 192 values at full resolution | a downsampling and a residual special to frames |
+| hindsight command (a label from the future in training, the current hunger when acting) | removed; the instinct acts through one-step lookahead | the command behaved differently in training and acting |
+| 20% babbling outside the model | the model's own samples | a rule outside the model |
+| act token (a query trained by auxiliary losses) | removed; the policy is the patch_64 → move prediction | it held contact but not the direction (vm-00016), and was a special token |
+| memory gated by hunger relief and surprise | keep everything; later, the model's own surprise | relief gating was specific to hunger |
