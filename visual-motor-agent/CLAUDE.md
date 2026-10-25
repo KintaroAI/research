@@ -27,7 +27,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     (replayed) experience. `model.one_frame=1`: each prediction uses only the current frame.
     `online.memory=gated` (vm-00007): 8-step chunks enter long-term memory by relief and surprise
     (`GatedMemory`). The default `stream` is the plain ring buffer, unchanged.
-    `analyze_hazards.py` (vm-00012): whether a planner agent's hunger model imagines the hazards' cost.
+    `analyze_hazards.py` (vm-00012): whether a planner agent's hunger model imagines the hazards' cost; `contact`
+    also probes patch-token models (per kind of token, and the token of the patch under the cursor).
     `analyze_self_actor.py`: why the self actor does or does not aim (aim, probe, relief, inputs,
     momentum). `ppo.pi_detach=1`: the move loss trains the policy head only (vm-00008);
     `model.pi_hidden`: a hidden layer in the policy head.
@@ -79,7 +80,8 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
     and the online loop runs 202 steps/s against 24 (a 50k lifetime in 6 minutes). It supports the CNN model
     with coord, residual frames and U-Net skips; the frame, drives, move, inverse-dynamics and latent-dynamics
     losses, the planner's `encode`/`imagine`/`decode`, and patch tokens (tasks 00013, 00015): DMI, the planner
-    agent L and vm-00010's patch-token agents run there. Not PPO (only `train.py` uses it). GPU lifetimes are not
+    agent L and vm-00010's patch-token agents run there. Windows longer than 32 tokens (patch tokens: `model.patch=8`
+    gives 536 per window) use batched cuBLAS attention, any length (task 00018). Not PPO (only `train.py` uses it). GPU lifetimes are not
     bitwise reproducible against CPU ones. `online.py --eval RUN --eval-device cuda` runs the frozen tests'
     forward passes on the GPU (about 10 s per checkpoint).
   - **Many lifetimes on one GPU: start the CUDA multi-process service** (`nvidia-cuda-mps-control -d`, with

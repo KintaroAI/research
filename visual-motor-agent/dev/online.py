@@ -348,15 +348,17 @@ def eval_self(agent, env_cfg, goal, n=128, seed=EVAL_SEED, rng_seed=0):
 
 def eval_forage(agent, env_cfg, goal, n=32, steps=1000, seed=EVAL_SEED, rng_seed=0):
     """A continual world (respawn): hits per 1000 steps of the frozen self actor over n worlds of `steps` steps, and
-    the share of steps inside a hazard. Acting window: the last ctx real states, as in online.py."""
+    the share of steps inside a hazard, of hazard steps that raised hunger (none at the cap of 1) and of steps at the
+    cap. Acting window: the last ctx real states, as in online.py."""
     env = CircleWorld(n, dataclasses.replace(env_cfg, auto_reset=False, bonuses=False, max_steps=10 ** 9), seed=seed)
     rng = np.random.default_rng(rng_seed)
     L = agent.config["ctx"]
     hist, obs = [], env.observe()
     prev_a = np.zeros((n, 3), np.float32)
     es = np.ones(n, np.uint8)
-    hits, in_hz = np.zeros(n), np.zeros(n)
+    hits, in_hz, felt, capped = np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n)
     for _ in range(steps):
+        h0 = env.hunger.copy()
         cur = dict(img=obs["image"], drv=obs["drives"], pa=prev_a,
                    cmd=(obs["drives"][:, 0] if goal else np.zeros(n)).astype(np.float32), es=es)
         win = hist + [cur]
@@ -365,11 +367,14 @@ def eval_forage(agent, env_cfg, goal, n=32, steps=1000, seed=EVAL_SEED, rng_seed
         obs, _, _, inf = env.step(a)
         hits += inf["success"]
         in_hz += inf.get("gt_in_hazard", np.zeros(n, bool))      # scoring only
+        felt += inf.get("gt_in_hazard", np.zeros(n, bool)) & (env.hunger - h0 > 1.5 * env_cfg.h_rate)
+        capped += h0 >= 1.0 - 1e-6
         hist = (hist + [cur])[-(L - 1):] if L > 1 else []
         prev_a = executed_action(a)
         es = np.zeros(n, np.uint8)
     return dict(forage_hits_per_1k=float(hits.mean() * 1000 / steps), forage_hazard_frac=float(in_hz.mean() / steps),
-                forage_hunger=float(env.hunger.mean()))
+                forage_hunger=float(env.hunger.mean()), forage_hazard_felt=float(felt.mean() / steps),
+                forage_capped=float(capped.mean() / steps))
 
 
 class _GpuEval:
@@ -435,7 +440,9 @@ def main():
                 json.dump(res, f)
             print("%s %8d  success %.3f  median %5.1f  clicks %5.1f" % (os.path.basename(args.eval.rstrip("/")), st,
                   res["success"], res["median_steps"], res["clicks_per_episode"])
-                  + ("  forage: hits/1k %.1f  in hazard %.3f" % (res["forage_hits_per_1k"], res["forage_hazard_frac"])
+                  + ("  forage: hits/1k %.1f  in hazard %.3f (felt %.3f)  hunger capped %.2f" % (
+                      res["forage_hits_per_1k"], res["forage_hazard_frac"], res["forage_hazard_felt"],
+                      res["forage_capped"])
                      if "forage_hits_per_1k" in res else ""), flush=True)
             agent.close()
         return
@@ -514,7 +521,7 @@ def main():
     prev_a = np.zeros((1, 3), np.float32)
     prev_r = np.zeros(1, np.float32)
     ep_start = 1
-    win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], step_hits=0, hazard=0)
+    win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], step_hits=0, hazard=0, hazard_felt=0, capped=0)
     t0 = time.time()
     for step in range(1, on["steps"] + 1):
         h = obs["drives"][:, 0]
@@ -556,6 +563,11 @@ def main():
                 pr=prev_r[0], es=ep_start, act=a[0], rew=rew[0], done=done[0], hit=inf["success"][0], cmd=cmd)
         win["step_hits"] += int(inf["success"][0])                      # every hit (a continual world has no episodes)
         win["hazard"] += int(inf["gt_in_hazard"][0]) if "gt_in_hazard" in inf else 0   # scoring only
+        # scoring only: hazard steps whose cost showed in the drives (hunger is capped at 1: at the cap a hazard step
+        # changes nothing), and steps at the cap
+        dh = float(inf["terminal_drives"][0, 0] - drv[0])
+        win["hazard_felt"] += int(bool(inf["gt_in_hazard"][0]) and dh > 1.5 * env_cfg.h_rate) if "gt_in_hazard" in inf else 0
+        win["capped"] += int(drv[0] >= 1.0 - 1e-6)
         if done[0]:
             win["eps"].append((bool(inf["ep_success"][0]), float(inf["ep_length"][0]), float(inf["ep_clicks"][0])))
             planner.reset(np.ones(1, bool))
@@ -605,6 +617,7 @@ def main():
                        ep_clicks=float(np.mean([e[2] for e in eps])) if eps else None,
                        planned=win["planned"] / on["log_every"], gain=float(np.mean(win["gain"])),
                        step_hits=win["step_hits"], hazard_frac=win["hazard"] / on["log_every"],
+                       hazard_felt=win["hazard_felt"] / on["log_every"], hunger_capped=win["capped"] / on["log_every"],
                        hunger=float(h[0]))
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in STAT_KEYS})
@@ -627,7 +640,8 @@ def main():
                                                row.get("pred_mse", float("nan")), row.get("inv_r2", float("nan")),
                                                row.get("dyn_hunger_mse", float("nan"))) + gate
                   + ("  in hazard %.3f" % row["hazard_frac"] if env_cfg.hazards else ""), flush=True)
-            win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], t=time.time(), step_hits=0, hazard=0)
+            win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], t=time.time(), step_hits=0, hazard=0,
+                       hazard_felt=0, capped=0)
     if gpu:
         gpu.sync_to(agent)
     agent.save(os.path.join(out_dir, "ckpt_final.bin"), with_optimizer=gpu is None)   # GPU: the optimizer state stays there

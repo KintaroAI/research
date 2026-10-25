@@ -10,6 +10,9 @@ place the states (scoring only; the model sees only the rendered frames and its 
   contact  Is hazard contact represented at all? For 4,096 placed states, half with the cursor inside a hazard: a
            linear probe of "inside a hazard" from v (the encoder's features) and from z (the Transformer output), and
            the drives head's predicted next hunger inside against outside (with no move), against the world's.
+           Patch-token models (vm-00014) have no v: the probes read the token outputs instead (from the PyTorch
+           reference, as analyze_patch.py tokens): the move token (z), the drives token, the token of the patch under
+           the cursor and the mean of the patch tokens.
 
 usage:
   ./venv/bin/python analyze_hazards.py hazard RUN_DIR [RUN_DIR ...] --step 40000 [--device cuda]
@@ -100,14 +103,35 @@ def contact(run, st, n=4096, seed=5):
     obs = env.observe()
     goal = info["config"]["online"].get("goal")
     cmd = obs["drives"][:, :1].astype(np.float32) if goal else np.zeros((n, 1), np.float32)
-    out = a.forward(obs["image"][:, None], obs["drives"][:, None].astype(np.float32), np.zeros((n, 1, 3), np.float32),
-                    cmd, np.ones((n, 1), np.uint8), pred_actions=np.zeros((n, 1, 3), np.float32))
-    v = a.encode(obs["image"])["vf"]
-    a.close()
+    x = (obs["image"][:, None], obs["drives"][:, None].astype(np.float32), np.zeros((n, 1, 3), np.float32), cmd,
+         np.ones((n, 1), np.uint8))
+    out = a.forward(*x, pred_actions=np.zeros((n, 1, 3), np.float32))
     ph = out["pred_drives"][:, 0, 0]
-    return dict(inside_share=float(lab.mean()), r2_v=ridge_r2(v, lab[:, None]), r2_z=ridge_r2(out["z"][:, 0], lab[:, None]),
-                drives_head_inside=float(ph[lab > 0].mean()), drives_head_outside=float(ph[lab == 0].mean()),
-                true_inside=float(0.4 + cfg.h_rate + cfg.hazard_cost), true_outside=float(0.4 + cfg.h_rate))
+    res = dict(inside_share=float(lab.mean()), r2_z=ridge_r2(out["z"][:, 0], lab[:, None]),
+               drives_head_inside=float(ph[lab > 0].mean()), drives_head_outside=float(ph[lab == 0].mean()),
+               true_inside=float(0.4 + cfg.h_rate + cfg.hazard_cost), true_outside=float(0.4 + cfg.h_rate))
+    c = a.config
+    if not c["patch"]:
+        res["r2_v"] = ridge_r2(a.encode(obs["image"])["vf"], lab[:, None])
+        a.close()
+        return res
+    import torch
+    from reference import torch_reference as ref
+    torch.set_num_threads(agent_lib.get_threads())
+    P = ref.params_from_flat(a.params(), a.param_layout(), c, dtype=torch.float32)
+    a.close()
+    with torch.no_grad():
+        h = np.concatenate([ref.forward_patch(P, c, *[v[i:i + 1024] for v in x])["h"][:, -1].numpy()
+                            for i in range(0, n, 1024)])                       # [n, ntok, d]
+    g, npch = c["img"] // c["patch"], h.shape[1] - 3
+    view = np.full((n, 2), S / 2) if cfg.egocentric else env.cursor
+    cell = (np.clip(np.floor(view[:, 1]).astype(int) // c["patch"], 0, g - 1) * g +
+            np.clip(np.floor(view[:, 0]).astype(int) // c["patch"], 0, g - 1))
+    res.update(r2_drives=ridge_r2(h[:, npch], lab[:, None]),
+               r2_cursor_patch=ridge_r2(h[np.arange(n), cell], lab[:, None]),
+               r2_patch_mean=ridge_r2(h[:, :npch].mean(1), lab[:, None]),
+               z_max_abs_diff=float(np.abs(h[:, npch + 1] - out["z"][:, 0]).max()))
+    return res
 
 
 def main():
@@ -127,10 +151,12 @@ def main():
             os.makedirs(os.path.join(run, "eval"), exist_ok=True)
             with open(os.path.join(run, "eval", "ckpt_%08d_contact.json" % args.step), "w") as f:
                 json.dump(r, f)
-            print("%-14s %7d  inside a hazard: R^2 from v %.2f, from z %.2f; drives head next hunger inside %.3f, "
-                  "outside %.3f (world %.3f, %.3f)" % (name(run), args.step, r["r2_v"], r["r2_z"], r["drives_head_inside"],
-                                                       r["drives_head_outside"], r["true_inside"], r["true_outside"]),
-                  flush=True)
+            probes = ("from v %.2f, from z %.2f" % (r["r2_v"], r["r2_z"]) if "r2_v" in r else
+                      "from z (move token) %.2f, drives token %.2f, cursor's patch %.2f, patch mean %.2f (z vs C++ %.0e)"
+                      % (r["r2_z"], r["r2_drives"], r["r2_cursor_patch"], r["r2_patch_mean"], r["z_max_abs_diff"]))
+            print("%-14s %7d  inside a hazard: R^2 %s; drives head next hunger inside %.3f, outside %.3f (world %.3f, "
+                  "%.3f)" % (name(run), args.step, probes, r["drives_head_inside"], r["drives_head_outside"],
+                             r["true_inside"], r["true_outside"]), flush=True)
             continue
         r = hazard(run, args.step, device=args.device)
         if r is None:

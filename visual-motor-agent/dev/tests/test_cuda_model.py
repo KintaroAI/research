@@ -53,7 +53,9 @@ MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
           "planner": dict(BASIC, inv_hidden=128, dyn_hidden=256, one_frame=1),               # configs/L_gated.json
           "small_dynamics": dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, inv_hidden=6, dyn_hidden=7),
           "patch": dict(BASIC, patch=16),                                                       # vm-00010 P0
-          "small_patch_hidden": dict(SMALL, patch=8, pred_residual=1, pi_hidden=5)}
+          "small_patch_hidden": dict(SMALL, patch=8, pred_residual=1, pi_hidden=5),
+          "patch8": dict(BASIC, patch=8, pi_hidden=128),             # vm-00014 P8: 536 tokens per context (> 256)
+          "patch_whole_frame": dict(BASIC, patch=64, pi_hidden=128)}  # vm-00014 P64: the frame as one token
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
           "no_move": dict(PC, move_coef=0.0),

@@ -49,7 +49,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
     if (D.patch) {   // patch tokens (vm-00010): residual frames; no inverse or latent dynamics (as vm_agent.cpp)
         if (!c.pred_residual || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.img % D.patch) return false;
         D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3; D.pdim = D.patch * D.patch * 3;
-        if (c.pred_img % D.gp || c.ctx * D.ntok > 256 || c.d_model % c.n_head) return false;
+        if (c.pred_img % D.gp || c.d_model % c.n_head) return false;
         D.cell = c.pred_img / D.gp; D.cpx = D.cell * D.cell * 3;
         D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
         D.h1 = c.img / 2; D.h2 = c.img / 4; D.h3 = c.img / 8; D.enc_flat = c.c3 * D.h3 * D.h3;
@@ -76,7 +76,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
     D.pih = c.pi_hidden > 0 ? c.pi_hidden : 0;
     D.ih = c.inv_hidden > 0 ? c.inv_hidden : 0;
     D.dh = c.dyn_hidden > 0 ? c.dyn_hidden : 0; D.rimg = c.pred_img / 2; D.rpx = D.rimg * D.rimg * 3;
-    return D.p1 == D.h2 && D.p0 == D.h3 && D.K <= 256;   // U-Net skips need equal map sizes; k_attn_bwd: K <= 256
+    return D.p1 == D.h2 && D.p0 == D.h3;   // U-Net skips need equal map sizes
 }
 
 static void expected_sizes(const Dims& D, long* s) {
@@ -334,23 +334,56 @@ __global__ void k_attn_bwd(float* dqkv, const float* dout, const float* qkv, con
     const float* q = qkv + (long)b * d3 + h * hs;
     const float* w = att + (long)i * K;
     const float* dy = dout + (long)b * d + h * hs;
-    float da[256];   // K <= 256 keys per block
-    float dsum = 0.f;
+    float dsum = 0.f;   // the gradient at the weights, v_j . dy, is recomputed in the second loop: any number of keys
     for (int j = lo; j <= hi; j++) {
         const float* v = qkv + (long)j * d3 + 2 * d + h * hs;
         float* dv = dqkv + (long)j * d3 + 2 * d + h * hs;
         float s = 0.f;
         for (int c = 0; c < hs; c++) { s += v[c] * dy[c]; atomicAdd(dv + c, w[j - blk] * dy[c]); }
-        da[j - blk] = s;
         dsum += w[j - blk] * s;
     }
     float* dq = dqkv + (long)b * d3 + h * hs;
     for (int j = lo; j <= hi; j++) {
-        const float dp = w[j - blk] * (da[j - blk] - dsum) * scale;
+        const float* v = qkv + (long)j * d3 + 2 * d + h * hs;
+        float s = 0.f;
+        for (int c = 0; c < hs; c++) s += v[c] * dy[c];
+        const float dp = w[j - blk] * (s - dsum) * scale;
         const float* k = qkv + (long)j * d3 + d + h * hs;
         float* dk = dqkv + (long)j * d3 + d + h * hs;
         for (int c = 0; c < hs; c++) { atomicAdd(dq + c, dp * k[c]); atomicAdd(dk + c, dp * q[c]); }
     }
+}
+// Long blocks (K > ATT_GEMM_K, patch tokens): the scores come from batched GEMMs. One warp per (row b, head):
+// softmax of the scaled scores in place over keys start[b]..end[b] (end = NULL: ..b) of its block, 0 elsewhere.
+#define ATT_GEMM_K 32
+__global__ void k_attn_softmax(float* att, const int* start, const int* end, int B, int K, int nh) {
+    const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
+    if (i >= B * nh) return;
+    const int b = i / nh, blk = (b / K) * K, lo = start[b] - blk, hi = (end ? end[b] : b) - blk;
+    float* w = att + (long)i * K;
+    float mx = -1e30f;
+    for (int c = lane; c < K; c += 32) if (c >= lo && c <= hi) mx = fmaxf(mx, w[c]);
+    for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
+    float sum = 0.f;
+    for (int c = lane; c < K; c += 32) {
+        const float e = (c >= lo && c <= hi) ? expf(w[c] - mx) : 0.f;
+        w[c] = e;
+        sum += e;
+    }
+    for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
+    const float inv = 1.0f / sum;
+    for (int c = lane; c < K; c += 32) w[c] *= inv;
+}
+// dS = P * (dP - sum_c P dP) * scale, in place in dp ([b, h] rows of K, laid out as att)
+__global__ void k_attn_softmax_bwd(float* dp, const float* att, int B, int K, int nh, float scale) {
+    const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
+    if (i >= B * nh) return;
+    const float* w = att + (long)i * K;
+    float* g = dp + (long)i * K;
+    float s = 0.f;
+    for (int c = lane; c < K; c += 32) s += w[c] * g[c];
+    for (int o = 16; o; o >>= 1) s += __shfl_xor_sync(0xffffffff, s, o);
+    for (int c = lane; c < K; c += 32) g[c] = w[c] * (g[c] - s) * scale;
 }
 #define GELU_S 0.7978845608028654f
 __global__ void k_gelu_fwd(float* out, const float* inp, long n) {
@@ -873,7 +906,7 @@ struct Model {
     float *drv = nullptr, *pa = nullptr, *pr = nullptr, *act = nullptr, *ndrv = nullptr;
     int cap = 0;   // frames allocated
     // activations and gradients
-    Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, xin, ln1, ln1m, ln1r, qkv, att, atty, res1, ln2, ln2m, ln2r,
+    Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, xin, ln1, ln1m, ln1r, qkv, att, datt, atty, res1, ln2, ln2m, ln2r,
         fch, fchg, res2, lnf, lnfm, lnfr, pih, pi, pin, ph1, ph2, ub, pdrv, d1in, dc1, d2in, dc2, pout;
     Buf iv_in, iv_h, iv_out, div_out, div_h, div_in;   // inverse dynamics
     // latent dynamics: chain steps of all levels, level k at rows [lev[k-1], lev[k]); y_* forward, g_* gradients
@@ -904,6 +937,60 @@ static void gemm(Model* M, bool ta, bool tb, int m, int n, int k, const float* A
     const float one = 1.0f;
     cublasSgemm(M->cb, tb ? CUBLAS_OP_T : CUBLAS_OP_N, ta ? CUBLAS_OP_T : CUBLAS_OP_N, n, m, k, &one, B, ldb, A, lda,
                 &beta, C, ldc);
+}
+// gemm over `batch` independent problems, the i-th at A + i sA, B + i sB, C + i sC (row-major, as gemm)
+static void gemm_sb(Model* M, bool ta, bool tb, int m, int n, int k, float alpha, const float* A, int lda, long sA,
+                    const float* B, int ldb, long sB, float beta, float* C, int ldc, long sC, int batch) {
+    cublasSgemmStridedBatched(M->cb, tb ? CUBLAS_OP_T : CUBLAS_OP_N, ta ? CUBLAS_OP_T : CUBLAS_OP_N, n, m, k, &alpha,
+                              B, ldb, sB, A, lda, sA, &beta, C, ldc, sC, batch);
+}
+// Attention of B rows in blocks of K (row b of block s attends to rows start[b]..end[b] of it). Short blocks: one
+// thread per (row, head). Long blocks: per head, scores = Q K^T and Y = P V as GEMMs batched over the blocks, with a
+// masked softmax in between; att holds the weights of row b, head h at [(b nh + h) K + key - block start] as in
+// k_attn_fwd (0 outside the row's keys).
+static void attention_fwd(Model* M, const float* qkv, float* att, float* y, const int* start, const int* end, int B,
+                          int K) {
+    const Dims& D = M->D;
+    const int d = D.d, nh = D.nh, hs = D.hs, ns = B / K;
+    if (K <= ATT_GEMM_K) {
+        k_attn_fwd<<<(B * nh + 127) / 128, 128>>>(qkv, att, y, start, end, B, K, d, nh);
+        return;
+    }
+    const float scale = 1.0f / sqrtf((float)hs);
+    for (int h = 0; h < nh; h++)
+        gemm_sb(M, false, true, K, K, hs, scale, qkv + h * hs, 3 * d, (long)K * 3 * d, qkv + d + h * hs, 3 * d,
+                (long)K * 3 * d, 0.f, att + (long)h * K, nh * K, (long)K * nh * K, ns);
+    k_attn_softmax<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(att, start, end, B, K, nh);
+    for (int h = 0; h < nh; h++)
+        gemm_sb(M, false, false, K, hs, K, 1.f, att + (long)h * K, nh * K, (long)K * nh * K, qkv + 2 * d + h * hs,
+                3 * d, (long)K * 3 * d, 0.f, y + h * hs, d, (long)K * d, ns);
+}
+// Backward of attention_fwd: dqkv (zeroed first) from dy
+static void attention_bwd(Model* M, float* dqkv, const float* dy, const float* qkv, const float* att, const int* start,
+                          const int* end, int B, int K) {
+    const Dims& D = M->D;
+    const int d = D.d, nh = D.nh, hs = D.hs, ns = B / K;
+    cudaMemsetAsync(dqkv, 0, sizeof(float) * B * 3 * d);
+    if (K <= ATT_GEMM_K) {
+        k_attn_bwd<<<(B * nh + 127) / 128, 128>>>(dqkv, dy, qkv, att, start, end, B, K, d, nh);
+        return;
+    }
+    float* dp = M->datt.get((size_t)B * nh * K);
+    const long sq = (long)K * 3 * d, sa = (long)K * nh * K;
+    for (int h = 0; h < nh; h++) {   // dP = dY V^T; dV = P^T dY
+        gemm_sb(M, false, true, K, K, hs, 1.f, dy + h * hs, d, (long)K * d, qkv + 2 * d + h * hs, 3 * d, sq, 0.f,
+                dp + (long)h * K, nh * K, sa, ns);
+        gemm_sb(M, true, false, K, hs, K, 1.f, att + (long)h * K, nh * K, sa, dy + h * hs, d, (long)K * d, 0.f,
+                dqkv + 2 * d + h * hs, 3 * d, sq, ns);
+    }
+    k_attn_softmax_bwd<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(dp, att, B, K, nh,
+                                                                            1.0f / sqrtf((float)hs));
+    for (int h = 0; h < nh; h++) {   // dQ = dS K; dK = dS^T Q
+        gemm_sb(M, false, false, K, hs, K, 1.f, dp + (long)h * K, nh * K, sa, qkv + d + h * hs, 3 * d, sq, 0.f,
+                dqkv + h * hs, 3 * d, sq, ns);
+        gemm_sb(M, true, false, K, hs, K, 1.f, dp + (long)h * K, nh * K, sa, qkv + h * hs, 3 * d, sq, 0.f,
+                dqkv + d + h * hs, 3 * d, sq, ns);
+    }
 }
 // out [T, OC] = inp [T, C] W^T (+ b, act); W [OC, C]
 static void linear(Model* M, float* out, const float* inp, const float* W, const float* b, int T, int C, int OC,
@@ -1217,7 +1304,7 @@ static void transformer_fwd(Model* M, int B, int K, const int* start, const int*
         const size_t bd = (size_t)l * B * d;
         k_ln_fwd<<<lnb, 256>>>(ln1 + bd, ln1m + l * B, ln1r + l * B, x, P + off[LN1W] + l * d, P + off[LN1B] + l * d, B, d);
         linear(M, qkv + bd * 3, ln1 + bd, P + off[QKVW] + (size_t)l * 3 * d * d, P + off[QKVB] + l * 3 * d, B, d, 3 * d, 0);
-        k_attn_fwd<<<(B * D.nh + 127) / 128, 128>>>(qkv + bd * 3, att + (size_t)l * B * D.nh * K, atty + bd, start, end, B, K, d, D.nh);
+        attention_fwd(M, qkv + bd * 3, att + (size_t)l * B * D.nh * K, atty + bd, start, end, B, K);
         cudaMemcpyAsync(res1 + bd, x, sizeof(float) * B * d, cudaMemcpyDeviceToDevice);
         gemm(M, false, true, B, d, d, atty + bd, d, P + off[APW] + (size_t)l * d * d, d, 1.f, res1 + bd, d);
         k_bias_act<<<GRID((long)B * d)>>>(res1 + bd, P + off[APB] + l * d, B, d, 0);
@@ -1263,8 +1350,7 @@ static int transformer_bwd(Model* M, int B, int K, const int* start, const int* 
                                ln2m + l * B, ln2r + l * B, B, d);
         linear_bwd(M, dres, atty + bd, P + off[APW] + (size_t)l * d * d, B, d, d, datty, false,
                    G + off[APW] + (size_t)l * d * d, G + off[APB] + l * d);
-        CK(cudaMemsetAsync(dqkv, 0, sizeof(float) * B * 3 * d));
-        k_attn_bwd<<<(B * D.nh + 127) / 128, 128>>>(dqkv, datty, qkv + bd * 3, att + (size_t)l * B * D.nh * K, start, end, B, K, d, D.nh);
+        attention_bwd(M, dqkv, datty, qkv + bd * 3, att + (size_t)l * B * D.nh * K, start, end, B, K);
         linear_bwd(M, dqkv, ln1 + bd, P + off[QKVW] + (size_t)l * 3 * d * d, B, d, 3 * d, dln, false,
                    G + off[QKVW] + (size_t)l * 3 * d * d, G + off[QKVB] + l * 3 * d);
         k_ln_bwd<<<lnb, 256>>>(dres, G + off[LN1W] + l * d, G + off[LN1B] + l * d, dln, xl, P + off[LN1W] + l * d,

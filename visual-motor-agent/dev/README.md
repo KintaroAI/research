@@ -248,6 +248,9 @@ are used for scoring only):
     drives, from [its output, the executed move]. The move token's output is the policy.
   - The self actor only: the model acts through `vm_forward` on its window, so `vm_act`, `vm_encode` and
     the planner refuse patch mode. `agent.attention(...)` returns the attention weights of one sequence.
+  - Other sizes (vm-00014): `model.patch=8` (64 patches of 8×8, 67 tokens per step, 536 per window of 8) and
+    `model.patch=64` (the whole frame as one token). On the GPU, windows longer than 32 tokens use batched cuBLAS
+    attention: the P8 update takes 6.7 ms, the forward 0.5 ms (P16: 2.4 and 0.4 ms).
 - `env.distractors=8`: grey 2×2-px dots (brightness 60–180) moving at 0.5–2 px per step, bouncing off the
   walls, drawn under the circle and the cursor. They never affect the task, and their random streams are
   separate, so the episodes are identical with and without them. Positions: `info["gt_dots"]` (scoring

@@ -116,6 +116,37 @@ def test_patch_forward_matches_reference(patch_agent):
     np.testing.assert_allclose(out["pred_drives"], r["pred_drives"].numpy(), atol=2e-5)
 
 
+# Other patch sizes (vm-00014): a fine 8x8 grid of 4x4 patches (67 tokens per step, 536 per context of 8 steps, as
+# 8x8 patches of 64x64 frames) and the whole frame as one patch (4 tokens per step)
+@pytest.fixture(scope="module", params=[4, 32], ids=["fine", "whole_frame"])
+def sized_agent(request):
+    agent_lib.set_threads(4)
+    return agent_lib.Agent(dict(PATCH, patch=request.param, pred_residual=1, pi_hidden=5), seed=6)
+
+
+@pytest.mark.parametrize("pc_over", [dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.5),
+                                     dict(use_ppo=0, pred_coef=2.0, drive_coef=1.0, pred_changed_weight=9.0,
+                                          pi_detach=1, drive_changed_weight=4.0, drive_change_eps=0.3)])
+def test_patch_sizes_loss_and_grads_match_reference(sized_agent, pc_over):
+    cfg = sized_agent.config
+    T, N = 16, 3
+    ro, data = store_rollout(sized_agent, T=T, N=N, seed=8)
+    pc = dict(agent_lib.DEFAULT_PPO, **pc_over)
+    ids = [0, 2, 4, 5]
+    loss_cpp, _ = sized_agent.debug_grads(ro, np.zeros(N, np.float32), pc, ids)
+    zeros = np.zeros((T, N))
+    batch = seq_batch(data, ids, cfg["ctx"], N, zeros, zeros, cfg["img"] // cfg["pred_img"])
+    P = ref.params_from_flat(sized_agent.params(), sized_agent.param_layout(), cfg)
+    loss_ref, _ = ref.ppo_loss(P, cfg, pc, batch)
+    loss_ref.backward()
+    assert abs(loss_cpp - loss_ref.item()) < 1e-4 * max(1.0, abs(loss_ref.item())), (loss_cpp, loss_ref.item())
+    compare_grads(sized_agent, P)
+
+
+def test_patch_sizes_forward_matches_reference(sized_agent):
+    test_patch_forward_matches_reference(sized_agent)
+
+
 def test_patch_causality(patch_agent):
     """A step's outputs depend on its own step and the earlier steps of its context block only."""
     cfg = patch_agent.config
