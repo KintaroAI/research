@@ -492,7 +492,8 @@ enum ParamId {
     PR1W, PR1B, PR2W, PR2B, PBW, PBB, D1W, D1B, D2W, D2B, DRW, DRB, IV1W, IV1B, IV2W, IV2B,
     T1W, T1B, T2W, T2B, H1W, H1B, H2W, H2B, X1W, X1B, X2W, X2B,   // latent dynamics (dyn_hidden > 0)
     PEW, PEB, POS2D, TYP, DEW, DEB, MEW, MEB, CEW, CEB,       // patch tokens (patch > 0)
-    ACTE, AX1W, AX1B, AXDW, AXDB, AXFW, AXFB, NUM_P             // act token (act_token = 1) and its auxiliary heads
+    ACTE, AX1W, AX1B, AXDW, AXDB, AXFW, AXFB,                   // act token (act_token = 1) and its auxiliary heads
+    UIW, UIB, USL, UOW, UOB, NUM_P                              // the universal model: input map, slots, output head
 };
 static const char* PNAME[NUM_P] = {
     "enc_c1w", "enc_c1b", "enc_c2w", "enc_c2b", "enc_c3w", "enc_c3b", "enc_fcw", "enc_fcb", "in_w", "in_b", "wpe",
@@ -501,7 +502,8 @@ static const char* PNAME[NUM_P] = {
     "dc2w", "dc2b", "drw", "drb", "iv1w", "iv1b", "iv2w", "iv2b",
     "dt1w", "dt1b", "dt2w", "dt2b", "dh1w", "dh1b", "dh2w", "dh2b", "dx1w", "dx1b", "dx2w", "dx2b",
     "pt_w", "pt_b", "pos2d", "tok_type", "drv_w", "drv_b", "mv_w", "mv_b", "cmd_w", "cmd_b",
-    "act_e", "ax1w", "ax1b", "axdw", "axdb", "axfw", "axfb"};
+    "act_e", "ax1w", "ax1b", "axdw", "axdb", "axfw", "axfb",
+    "uni_in_w", "uni_in_b", "uni_slot", "uni_out_w", "uni_out_b"};
 
 static const int ACT_CG = 8;   // act token: side of the coarse next frame it predicts
 
@@ -518,6 +520,8 @@ struct Dims {
                                           // values per patch
     int cell, cpx, KT;                    // predicted cell side / values per patch; tokens per context (K * ntok)
     int act, cds, cfx;                    // act token on/off; prediction frame -> coarse frame block side; coarse values
+    int uni, V, nbin, OV, ch;             // universal model: on/off; values per token; bins per value; head outputs;
+                                          // channels per patch pixel (1 with gray, else 3)
 };
 static Dims make_dims(const VMConfig& c) {
     Dims D;
@@ -551,9 +555,15 @@ static Dims make_dims(const VMConfig& c) {
     D.npch = D.gp * D.gp;
     D.act = (D.patch && c.act_token) ? 1 : 0;
     D.ntok = D.patch ? D.npch + 3 + D.act : 1;
+    D.uni = (D.patch && c.universal) ? 1 : 0;   // tokens: body, the patches, the move
+    if (D.uni) D.ntok = D.npch + 2;
     D.cds = c.pred_img / ACT_CG;
     D.cfx = ACT_CG * ACT_CG * 3;
     D.pdim = D.patch * D.patch * 3;
+    D.ch = (D.uni && c.gray) ? 1 : 3;
+    D.V = D.uni ? D.patch * D.patch * D.ch : 0;
+    D.nbin = D.uni ? c.bins : 0;
+    D.OV = D.V * D.nbin;
     D.cell = D.patch ? c.pred_img / D.gp : 0;
     D.cpx = D.cell * D.cell * 3;
     D.KT = D.K * D.ntok;
@@ -585,6 +595,10 @@ struct Workspace {
     // act token: rows [its output, executed move]; hidden; predicted drives and coarse frame; gradients; coarse frames
     std::vector<float> ax_in, ax_h, ax_drv, ax_frm, dax_in, dax_h, dax_drv, dax_frm;
     std::vector<uint8_t> ax_cur;
+    // universal model: per token the centred input values, the next token's values (targets) and how many of them are
+    // used; one row of head logits and its probabilities
+    std::vector<float> u_in, u_tgt, u_row, u_prob;
+    std::vector<int> u_use;
 };
 static Workspace* ws_create(const Dims& D) {
     Workspace* W = new Workspace();
@@ -645,6 +659,10 @@ static Workspace* ws_create(const Dims& D) {
         for (auto* v : {&W->ax_drv, &W->dax_drv}) v->resize(K * 2);
         for (auto* v : {&W->ax_frm, &W->dax_frm}) v->resize(K * (size_t)D.cfx);
         W->ax_cur.resize(K * (size_t)D.cfx);
+    }
+    if (D.uni) {
+        W->u_in.resize(KT * (size_t)D.V); W->u_tgt.resize(KT * (size_t)D.V); W->u_use.resize(KT);
+        W->u_row.resize(D.OV); W->u_prob.resize(D.OV);
     }
     W->dpd1.resize((size_t)D.pc1 * D.p1 * D.p1);
     W->cur_small.resize(D.small_px);
@@ -727,9 +745,19 @@ static void model_layout(Model* M) {
     s[TYP] = pm ? (4 + ac) * d : 0;
     s[ACTE] = ac * d; s[AX1W] = ac * D.ph * D.pin_dim; s[AX1B] = ac * D.ph; s[AXDW] = ac * 2 * D.ph; s[AXDB] = ac * 2;
     s[AXFW] = ac * D.cfx * D.ph; s[AXFB] = ac * D.cfx;
+    const long un = D.uni;
+    if (un)   // the universal model: one input map, slot embeddings, one output head; no per-type heads
+        for (int p : {PIW, PIB, PHW, PHB, VW, VB, PR1W, PR1B, PR2W, PR2B, DRW, DRB, PEW, PEB, POS2D, TYP, DEW, DEB,
+                      MEW, MEB, CEW, CEB}) s[p] = 0;
+    s[UIW] = un * d * D.V; s[UIB] = un * d; s[USL] = un * D.ntok * d; s[UOW] = un * D.OV * d; s[UOB] = un * D.OV;
     long o = 0;
     for (int i = 0; i < NUM_P; i++) { M->off[i] = o; M->sz[i] = s[i]; o += s[i]; }
     M->n_params = o;
+    if (D.uni) {
+        M->tlist = {{QKVW, 3 * D.d, D.d, D.L}, {APW, D.d, D.d, D.L}, {FCW, D.dff, D.d, D.L}, {FPW, D.d, D.dff, D.L},
+                    {UIW, D.d, D.V, 1}, {UOW, D.OV, D.d, 1}};
+        return;
+    }
     if (pm) {
         M->tlist = {
             {QKVW, 3 * D.d, D.d, D.L}, {APW, D.d, D.d, D.L}, {FCW, D.dff, D.d, D.L}, {FPW, D.d, D.dff, D.L},
@@ -817,7 +845,7 @@ static void model_init_params(Model* M, uint64_t seed) {
         fill_normal(r, P + M->off[X1W], M->sz[X1W], sqrtf(2.0f / D.feat));
         fill_normal(r, P + M->off[X2W], M->sz[X2W], sqrtf(1.0f / D.dh));
     }
-    if (D.patch) {
+    if (D.patch && !D.uni) {
         fill_normal(r, P + M->off[PEW], M->sz[PEW], sqrtf(1.0f / D.pdim));
         fill_normal(r, P + M->off[TYP], M->sz[TYP], 0.1f);
         fill_normal(r, P + M->off[DEW], M->sz[DEW], sqrtf(1.0f / 2));
@@ -842,6 +870,22 @@ static void model_init_params(Model* M, uint64_t seed) {
         fill_normal(r, P + M->off[AXDW], M->sz[AXDW], sqrtf(1.0f / D.ph));
         fill_normal(r, P + M->off[AXFW], M->sz[AXFW], 0.1f * sqrtf(1.0f / D.ph));   // residual: near "no change"
     }
+    if (D.uni) {   // drawn after everything else: the other models are unchanged
+        fill_normal(r, P + M->off[UIW], M->sz[UIW], sqrtf(3.0f / D.V));   // inputs in [-0.5, 0.5]: about unit scale
+        fill_normal(r, P + M->off[USL], M->sz[USL], 0.02f);
+        fill_normal(r, P + M->off[UOW], M->sz[UOW], 0.02f);                // near-uniform bins at birth
+        // the patch slots (1..npch) add the 2D sine-cosine code of their cell, as pos2d
+        const int q = (int)(d / 4);
+        for (int k = 0; k < D.npch; k++) {
+            const float gx = (float)(k % D.gp), gy = (float)(k / D.gp);
+            float* pe = P + M->off[USL] + (size_t)(k + 1) * d;
+            for (int i = 0; i < q; i++) {
+                const float w = powf(10000.f, -(float)i / q);
+                pe[i] += 0.1f * sinf(gx * w); pe[q + i] += 0.1f * cosf(gx * w);
+                pe[2 * q + i] += 0.1f * sinf(gy * w); pe[3 * q + i] += 0.1f * cosf(gy * w);
+            }
+        }
+    }
 }
 
 static bool config_valid(const VMConfig& c) {
@@ -860,6 +904,9 @@ static bool config_valid(const VMConfig& c) {
     }
     if (c.act_token < 0 || c.act_token > 1) return false;
     if (c.act_token && (c.patch <= 0 || !c.pred_residual || c.pred_img % ACT_CG)) return false;
+    if (c.universal < 0 || c.universal > 1) return false;
+    if (c.universal && (c.patch <= 0 || c.act_token || c.bins < 2 || c.patch * c.patch * (c.gray ? 1 : 3) < 3)) return false;
+    if (c.gray < 0 || c.gray > 1 || (c.gray && !c.universal)) return false;
     return true;
 }
 static Model* model_new(const VMConfig& cfg) {
@@ -1219,8 +1266,102 @@ static void seq_fwd_patch(const Model* M, Workspace* W, const SeqView& sv, bool 
     for (int i = 0; i < T * D.cfx; i++) W->ax_frm[i] += W->ax_cur[i] / 255.0f;
 }
 
+// ---- the universal model (universal = 1, task 00023) ----
+// Each step is ntok = npch + 2 tokens: the body (hunger, restlessness), the patches row by row (pixels / 255, (y, x, c)
+// within the patch), the move made at this step ((dx + 1) / 2, (dy + 1) / 2, click). Every token is a value vector of V
+// numbers in [0, 1] (body 2 used, move 3, patch V), centred to [-0.5, 0.5] at the input, unused entries 0. Fully causal
+// within the context; every token predicts the next token's values: the move token the drives after its step.
+static inline int uni_used(const Dims& D, int k) { return k == 0 ? 2 : (k == D.ntok - 1 ? 3 : D.V); }
+
+// The token values of step t, slot k, into v [V] (raw, in [0, 1]); returns the number used.
+static int uni_values(const Dims& D, const SeqView& sv, int t, int k, float* v) {
+    const int V = D.V, ps = D.patch, S = D.img;
+    for (int i = 0; i < V; i++) v[i] = 0.f;
+    if (k == 0) {
+        const float* dr = sv.drives + (size_t)t * sv.drv_st;
+        v[0] = dr[0]; v[1] = dr[1];
+        return 2;
+    }
+    if (k == D.ntok - 1) {
+        const float* a = sv.action + (size_t)t * sv.act_st;
+        v[0] = 0.5f * (clampf_(a[0], -1.f, 1.f) + 1.f);
+        v[1] = 0.5f * (clampf_(a[1], -1.f, 1.f) + 1.f);
+        v[2] = a[2] > 0.5f ? 1.f : 0.f;
+        return 3;
+    }
+    const int p = k - 1, py = (p / D.gp) * ps, px = (p % D.gp) * ps, ch = D.ch;   // gray: the first channel only
+    const uint8_t* img = sv.img + (size_t)t * sv.img_st;
+    for (int y = 0; y < ps; y++)
+        for (int x = 0; x < ps; x++)
+            for (int c = 0; c < ch; c++) v[(y * ps + x) * ch + c] = img[((size_t)(py + y) * S + px + x) * 3 + c] / 255.0f;
+    return V;
+}
+
+// Tokens, targets and the Transformer (after seq_fwd_setup). Targets need sv.next_drives (training) for the move
+// tokens; without it their targets are left 0 (forward passes for acting / analysis).
+static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
+    const Dims& D = M->D;
+    const int T = sv.T, nt = D.ntok, V = D.V, d = D.d;
+    const float* P = M->params.data();
+    for (int t = 0; t < T; t++)
+        for (int k = 0; k < nt; k++) {
+            const int i = t * nt + k;
+            W->tss[i] = W->ss[t] * nt;
+            float* in = W->u_in.data() + (size_t)i * V;
+            const int u = uni_values(D, sv, t, k, in);
+            if (k > 0) {   // this token is the target of the one before it (in the same step)
+                memcpy(W->u_tgt.data() + (size_t)(i - 1) * V, in, sizeof(float) * V);
+                W->u_use[i - 1] = u;
+            }
+            for (int j = 0; j < u; j++) in[j] -= 0.5f;
+            if (k == nt - 1) {   // the move token predicts the drives after its step
+                float* tg = W->u_tgt.data() + (size_t)i * V;
+                for (int j = 0; j < V; j++) tg[j] = 0.f;
+                if (sv.next_drives) { tg[0] = sv.next_drives[(size_t)t * sv.nd_st]; tg[1] = sv.next_drives[(size_t)t * sv.nd_st + 1]; }
+                W->u_use[i] = 2;
+            }
+        }
+    linear_fwd(W->xin.data(), W->u_in.data(), M->wt.data() + M->off[UIW], P + M->off[UIB], T * nt, V, d);
+    for (int t = 0; t < T; t++) {
+        const float* pe = P + M->off[WPE] + (size_t)W->pos[t] * d;
+        for (int k = 0; k < nt; k++) {
+            float* x = W->xin.data() + ((size_t)t * nt + k) * d;
+            const float* sl = P + M->off[USL] + (size_t)k * d;
+            for (int j = 0; j < d; j++) x[j] += sl[j] + pe[j];
+        }
+    }
+    transformer_fwd(M, W, T * nt, W->tss.data(), nullptr);
+}
+
+// One token's head: logits [OV] for its final output z, then the per-value softmax into prob [OV].
+static void uni_head_row(const Model* M, const float* z, float* row, float* prob) {
+    const Dims& D = M->D;
+    linear_fwd(row, z, M->wt.data() + M->off[UOW], M->params.data() + M->off[UOB], 1, D.d, D.OV);
+    const int K = D.nbin;
+    for (int u = 0; u < D.V; u++) {
+        const float* l = row + (size_t)u * K;
+        float* p = prob + (size_t)u * K;
+        float mx = l[0];
+        for (int k = 1; k < K; k++) mx = l[k] > mx ? l[k] : mx;
+        float sum = 0.f;
+        for (int k = 0; k < K; k++) { p[k] = expf(l[k] - mx); sum += p[k]; }
+        const float inv = 1.0f / sum;
+        for (int k = 0; k < K; k++) p[k] *= inv;
+    }
+}
+
+// Two-hot target of a value in [0, 1] over K bins with centres k / (K - 1): the bins below and above it.
+static inline void two_hot(float v, int K, int& lo, float& wlo, float& whi) {
+    const float pos = clampf_(v, 0.f, 1.f) * (K - 1);
+    lo = (int)pos;
+    if (lo > K - 2) lo = K - 2;
+    whi = pos - lo;
+    wlo = 1.0f - whi;
+}
+
 static void seq_forward(const Model* M, Workspace* W, const SeqView& sv, bool want_pred) {
     seq_fwd_setup(M, W, sv);
+    if (M->D.uni) { seq_fwd_uni(M, W, sv); return; }
     if (M->D.patch) { seq_fwd_patch(M, W, sv, want_pred); return; }
     for (int t = 0; t < sv.T; t++) seq_fwd_encode(M, W, W, sv, t);
     seq_fwd_core(M, W, sv, want_pred);
@@ -1235,12 +1376,14 @@ struct LossAcc {
     double dyn_se = 0, dyn_n = 0, dynh_se = 0, dynh_n = 0, dynx_se = 0, dynx_n = 0;
     double move = 0;
     double act_dse = 0, act_fse = 0;   // act token: next-drives and coarse-next-frame squared errors (per pred row)
+    double uce[3] = {0, 0, 0}, use_[3] = {0, 0, 0}, un[3] = {0, 0, 0};   // universal: by predicted kind (body, patch, move)
     double total = 0;
     void add(const LossAcc& o) {
         pg += o.pg; v += o.v; ent += o.ent; kl += o.kl; clip += o.clip; n += o.n; clickp += o.clickp;
         pred_se += o.pred_se; pred_n += o.pred_n; pred_ch_se += o.pred_ch_se; copy_se += o.copy_se;
         copy_ch_se += o.copy_ch_se; ch_n += o.ch_n; drive_se += o.drive_se; total += o.total;
         act_dse += o.act_dse; act_fse += o.act_fse;
+        for (int k = 0; k < 3; k++) { uce[k] += o.uce[k]; use_[k] += o.use_[k]; un[k] += o.un[k]; }
         inv_se += o.inv_se; inv_n += o.inv_n; inv_var += o.inv_var;
         dyn_se += o.dyn_se; dyn_n += o.dyn_n; dynh_se += o.dynh_se; dynh_n += o.dynh_n;
         dynx_se += o.dynx_se; dynx_n += o.dynx_n;
@@ -1886,6 +2029,71 @@ static void seq_bwd_patch(const Model* M, Workspace* W, const SeqView& sv, float
                G + M->off[PEB], scr);
 }
 
+// The loss of every token (cross-entropy of the next token's used values, their mean, times inv_tok), fused with the
+// head's backward: the head's gradients into G and each token's output gradient into W->dz.
+static void seq_loss_uni(const Model* M, Workspace* W, const SeqView& sv, float inv_tok, float* G, LossAcc& acc) {
+    const Dims& D = M->D;
+    const int T = sv.T, nt = D.ntok, V = D.V, d = D.d, K = D.nbin;
+    const float* P = M->params.data();
+    float* row = W->u_row.data();
+    float* prob = W->u_prob.data();
+    float* gW = G + M->off[UOW];
+    float* gb = G + M->off[UOB];
+    const float* Wo = P + M->off[UOW];
+    for (int i = 0; i < T * nt; i++) {
+        const int k = i % nt, u = W->u_use[i];
+        const int kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);   // predicted: the next body, the move, a patch
+        const float* z = W->lnf.data() + (size_t)i * d;
+        const float* tg = W->u_tgt.data() + (size_t)i * V;
+        uni_head_row(M, z, row, prob);
+        float* dz = W->dz.data() + (size_t)i * d;
+        for (int j = 0; j < d; j++) dz[j] = 0.f;
+        const float sc = inv_tok / u;
+        double ce = 0, se = 0;
+        for (int v = 0; v < u; v++) {
+            int lo; float wlo, whi;
+            two_hot(tg[v], K, lo, wlo, whi);
+            float* p = prob + (size_t)v * K;
+            float ev = 0.f;
+            for (int b = 0; b < K; b++) ev += p[b] * (float)b / (K - 1);
+            ce -= wlo * logf(std::max(p[lo], 1e-30f)) + whi * logf(std::max(p[lo + 1], 1e-30f));
+            se += (double)(ev - tg[v]) * (ev - tg[v]);
+            p[lo] -= wlo;           // dL/dlogits = (p - target) * sc, in place
+            p[lo + 1] -= whi;
+            for (int b = 0; b < K; b++) {
+                const float g = p[b] * sc;
+                const int r = v * K + b;
+                gb[r] += g;
+                const float* wr = Wo + (size_t)r * d;
+                float* gw = gW + (size_t)r * d;
+                for (int j = 0; j < d; j++) { gw[j] += g * z[j]; dz[j] += g * wr[j]; }
+            }
+        }
+        ce /= u;
+        acc.uce[kind] += ce; acc.use_[kind] += se / u; acc.un[kind] += 1;
+        acc.total += ce;
+        acc.n += 1;
+    }
+}
+
+// Backward from W->dz: the Transformer, then the input map, the slot and the step embeddings.
+static void seq_bwd_uni(const Model* M, Workspace* W, const SeqView& sv, float* G) {
+    const Dims& D = M->D;
+    const int T = sv.T, nt = D.ntok, d = D.d;
+    transformer_bwd(M, W, T * nt, W->tss.data(), nullptr, G);
+    const float* dres = W->dres.data();
+    linear_bwd(dres, W->u_in.data(), M->params.data() + M->off[UIW], T * nt, D.V, d, nullptr, false, G + M->off[UIW],
+               G + M->off[UIB], W->scr.data());
+    for (int t = 0; t < T; t++) {
+        float* gpe = G + M->off[WPE] + (size_t)W->pos[t] * d;
+        for (int k = 0; k < nt; k++) {
+            const float* dr = dres + ((size_t)t * nt + k) * d;
+            float* gs = G + M->off[USL] + (size_t)k * d;
+            for (int j = 0; j < d; j++) { gpe[j] += dr[j]; gs[j] += dr[j]; }
+        }
+    }
+}
+
 static void seq_backward(const Model* M, Workspace* W, const SeqView& sv, float* G, bool have_pred, float pred_scale,
                          bool have_inv, bool pi_detach) {
     if (M->D.patch) { seq_bwd_patch(M, W, sv, G, have_pred, pred_scale, pi_detach); return; }
@@ -2064,6 +2272,12 @@ static LossAcc loss_and_grads_seqs(Model* M, Rollout* R, const int* ids, int n_s
             }
             Workspace* W = M->ws[tid];
             SeqView sv = rollout_view(R, ids[q]);
+            if (D.uni) {   // the universal model: one loss over every token, nothing else
+                seq_forward(M, W, sv, false);
+                seq_loss_uni(M, W, sv, inv_B / D.ntok, G, accs[tid]);
+                seq_bwd_uni(M, W, sv, G);
+                continue;
+            }
             seq_forward(M, W, sv, have_pred);
             float dls[2] = {0.f, 0.f};
             seq_loss(M, W, sv, pc, inv_B, (float)am, (float)as, have_pred, dls, accs[tid]);
@@ -2190,7 +2404,7 @@ static double grad_sq_norms(const Model* M, double* group) {
     struct Chunk { long b, e; int g; };
     std::vector<Chunk> chunks;
     for (int p = 0; p < NUM_P; p++) {
-        const int g = (p >= PIW && p <= VB) ? 1 : (((p >= PR1W && p < PEW) || p >= AX1W) ? 2 : 0);
+        const int g = (p >= PIW && p <= VB) ? 1 : (((p >= PR1W && p < PEW) || (p >= AX1W && p <= AXFB) || p >= UOW) ? 2 : 0);
         for (long b = M->off[p]; b < M->off[p] + M->sz[p]; b += 16384)
             chunks.push_back({b, std::min(M->off[p] + M->sz[p], b + 16384), g});
     }
@@ -2260,6 +2474,9 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[37] = c.pi_hidden;
     h[38] = c.patch;
     h[39] = c.act_token;
+    h[40] = c.universal;
+    h[41] = c.bins;
+    h[42] = c.gray;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2276,6 +2493,9 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.pi_hidden = h[37];
     c.patch = h[38];
     c.act_token = h[39];
+    c.universal = h[40];
+    c.bins = h[41];
+    c.gray = h[42];
 }
 
 // =====================================================================================
@@ -2509,6 +2729,11 @@ static void fill_stats(PPOStats* st, const LossAcc& acc, int n_updates, const Mo
     st->dyn_recon_mse = acc.dynx_n > 0 ? (float)(acc.dynx_se / acc.dynx_n) : 0.f;
     st->move_nll = (float)(acc.move / n);
     st->act_drive_mse = (float)(acc.act_dse / pn);
+    {
+        float* ce[3] = {&st->uni_ce_body, &st->uni_ce_patch, &st->uni_ce_move};
+        float* se[3] = {&st->uni_mse_body, &st->uni_mse_patch, &st->uni_mse_move};
+        for (int k = 0; k < 3; k++) if (acc.un[k] > 0) { *ce[k] = (float)(acc.uce[k] / acc.un[k]); *se[k] = (float)(acc.use_[k] / acc.un[k]); }
+    }
     st->act_frame_mse = (float)(acc.act_fse / pn);
     st->updates_done = n_updates;
     const float* ls = M->params.data() + M->off[LOGSTD];
@@ -2590,6 +2815,7 @@ void vm_forward(void* a, int S, int T, const uint8_t* images, const float* drive
     Model* M = (Model*)a;
     const Dims& D = M->D;
     CK(T >= 1 && T <= D.K);
+    CK(!D.uni);   // the universal model: vm_forward_uni
     ensure_threads(M);
     const bool want_pred = pred_actions != nullptr;
     std::vector<SeqView> svs(S);
@@ -2650,6 +2876,49 @@ void vm_forward(void* a, int S, int T, const uint8_t* images, const float* drive
     }
 }
 
+void vm_forward_uni(void* a, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                    const uint8_t* ep_start, float* values, float* move_probs, float* next_body) {
+    Model* M = (Model*)a;
+    const Dims& D = M->D;
+    CK(D.uni && T >= 1 && T <= D.K);
+    ensure_threads(M);
+    const int nt = D.ntok, V = D.V, K = D.nbin;
+    #pragma omp parallel for schedule(dynamic, 1)
+    for (int s = 0; s < S; s++) {
+        Workspace* W = M->ws[omp_get_thread_num()];
+        const size_t b = (size_t)s * T;
+        SeqView sv;
+        sv.T = T;
+        sv.img = images + b * D.img_px; sv.img_st = D.img_px;
+        sv.drives = drives + b * 2; sv.drv_st = 2;
+        sv.action = actions + b * 3; sv.act_st = 3;
+        sv.ep_start = ep_start ? ep_start + b : nullptr; sv.es_st = 1;
+        seq_forward(M, W, sv, false);
+        for (int i = 0; i < T * nt; i++) {
+            const bool mv = (i % nt) == nt - 2;   // the last patch: its prediction is the move
+            const bool nb = (i % nt) == nt - 1;   // the move token: its prediction is the next body
+            if (!values && !(move_probs && mv) && !(next_body && nb)) continue;
+            uni_head_row(M, W->lnf.data() + (size_t)i * D.d, W->u_row.data(), W->u_prob.data());
+            const float* p = W->u_prob.data();
+            if (values) {
+                float* out = values + (b * nt + i) * V;
+                for (int u = 0; u < V; u++) {
+                    float ev = 0.f;
+                    for (int k = 0; k < K; k++) ev += p[(size_t)u * K + k] * (float)k / (K - 1);
+                    out[u] = ev;
+                }
+            }
+            if (move_probs && mv) memcpy(move_probs + (b + i / nt) * 3 * K, p, sizeof(float) * 3 * K);
+            if (next_body && nb)
+                for (int u = 0; u < 2; u++) {
+                    float ev = 0.f;
+                    for (int k = 0; k < K; k++) ev += p[(size_t)u * K + k] * (float)k / (K - 1);
+                    next_body[(b + i / nt) * 2 + u] = ev;
+                }
+        }
+    }
+}
+
 // Encoder only: conv-3 map a3 [n, c3*(img/8)^2] and visual feature vf [n, feat] (either may be NULL).
 void vm_attention(void* a, int T, const uint8_t* images, const float* drives, const float* prev_action,
                   const float* prev_reward, const uint8_t* ep_start, float* att_out) {
@@ -2673,7 +2942,7 @@ void vm_attention(void* a, int T, const uint8_t* images, const float* drives, co
             for (int i = 0; i < Tt; i++) {
                 const float* row = W->att.data() + (((size_t)l * D.nh + h) * KT + i) * KT;
                 float* dst = att_out + (((size_t)l * D.nh + h) * Tt + i) * Tt;
-                const int lo = ss[i], hi = D.patch ? W->tse[i] : i;
+                const int lo = ss[i], hi = (D.patch && !D.uni) ? W->tse[i] : i;
                 for (int j = 0; j < Tt; j++) dst[j] = (j >= lo && j <= hi) ? row[j] : 0.f;
             }
 }

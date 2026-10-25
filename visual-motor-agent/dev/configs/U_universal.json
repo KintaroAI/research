@@ -1,0 +1,54 @@
+{
+  "name": "U_universal",
+  "description": "The universal model (ARCHITECTURE.md, tasks 00023-00024) and its world, the defaults for universal-model experiments: 8x8 grayscale patch tokens (one channel), 32 bins, fully causal next-token prediction, one head, nothing detached; acting by its own move prediction plus the hunger instinct (16 candidates), no babbling, no command; memory U. The world: a continual torus in grayscale, food (a solid disc) relieves hunger on a click, poison (a checkerboard disc) adds 0.5 on a click, contact costs nothing, slow hunger, 8 moving grey dots.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0,
+    "respawn": true,
+    "end_on_success": false,
+    "max_steps": 1000000000,
+    "wrap": true,
+    "hazards": 2,
+    "hazard_cost": 0.0,
+    "hazard_click_add": 0.5,
+    "hazard_pattern": "checker",
+    "gray": true,
+    "h_rate": 0.001,
+    "distractors": 8
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "patch": 8,
+    "universal": 1,
+    "bins": 32,
+    "gray": 1,
+    "ctx": 8
+  },
+  "online": {
+    "actor": "self",
+    "steps": 60000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_eps": 0.0,
+    "goal": 0,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "instinct_m": 16,
+    "instinct_tol": 0.005,
+    "device": "cuda",
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4
+  }
+}

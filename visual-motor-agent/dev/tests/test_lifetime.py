@@ -102,3 +102,34 @@ def test_short_lifetime_with_bodies(tmp_path, goal_mode):
     assert [r["bodies"] for r in rows] == [4, 4, 2, 1, 1]
     assert all(r["act_frame_mse"] > 0 for r in rows[1:]) and abs(rows[-1]["eps"] - 0.05) < 1e-9
     assert os.path.exists(os.path.join(out, "ckpt_final.bin"))
+
+
+@pytest.mark.parametrize("instinct", [0, 4])
+def test_short_lifetime_universal(tmp_path, instinct):
+    """The universal model (task 00023) lives a short lifetime with two bodies, with and without the instinct, and its
+    frozen tests run."""
+    out = str(tmp_path / "run")
+    cmd = [sys.executable, os.path.join(DEV, "lifetime.py"), "--config", os.path.join(DEV, "configs", "AHR_gated.json"),
+           "--set", "model.patch=16", "--set", "model.universal=1", "--set", "model.bins=8", "--set", "model.d_model=32",
+           "--set", "model.n_head=2", "--set", "model.d_ff=64", "--set", "online.goal=0", "--set", "online.explore_eps=0",
+           "--set", "online.instinct_m=%d" % instinct, "--set", "online.bodies=2", "--set", "online.bodies_hold=30",
+           "--set", "online.bodies_halve=20", "--set", "online.steps=60", "--set", "online.log_every=30",
+           "--set", "online.save_every=60", "--set", "online.threads=2", "--set", "online.stm=64",
+           "--set", "online.replay=4000", "--set", "env.respawn=true", "--set", "env.end_on_success=false",
+           "--set", "env.max_steps=1000000000", "--set", "env.wrap=true", "--set", "env.hazards=2",
+           "--set", "env.hazard_cost=0", "--set", "env.hazard_click_add=0.5", "--seed", "3", "-o", out]
+    subprocess.run(cmd, check=True, cwd=DEV, capture_output=True)
+    rows = [json.loads(line) for line in open(os.path.join(out, "metrics.jsonl"))]
+    assert [r["bodies"] for r in rows] == [2, 1]
+    assert all(r["uni_ce_patch"] > 0 and r["uni_ce_body"] > 0 for r in rows)
+    assert "instinct_override" in rows[-1]
+    if instinct == 0:
+        assert all(r["instinct_override"] == 0 for r in rows)
+    import agent_lib   # nothing (e.g. online.click_bias, which needs a policy head) altered the newborn weights
+    born = agent_lib.Agent.load(os.path.join(out, "ckpt_00000000.bin"))
+    fresh = agent_lib.Agent(born.config, seed=3)
+    np.testing.assert_array_equal(born.params(), fresh.params())
+    ev = subprocess.run([sys.executable, os.path.join(DEV, "online.py"), "--eval", out, "--ckpts", "60"], cwd=DEV,
+                        capture_output=True, text=True, check=True)
+    assert "success" in ev.stdout and "forage: hits/1k" in ev.stdout
+

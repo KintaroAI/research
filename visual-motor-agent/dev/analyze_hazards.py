@@ -203,14 +203,21 @@ def click(run, st, n=1536, seed=13, device="cpu"):
     redness = lambda fr: np.array([(fr[i][red[i]][:, 0] - fr[i][red[i]][:, 2]).mean() if red[i].any() else np.nan
                                    for i in range(n)])
     res = {}
+    uni = bool(a.config.get("universal"))
     for c in (0, 1):
         act = np.zeros((n, 1, 3), np.float32)
         act[..., 2] = c
-        fwd = m.forward if m is not a else a.forward
-        out = fwd(obs["image"][:, None], obs["drives"][:, None].astype(np.float32), np.zeros((n, 1, 3), np.float32),
-                  cmd, np.ones((n, 1), np.uint8), pred_actions=act)
-        ph = out["pred_drives"][:, 0, 0]
-        pf = redness(out["pred_frames"][:, 0] * 255.0)
+        if uni:   # the move token's prediction of the next body; the next frame would need generating patch by patch
+            ph = m.forward_uni(obs["image"][:, None], obs["drives"][:, None].astype(np.float32), act,
+                               np.ones((n, 1), np.uint8), values=False, move_probs=False,
+                               next_body=True)["next_body"][:, 0, 0]
+            pf = np.full(n, np.nan)
+        else:
+            fwd = m.forward if m is not a else a.forward
+            out = fwd(obs["image"][:, None], obs["drives"][:, None].astype(np.float32), np.zeros((n, 1, 3), np.float32),
+                      cmd, np.ones((n, 1), np.uint8), pred_actions=act)
+            ph = out["pred_drives"][:, 0, 0]
+            pf = redness(out["pred_frames"][:, 0] * 255.0)
         env.set_state(base)
         nobs = env.step(act[:, 0])[0]
         th = env.hunger.copy()
@@ -222,7 +229,7 @@ def click(run, st, n=1536, seed=13, device="cpu"):
         for k, nm in enumerate(("food", "poison", "background")):
             sel = keep & (kind == k)
             r = dict(n=int(sel.sum()), predicted=float(ph[sel].mean()), true=float(th[sel].mean()),
-                     red_predicted=float(np.nanmean(pf[sel])) if k == 0 else None,
+                     red_predicted=float(np.nanmean(pf[sel])) if k == 0 and not uni else None,
                      red_true=float(np.nanmean(tf[sel])) if k == 0 else None)
             if ih is not None:
                 r["imagined"] = float(ih[sel].mean())
@@ -257,9 +264,10 @@ def main():
                     parts.append("%s/%s %.3f (true %.3f%s)" % (k, c, v["predicted"], v["true"],
                                  ", imagined %.3f" % v["imagined"] if "imagined" in v else ""))
             fc, fs = r["food_click"], r["food_stay"]
-            print("%-14s %7d  next hunger: %s;  circle redness on a food click %.0f (true %.0f), staying %.0f (true %.0f)"
-                  % (name(run), args.step, "  ".join(parts), fc["red_predicted"], fc["red_true"], fs["red_predicted"],
-                     fs["red_true"]), flush=True)
+            red = ("" if fc["red_predicted"] is None else
+                   ";  circle redness on a food click %.0f (true %.0f), staying %.0f (true %.0f)" % (
+                       fc["red_predicted"], fc["red_true"], fs["red_predicted"], fs["red_true"]))
+            print("%-14s %7d  next hunger: %s%s" % (name(run), args.step, "  ".join(parts), red), flush=True)
             continue
         if args.what == "contact":
             r = contact(run, args.step)

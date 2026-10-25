@@ -23,7 +23,8 @@ class VMConfig(C.Structure):
                                        "ctx", "pred_img", "pc1", "pc2", "pred_hidden", "use_prev_reward")]
     _fields_ += [("logstd_init", C.c_float), ("coord", C.c_int), ("pb", C.c_int), ("pred_residual", C.c_int),
                  ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int), ("one_frame", C.c_int),
-                 ("pi_hidden", C.c_int), ("patch", C.c_int), ("act_token", C.c_int)]
+                 ("pi_hidden", C.c_int), ("patch", C.c_int), ("act_token", C.c_int), ("universal", C.c_int),
+                 ("bins", C.c_int), ("gray", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -47,12 +48,14 @@ class PPOStats(C.Structure):
                                          "dyn_recon_mse")]
     _fields_ += [(n, C.c_int) for n in ("epochs_done", "updates_done")]
     _fields_ += [("move_nll", C.c_float), ("act_drive_mse", C.c_float), ("act_frame_mse", C.c_float)]
+    _fields_ += [(n, C.c_float) for n in ("uni_ce_body", "uni_ce_patch", "uni_ce_move", "uni_mse_body",
+                                         "uni_mse_patch", "uni_mse_move")]
 
 
 DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer=2, n_head=4, d_ff=512, ctx=32,
                      pred_img=32, pc1=16, pc2=32, pred_hidden=256, use_prev_reward=0, logstd_init=-0.5, coord=0, pb=32,
                      pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
-                     act_token=0)
+                     act_token=0, universal=0, bins=32, gray=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
@@ -102,6 +105,7 @@ def _load_lib(path=LIB_PATH):
         "vm_update": (None, [vp, vp, vp, C.POINTER(PPOConfig), C.POINTER(PPOStats)]),
         "vm_debug_grads": (f32, [vp, vp, vp, C.POINTER(PPOConfig), vp, i32, C.POINTER(PPOStats)]),
         "vm_forward": (None, [vp, i32, i32, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp, vp]),
+        "vm_forward_uni": (None, [vp, i32, i32, vp, vp, vp, vp, vp, vp, vp]),
         "vm_attention": (None, [vp, i32, vp, vp, vp, vp, vp, vp]),
         "vm_encode": (None, [vp, i32, vp, vp, vp]),
         "vm_inverse": (None, [vp, i32, vp, vp, vp]),
@@ -109,6 +113,8 @@ def _load_lib(path=LIB_PATH):
         "vm_decode": (None, [vp, i32, vp, vp]),
     }
     for name, (res, args) in sig.items():
+        if not hasattr(lib, name):   # an older build without this function (e.g. one a running experiment loaded)
+            continue
         fn = getattr(lib, name)
         fn.restype = res
         fn.argtypes = args
@@ -331,6 +337,29 @@ class Agent:
                          _ptr(out["z"], np.float32), _ptr(out["value"], np.float32), _ptr(out["mu"], np.float32),
                          _ptr(out["click_p"], np.float32), _ptr(out.get("pred_frames"), np.float32),
                          _ptr(out.get("pred_drives"), np.float32))
+        return out
+
+    def forward_uni(self, images, drives, actions, ep_start=None, values=True, move_probs=True, next_body=False):
+        """The universal model (model.universal=1) over S sequences of T steps: images u8 [S,T,H,W,3], drives [S,T,2],
+        actions [S,T,3] (the move made at each step; the last one may be a candidate). Returns values [S, T, ntok, V]
+        (every token's expected prediction of the next token's values; tokens of a step: body, patches, move) and
+        move_probs [S, T, 3, bins] (the predicted move's bin probabilities: (dx+1)/2, (dy+1)/2, click) and next_body
+        [S, T, 2] (the move tokens' expected prediction of the drives after their step)."""
+        img = _arr(images, np.uint8)
+        S, T = img.shape[:2]
+        c = self.config
+        nt, V, K = (c["img"] // c["patch"]) ** 2 + 2, c["patch"] ** 2 * (1 if c.get("gray") else 3), c["bins"]
+        out = {}
+        if values:
+            out["values"] = np.empty((S, T, nt, V), np.float32)
+        if move_probs:
+            out["move_probs"] = np.empty((S, T, 3, K), np.float32)
+        if next_body:
+            out["next_body"] = np.empty((S, T, 2), np.float32)
+        lib().vm_forward_uni(self.handle, S, T, _ptr(img, np.uint8), _ptr(_arr(drives, np.float32), np.float32),
+                             _ptr(_arr(actions, np.float32), np.float32), _ptr(_arr(ep_start, np.uint8), np.uint8),
+                             _ptr(out.get("values"), np.float32), _ptr(out.get("move_probs"), np.float32),
+                             _ptr(out.get("next_body"), np.float32))
         return out
 
     def attention(self, images, drives, prev_action, prev_reward, ep_start=None):

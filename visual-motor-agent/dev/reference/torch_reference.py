@@ -42,6 +42,7 @@ def param_shapes(cfg):
         "iv2b": (2 if cfg.get("inv_hidden", 0) else 0,),
         **dyn_shapes(cfg),
         **patch_shapes(cfg),
+        **uni_shapes(cfg),
     }
     if cfg.get("patch", 0):   # no CNN encoder or decoder; pr2w outputs one patch's cell
         cell = cfg["pred_img"] // (cfg["img"] // cfg["patch"])
@@ -49,7 +50,29 @@ def param_shapes(cfg):
                   "in_b", "pbw", "pbb", "dc1w", "dc1b", "dc2w", "dc2b"):
             shapes[k] = (0,)
         shapes["pr2w"], shapes["pr2b"] = (cell * cell * 3, ph), (cell * cell * 3,)
+    if uni_on(cfg):   # the universal model: no per-type heads or embeddings
+        for k in ("pi_w", "pi_b", "pi_h_w", "pi_h_b", "v_w", "v_b", "pr1w", "pr1b", "pr2w", "pr2b", "drw", "drb",
+                  "pt_w", "pt_b", "pos2d", "tok_type", "drv_w", "drv_b", "mv_w", "mv_b", "cmd_w", "cmd_b"):
+            shapes[k] = (0,)
     return shapes
+
+
+def uni_on(cfg):
+    return 1 if cfg.get("patch", 0) and cfg.get("universal", 0) else 0
+
+
+def uni_dims(cfg):
+    """(tokens per step, values per token, bins) of the universal model."""
+    g = cfg["img"] // cfg["patch"]
+    return g * g + 2, cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
+
+
+def uni_shapes(cfg):
+    d, on = cfg["d_model"], uni_on(cfg)
+    if not on:
+        return {"uni_in_w": (0,), "uni_in_b": (0,), "uni_slot": (0,), "uni_out_w": (0,), "uni_out_b": (0,)}
+    nt, V, K = uni_dims(cfg)
+    return {"uni_in_w": (d, V), "uni_in_b": (d,), "uni_slot": (nt, d), "uni_out_w": (V * K, d), "uni_out_b": (V * K,)}
 
 
 def patch_dims(cfg):
@@ -379,12 +402,88 @@ def gae(reward, value, done, last_value, gamma, lam, reward_scale):
     return adv, adv + value
 
 
+def uni_values(cfg, images, drives, actions):
+    """Token values [S, T, ntok, V] in [0, 1] and the used counts [ntok]: body (hunger, restlessness), the patches row
+    by row ((y, x, c) within a patch, pixels / 255), the move ((dx+1)/2, (dy+1)/2, click)."""
+    S, T = images.shape[:2]
+    nt, V, _ = uni_dims(cfg)
+    ps, g = cfg["patch"], cfg["img"] // cfg["patch"]
+    v = np.zeros((S, T, nt, V))
+    x = np.asarray(images, np.float64).reshape(S, T, g, ps, g, ps, 3) / 255.0
+    if cfg.get("gray", 0):   # one channel per pixel: the first
+        x = x[..., :1]
+    v[:, :, 1:nt - 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)
+    v[:, :, 0, :2] = np.asarray(drives, np.float64)
+    a = np.asarray(actions, np.float64)
+    v[:, :, nt - 1, 0] = (np.clip(a[..., 0], -1, 1) + 1) / 2
+    v[:, :, nt - 1, 1] = (np.clip(a[..., 1], -1, 1) + 1) / 2
+    v[:, :, nt - 1, 2] = (a[..., 2] > 0.5).astype(np.float64)
+    used = np.full(nt, V)
+    used[0], used[nt - 1] = 2, 3
+    return v, used
+
+
+def forward_uni(P, cfg, images, drives, actions, ep_start):
+    """The universal model (as seq_fwd_uni in C++). Returns h (token outputs [S, T*ntok, d]) and logits
+    [S, T*ntok, V, K]: every token's prediction of the next token's values."""
+    dt = P["uni_in_w"].dtype
+    S, T = images.shape[:2]
+    nt, V, K = uni_dims(cfg)
+    v, used = uni_values(cfg, images, drives, actions)
+    m = (np.arange(V)[None, :] < used[:, None]).astype(np.float64)               # [nt, V]
+    x = torch.tensor((v - 0.5) * m, dtype=dt).reshape(S, T * nt, V)
+    ss = segment_starts(np.asarray(ep_start, bool))
+    pos = np.arange(T)[None, :] - ss
+    h = F.linear(x, P["uni_in_w"], P["uni_in_b"]).reshape(S, T, nt, -1) + P["uni_slot"][None, None]
+    h = (h + P["wpe"][torch.tensor(pos)][:, :, None]).reshape(S, T * nt, -1)
+    step = np.repeat(np.arange(T), nt)
+    first = np.repeat(ss, nt, axis=1) * nt                                         # first token each token sees
+    idx = np.arange(T * nt)
+    mask = (idx[None, None, :] <= idx[None, :, None]) & (idx[None, None, :] >= first[:, :, None])
+    hz = transformer(P, cfg, h, torch.tensor(mask)[:, None])
+    logits = F.linear(hz, P["uni_out_w"], P["uni_out_b"]).reshape(S, T * nt, V, K)
+    return dict(h=hz, logits=logits, values=v, used=used, step=step)
+
+
+def two_hot(v, K):
+    """Two-hot targets [..., K] for values in [0, 1] (centres k / (K - 1))."""
+    pos = np.clip(v, 0, 1) * (K - 1)
+    lo = np.minimum(np.floor(pos).astype(np.int64), K - 2)
+    w = pos - lo
+    t = np.zeros(v.shape + (K,))
+    np.put_along_axis(t, lo[..., None], (1 - w)[..., None], -1)
+    np.put_along_axis(t, (lo + 1)[..., None], w[..., None], -1)
+    return t
+
+
+def uni_loss(P, cfg, batch):
+    """The universal model's loss: every token predicts the next token's values (the move token: the drives after its
+    step); two-hot cross-entropy, the mean over the target's used values, the mean over tokens."""
+    dt = P["uni_in_w"].dtype
+    out = forward_uni(P, cfg, batch["images"], batch["drives"], batch["action"], batch["ep_start"])
+    S, T = batch["images"].shape[:2]
+    nt, V, K = uni_dims(cfg)
+    v, used = out["values"], out["used"]
+    tgt = np.zeros((S, T, nt, V))
+    tgt[:, :, :nt - 1] = v[:, :, 1:]                                               # the next token in the step
+    tgt[:, :, nt - 1, :2] = np.asarray(batch["next_drives"], np.float64)           # the move: the next drives
+    tu = np.concatenate([used[1:], [2]])                                           # values used by each target
+    m = (np.arange(V)[None, :] < tu[:, None]).astype(np.float64)                   # [nt, V]
+    logp = out["logits"].log_softmax(-1).reshape(S, T, nt, V, K)
+    ce = -(torch.tensor(two_hot(tgt, K), dtype=dt) * logp).sum(-1)                # [S, T, nt, V]
+    per_tok = (ce * torch.tensor(m, dtype=dt)).sum(-1) / torch.tensor(tu, dtype=dt)
+    return per_tok.mean(), dict(per_token=per_tok, logp=logp, tgt=tgt, used=tu)
+
+
 def ppo_loss(P, cfg, pc, batch):
     """Total loss (mean per transition) for a batch of sequences, as in C++ seq_loss.
 
     batch: dict with [S,T,...] arrays: images, drives, prev_action, prev_reward, ep_start, action, old_logp,
     adv, ret, next_small (u8 HWC), next_drives.
     """
+    if uni_on(cfg):
+        loss, terms = uni_loss(P, cfg, batch)
+        return loss, terms
     dt = P["in_w"].dtype
     have_pred = pc["pred_coef"] > 0 or pc["drive_coef"] > 0
     out = forward(P, cfg, batch["images"], batch["drives"], batch["prev_action"], batch["prev_reward"],

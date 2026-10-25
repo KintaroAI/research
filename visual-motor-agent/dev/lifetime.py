@@ -42,12 +42,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import FIELDS, STAT_KEYS, GatedMemory, fill_rollout, load_config, sample_moves  # noqa: E402
+from online import FIELDS, STAT_KEYS, GatedMemory, fill_rollout, load_config, sample_moves, uni_act  # noqa: E402
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
 from world import CircleWorld, EnvConfig  # noqa: E402
 
-LIFE_STATS = STAT_KEYS + ("act_drive_mse", "act_frame_mse")
+LIFE_STATS = STAT_KEYS + ("act_drive_mse", "act_frame_mse", "uni_ce_body", "uni_ce_patch", "uni_ce_move",
+                          "uni_mse_body", "uni_mse_patch", "uni_mse_move")
 
 
 def bodies_at(on, tick):
@@ -90,11 +91,14 @@ def main():
     env_cfg = dataclasses.replace(EnvConfig(**cfg["env"]), auto_reset=True)
     env = CircleWorld(N0, env_cfg, seed=args.seed)
     agent = agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)
-    if on["click_bias"] is not None and not args.init:   # initial click-logit bias, e.g. -2.197 = click p 0.1
-        off = {name: o for name, o, _ in agent.param_layout()}["pi_b"]
-        agent.params()[off + 2] = on["click_bias"]
+    pib = {name: (o, n) for name, o, n in agent.param_layout()}["pi_b"]
+    if on["click_bias"] is not None and not args.init and pib[1]:   # initial click-logit bias, e.g. -2.197 = p 0.1
+        agent.params()[pib[0] + 2] = on["click_bias"]                 # (no policy head, e.g. the universal model: none)
         agent.params_changed()
     goal_k = on["goal_k"] if on["goal"] else 0
+    uni = bool(agent.config["universal"])
+    if uni and goal_k:
+        raise ValueError("the universal model has no command: set online.goal=0")
     if goal_k and not agent.config["use_prev_reward"]:
         raise ValueError("online.goal=1 needs model.use_prev_reward=1 (the scalar token slot carries the goal)")
     ppo = dict(agent_lib.DEFAULT_PPO)
@@ -115,6 +119,7 @@ def main():
         fwd = gpu.forward
     elif on["device"] != "cpu":
         raise ValueError("online.device must be 'cpu' or 'cuda'")
+    fwd_uni = (gpu or agent).forward_uni if uni else None
     rollouts = {}
 
     def rollout(n):   # one per batch size (the batch grows with the active bodies)
@@ -140,7 +145,7 @@ def main():
 
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
-                    body_steps=0, babbled=0, poison=0, all_poison=0, t=time.time())
+                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, t=time.time())
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -153,9 +158,16 @@ def main():
         win_in = [np.stack([np.concatenate([getattr(gm.stm, f)[ix], cur]) for gm, ix, cur in
                             zip(gms[:N], idx, cs)]) for f, cs in
                   (("img", obs["image"][:N, None]), ("drv", obs["drives"][:N, None]), ("pa", prev_a[:N, None]),
-                   ("cmd", cmd[:, None]), ("es", ep_start[:N, None]))]
-        out = fwd(win_in[0], win_in[1], win_in[2], win_in[3].astype(np.float32), win_in[4].astype(np.uint8))
-        a = sample_moves(agent, out, rng)
+                   ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
+        if uni:   # the universal model: its own move prediction, and the instinct
+            a, over, gain = uni_act(fwd_uni, win_in[0], win_in[1], win_in[5].astype(np.float32),
+                                    win_in[4].astype(np.uint8), agent.config["bins"], rng, on["instinct_m"],
+                                    on["instinct_tol"])
+            win["override"] += over * N
+            win["gain"] += gain * N
+        else:
+            out = fwd(win_in[0], win_in[1], win_in[2], win_in[3].astype(np.float32), win_in[4].astype(np.uint8))
+            a = sample_moves(agent, out, rng)
         bab = rng.random(N) < eps_at(on, tick)
         if bab.any():   # keeps trying: own moves alone drift to never clicking
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
@@ -218,7 +230,8 @@ def main():
                        hazard_felt=win["hazard_felt"] / le, hunger_capped=win["capped"] / le, hunger=float(h[0]),
                        all_hits_per_1k=1000.0 * win["all_hits"] / bs, all_hazard_frac=win["all_hazard"] / bs,
                        babbled=win["babbled"] / bs, eps=eps_at(on, tick), poison=win["poison"],
-                       all_poison_per_1k=1000.0 * win["all_poison"] / bs)
+                       all_poison_per_1k=1000.0 * win["all_poison"] / bs, instinct_override=win["override"] / bs,
+                       instinct_gain=win["gain"] / bs)
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

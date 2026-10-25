@@ -29,7 +29,8 @@ class VMCStats(C.Structure):
     _fields_ = [(n, C.c_float) for n in ("loss", "pred_mse", "drive_mse", "move_nll", "click_p", "pred_changed_mse",
                                          "grad_norm", "gn_backbone", "gn_policy", "gn_pred", "inv_mse", "inv_r2",
                                          "dyn_mse", "dyn_hunger_mse", "dyn_recon_mse", "act_drive_mse",
-                                         "act_frame_mse")]
+                                         "act_frame_mse", "uni_ce_body", "uni_ce_patch", "uni_ce_move",
+                                         "uni_mse_body", "uni_mse_patch", "uni_mse_move")]
 
 
 _lib = None
@@ -53,12 +54,15 @@ def lib():
             "vmc_set_params": (i32, [vp, fp]),
             "vmc_sync": (i32, [vp]),
             "vmc_forward": (i32, [vp, i32, i32, u8p, fp, fp, fp, u8p, fp, fp, fp, fp, fp, fp, fp]),
+            "vmc_forward_uni": (i32, [vp, i32, i32, u8p, fp, fp, u8p, fp, fp, fp]),
             "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
             "vmc_encode": (i32, [vp, i32, u8p, fp]),
             "vmc_imagine": (i32, [vp, i32, i32, fp, fp, fp, fp, fp, fp]),
             "vmc_decode": (i32, [vp, i32, fp, fp]),
         }
         for name, (res, args) in sig.items():
+            if not hasattr(_lib, name):   # an older build without this function (e.g. one a running job loaded)
+                continue
             f = getattr(_lib, name)
             f.restype, f.argtypes = res, args
     return _lib
@@ -225,6 +229,28 @@ class CudaModel:
                                  _p(out["z"], C.c_float), _p(out["value"], C.c_float), _p(out["mu"], C.c_float),
                                  _p(out["click_p"], C.c_float), opt(out.get("pred_frames"), C.c_float),
                                  opt(out.get("pred_drives"), C.c_float)), "forward")
+        return out
+
+    def forward_uni(self, images, drives, actions, ep_start=None, values=True, move_probs=True, next_body=False):
+        """agent_lib.Agent.forward_uni on the GPU (the universal model)."""
+        img = np.ascontiguousarray(images, np.uint8)
+        S, T = img.shape[:2]
+        c = self.config
+        nt, V, K = (c["img"] // c["patch"]) ** 2 + 2, c["patch"] ** 2 * (1 if c.get("gray") else 3), c["bins"]
+        drv, act = np.ascontiguousarray(drives, np.float32), np.ascontiguousarray(actions, np.float32)
+        es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
+        out = {}
+        if values:
+            out["values"] = np.empty((S, T, nt, V), np.float32)
+        if move_probs:
+            out["move_probs"] = np.empty((S, T, 3, K), np.float32)
+        if next_body:
+            out["next_body"] = np.empty((S, T, 2), np.float32)
+        opt = lambda a, ct: None if a is None else _p(a, ct)   # noqa: E731
+        _check(lib().vmc_forward_uni(self.handle, S, T, _p(img, C.c_uint8), _p(drv, C.c_float), _p(act, C.c_float),
+                                     opt(es, C.c_uint8), opt(out.get("values"), C.c_float),
+                                     opt(out.get("move_probs"), C.c_float), opt(out.get("next_body"), C.c_float)),
+               "forward_uni")
         return out
 
     def stats(self):

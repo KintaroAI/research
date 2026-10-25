@@ -2,6 +2,7 @@
 import dataclasses
 
 import numpy as np
+import pytest
 
 from world.circle_world import CircleWorld, EnvConfig
 
@@ -192,3 +193,28 @@ def test_torus_state_round_trip():
     second = [env.step(a)[0]["image"] for a in acts]
     for a, b in zip(first, second):
         np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("wrap", [False, True])
+def test_gray_and_checker_hazard(wrap):
+    """env.gray (task 00024): R = G = B = the luma of the colour frame; env.hazard_pattern="checker": hazard pixels
+    only where row + column is even, the rest background; off by default."""
+    cfg = dataclasses.replace(RICH, target_speed=0.0, hazard_speed=0.0, wrap=wrap, distractors=4)
+    col = CircleWorld(4, cfg, seed=8)
+    gry = CircleWorld(4, dataclasses.replace(cfg, gray=True), seed=8)
+    a, b = col.observe()["image"].astype(np.int32), gry.observe()["image"]
+    luma = (299 * a[..., 0] + 587 * a[..., 1] + 114 * a[..., 2] + 500) // 1000
+    np.testing.assert_array_equal(b[..., 0], luma)
+    assert (b[..., 0] == b[..., 1]).all() and (b[..., 1] == b[..., 2]).all()
+    chk = CircleWorld(4, dataclasses.replace(cfg, hazard_pattern="checker", distractors=0), seed=8)
+    sol = CircleWorld(4, dataclasses.replace(cfg, distractors=0), seed=8)
+    for env in (chk, sol):   # hazards away from the circle and the cursor
+        env.set_state(dict(target=np.full((4, 2), 50.0), radius=np.full(4, 5.0), cursor=np.full((4, 2), 56.0),
+                           hz_pos=np.tile([[16.0, 16.0], [36.0, 16.0]], (4, 1, 1)), hz_rad=np.full((4, 2), 6.0)))
+    ci, si = chk.observe()["image"], sol.observe()["image"]
+    hz = (si == np.array(cfg.hazard_color, np.uint8)).all(-1)                    # solid hazard pixels
+    even = (np.add.outer(np.arange(64), np.arange(64)) % 2 == 0)[None]
+    np.testing.assert_array_equal((ci == np.array(cfg.hazard_color, np.uint8)).all(-1), hz & even)
+    assert (ci[hz & ~even] == np.array(cfg.bg_color, np.uint8)).all()
+    assert hz.sum() > 50
+

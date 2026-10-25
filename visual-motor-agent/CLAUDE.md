@@ -42,6 +42,11 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     Hunger is capped at 1: at the cap a hazard step leaves no trace; use slow hunger (`env.h_rate=0.001`, vm-00015).
     `env.hazard_click=1` (vm-00017): a click inside a hazard sets hunger to 1 (poison); `analyze_hazards.py click`
     tests whether a model predicts what each kind of click does.
+  - **The universal model** (task 00023, `../ARCHITECTURE.md`): `model.universal=1` with `model.patch`: one token
+    format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
+    channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,
+    the instinct; `lifetime.py`). Its forward is `Agent.forward_uni` / `CudaModel.forward_uni`; `vm_forward` refuses it.
+    `online.click_bias` is skipped for models without a policy head (it used to write into the next parameter).
   - `lifetime.py` (task 00020, `../ARCHITECTURE.md`): the self actor with N parallel bodies early in life
     (`online.bodies`, `bodies_hold`, `bodies_halve`; one shared long-term memory, `ChunkStore`), the signed hindsight
     command (`online.goal_mode=delta`) and exploration decay. With one body it reproduces `online.py` bit for bit.

@@ -31,8 +31,10 @@ enum ParamId {
     PR1W, PR1B, PR2W, PR2B, PBW, PBB, D1W, D1B, D2W, D2B, DRW, DRB, IV1W, IV1B, IV2W, IV2B,
     T1W, T1B, T2W, T2B, H1W, H1B, H2W, H2B, X1W, X1B, X2W, X2B,
     PEW, PEB, POS2D, TYP, DEW, DEB, MEW, MEB, CEW, CEB,
-    ACTE, AX1W, AX1B, AXDW, AXDB, AXFW, AXFB, NUM_P   // act token (act_token = 1) and its auxiliary heads
+    ACTE, AX1W, AX1B, AXDW, AXDB, AXFW, AXFB,         // act token (act_token = 1) and its auxiliary heads
+    UIW, UIB, USL, UOW, UOB, NUM_P                    // the universal model (universal = 1)
 };
+#define ACC_N 34   // loss accumulators (see the kernels that fill them; 24..33: the universal model)
 static const float LS_MIN = -5.0f, LS_MAX = 1.0f, LOG_2PI = 1.8378770664093453f;
 static const int KK = 16;   // 4x4 kernels, stride 2, padding 1
 
@@ -44,6 +46,8 @@ struct Dims {
     int patch, gp, npch, ntok, pdim, cell, cpx;   // patch tokens (0: the CNN model): side, grid, patches, tokens per
                                                   // step, values per patch, predicted cell side and values
     int act, cds, cfx;   // act token on/off (task 00020); prediction frame -> coarse frame block side; coarse values
+    int uni, V, nbin, OV, ch;   // universal model (task 00023): on/off; values per token; bins per value; head
+                                // outputs; channels per patch pixel (1 with gray, else 3)
 };
 static const int ACT_CG = 8;   // act token: side of the coarse next frame it predicts (as vm_agent.cpp)
 
@@ -52,8 +56,12 @@ static bool make_dims(const VMConfig& c, Dims& D) {
     D.act = (D.patch && c.act_token) ? 1 : 0; D.cds = c.pred_img / ACT_CG; D.cfx = ACT_CG * ACT_CG * 3;
     if (c.act_token && (!D.patch || c.pred_img % ACT_CG)) return false;
     if (D.patch) {   // patch tokens (vm-00010): residual frames; no inverse or latent dynamics (as vm_agent.cpp)
-        if (!c.pred_residual || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.img % D.patch) return false;
+        if ((!c.pred_residual && !c.universal) || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.img % D.patch) return false;
         D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3 + D.act; D.pdim = D.patch * D.patch * 3;
+        D.uni = c.universal ? 1 : 0;
+        if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = D.npch + 2; }
+        D.ch = (D.uni && c.gray) ? 1 : 3;
+        D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
         if (c.pred_img % D.gp || c.d_model % c.n_head) return false;
         D.cell = c.pred_img / D.gp; D.cpx = D.cell * D.cell * 3;
         D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
@@ -67,6 +75,8 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         return true;
     }
     D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1;
+    D.uni = D.V = D.nbin = D.OV = 0; D.ch = 3;
+    if (c.universal || c.gray) return false;
     if (!c.coord || !c.pred_residual || !c.pred_skip) return false;
     if (c.img % 8 || c.pred_img % 4 || c.img / c.pred_img != 2 || c.d_model % c.n_head || c.pb <= 0) return false;
     D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
@@ -112,6 +122,11 @@ static void expected_sizes(const Dims& D, long* s) {
         const long ac = D.act;
         s[ACTE] = ac * d; s[AX1W] = ac * D.ph * D.pin_dim; s[AX1B] = ac * D.ph; s[AXDW] = ac * 2 * D.ph; s[AXDB] = ac * 2;
         s[AXFW] = ac * D.cfx * D.ph; s[AXFB] = ac * D.cfx;
+        if (D.uni) {   // one input map, slot embeddings, one output head; no per-type heads (as vm_agent.cpp)
+            for (int q : {PIW, PIB, PHW, PHB, VW, VB, PR1W, PR1B, PR2W, PR2B, DRW, DRB, PEW, PEB, POS2D, TYP, DEW, DEB,
+                          MEW, MEB, CEW, CEB}) s[q] = 0;
+            s[UIW] = d * D.V; s[UIB] = d; s[USL] = (long)D.ntok * d; s[UOW] = (long)D.OV * d; s[UOB] = D.OV;
+        }
     }
 }
 
@@ -986,6 +1001,7 @@ struct Model {
     Buf fout, fhwc;   // forward outputs: [B, 4] mu, click p, value; predicted frames HWC
     Buf tpx, pemb, dpemb, zm, dzm, pdel, dpdel;   // patch tokens
     Buf ax_in, ax_h, ax_drv, ax_frm, dax_in, dax_h, dax_drv, dax_frm;   // the act token's auxiliary heads
+    Buf u_in, u_tgt, u_log, u_val;   // universal model: token inputs, targets, head logits (then gradients), values
     int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
     int tcap = 0;
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
@@ -1112,11 +1128,11 @@ void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const 
     for (int i = 0; i < NUM_P; i++) { M->off[i] = offsets[i]; M->sz[i] = sizes[i]; }
     const size_t nb = n_params * sizeof(float);
     if (cudaMalloc(&M->P, nb) || cudaMalloc(&M->G, nb) || cudaMalloc(&M->m, nb) || cudaMalloc(&M->v, nb) ||
-        cudaMalloc(&M->acc, 24 * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
+        cudaMalloc(&M->acc, ACC_N * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
         fprintf(stderr, "vm_cuda: out of device memory\n"); return nullptr;
     }
     cudaMemcpy(M->P, params, nb, cudaMemcpyHostToDevice);
-    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, 24 * sizeof(double));
+    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, ACC_N * sizeof(double));
     if (cublasCreate(&M->cb) != CUBLAS_STATUS_SUCCESS) return nullptr;
     cublasSetMathMode(M->cb, CUBLAS_PEDANTIC_MATH);   // no TF32
     return M;
@@ -1173,7 +1189,10 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
         const int nt = D.ntok, Bx = B * nt;
         std::vector<int> ts(Bx), te(Bx);
         for (int b = 0; b < B; b++)
-            for (int k = 0; k < nt; k++) { ts[b * nt + k] = start[b] * nt; te[b * nt + k] = b * nt + nt - 1; }
+            for (int k = 0; k < nt; k++) {   // universal model: fully causal (up to the token itself)
+            ts[b * nt + k] = start[b] * nt;
+            te[b * nt + k] = D.uni ? b * nt + k : b * nt + nt - 1;
+        }
         if (Bx > M->tcap) {
             cudaFree(M->tstart); cudaFree(M->tend);
             CK(cudaMalloc(&M->tstart, Bx * sizeof(int))); CK(cudaMalloc(&M->tend, Bx * sizeof(int)));
@@ -1426,6 +1445,105 @@ static int transformer_bwd(Model* M, int B, int K, const int* start, const int* 
     return 0;
 }
 
+// ---- the universal model (task 00023; as seq_fwd_uni / seq_loss_uni / seq_bwd_uni in vm_agent.cpp) ----
+// Token (b, k) of frame b: k = 0 the body, 1..np the patches, nt - 1 the move. Values in [0, 1]; used: 2, V, 3.
+__device__ inline int uni_used_(int k, int nt, int V) { return k == 0 ? 2 : (k == nt - 1 ? 3 : V); }
+__device__ inline float uni_value_(const uint8_t* img, const float* drv, const float* act, long b, int k, int j, int nt,
+                                   int V, int S, int ps, int gp, int ch) {
+    if (k == 0) return j < 2 ? drv[b * 2 + j] : 0.f;
+    if (k == nt - 1) {
+        if (j < 2) return 0.5f * (clampf_(act[b * 3 + j], -1.f, 1.f) + 1.f);
+        return j == 2 ? (act[b * 3 + 2] > 0.5f ? 1.f : 0.f) : 0.f;
+    }
+    const int p = k - 1, c = j % ch, x = (j / ch) % ps, y = j / (ch * ps), py = (p / gp) * ps, px = (p % gp) * ps;
+    return img[((b * S + py + y) * S + px + x) * 3 + c] / 255.0f;
+}
+// in [B*nt, V]: the centred inputs (unused 0); tgt [B*nt, V]: the next token's values (the move: the next drives)
+__global__ void k_uni_tokens(const uint8_t* img, const float* drv, const float* act, const float* ndrv, float* in,
+                             float* tgt, int B, int nt, int V, int S, int ps, int gp, int ch) {
+    const long n = (long)B * nt * V;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int j = i % V, k = (i / V) % nt;
+        const long b = i / ((long)V * nt);
+        const float v = uni_value_(img, drv, act, b, k, j, nt, V, S, ps, gp, ch);
+        in[i] = j < uni_used_(k, nt, V) ? v - 0.5f : 0.f;
+        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch);
+        else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : 0.f;
+    }
+}
+// xin [B*nt, d] += slot[k] + wpe[pos[b]] (back: their gradients from x = dres, atomics)
+__global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const int* pos, int B, int nt, int d,
+                            int back, float* gslot, float* gwpe) {
+    const long n = (long)B * nt * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int j = i % d, k = (i / d) % nt;
+        const long b = i / ((long)d * nt);
+        if (back) { atomicAdd(gslot + (long)k * d + j, x[i]); atomicAdd(gwpe + (long)pos[b] * d + j, x[i]); }
+        else x[i] += slot[(long)k * d + j] + wpe[(long)pos[b] * d + j];
+    }
+}
+// One block per token row: the softmax of each used value's K logits, the two-hot cross-entropy of the next token's
+// values, and in place the logits' gradient (p - target) * inv_tok / used (0 for unused values). Accumulators:
+// acc[24 + kind] += token CE, acc[27 + kind] += token squared error of the expected value, acc[30 + kind] += 1,
+// acc[33] += token CE; kind 0 the next body (move tokens), 1 a patch, 2 the move (the last patch).
+__global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc) {
+    __shared__ double sh[2][128];
+    const int r = blockIdx.x, k = r % nt;
+    const int u = k == nt - 1 ? 2 : uni_used_(k + 1, nt, V), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
+    double ce = 0, se = 0;
+    for (int v = threadIdx.x; v < V; v += blockDim.x) {
+        float* l = lg + ((long)r * V + v) * K;
+        if (v >= u) { for (int b = 0; b < K; b++) l[b] = 0.f; continue; }
+        float mx = l[0];
+        for (int b = 1; b < K; b++) mx = fmaxf(mx, l[b]);
+        float sum = 0.f;
+        for (int b = 0; b < K; b++) { l[b] = expf(l[b] - mx); sum += l[b]; }
+        const float inv = 1.0f / sum, t = fminf(fmaxf(tgt[(long)r * V + v], 0.f), 1.f), pos = t * (K - 1);
+        int lo = (int)pos;
+        if (lo > K - 2) lo = K - 2;
+        const float whi = pos - lo, wlo = 1.0f - whi, sc = inv_tok / u;
+        float ev = 0.f;
+        for (int b = 0; b < K; b++) { l[b] *= inv; ev += l[b] * (float)b / (K - 1); }
+        ce -= wlo * logf(fmaxf(l[lo], 1e-30f)) + whi * logf(fmaxf(l[lo + 1], 1e-30f));
+        se += (double)(ev - t) * (ev - t);
+        l[lo] -= wlo; l[lo + 1] -= whi;
+        for (int b = 0; b < K; b++) l[b] *= sc;
+    }
+    sh[0][threadIdx.x] = ce; sh[1][threadIdx.x] = se;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) { sh[0][threadIdx.x] += sh[0][threadIdx.x + s]; sh[1][threadIdx.x] += sh[1][threadIdx.x + s]; }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        atomicAdd(acc + 24 + kind, sh[0][0] / u); atomicAdd(acc + 27 + kind, sh[1][0] / u);
+        atomicAdd(acc + 30 + kind, 1.0); atomicAdd(acc + 33, sh[0][0] / u);
+    }
+}
+// out [B*2, d]: the outputs of the last patch and the move token of each frame (the move and next-body predictions)
+__global__ void k_uni_last2(const float* lnf, float* out, int B, int nt, int d) {
+    const long n = (long)B * 2 * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int j = i % d, q = (i / d) % 2;
+        const long b = i / (2L * d);
+        out[i] = lnf[(b * nt + nt - 2 + q) * d + j];
+    }
+}
+// Forward only: per (row, value) the softmax in place and the expected value val [rows, V]
+__global__ void k_uni_probs(float* lg, float* val, long n, int K) {
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        float* l = lg + i * K;
+        float mx = l[0];
+        for (int b = 1; b < K; b++) mx = fmaxf(mx, l[b]);
+        float sum = 0.f;
+        for (int b = 0; b < K; b++) { l[b] = expf(l[b] - mx); sum += l[b]; }
+        const float inv = 1.0f / sum;
+        float ev = 0.f;
+        for (int b = 0; b < K; b++) { l[b] *= inv; ev += l[b] * (float)b / (K - 1); }
+        val[i] = ev;
+    }
+}
+
 // Patch tokens (D.patch > 0): the forward pass, and with train the losses and gradients (as run_model for the CNN
 // model; the frame, drives and move losses only).
 static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred) {
@@ -1482,7 +1600,7 @@ static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     if (!train) { CK(cudaGetLastError()); return 0; }
     const PPOConfig& pc = *pcp;
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
-    CK(cudaMemsetAsync(M->acc, 0, 24 * sizeof(double)));
+    CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef;
     M->coef[3] = M->coef[4] = M->coef[5] = M->coef[6] = 0.f;
     M->coef[7] = D.act ? pc.act_coef : 0.f;
@@ -1548,10 +1666,59 @@ static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     return 0;
 }
 
+// The universal model: tokens, the Transformer, the head; with train the loss and every gradient; else the
+// probabilities and expected values (M->u_log, M->u_val) of every token, or (all = false) only of each frame's last
+// patch and move token, rows 2b and 2b + 1 (the move and next-body predictions: 1/33 of the head's work and memory).
+static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) {
+    const Dims& D = M->D;
+    const int B = M->B, T = M->T, d = D.d, nt = D.ntok, V = D.V, K = D.nbin, rows = B * nt, KT = T * nt;
+    const float* P = M->P;
+    float* G = M->G;
+    const long* off = M->off;
+    float* in = M->u_in.get((size_t)rows * V);
+    float* tgt = M->u_tgt.get((size_t)rows * V);
+    float* xin = M->xin.get((size_t)rows * d);
+    k_uni_tokens<<<GRID((long)rows * V)>>>(M->img, M->drv, M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img,
+                                         D.patch, D.gp, D.ch);
+    linear(M, xin, in, P + off[UIW], P + off[UIB], rows, V, d, 0);
+    k_uni_embed<<<GRID((long)rows * d)>>>(xin, P + off[USL], P + off[WPE], M->pos, B, nt, d, 0, nullptr, nullptr);
+    transformer_fwd(M, rows, KT, M->tstart, M->tend);
+    float* lnf = M->lnf.p;
+    if (!train && !all) {
+        float* z2 = M->zm.get((size_t)B * 2 * d);
+        k_uni_last2<<<GRID((long)B * 2 * d)>>>(lnf, z2, B, nt, d);
+        float* lg2 = M->u_log.get((size_t)B * 2 * D.OV);
+        linear(M, lg2, z2, P + off[UOW], P + off[UOB], B * 2, d, D.OV, 0);
+        k_uni_probs<<<GRID((long)B * 2 * V)>>>(lg2, M->u_val.get((size_t)B * 2 * V), (long)B * 2 * V, K);
+        CK(cudaGetLastError());
+        return 0;
+    }
+    float* lg = M->u_log.get((size_t)rows * D.OV);
+    linear(M, lg, lnf, P + off[UOW], P + off[UOB], rows, d, D.OV, 0);
+    if (!train) {
+        k_uni_probs<<<GRID((long)rows * V)>>>(lg, M->u_val.get((size_t)rows * V), (long)rows * V, K);
+        CK(cudaGetLastError());
+        return 0;
+    }
+    CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
+    CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
+    for (int i = 0; i < 8; i++) M->coef[i] = 0.f;
+    k_uni_loss<<<rows, 128>>>(lg, tgt, rows, nt, V, K, 1.0f / rows, M->acc);
+    float* dz = M->dz.get((size_t)rows * d);
+    linear_bwd(M, lg, lnf, P + off[UOW], rows, d, D.OV, dz, false, G + off[UOW], G + off[UOB]);
+    if (transformer_bwd(M, rows, KT, M->tstart, M->tend)) return -1;
+    float* dres = M->dres.p;
+    linear_bwd(M, dres, in, P + off[UIW], rows, V, d, nullptr, false, G + off[UIW], G + off[UIB]);
+    k_uni_embed<<<GRID((long)rows * d)>>>(dres, nullptr, nullptr, M->pos, B, nt, d, 1, G + off[USL], G + off[WPE]);
+    CK(cudaGetLastError());
+    return 0;
+}
+
 // The forward pass of the uploaded batch (train = false: up to the outputs; the prediction head and decoder only
 // if want_pred), or the forward pass, the losses and the gradients (train = true).
 static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred) {
     if (!M->B) return -1;
+    if (M->D.uni) return run_uni(M, pcp, train);
     if (M->D.patch) return run_patch(M, pcp, train, want_pred);
     const Dims& D = M->D;
     const int B = M->B, K = M->T, d = D.d;   // K: the batch's sequence length (ctx when training)
@@ -1615,7 +1782,7 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     if (!train) { CK(cudaGetLastError()); return 0; }
     const PPOConfig& pc = *pcp;
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
-    CK(cudaMemsetAsync(M->acc, 0, 24 * sizeof(double)));
+    CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     const bool have_inv = pc.inv_coef > 0.f && D.ih > 0;
     M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef; M->coef[3] = have_inv ? pc.inv_coef : 0.f;
 
@@ -1779,6 +1946,27 @@ int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drive
     return 0;
 }
 
+int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                    const uint8_t* ep_start, float* values, float* move_probs, float* next_body) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.uni) return -1;
+    std::vector<float> zero((size_t)S * T, 0.f);
+    if (upload_inputs(M, S, T, images, drives, actions, zero.data(), ep_start, actions)) return -1;
+    const bool all = values != nullptr;
+    if (run_uni(M, nullptr, false, all)) return -1;
+    const int nt = D.ntok, V = D.V, K = D.nbin, B = M->B;
+    const int stride = all ? nt : 2, mrow = all ? nt - 2 : 0, brow = all ? nt - 1 : 1;   // rows per frame; which
+    if (values) CK(cudaMemcpy(values, M->u_val.p, (size_t)B * nt * V * sizeof(float), cudaMemcpyDeviceToHost));
+    if (move_probs)   // the last patch of each frame predicts the move: its first 3 values
+        CK(cudaMemcpy2D(move_probs, 3 * K * sizeof(float), M->u_log.p + ((size_t)mrow * V) * K,
+                        (size_t)stride * V * K * sizeof(float), 3 * K * sizeof(float), B, cudaMemcpyDeviceToHost));
+    if (next_body)   // the move token's expected next drives: its first 2 values
+        CK(cudaMemcpy2D(next_body, 2 * sizeof(float), M->u_val.p + (size_t)brow * V, (size_t)stride * V * sizeof(float),
+                        2 * sizeof(float), B, cudaMemcpyDeviceToHost));
+    return 0;
+}
+
 int vmc_encode(void* h, int n, const uint8_t* images, float* vf_out) {
     Model* M = (Model*)h;
     const Dims& D = M->D;
@@ -1872,7 +2060,7 @@ int vmc_update(void* h, const PPOConfig* pcp) {
 
 int vmc_stats(void* h, VMCStats* out) {
     Model* M = (Model*)h;
-    double a[24];
+    double a[ACC_N];
     CK(cudaMemcpy(a, M->acc, sizeof(a), cudaMemcpyDeviceToHost));
     const double n = M->B > 0 ? M->B : 1;
     memset(out, 0, sizeof(VMCStats));
@@ -1892,6 +2080,12 @@ int vmc_stats(void* h, VMCStats* out) {
     out->grad_norm = (float)sqrt(a[5] + a[6] + a[7]);
     out->gn_backbone = (float)sqrt(a[5]); out->gn_policy = (float)sqrt(a[6]); out->gn_pred = (float)sqrt(a[7]);
     out->act_drive_mse = (float)(a[23] / n);
+    if (M->D.uni) {   // the universal model: the mean token cross-entropy, and by predicted kind
+        out->loss = (float)(a[33] / ((double)n * M->D.ntok));
+        float* ce[3] = {&out->uni_ce_body, &out->uni_ce_patch, &out->uni_ce_move};
+        float* se[3] = {&out->uni_mse_body, &out->uni_mse_patch, &out->uni_mse_move};
+        for (int k = 0; k < 3; k++) if (a[30 + k] > 0) { *ce[k] = (float)(a[24 + k] / a[30 + k]); *se[k] = (float)(a[27 + k] / a[30 + k]); }
+    }
     out->act_frame_mse = (float)(a[22] / n);
     return 0;
 }

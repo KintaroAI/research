@@ -30,18 +30,24 @@ Behaviour is not the primary goal at this stage; whether the predictions are rig
 ## 3. The World
 
 - 64×64 RGB, a continual torus: a new red circle appears after each one eaten; nothing resets (vm-00011).
-- Food: clicking the red circle relieves hunger. Poison: clicking a blue circle adds 0.5 to hunger
-  (`env.hazard_click_add`, vm-00018); contact alone costs nothing.
+- Food: clicking the solid disc relieves hunger. Poison: clicking a checkerboard disc (every other pixel missing,
+  `env.hazard_pattern="checker"`) adds 0.5 to hunger (`env.hazard_click_add`, vm-00018); contact alone costs nothing.
+- **Grayscale** (`env.gray`, task 00024): food and poison differ by texture, not colour, and every patch is one channel,
+  a third of the values to encode and predict.
+- **Eight moving grey dots** (`env.distractors=8`, vm-00010): content and motion the agent does not cause, so it must
+  work out which moving thing obeys its moves.
+- All of this is the universal model's default world: `dev/configs/U_universal.json`.
 - Slow hunger (0.001 per step) so that hunger rarely sits at its cap of 1, where changes leave no trace (vm-00015).
 
 ## 4. Tokens: One Format for Everything
 
-Every token carries a **value vector** of V = 192 numbers in [0, 1], with a mask for the numbers it does not use:
+Every token carries a **value vector** of V = 64 numbers in [0, 1] (`model.gray=1`; 192 with RGB), with a mask for
+the numbers it does not use:
 
 | Slot | Per step | Values (in [0, 1]) |
 |---|---|---|
 | body | 1 | hunger, restlessness (2 used) |
-| patch 1..64 | 64 | an 8×8 RGB patch of the 64×64 frame, row by row: 8·8·3 = 192 (pixels / 255) |
+| patch 1..64 | 64 | an 8×8 grayscale patch of the 64×64 frame, row by row: 64 (pixels / 255; RGB: 8·8·3 = 192) |
 | move | 1 | the executed move: (dx + 1)/2, (dy + 1)/2, click (3 used) |
 
 That is 66 tokens per step, 528 per window of 8 steps.
@@ -124,7 +130,7 @@ every tick:
 | working | the attention window | 8 steps (528 tokens) |
 | short-term | each body's recent steps | 256 steps per body |
 | long-term | 8-step chunks, shared by all bodies | 100k steps |
-| weights | everything learned | about 1.3M parameters (0.8M of them the output head) |
+| weights | everything learned | 0.68M parameters in grayscale (the output head 0.26M; RGB: 1.22M, head 0.79M) |
 
 - To begin with, long-term memory keeps every chunk (vm-00007's uniform control). A universal salience rule is the
   model's own surprise: the loss of the chunk's tokens, which counts every kind of token the same way. Gating by
@@ -132,6 +138,13 @@ every tick:
 
 ## 9. To Do Later
 
+- **Learned embedding selection, as in a text LLM** (the user's idea, 2026-10-25): in an LLM a token id selects a row of
+  a randomly initialized, trainable embedding table, so the token and its embedding are decoupled. Here: a table of E
+  learned embeddings (random at birth) and a small trainable network that reads a token's values and chooses among
+  them, softly (a softmax over the E rows, weighting them) or hard (the argmax, with a straight-through gradient). The
+  embedding is then `Σ_e softmax(g(values))_e · table_e + slot + step` instead of `W_in · values`. What a token *is*
+  becomes a learned choice from a vocabulary of embeddings. It replaces only the input map; the rest stays universal.
+  The hard version with a reconstruction target is the VQ codebook below.
 - **Learned discrete tokens (a VQ codebook):** each patch becomes an index into a learned vocabulary, as an LLM's tokens
   are, and the model predicts a softmax over the codebook. It turns the value vectors into true tokens; the risk is that
   small things like the cursor are lost in the codebook. After the universal model works on value vectors.
@@ -159,7 +172,8 @@ every tick:
 | One value format with masks, one shared input map, slot embeddings | new |
 | Fully causal next-token order (body, patches, move) | new (the current model is block-causal per step) |
 | One shared output head, K-bin two-hot cross-entropy, equal weight per token | new (replaces the per-type heads and losses) |
-| Full-resolution frame prediction (each patch's own 192 values) | new (the current model predicts a 32×32 residual) |
+| Full-resolution frame prediction (each patch's own 192 values) | built (task 00023) |
+| Grayscale patches, a textured poison, moving dots, the default config | built (task 00024) |
 | The instinct: one-step lookahead on the predicted next hunger | new |
 | Acting by the model's own samples, no babbling | new |
 

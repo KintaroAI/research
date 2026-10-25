@@ -21,6 +21,8 @@ typedef struct {
     float inv_mse, inv_r2;    // inverse dynamics: MSE of (dx, dy) and R^2 against predicting 0 (as vm_agent)
     float dyn_mse, dyn_hunger_mse, dyn_recon_mse;   // latent dynamics (task 00014): latent, hunger, decoder MSE
     float act_drive_mse, act_frame_mse;   // act token (task 00020): its next-drives and coarse-next-frame MSE
+    // universal model (task 00023): cross-entropy and expected-value squared error by predicted kind
+    float uni_ce_body, uni_ce_patch, uni_ce_move, uni_mse_body, uni_mse_patch, uni_mse_move;
 } VMCStats;
 
 // Creates the model from a config and the flat parameters (n_params floats, the layout of vm_param_layout: offsets
@@ -45,6 +47,9 @@ int vmc_update(void* h, const PPOConfig* pc);
 int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drives, const float* prev_action,
                 const float* prev_reward, const uint8_t* ep_start, const float* pred_actions, float* z, float* value,
                 float* mu, float* click_p, float* pred_frames, float* pred_drives);
+// The universal model (universal = 1), as vm_forward_uni: values [S, T*ntok, V], move_probs [S, T, 3*bins] (either NULL).
+int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                    const uint8_t* ep_start, float* values, float* move_probs, float* next_body);
 // The planner's model calls (latent dynamics, dyn_hidden > 0), as vm_encode (v only), vm_imagine and vm_decode.
 int vmc_encode(void* h, int n, const uint8_t* images, float* vf_out);
 int vmc_imagine(void* h, int n, int H, const float* s0, const float* h0, const float* actions, float* hunger,

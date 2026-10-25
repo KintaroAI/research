@@ -57,7 +57,12 @@ MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
           "patch8": dict(BASIC, patch=8, pi_hidden=128),             # vm-00014 P8: 536 tokens per context (> 256)
           "patch_whole_frame": dict(BASIC, patch=64, pi_hidden=128),  # vm-00014 P64: the frame as one token
           "patch8_act": dict(BASIC, patch=8, pi_hidden=128, act_token=1),          # task 00020: the act token
-          "small_patch_act": dict(SMALL, patch=8, pred_residual=1, pi_hidden=0, act_token=1)}
+          "small_patch_act": dict(SMALL, patch=8, pred_residual=1, pi_hidden=0, act_token=1),
+          "universal": dict(BASIC, patch=8, universal=1, bins=32),                 # task 00023: the universal model
+          "small_universal": dict(SMALL, patch=8, universal=1, bins=8),
+          "small_universal_p16": dict(SMALL, patch=16, universal=1, bins=5),
+          "universal_gray": dict(BASIC, patch=8, universal=1, bins=32, gray=1),           # task 00024
+          "small_universal_gray": dict(SMALL, patch=4, universal=1, bins=6, gray=1)}
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
           "no_move": dict(PC, move_coef=0.0),
@@ -99,7 +104,8 @@ def test_loss_and_grads_match_cpp(setup, loss):
     m.close()
     assert abs(st["loss"] - loss_cpu) < 1e-4 * max(1.0, abs(loss_cpu)), (st["loss"], loss_cpu)
     for k in ("pred_mse", "pred_changed_mse", "drive_mse", "move_nll", "inv_mse", "inv_r2", "dyn_mse",
-              "dyn_hunger_mse", "dyn_recon_mse", "act_drive_mse", "act_frame_mse"):
+              "dyn_hunger_mse", "dyn_recon_mse", "act_drive_mse", "act_frame_mse", "uni_ce_body", "uni_ce_patch",
+              "uni_ce_move", "uni_mse_body", "uni_mse_patch", "uni_mse_move"):
         assert abs(st[k] - st_cpu[k]) < 1e-5 * max(1.0, abs(st_cpu[k])), (k, st[k], st_cpu[k])
     compare(agent, g_cpu, g_gpu, 1e-3)
 
@@ -169,9 +175,16 @@ def test_forward_matches_cpp(setup, T, pred):
     x[4] = x[4].copy()
     x[4][:, 0] = 1
     pa = np.ascontiguousarray(data["action"][sl].swapaxes(0, 1)) if pred else None
-    ref = agent.forward(*x, pred_actions=pa)
     m = cuda_lib.CudaModel(agent)
-    out = m.forward(*x, pred_actions=pa)
+    if agent.config["universal"]:   # its own forward: the moves made are inputs
+        act = np.ascontiguousarray(data["action"][sl].swapaxes(0, 1))
+        ref = agent.forward_uni(x[0], x[1], act, x[4], next_body=True)
+        out = m.forward_uni(x[0], x[1], act, x[4], next_body=True)
+        lean = m.forward_uni(x[0], x[1], act, x[4], values=False, next_body=True)   # the head on two rows per step
+        for k in ("move_probs", "next_body"):
+            np.testing.assert_allclose(lean[k], ref[k], rtol=1e-4, atol=2e-5, err_msg=k)
+    else:
+        ref, out = agent.forward(*x, pred_actions=pa), m.forward(*x, pred_actions=pa)
     m.close()
     assert set(out) == set(ref)
     for k in ref:
@@ -192,7 +205,11 @@ def test_forward_follows_updates(setup):
     m.sync_to(a2)
     x = [np.ascontiguousarray(data[k][:4].swapaxes(0, 1)) for k in ("images", "drives", "prev_action", "prev_reward",
                                                                    "ep_start")]
-    ref, out = a2.forward(*x), m.forward(*x)
+    if agent.config["universal"]:
+        act = np.ascontiguousarray(data["action"][:4].swapaxes(0, 1))
+        ref, out = a2.forward_uni(x[0], x[1], act, x[4]), m.forward_uni(x[0], x[1], act, x[4])
+    else:
+        ref, out = a2.forward(*x), m.forward(*x)
     m.close()
     a2.close()
     for k in ref:

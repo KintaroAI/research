@@ -1,7 +1,7 @@
 # Task 00022: Additive Poison, and One Model in Many Worlds (experiment vm-00018)
 
 **Date:** 2026-10-25
-**Status:** In Progress
+**Status:** Complete (results in vm-00018)
 
 ## Context
 

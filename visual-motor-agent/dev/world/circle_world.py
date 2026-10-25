@@ -147,6 +147,10 @@ class EnvConfig:
     hazard_click_add: float = 0.0       # > 0: a click inside a hazard adds this to hunger (after any relief, clipped;
                                         # vm-00018: poison that rarely parks hunger at the cap). 0: off
     hazard_color: RGB = (50, 90, 230)
+    hazard_pattern: str = "solid"       # "checker": hazard pixels only where (row + column) is even (view coordinates),
+                                        # so a hazard differs from the circle by texture, not only colour (task 00024)
+    gray: bool = False                  # the frame's RGB replaced by its luma (299 R + 587 G + 114 B) / 1000 in all
+                                        # three channels (task 00024; food and hazard then differ only by pattern)
     wrap: bool = False                  # the screen is a torus: the cursor, circles and dots wrap around the edges
                                         # (no walls); hit tests use the wrap-around distance
     egocentric: bool = False            # (needs wrap) the view is centered on the cursor: moving shifts the scene,
@@ -200,6 +204,8 @@ class EnvConfig:
             raise ValueError("hazard_click must be <= 1 (or < 0: off)")
         if self.hazard_click_add < 0:
             raise ValueError("hazard_click_add must be >= 0")
+        if self.hazard_pattern not in ("solid", "checker"):
+            raise ValueError("hazard_pattern must be 'solid' or 'checker'")
         if int(self.hazards) != self.hazards or self.hazards < 0:
             raise ValueError(f"hazards must be an integer >= 0, got {self.hazards!r}")
         if self.egocentric and not self.wrap:
@@ -371,7 +377,7 @@ def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarra
     background pixels after the circle (so under it) and before the dots, with the circle's pixel test.
     """
     if config.wrap:
-        return _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots, hazards)
+        return _to_gray(_render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots, hazards), config)
     size = int(config.size)
     cursor = np.asarray(cursor_xy, dtype=np.float64).reshape(-1, 2)
     target = np.asarray(target_xy, dtype=np.float64).reshape(-1, 2)
@@ -385,10 +391,26 @@ def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarra
     bank = _row_bank(size, _rgb(config.bg_color), _rgb(config.target_color))
     image = bank[count, size - start].reshape(n, size, size, 3)
     if hazards is not None and hazards[0].shape[1] > 0:
-        _paint_circles(image, hazards[0], hazards[1], _rgb(config.hazard_color), _rgb(config.bg_color))
+        _paint_circles(image, hazards[0], hazards[1], _rgb(config.hazard_color), _rgb(config.bg_color),
+                       checker=config.hazard_pattern == "checker")
     if dots is not None and dots[0].shape[1] > 0:
         _draw_dots(image, dots[0], dots[1], int(config.dot_size), _rgb(config.bg_color))
     _draw_cursor(image, cursor, _rgb(config.cursor_outline), _rgb(config.cursor_color))
+    return _to_gray(image, config)
+
+
+def _checker(size: int) -> np.ndarray:
+    """(S, S) bool: True where (row + column) is even."""
+    i = np.arange(size)
+    return (i[:, None] + i[None, :]) % 2 == 0
+
+
+def _to_gray(image: np.ndarray, config) -> np.ndarray:
+    """With config.gray, the luma (299 R + 587 G + 114 B + 500) // 1000 in all three channels, in place."""
+    if config.gray:
+        x = image.astype(np.int32)
+        g = ((299 * x[..., 0] + 587 * x[..., 1] + 114 * x[..., 2] + 500) // 1000).astype(np.uint8)
+        image[...] = g[..., None]
     return image
 
 
@@ -423,6 +445,8 @@ def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, 
     image[tmask] = np.array(_rgb(config.target_color), np.uint8)
     if hazards is not None and hazards[0].shape[1] > 0:
         hmask = mask(hazards[0], hazards[1]) & ~tmask
+        if config.hazard_pattern == "checker":
+            hmask &= _checker(size)[None]
         image[hmask] = np.array(_rgb(config.hazard_color), np.uint8)
     if dots is not None and dots[0].shape[1] > 0:
         _draw_dots(image, np.mod(dots[0] + shift[:, None], S), dots[1], int(config.dot_size), _rgb(config.bg_color))
@@ -430,14 +454,18 @@ def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, 
     return image
 
 
-def _paint_circles(image: np.ndarray, centers: np.ndarray, radii: np.ndarray, color: RGB, bg: RGB) -> None:
-    """Paint circles (centers (N,H,2), radii (N,H)) in color on the background pixels of image (N,S,S,3), in place."""
+def _paint_circles(image: np.ndarray, centers: np.ndarray, radii: np.ndarray, color: RGB, bg: RGB,
+                   checker: bool = False) -> None:
+    """Paint circles (centers (N,H,2), radii (N,H)) in color on the background pixels of image (N,S,S,3), in place
+    (checker: only on pixels where row + column is even)."""
     size = image.shape[1]
     c = np.arange(size, dtype=np.float64) + 0.5
     dx = c[None, None, None, :] - centers[..., 0, None, None]                 # (N,H,1,S)
     dy = c[None, None, :, None] - centers[..., 1, None, None]                 # (N,H,S,1)
     inside = (dx * dx + dy * dy <= (radii * radii)[..., None, None]).any(1)   # (N,S,S)
     on_bg = np.all(image == np.array(bg, np.uint8), axis=-1)
+    if checker:
+        inside &= _checker(size)[None]
     image[inside & on_bg] = np.array(color, np.uint8)
 
 

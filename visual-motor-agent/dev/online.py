@@ -70,7 +70,10 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00020 (lifetime.py; online.py reads goal_mode only): the hindsight command's form, and
                       # parallel bodies with a shrinking schedule, exploration decay
                       goal_mode="relief", bodies=1, bodies_hold=0, bodies_halve=0, explore_eps_end=None,
-                      explore_decay=0)
+                      explore_decay=0,
+                      # task 00023 (the universal model): the hunger instinct, one-step lookahead over instinct_m
+                      # candidate moves (0: the policy alone), keeping the first sample within instinct_tol of the best
+                      instinct_m=0, instinct_tol=0.005)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -359,6 +362,41 @@ def fill_rollout(ro, r, L):
         ro.outcome(t, r["rew"][:, t], r["done"][:, t], r["nimg"][:, t], r["ndrv"][:, t])
 
 
+UNI_CHUNK = 256   # windows per forward pass when acting
+
+
+def uni_act(fwd_uni, img, drv, act, es, bins, rng, m=0, tol=0.005):
+    """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
+    of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
+    candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
+    lowest, keeping the first sample when it is within tol of the lowest. Returns the moves [N, 3] (dx, dy in [-1, 1],
+    click 0 / 1), the share of bodies where the instinct overrode the first sample, and the mean predicted gain."""
+    N = img.shape[0]
+    a0 = act.copy()
+    a0[:, -1] = 0.0
+
+    def chunked(key, *xs, **kw):   # forward passes over at most UNI_CHUNK windows at a time (bounded memory)
+        return np.concatenate([fwd_uni(*[x[i:i + UNI_CHUNK] for x in xs], values=False, **kw)[key]
+                               for i in range(0, len(xs[0]), UNI_CHUNK)])
+    probs = chunked("move_probs", img, drv, a0, es, move_probs=True)[:, -1]                  # [N, 3, bins]
+    M = max(1, m)
+    cdf = np.cumsum(probs, -1)
+    u = rng.random((N, M, 3, 1))
+    idx = np.minimum((cdf[:, None] < u).sum(-1), bins - 1)                                  # [N, M, 3]
+    c = idx / (bins - 1)
+    cand = np.stack([2 * c[..., 0] - 1, 2 * c[..., 1] - 1, (c[..., 2] > 0.5).astype(np.float64)], -1).astype(np.float32)
+    if m <= 1:
+        return cand[:, 0], 0.0, 0.0
+    rep = lambda x: np.repeat(x, M, axis=0)   # noqa: E731
+    ac = rep(a0)
+    ac[:, -1] = cand.reshape(N * M, 3)
+    h = chunked("next_body", rep(img), rep(drv), ac, rep(es), move_probs=False, next_body=True)[:, -1, 0].reshape(N, M)
+    best = np.argmin(h, 1)
+    pick = np.where(h[:, 0] - h[np.arange(N), best] <= tol, 0, best)
+    gain = h[:, 0] - h[np.arange(N), pick]
+    return cand[np.arange(N), pick], float((pick != 0).mean()), float(gain.mean())
+
+
 def sample_moves(agent, out, rng):
     """Sample moves [n,3] from the last position of a forward pass: dx, dy ~ N(mu, std), click ~ Bernoulli(p)."""
     off = {name: o for name, o, _ in agent.param_layout()}["logstd"]
@@ -369,7 +407,17 @@ def sample_moves(agent, out, rng):
                           1).astype(np.float32)
 
 
-def eval_self(agent, env_cfg, goal, n=128, seed=EVAL_SEED, rng_seed=0):
+def eval_moves(agent, win, rng, instinct=(0, 0.005)):
+    """The frozen agent's moves from a window of steps (dicts of img, drv, pa, cmd, es, act; the last is the current
+    step): the policy head's sample, or for the universal model its own prediction plus the instinct (m, tol)."""
+    st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
+    if agent.config.get("universal"):
+        return uni_act(agent.forward_uni, st("img"), st("drv"), st("act").astype(np.float32), st("es"),
+                       agent.config["bins"], rng, *instinct)[0]
+    return sample_moves(agent, agent.forward(st("img"), st("drv"), st("pa"), st("cmd"), st("es")), rng)
+
+
+def eval_self(agent, env_cfg, goal, n=128, seed=EVAL_SEED, rng_seed=0, instinct=(0, 0.005)):
     """The self actor on the n test episodes (auto-reset off): the moves it predicts from its last ctx real states."""
     # test episodes: the first hit within 200 steps, also in a continual world (its circles, motion and hazards kept)
     env = CircleWorld(n, dataclasses.replace(env_cfg, auto_reset=False, bonuses=False, end_on_success=True,
@@ -386,12 +434,11 @@ def eval_self(agent, env_cfg, goal, n=128, seed=EVAL_SEED, rng_seed=0):
     clicks = np.zeros(n, int)
     for _ in range(env_cfg.max_steps):
         cur = dict(img=obs["image"], drv=obs["drives"], pa=prev_a,
-                   cmd=(obs["drives"][:, 0] if goal else np.zeros(n)).astype(np.float32), es=es)
+                   cmd=(obs["drives"][:, 0] if goal else np.zeros(n)).astype(np.float32), es=es,
+                   act=np.zeros((n, 3), np.float32))
         win = hist + [cur]
-        out = agent.forward(np.stack([w["img"] for w in win], 1), np.stack([w["drv"] for w in win], 1),
-                            np.stack([w["pa"] for w in win], 1), np.stack([w["cmd"] for w in win], 1),
-                            np.stack([w["es"] for w in win], 1))
-        a = np.where(active[:, None], sample_moves(agent, out, rng), 0.0).astype(np.float32)
+        a = np.where(active[:, None], eval_moves(agent, win, rng, instinct), 0.0).astype(np.float32)
+        cur["act"] = a
         obs, _, done, inf = env.step(a)
         length += active
         clicks += active & inf["click"]
@@ -408,7 +455,7 @@ def eval_self(agent, env_cfg, goal, n=128, seed=EVAL_SEED, rng_seed=0):
                 steps_success=[int(x) for x in np.where(success, length, -1)])
 
 
-def eval_forage(agent, env_cfg, goal, n=32, steps=1000, seed=EVAL_SEED, rng_seed=0):
+def eval_forage(agent, env_cfg, goal, n=32, steps=1000, seed=EVAL_SEED, rng_seed=0, instinct=(0, 0.005)):
     """A continual world (respawn): hits per 1000 steps of the frozen self actor over n worlds of `steps` steps, and
     the share of steps inside a hazard, of hazard steps that raised hunger (none at the cap of 1) and of steps at the
     cap. Acting window: the last ctx real states, as in online.py."""
@@ -418,15 +465,17 @@ def eval_forage(agent, env_cfg, goal, n=32, steps=1000, seed=EVAL_SEED, rng_seed
     hist, obs = [], env.observe()
     prev_a = np.zeros((n, 3), np.float32)
     es = np.ones(n, np.uint8)
-    hits, in_hz, felt, capped = np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n)
+    hits, in_hz, felt, capped, poison = np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n)
     for _ in range(steps):
         h0 = env.hunger.copy()
         cur = dict(img=obs["image"], drv=obs["drives"], pa=prev_a,
-                   cmd=(obs["drives"][:, 0] if goal else np.zeros(n)).astype(np.float32), es=es)
+                   cmd=(obs["drives"][:, 0] if goal else np.zeros(n)).astype(np.float32), es=es,
+                   act=np.zeros((n, 3), np.float32))
         win = hist + [cur]
-        out = agent.forward(*[np.stack([w[k] for w in win], 1) for k in ("img", "drv", "pa", "cmd", "es")])
-        a = sample_moves(agent, out, rng)
+        a = eval_moves(agent, win, rng, instinct)
+        cur["act"] = a
         obs, _, _, inf = env.step(a)
+        poison += inf.get("gt_hazard_click", np.zeros(n, bool))  # scoring only
         hits += inf["success"]
         in_hz += inf.get("gt_in_hazard", np.zeros(n, bool))      # scoring only
         felt += inf.get("gt_in_hazard", np.zeros(n, bool)) & (env.hunger - h0 > 1.5 * env_cfg.h_rate)
@@ -436,7 +485,7 @@ def eval_forage(agent, env_cfg, goal, n=32, steps=1000, seed=EVAL_SEED, rng_seed
         es = np.zeros(n, np.uint8)
     return dict(forage_hits_per_1k=float(hits.mean() * 1000 / steps), forage_hazard_frac=float(in_hz.mean() / steps),
                 forage_hunger=float(env.hunger.mean()), forage_hazard_felt=float(felt.mean() / steps),
-                forage_capped=float(capped.mean() / steps))
+                forage_capped=float(capped.mean() / steps), forage_poison_per_1k=float(poison.mean() * 1000 / steps))
 
 
 class _GpuEval:
@@ -444,6 +493,7 @@ class _GpuEval:
 
     def __init__(self, agent, gpu):
         self.config, self.params, self.param_layout, self.forward = agent.config, agent.params, agent.param_layout, gpu.forward
+        self.forward_uni = gpu.forward_uni
 
 
 def load_config(path, overrides):
@@ -474,6 +524,8 @@ def main():
     ap.add_argument("--eval", metavar="RUN_DIR", help="evaluate a self-actor run's checkpoints on the test episodes "
                     "(-> RUN_DIR/eval/ckpt_NNNNNNNN.json) instead of training")
     ap.add_argument("--ckpts", type=int, nargs="*", default=[], help="with --eval: checkpoints (steps)")
+    ap.add_argument("--eval-instinct", type=int, default=None,
+                    help="universal model: the instinct's candidates in the frozen tests (default: the run's; 0: off)")
     ap.add_argument("--eval-device", default="cpu", choices=["cpu", "cuda"],
                     help="with --eval: run the forward passes on the GPU (libvmcuda.so; same outputs to float precision)")
     ap.add_argument("--init", metavar="CKPT", help="start from these weights instead of a random initialization "
@@ -494,18 +546,24 @@ def main():
             if args.eval_device == "cuda":   # the CPU agent's weights (for sampling) and config, the GPU forward
                 import cuda_lib
                 ev = _GpuEval(agent, cuda_lib.CudaModel(agent))
-            res = eval_self(ev, EnvConfig(**ec), info["config"]["online"]["goal"])
+            ion = dict(DEFAULT_ONLINE, **info["config"]["online"])
+            inst = (ion["instinct_m"] if args.eval_instinct is None else args.eval_instinct, ion["instinct_tol"])
+            res = eval_self(ev, EnvConfig(**ec), info["config"]["online"]["goal"], instinct=inst)
             if ec.get("respawn"):
-                res.update(eval_forage(ev, EnvConfig(**ec), info["config"]["online"]["goal"]))
+                res.update(eval_forage(ev, EnvConfig(**ec), info["config"]["online"]["goal"], instinct=inst))
+            res["instinct_m"] = inst[0]
             res.update(run=args.eval, step=st)
-            with open(os.path.join(args.eval, "eval", "ckpt_%08d.json" % st), "w") as f:
+            tag = "" if args.eval_instinct is None else "_instinct%d" % args.eval_instinct
+            with open(os.path.join(args.eval, "eval", "ckpt_%08d%s.json" % (st, tag)), "w") as f:
                 json.dump(res, f)
             print("%s %8d  success %.3f  median %5.1f  clicks %5.1f" % (os.path.basename(args.eval.rstrip("/")), st,
                   res["success"], res["median_steps"], res["clicks_per_episode"])
                   + ("  forage: hits/1k %.1f  in hazard %.3f (felt %.3f)  hunger capped %.2f" % (
                       res["forage_hits_per_1k"], res["forage_hazard_frac"], res["forage_hazard_felt"],
                       res["forage_capped"])
-                     if "forage_hits_per_1k" in res else ""), flush=True)
+                     if "forage_hits_per_1k" in res else "")
+                  + ("  poison clicks/1k %.1f" % res["forage_poison_per_1k"] if res.get("forage_poison_per_1k") else "")
+                  + ("  instinct %d" % inst[0] if inst[0] else ""), flush=True)
             agent.close()
         return
     if not args.config:
@@ -521,9 +579,9 @@ def main():
     env_cfg = dataclasses.replace(EnvConfig(**cfg["env"]), auto_reset=True)
     env = CircleWorld(1, env_cfg, seed=args.seed)
     agent = agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)
-    if on["click_bias"] is not None and not args.init:   # initial click-logit bias, e.g. -2.197 = click p 0.1
-        off = {name: o for name, o, _ in agent.param_layout()}["pi_b"]
-        agent.params()[off + 2] = on["click_bias"]
+    pib = {name: (o, n) for name, o, n in agent.param_layout()}["pi_b"]
+    if on["click_bias"] is not None and not args.init and pib[1]:   # initial click-logit bias, e.g. -2.197 = p 0.1
+        agent.params()[pib[0] + 2] = on["click_bias"]                 # (no policy head, e.g. the universal model: none)
         agent.params_changed()
     self_actor = on["actor"] == "self"
     if on["actor"] not in ("planner", "self"):

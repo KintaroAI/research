@@ -141,15 +141,27 @@ def tokens(run, st, n=16384, chunk=2048):
     goal = info["config"]["online"]["goal"]
     x = (obs["image"][:, None], obs["drives"][:, None].astype(np.float32), np.zeros((n, 1, 3), np.float32),
          (obs["drives"][:, :1] if goal else np.zeros((n, 1))).astype(np.float32), np.ones((n, 1), np.uint8))
-    z_cpp = a.forward(*x)["z"][:, -1]
+    uni = bool(c.get("universal"))
+    z_cpp = None if uni else a.forward(*x)["z"][:, -1]
     P = ref.params_from_flat(a.params(), a.param_layout(), c, dtype=torch.float32)
     a.close()
     hs = []
     with torch.no_grad():
         for i in range(0, n, chunk):
-            hs.append(ref.forward_patch(P, c, *[v[i:i + chunk] for v in x])["h"][:, -1].numpy())
+            if uni:   # the universal model: tokens body, patches, move; the move made is "stay"
+                o = ref.forward_uni(P, c, x[0][i:i + chunk], x[1][i:i + chunk], np.zeros((len(x[0][i:i + chunk]), 1, 3)),
+                                    x[4][i:i + chunk])
+                hs.append(o["h"].reshape(len(x[0][i:i + chunk]), 1, -1, c["d_model"])[:, -1].numpy())
+            else:
+                hs.append(ref.forward_patch(P, c, *[v[i:i + chunk] for v in x])["h"][:, -1].numpy())
     h = np.concatenate(hs)                                                      # [n, ntok, d]
     npch = (c["img"] // c["patch"]) ** 2
+    if uni:   # body, the patches, the move: the last patch's output predicts the move (the policy's input)
+        feats = dict(body=h[:, 0], last_patch=h[:, npch], move=h[:, npch + 1], patch_mean=h[:, 1:npch + 1].mean(1),
+                     patches=h[:, 1:npch + 1].reshape(n, -1))
+        res = {"%s_%s" % (f, k): ridge_r2(X, Y, ntr=3 * n // 4) for f, X in feats.items() for k, Y in gt.items()}
+        res["z_max_abs_diff"] = 0.0
+        return res
     zi = npch + 3 if c.get("act_token") else npch + 1          # the token the policy reads (act token, else move)
     feats = dict(move=h[:, npch + 1], drives=h[:, npch], command=h[:, npch + 2], patch_mean=h[:, :npch].mean(1),
                  patches=h[:, :npch].reshape(n, -1))
@@ -188,7 +200,8 @@ def main():
             print("%-20s %7d  R^2 (cursor circle direction) from the token outputs:%s   (z vs C++: %.1e)" % (
                 name(run), args.step, "".join("  %s %.2f %.2f %.2f" % (f, r[f + "_cursor"], r[f + "_circle"],
                                                                         r[f + "_direction"])
-                                               for f in ("act", "move", "drives", "command", "patch_mean", "patches")
+                                               for f in ("act", "move", "drives", "command", "body", "last_patch",
+                                                         "patch_mean", "patches")
                                                if f + "_cursor" in r),
                 r["z_max_abs_diff"]), flush=True)
         else:

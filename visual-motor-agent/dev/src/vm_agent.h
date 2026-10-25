@@ -41,6 +41,13 @@ typedef struct {
     int act_token;      // 1 (patch models with pred_residual): one more token per step, a learned query whose output
                         //     the policy and value heads read, trained by its own predictions of the next drives and
                         //     the coarse (8x8) next frame from [its output, executed move] (task 00020)
+    int universal;      // 1 (with patch > 0): the universal model (task 00023, ARCHITECTURE.md). Tokens per step: body,
+                        //     the patches, the move made; every token a value vector in [0, 1] through one shared input
+                        //     map; fully causal; every token predicts the next token's values through one shared head
+                        //     (bins two-hot cross-entropy). The CNN / patch heads and their losses do not apply
+    int bins;           // universal: bins per predicted value (centres k / (bins - 1))
+    int gray;           // universal: 1 = each patch token carries one channel (the frame's first; for env.gray worlds),
+                        //     patch^2 values instead of patch^2 * 3 (task 00024)
 } VMConfig;
 
 typedef struct {
@@ -87,6 +94,9 @@ typedef struct {
     int epochs_done, updates_done;
     float move_nll;             // next-move prediction: mean -log pi(a_t) of the moves actually made
     float act_drive_mse, act_frame_mse;   // act token: its next-drives MSE and coarse-next-frame MSE
+    // universal model: cross-entropy (per used value) and squared error of the expected value, by the kind of token
+    // predicted (the next body, a patch, the move)
+    float uni_ce_body, uni_ce_patch, uni_ce_move, uni_mse_body, uni_mse_patch, uni_mse_move;
 } PPOStats;
 
 // ---- model lifecycle ----
@@ -150,6 +160,12 @@ void  vm_forward(void* agent, int S, int T, const uint8_t* images, const float* 
                  const float* prev_action, const float* prev_reward, const uint8_t* ep_start,
                  const float* pred_actions, float* z, float* value, float* mu, float* click_p,
                  float* pred_frames, float* pred_drives);
+// The universal model (universal = 1): S sequences of T <= ctx steps. actions [S,T,3]: the move made at each step (the
+// last step's may be a candidate). values [S, T*ntok, V]: every token's expected prediction of the next token's
+// values; move_probs [S, T, 3*bins]: the bin probabilities of the move predicted at each step; next_body [S, T, 2]: the
+// move tokens' expected prediction of the drives after their step (NULL to skip any).
+void  vm_forward_uni(void* agent, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                     const uint8_t* ep_start, float* values, float* move_probs, float* next_body);
 
 // Attention weights of one sequence of T steps: att [n_layer, n_head, Tt, Tt] with Tt = T (CNN model) or
 // T * tokens per step (patch tokens); row = the attending token, zero outside the tokens it attends to.
