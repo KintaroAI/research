@@ -39,10 +39,30 @@ struct Dims {
     int img, in_ch, c1, c2, c3, h1, h2, h3, enc_flat, feat, d, L, nh, hs, dff, K, in_dim;
     int pimg, p0, p1, pc1, pc2, ph, pred_flat, pin_dim, small_px, pb, d1_in, d2_in, skip1_off, skip_off, pih;
     int ih;   // inverse-dynamics hidden size (0: no inverse head)
+    int dh, rimg, rpx;   // latent dynamics hidden size (0: none); coarse decoder frame side and values
+    int patch, gp, npch, ntok, pdim, cell, cpx;   // patch tokens (0: the CNN model): side, grid, patches, tokens per
+                                                  // step, values per patch, predicted cell side and values
 };
 
 static bool make_dims(const VMConfig& c, Dims& D) {
-    if (!c.coord || !c.pred_residual || !c.pred_skip || c.dyn_hidden > 0 || c.patch > 0) return false;
+    D.patch = c.patch > 0 ? c.patch : 0;
+    if (D.patch) {   // patch tokens (vm-00010): residual frames; no inverse or latent dynamics (as vm_agent.cpp)
+        if (!c.pred_residual || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.img % D.patch) return false;
+        D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3; D.pdim = D.patch * D.patch * 3;
+        if (c.pred_img % D.gp || c.ctx * D.ntok > 256 || c.d_model % c.n_head) return false;
+        D.cell = c.pred_img / D.gp; D.cpx = D.cell * D.cell * 3;
+        D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
+        D.h1 = c.img / 2; D.h2 = c.img / 4; D.h3 = c.img / 8; D.enc_flat = c.c3 * D.h3 * D.h3;
+        D.feat = c.feat; D.d = c.d_model; D.L = c.n_layer; D.nh = c.n_head; D.hs = c.d_model / c.n_head;
+        D.dff = c.d_ff; D.K = c.ctx; D.in_dim = c.feat + 6;
+        D.pimg = c.pred_img; D.p0 = c.pred_img / 4; D.p1 = c.pred_img / 2; D.pc1 = c.pc1; D.pc2 = c.pc2;
+        D.ph = c.pred_hidden; D.pred_flat = c.pc2 * D.p0 * D.p0; D.pin_dim = c.d_model + 3;
+        D.small_px = c.pred_img * c.pred_img * 3; D.pb = 0; D.skip1_off = D.d1_in = D.skip_off = D.d2_in = 0;
+        D.pih = c.pi_hidden > 0 ? c.pi_hidden : 0; D.ih = 0; D.dh = 0; D.rimg = c.pred_img / 2; D.rpx = 0;
+        return true;
+    }
+    D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1;
+    if (!c.coord || !c.pred_residual || !c.pred_skip) return false;
     if (c.img % 8 || c.pred_img % 4 || c.img / c.pred_img != 2 || c.d_model % c.n_head || c.pb <= 0) return false;
     D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
     D.h1 = c.img / 2; D.h2 = c.img / 4; D.h3 = c.img / 8; D.enc_flat = c.c3 * D.h3 * D.h3;
@@ -55,7 +75,8 @@ static bool make_dims(const VMConfig& c, Dims& D) {
     D.skip_off = D.pc1 + 2; D.d2_in = D.skip_off + D.c2 + 3;
     D.pih = c.pi_hidden > 0 ? c.pi_hidden : 0;
     D.ih = c.inv_hidden > 0 ? c.inv_hidden : 0;
-    return D.p1 == D.h2 && D.p0 == D.h3 && D.K <= 64;   // U-Net skips need equal map sizes; k_attn_bwd: K <= 64
+    D.dh = c.dyn_hidden > 0 ? c.dyn_hidden : 0; D.rimg = c.pred_img / 2; D.rpx = D.rimg * D.rimg * 3;
+    return D.p1 == D.h2 && D.p0 == D.h3 && D.K <= 256;   // U-Net skips need equal map sizes; k_attn_bwd: K <= 256
 }
 
 static void expected_sizes(const Dims& D, long* s) {
@@ -74,6 +95,16 @@ static void expected_sizes(const Dims& D, long* s) {
     s[D1W] = (long)D.d1_in * D.pc1 * KK; s[D1B] = D.pc1; s[D2W] = (long)D.d2_in * 3 * KK; s[D2B] = 3;
     s[DRW] = 2L * D.ph; s[DRB] = 2;
     s[IV1W] = (long)D.ih * 2 * D.feat; s[IV1B] = D.ih; s[IV2W] = 2L * D.ih; s[IV2B] = D.ih ? 2 : 0;
+    const long dh = D.dh, F = D.feat;
+    s[T1W] = dh * (F + 3); s[T1B] = dh; s[T2W] = F * dh; s[T2B] = dh ? F : 0;
+    s[H1W] = dh * (F + 4); s[H1B] = dh; s[H2W] = dh; s[H2B] = dh ? 1 : 0;
+    s[X1W] = dh * F; s[X1B] = dh; s[X2W] = (long)D.rpx * dh; s[X2B] = dh ? D.rpx : 0;
+    if (D.patch) {   // no CNN encoder or decoder; PR2W outputs one patch's cell
+        for (int q : {C1W, C1B, C2W, C2B, C3W, C3B, EFW, EFB, INW, INB, PBW, PBB, D1W, D1B, D2W, D2B}) s[q] = 0;
+        s[PR2W] = (long)D.cpx * D.ph; s[PR2B] = D.cpx;
+        s[PEW] = d * D.pdim; s[PEB] = d; s[POS2D] = (long)D.npch * d; s[TYP] = 4 * d;
+        s[DEW] = 2 * d; s[DEB] = d; s[MEW] = 3 * d; s[MEB] = d; s[CEW] = d; s[CEB] = d;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -265,15 +296,16 @@ __global__ void k_ln_bwd(float* dinp, float* dw, float* db, const float* dout, c
 }
 // Causal attention within a context block: query b attends to keys lo..b, lo = start[b]. One thread per (b, head);
 // att[(b*nh + h)*K + (j - blk)] holds the weights, blk = the block's first frame.
-__global__ void k_attn_fwd(const float* qkv, float* att, float* out, const int* start, int B, int K, int d, int nh) {
+__global__ void k_attn_fwd(const float* qkv, float* att, float* out, const int* start, const int* end, int B, int K,
+                           int d, int nh) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= B * nh) return;
-    const int b = i / nh, h = i % nh, hs = d / nh, d3 = 3 * d, lo = start[b], blk = (b / K) * K;
+    const int b = i / nh, h = i % nh, hs = d / nh, d3 = 3 * d, lo = start[b], hi = end ? end[b] : b, blk = (b / K) * K;
     const float scale = 1.0f / sqrtf((float)hs);
     const float* q = qkv + (long)b * d3 + h * hs;
     float* w = att + (long)i * K;
     float mx = -1e30f;
-    for (int j = lo; j <= b; j++) {
+    for (int j = lo; j <= hi; j++) {
         const float* k = qkv + (long)j * d3 + d + h * hs;
         float s = 0.f;
         for (int c = 0; c < hs; c++) s += q[c] * k[c];
@@ -282,29 +314,29 @@ __global__ void k_attn_fwd(const float* qkv, float* att, float* out, const int* 
         mx = fmaxf(mx, s);
     }
     float sum = 0.f;
-    for (int j = lo; j <= b; j++) { float e = expf(w[j - blk] - mx); w[j - blk] = e; sum += e; }
+    for (int j = lo; j <= hi; j++) { float e = expf(w[j - blk] - mx); w[j - blk] = e; sum += e; }
     const float inv = 1.0f / sum;
-    for (int j = lo; j <= b; j++) w[j - blk] *= inv;
+    for (int j = lo; j <= hi; j++) w[j - blk] *= inv;
     float* y = out + (long)b * d + h * hs;
     for (int c = 0; c < hs; c++) {
         float s = 0.f;
-        for (int j = lo; j <= b; j++) s += w[j - blk] * qkv[(long)j * d3 + 2 * d + h * hs + c];
+        for (int j = lo; j <= hi; j++) s += w[j - blk] * qkv[(long)j * d3 + 2 * d + h * hs + c];
         y[c] = s;
     }
 }
 // dqkv must be zero; dk, dv of earlier rows are accumulated with atomics
-__global__ void k_attn_bwd(float* dqkv, const float* dout, const float* qkv, const float* att, const int* start, int B,
-                           int K, int d, int nh) {
+__global__ void k_attn_bwd(float* dqkv, const float* dout, const float* qkv, const float* att, const int* start,
+                           const int* end, int B, int K, int d, int nh) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= B * nh) return;
-    const int b = i / nh, h = i % nh, hs = d / nh, d3 = 3 * d, lo = start[b], blk = (b / K) * K;
+    const int b = i / nh, h = i % nh, hs = d / nh, d3 = 3 * d, lo = start[b], hi = end ? end[b] : b, blk = (b / K) * K;
     const float scale = 1.0f / sqrtf((float)hs);
     const float* q = qkv + (long)b * d3 + h * hs;
     const float* w = att + (long)i * K;
     const float* dy = dout + (long)b * d + h * hs;
-    float da[64];   // K <= 64
+    float da[256];   // K <= 256 keys per block
     float dsum = 0.f;
-    for (int j = lo; j <= b; j++) {
+    for (int j = lo; j <= hi; j++) {
         const float* v = qkv + (long)j * d3 + 2 * d + h * hs;
         float* dv = dqkv + (long)j * d3 + 2 * d + h * hs;
         float s = 0.f;
@@ -313,7 +345,7 @@ __global__ void k_attn_bwd(float* dqkv, const float* dout, const float* qkv, con
         dsum += w[j - blk] * s;
     }
     float* dq = dqkv + (long)b * d3 + h * hs;
-    for (int j = lo; j <= b; j++) {
+    for (int j = lo; j <= hi; j++) {
         const float dp = w[j - blk] * (da[j - blk] - dsum) * scale;
         const float* k = qkv + (long)j * d3 + d + h * hs;
         float* dk = dqkv + (long)j * d3 + d + h * hs;
@@ -427,18 +459,23 @@ __global__ void k_frame_loss(const float* pout, const uint8_t* cs, const uint8_t
 }
 // Drives and move losses, one thread per token. acc[2] += drive SE / 2, acc[3] += -logp, acc[4] += click p.
 // Gradients: dpdrv, dpi, and the log-std's directly into G.
+__device__ inline float drive_weight_(const float* drv, const float* ndrv, float w, float eps) {
+    return (w > 0.f && fabsf(ndrv[0] - drv[0]) > eps) ? 1.0f + w : 1.0f;
+}
 __global__ void k_head_loss(const float* pdrv, const float* ndrv, const float* pi, const float* act,
                             const float* logstd, float* dpdrv, float* dpi, float* glogstd, int B, float inv_B,
-                            float drive_coef, float move_coef, double* acc) {
+                            float drive_coef, float move_coef, double* acc, const float* drv, float dcw, float deps) {
     const int b = blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= B) return;
     double dse = 0;
+    const float wd = drive_weight_(drv + b * 2, ndrv + b * 2, dcw, deps);
     for (int j = 0; j < 2; j++) {
         const float p = pdrv[b * 2 + j], e = p - ndrv[b * 2 + j];
         dse += (double)e * e;
-        dpdrv[b * 2 + j] = inv_B * drive_coef * e * p * (1.0f - p);
+        dpdrv[b * 2 + j] = wd * inv_B * drive_coef * e * p * (1.0f - p);
     }
     atomicAdd(acc + 2, dse / 2.0);
+    atomicAdd(acc + 19, wd * dse / 2.0);
     const float* p3 = pi + b * 3;
     const float* a = act + b * 3;
     float logp = 0.f;
@@ -583,6 +620,215 @@ __global__ void k_adamw(float* P, const float* G, float* m, float* v, long n, fl
     }
 }
 
+// ---- latent dynamics (dyn_hidden > 0; as vm_agent.cpp's seq_dyn, dyn_step, dyn_decode) ----
+// Chain step inputs for rows [0, n) of one level: uT = [s, executed a_j], uH = [s, h, executed a_j], where s is v of
+// the chain's start frame (par < 0) or the previous step's latent, and h the true hunger at j (train) or the
+// imagined one (imagination: hcur, NULL in training)
+__global__ void k_dyn_in(const float* vf, const float* ys, const int* b, const int* j, const int* par,
+                         const float* act, const float* drv, const float* hcur, float* uT, float* uH, int n, int F) {
+    const long tot = (long)n * (F + 4);
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < tot; i += (long)gridDim.x * blockDim.x) {
+        const int r = i / (F + 4), c = i % (F + 4);
+        const int jj = j[r];
+        const float* a = act + (long)jj * 3;
+        const float e0 = clampf_(a[0], -1.f, 1.f), e1 = clampf_(a[1], -1.f, 1.f), e2 = a[2] > 0.5f ? 1.f : 0.f;
+        float vu;
+        if (c < F) {
+            vu = par[r] < 0 ? vf[(long)b[r] * F + c] : ys[(long)par[r] * F + c];
+            uT[(long)r * (F + 3) + c] = vu;
+        } else if (c == F) {
+            vu = hcur ? hcur[r] : drv[(long)jj * 2];
+        } else {
+            vu = c == F + 1 ? e0 : (c == F + 2 ? e1 : e2);
+            uT[(long)r * (F + 3) + c - 1] = vu;
+        }
+        uH[(long)r * (F + 4) + c] = vu;
+    }
+}
+// s_out = s + (T2 hT + b): s from uT [n, F+3]
+__global__ void k_dyn_res(float* sout, const float* b, const float* uT, int n, int F) {
+    const long tot = (long)n * F;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < tot; i += (long)gridDim.x * blockDim.x)
+        sout[i] += b[i % F] + uT[(i / F) * (F + 3) + i % F];
+}
+// Latent and hunger losses per chain step p: latent target v of frame lt[p] (-1: none), hunger loss if hl[p].
+// acc[13] += SE/F, [14] += 1; acc[15] += eh^2, [16] += 1
+__global__ void k_dyn_loss(const float* ys, const float* h, const float* vf, const int* lt, const int* hl,
+                           const int* j, const float* ndrv, float* gs, float* gh, int n, int F, float cs, float ch,
+                           double* acc, const float* drv, float dcw, float deps) {
+    const int p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= n) return;
+    float* g = gs + (long)p * F;
+    if (lt[p] >= 0) {
+        const float* sh = ys + (long)p * F;
+        const float* tg = vf + (long)lt[p] * F;
+        double se = 0;
+        for (int i = 0; i < F; i++) { const float e = sh[i] - tg[i]; se += (double)e * e; g[i] = cs * e; }
+        atomicAdd(acc + 13, se / F); atomicAdd(acc + 14, 1.0);
+    } else {
+        for (int i = 0; i < F; i++) g[i] = 0.f;
+    }
+    gh[p] = 0.f;
+    if (hl[p]) {
+        const float hh = h[p], eh = hh - ndrv[(long)j[p] * 2];
+        const float wj = drive_weight_(drv + (long)j[p] * 2, ndrv + (long)j[p] * 2, dcw, deps);
+        gh[p] = wj * ch * eh * hh * (1.0f - hh);
+        atomicAdd(acc + 15, (double)eh * eh); atomicAdd(acc + 16, 1.0); atomicAdd(acc + 20, wj * (double)eh * eh);
+    }
+}
+// Coarse decoder loss: x [n, R] (HWC at r = pimg/2) against src frame fr[p] of u8 frames [*, pimg, pimg, 3] box-
+// averaged by 2; gx = cx * e. acc[17] += SE/R, [18] += 1 per row
+__global__ void k_dyn_xloss(const float* x, const uint8_t* frames, const int* fr, float* gx, int n, int pimg, float cx,
+                            double* acc) {
+    __shared__ double sh[256];
+    const int r = pimg / 2, R = r * r * 3;
+    const long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
+    double se = 0;
+    if (i < (long)n * R) {
+        const long p = i / R;
+        const int k = i % R, c = k % 3, xx = (k / 3) % r, yy = k / (3 * r);
+        const uint8_t* f = frames + (long)(fr ? fr[p] : p) * pimg * pimg * 3;
+        const int sum = f[((2 * yy) * pimg + 2 * xx) * 3 + c] + f[((2 * yy) * pimg + 2 * xx + 1) * 3 + c] +
+                        f[((2 * yy + 1) * pimg + 2 * xx) * 3 + c] + f[((2 * yy + 1) * pimg + 2 * xx + 1) * 3 + c];
+        const float tg = (float)((sum + 2) / 4) / 255.0f, e = x[i] - tg;
+        se = (double)e * e / R;
+        gx[i] = cx * e;
+        if (k == 0) atomicAdd(acc + 18, 1.0);
+    }
+    sh[threadIdx.x] = se;
+    __syncthreads();
+    for (int k = blockDim.x / 2; k > 0; k >>= 1) {
+        if (threadIdx.x < k) sh[threadIdx.x] += sh[threadIdx.x + k];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) atomicAdd(acc + 17, sh[0]);
+}
+// The gradient into each step's previous latent: g_s[par] += g_s[p] + g_uT[p, :F] + g_uH[p, :F] (one child per parent)
+__global__ void k_dyn_back(float* gs, const float* guT, const float* guH, const int* par, int p0, int n, int F) {
+    const long tot = (long)n * F;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < tot; i += (long)gridDim.x * blockDim.x) {
+        const int r = i / F, c = i % F, p = p0 + r;
+        if (par[p] < 0) continue;
+        gs[(long)par[p] * F + c] += gs[(long)p * F + c] + guT[(long)p * (F + 3) + c] + guH[(long)p * (F + 4) + c];
+    }
+}
+
+// Imagination step k inputs: uT = [s, executed a_k], uH = [s, h, executed a_k]; actions [n, H, 3]
+__global__ void k_im_in(const float* sv, const float* h, const float* act, float* uT, float* uH, int n, int H, int k,
+                        int F) {
+    const long tot = (long)n * (F + 4);
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < tot; i += (long)gridDim.x * blockDim.x) {
+        const int r = i / (F + 4), c = i % (F + 4);
+        const float* a = act + ((long)r * H + k) * 3;
+        float vu;
+        if (c < F) { vu = sv[(long)r * F + c]; uT[(long)r * (F + 3) + c] = vu; }
+        else if (c == F) vu = h[r];
+        else {
+            vu = c == F + 1 ? clampf_(a[0], -1.f, 1.f) : (c == F + 2 ? clampf_(a[1], -1.f, 1.f) : (a[2] > 0.5f ? 1.f : 0.f));
+            uT[(long)r * (F + 3) + c - 1] = vu;
+        }
+        uH[(long)r * (F + 4) + c] = vu;
+    }
+}
+// dst[r * H + k] (rows of width w) = src[r] (rows of width w)
+__global__ void k_store_step(float* dst, const float* src, int n, int H, int k, int w) {
+    const long tot = (long)n * w;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < tot; i += (long)gridDim.x * blockDim.x)
+        dst[((i / w) * H + k) * w + i % w] = src[i];
+}
+
+// ---- patch tokens (vm-00010; as seq_fwd_patch / seq_bwd_patch in vm_agent.cpp) ----
+// Patch pixels in [0, 1]: tpx [(b*np + p), (y*ps + x)*3 + c]
+__global__ void k_patch_px(const uint8_t* img, float* tpx, int B, int S, int ps, int gp) {
+    const int np = gp * gp, pd = ps * ps * 3;
+    const long n = (long)B * np * pd;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int q = i % pd, c = q % 3, x = (q / 3) % ps, y = q / (3 * ps);
+        const long bp = i / pd, b = bp / np;
+        const int p = bp % np, py = (p / gp) * ps, px = (p % gp) * ps;
+        tpx[i] = img[((b * S + py + y) * S + px + x) * 3 + c] / 255.0f;
+    }
+}
+// Token inputs [B * nt, d]: patches (embedding + pos2d + type 0), drives (type 1), previous move (2), command (3);
+// all + the time embedding of the step
+__global__ void k_ptok(const float* pemb, const float* pos2d, const float* typ, const float* dw, const float* db,
+                       const float* mw, const float* mb, const float* cw, const float* cb, const float* wpe,
+                       const int* pos, const float* drv, const float* pa, const float* pr, int use_pr, float* xin,
+                       int B, int np, int d) {
+    const int nt = np + 3;
+    const long n = (long)B * nt * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int j = i % d, k = (i / d) % nt;
+        const long b = i / ((long)d * nt);
+        float v = wpe[(long)pos[b] * d + j];
+        if (k < np) v += pemb[(b * np + k) * d + j] + pos2d[(long)k * d + j] + typ[j];
+        else if (k == np) v += dw[j * 2] * drv[b * 2] + dw[j * 2 + 1] * drv[b * 2 + 1] + db[j] + typ[d + j];
+        else if (k == np + 1) v += mw[j * 3] * pa[b * 3] + mw[j * 3 + 1] * pa[b * 3 + 1] + mw[j * 3 + 2] * pa[b * 3 + 2] + mb[j] + typ[2 * d + j];
+        else v += cw[j] * (use_pr ? pr[b] : 0.f) + cb[j] + typ[3 * d + j];
+        xin[i] = v;
+    }
+}
+// dst[r] (+)= src[b*nt + k] for r = b (rows of width d): the move token's output z, and its gradient back
+__global__ void k_tok_rows(float* rows, float* tok, int B, int nt, int k, int d, int to_tok) {
+    const long n = (long)B * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const long b = i / d, t = (b * nt + k) * d + i % d;
+        if (to_tok) tok[t] += rows[i]; else rows[i] = tok[t];
+    }
+}
+// Prediction rows R = B*(np+1): rows b*np + p (patch p of frame b), then B*np + b (the drives token of frame b);
+// pin = [token output, executed action]. back: tok[...] += scale * dpin[r, :d] instead.
+__global__ void k_ppin(float* lnf, const float* act, float* pin, int B, int np, int d, int back, float scale) {
+    const int nt = np + 3, D = d + 3;
+    const long R = (long)B * (np + 1), n = R * (back ? d : D);
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int w = back ? d : D, j = i % w;
+        const long r = i / w;
+        const long b = r < (long)B * np ? r / np : r - (long)B * np;
+        const int k = r < (long)B * np ? (int)(r % np) : np;
+        const long t = (b * nt + k) * d + j;
+        if (back) { lnf[t] += scale * pin[r * D + j]; continue; }
+        float v;
+        if (j < d) v = lnf[t];
+        else if (j < d + 2) v = clampf_(act[b * 3 + j - d], -1.f, 1.f);
+        else v = act[b * 3 + 2] > 0.5f ? 1.f : 0.f;
+        pin[i] = v;
+    }
+}
+// Cells <-> the predicted frame (channel-major [3, B, P]): cell values [(b*np + p), (y*cs + x)*3 + c]
+__global__ void k_cells_frame(float* cells, float* frame, int B, int pimg, int gp, int to_frame) {
+    const int cs = pimg / gp, np = gp * gp, cpx = cs * cs * 3, P = pimg * pimg;
+    const long n = (long)B * np * cpx;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int q = i % cpx, c = q % 3, x = (q / 3) % cs, y = q / (3 * cs);
+        const long bp = i / cpx, b = bp / np;
+        const int p = bp % np, oy = (p / gp) * cs, ox = (p % gp) * cs;
+        const long f = (long)c * B * P + b * P + (long)(oy + y) * pimg + ox + x;
+        if (to_frame) frame[f] = cells[i]; else cells[i] = frame[f];
+    }
+}
+// The token inputs' gradients: time embedding, type, pos2d, the drives / move / command embeddings (atomics), and the
+// patch embedding's output gradient dpemb
+__global__ void k_ptok_grad(const float* dres, const int* pos, const float* drv, const float* pa, const float* pr,
+                            int use_pr, float* gwpe, float* gtyp, float* gpos2d, float* gdw, float* gdb, float* gmw,
+                            float* gmb, float* gcw, float* gcb, float* dpemb, int B, int np, int d) {
+    const int nt = np + 3;
+    const long n = (long)B * nt * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int j = i % d, k = (i / d) % nt;
+        const long b = i / ((long)d * nt);
+        const float g = dres[i];
+        atomicAdd(gwpe + (long)pos[b] * d + j, g);
+        atomicAdd(gtyp + (long)(k < np ? 0 : k - np + 1) * d + j, g);
+        if (k < np) { atomicAdd(gpos2d + (long)k * d + j, g); dpemb[(b * np + k) * d + j] = g; }
+        else if (k == np) { atomicAdd(gdw + j * 2, g * drv[b * 2]); atomicAdd(gdw + j * 2 + 1, g * drv[b * 2 + 1]); atomicAdd(gdb + j, g); }
+        else if (k == np + 1) {
+            for (int q = 0; q < 3; q++) atomicAdd(gmw + j * 3 + q, g * pa[b * 3 + q]);
+            atomicAdd(gmb + j, g);
+        } else { atomicAdd(gcw + j, g * (use_pr ? pr[b] : 0.f)); atomicAdd(gcb + j, g); }
+    }
+}
+
 // Forward outputs per token: o[b*4 + 0..1] = tanh(pi[0..1]), o[b*4 + 2] = sigmoid(pi[2]), o[b*4 + 3] = value
 __global__ void k_fwd_out(const float* pi, const float* z, const float* vw, const float* vb, float* o, int B, int d) {
     const int b = blockIdx.x * blockDim.x + threadIdx.x;
@@ -630,13 +876,26 @@ struct Model {
     Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, xin, ln1, ln1m, ln1r, qkv, att, atty, res1, ln2, ln2m, ln2r,
         fch, fchg, res2, lnf, lnfm, lnfr, pih, pi, pin, ph1, ph2, ub, pdrv, d1in, dc1, d2in, dc2, pout;
     Buf iv_in, iv_h, iv_out, div_out, div_h, div_in;   // inverse dynamics
+    // latent dynamics: chain steps of all levels, level k at rows [lev[k-1], lev[k]); y_* forward, g_* gradients
+    Buf y_uT, y_uH, y_hT, y_hH, y_h, y_s, y_hX, y_x, y_hX0, y_x0, g_s, g_h, g_hT, g_hH, g_uT, g_uH, g_hX, g_x, g_hX0, g_x0;
+    int *ch_b = nullptr, *ch_j = nullptr, *ch_par = nullptr, *ch_lt = nullptr, *ch_hl = nullptr, *ch_fr = nullptr;
+    int ch_cap = 0;
+    std::vector<uint8_t> es_host;   // the batch's episode starts (chains stop at them)
+    Buf im_s, im_s2, im_h, im_uT, im_uH, im_hT, im_hH, im_x, im_hX, im_act;   // imagination
+    int *im_idx = nullptr, *im_par = nullptr;
+    int im_cap = 0;
     Buf fout, fhwc;   // forward outputs: [B, 4] mu, click p, value; predicted frames HWC
+    Buf tpx, pemb, dpemb, zm, dzm, pdel, dpdel;   // patch tokens
+    int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
+    int tcap = 0;
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
         dtin, dvf, da3, da2, da1, dY;
     double* acc = nullptr;    // [0] weighted frame SE, [1] frame SE, [2] drive SE, [3] -logp, [4] click p, [5..7] norms,
-                              // [8] SE of the changed pixels, [9] their count (x3), [10..12] inverse SE, var, count
+                              // [8] SE of the changed pixels, [9] their count (x3), [10..12] inverse SE, var, count,
+                              // [13..18] latent dynamics: latent SE/F, n; hunger SE, n; decoder SE/R, n;
+                              // [19], [20] the drive and hunger SE weighted by drive_changed_weight
     float* clip = nullptr;
-    float coef[4] = {0, 0, 0, 0};   // pred, drive, move, inverse coefficients of the last loss (the reported total)
+    float coef[7] = {0, 0, 0, 0, 0, 0, 0};   // pred, drive, move, inverse, dyn latent, hunger, decoder coefficients
 };
 
 static void gemm(Model* M, bool ta, bool tb, int m, int n, int k, const float* A, int lda, const float* B, int ldb,
@@ -699,11 +958,11 @@ void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const 
     for (int i = 0; i < NUM_P; i++) { M->off[i] = offsets[i]; M->sz[i] = sizes[i]; }
     const size_t nb = n_params * sizeof(float);
     if (cudaMalloc(&M->P, nb) || cudaMalloc(&M->G, nb) || cudaMalloc(&M->m, nb) || cudaMalloc(&M->v, nb) ||
-        cudaMalloc(&M->acc, 13 * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
+        cudaMalloc(&M->acc, 21 * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
         fprintf(stderr, "vm_cuda: out of device memory\n"); return nullptr;
     }
     cudaMemcpy(M->P, params, nb, cudaMemcpyHostToDevice);
-    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, 13 * sizeof(double));
+    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, 21 * sizeof(double));
     if (cublasCreate(&M->cb) != CUBLAS_STATUS_SUCCESS) return nullptr;
     cublasSetMathMode(M->cb, CUBLAS_PEDANTIC_MATH);   // no TF32
     return M;
@@ -722,8 +981,13 @@ void vmc_free(void* h) {
                    &M->dpi, &M->dcols, &M->dx2, &M->dx1, &M->dph2, &M->dub, &M->dskip3, &M->dph1, &M->dpin, &M->dz,
                    &M->dpih, &M->dres, &M->dln, &M->datty, &M->dqkv, &M->dfch, &M->dfchg, &M->dtin, &M->dvf, &M->da3,
                    &M->da2, &M->da1, &M->dY, &M->iv_in, &M->iv_h, &M->iv_out, &M->div_out, &M->div_h, &M->div_in,
-                   &M->fout, &M->fhwc})
+                   &M->fout, &M->fhwc, &M->y_uT, &M->y_uH, &M->y_hT, &M->y_hH, &M->y_h, &M->y_s, &M->y_hX, &M->y_x,
+                   &M->y_hX0, &M->y_x0, &M->g_s, &M->g_h, &M->g_hT, &M->g_hH, &M->g_uT, &M->g_uH, &M->g_hX, &M->g_x,
+                   &M->g_hX0, &M->g_x0, &M->im_s, &M->im_s2, &M->im_h, &M->im_uT, &M->im_uH, &M->im_hT, &M->im_hH,
+                   &M->im_x, &M->im_hX, &M->im_act, &M->tpx, &M->pemb, &M->dpemb, &M->zm, &M->dzm, &M->pdel, &M->dpdel})
         if (b->p) cudaFree(b->p);
+    for (int* q : {M->ch_b, M->ch_j, M->ch_par, M->ch_lt, M->ch_hl, M->ch_fr, M->im_idx, M->im_par, M->tstart, M->tend})
+        cudaFree(q);
     cublasDestroy(M->cb);
     delete M;
 }
@@ -749,6 +1013,21 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
             valid[b] = t + 1 < T && !(ep_start && ep_start[b + 1]);   // inverse dynamics (one_frame aside)
         }
     CK(cudaMemcpy(M->ivalid, valid.data(), B * sizeof(int), cudaMemcpyHostToDevice));
+    M->es_host.assign(B, 0);
+    if (ep_start) for (int b = 0; b < B; b++) M->es_host[b] = ep_start[b];
+    if (D.patch) {   // a token sees every token of its own step and of the earlier steps of its block
+        const int nt = D.ntok, Bx = B * nt;
+        std::vector<int> ts(Bx), te(Bx);
+        for (int b = 0; b < B; b++)
+            for (int k = 0; k < nt; k++) { ts[b * nt + k] = start[b] * nt; te[b * nt + k] = b * nt + nt - 1; }
+        if (Bx > M->tcap) {
+            cudaFree(M->tstart); cudaFree(M->tend);
+            CK(cudaMalloc(&M->tstart, Bx * sizeof(int))); CK(cudaMalloc(&M->tend, Bx * sizeof(int)));
+            M->tcap = Bx;
+        }
+        CK(cudaMemcpy(M->tstart, ts.data(), Bx * sizeof(int), cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(M->tend, te.data(), Bx * sizeof(int), cudaMemcpyHostToDevice));
+    }
     CK(cudaMemcpy(M->img, images, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->start, start.data(), B * sizeof(int), cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->pos, pos.data(), B * sizeof(int), cudaMemcpyHostToDevice));
@@ -784,19 +1063,12 @@ int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, co
 
 }   // extern "C"
 
-// The forward pass of the uploaded batch (train = false: up to the outputs; the prediction head and decoder only
-// if want_pred), or the forward pass, the losses and the gradients (train = true).
-static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred) {
-    if (!M->B) return -1;
+// The encoder of B frames (M->img) -> the conv maps and v (M->vf).
+static void encoder_fwd(Model* M, int B) {
     const Dims& D = M->D;
-    const int B = M->B, K = M->T, d = D.d, L = D.L;   // K: the batch's sequence length (ctx when training)
     const float* P = M->P;
-    float* G = M->G;
     const long* off = M->off;
-    const int P1 = D.h1 * D.h1, P2 = D.h2 * D.h2, P3 = D.h3 * D.h3, q0 = D.p0 * D.p0, q1 = D.p1 * D.p1;
-    const int sp = D.pimg * D.pimg;
-
-    // ---- encoder (all frames) ----
+    const int P1 = D.h1 * D.h1, P2 = D.h2 * D.h2, P3 = D.h3 * D.h3;
     float* x0 = M->x0.get((size_t)B * 5 * D.img * D.img);
     float* a1 = M->a1.get((size_t)B * D.c1 * P1);
     float* a2 = M->a2.get((size_t)B * D.c2 * P2);
@@ -805,6 +1077,7 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     float* cols2 = M->cols2.get((size_t)D.c1 * KK * B * P2);
     float* cols3 = M->cols3.get((size_t)D.c2 * KK * B * P3);
     float* Y = M->Y.get((size_t)std::max(D.c1 * P1, std::max(D.c2 * P2, D.c3 * P3)) * B);
+    float* vf = M->vf.get((size_t)B * D.feat);
     k_input<<<GRID((long)B * 5 * D.img * D.img)>>>(M->img, x0, B, D.img);
     k_im2col<<<GRID((long)5 * KK * B * P1)>>>(x0, 5L * D.img * D.img, (long)D.img * D.img, 5, D.img, B, cols1);
     gemm(M, false, false, D.c1, B * P1, 5 * KK, P + off[C1W], 5 * KK, cols1, B * P1, 0.f, Y, B * P1);
@@ -815,15 +1088,122 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     k_im2col<<<GRID((long)D.c2 * KK * B * P3)>>>(a2, (long)D.c2 * P2, P2, D.c2, D.h2, B, cols3);
     gemm(M, false, false, D.c3, B * P3, D.c2 * KK, P + off[C3W], D.c2 * KK, cols3, B * P3, 0.f, Y, B * P3);
     k_conv_out<<<GRID((long)B * D.c3 * P3)>>>(Y, P + off[C3B], a3, D.c3, B, P3);
-
-    // ---- tokens and Transformer ----
-    float* vf = M->vf.get((size_t)B * D.feat);
-    float* tin = M->tin.get((size_t)B * D.in_dim);
-    float* xin = M->xin.get((size_t)B * d);
     linear(M, vf, a3, P + off[EFW], P + off[EFB], B, D.enc_flat, D.feat, 1);
-    k_token<<<GRID((long)B * D.in_dim)>>>(vf, M->drv, M->pa, M->pr, tin, B, D.feat, M->cfg.use_prev_reward);
-    gemm(M, false, true, B, d, D.in_dim, tin, D.in_dim, P + off[INW], D.in_dim, 0.f, xin, d);
-    k_bias_wpe<<<GRID((long)B * d)>>>(xin, P + off[INB], P + off[WPE], M->pos, B, d);
+}
+
+static int grow_ints(int** p, int* cap, int need, int which) {
+    (void)which;
+    if (need <= *cap) return 0;
+    cudaFree(*p);
+    return cudaMalloc(p, (size_t)need * sizeof(int)) == cudaSuccess ? 0 : -1;
+}
+
+// Latent dynamics losses and their gradients (heads only: v is detached), as seq_dyn in vm_agent.cpp, for all the
+// sequences of the batch at once. Chains of imagined steps start at every frame t; step k uses the action of frame
+// j = t + k - 1 and stops at the horizon, at the sequence's end and at an episode start.
+static int dyn_losses(Model* M, const PPOConfig& pc, float inv_B) {
+    const Dims& D = M->D;
+    const int T = M->T, B = M->B, F = D.feat, Hd = D.dh, R = D.rpx, UT = F + 3, UH = F + 4;
+    const float* P = M->P;
+    float* G = M->G;
+    const long* off = M->off;
+    const int Hmax = std::min(pc.dyn_horizon, T);
+    M->coef[4] = pc.dyn_coef; M->coef[5] = pc.dyn_h_coef; M->coef[6] = pc.dyn_x_coef;
+    std::vector<int> hb, hj, hp, hlt, hhl, lev = {0};
+    for (int k = 1; k <= Hmax; k++) {
+        const int begin = (int)hb.size();
+        if (k == 1) {
+            for (int b = 0; b < B; b++) { hb.push_back(b); hj.push_back(b); hp.push_back(-1); }
+        } else {
+            for (int q = lev[k - 2]; q < lev[k - 1]; q++) {
+                const int b = hb[q], jl = b % T + k - 1, jf = b + k - 1;
+                if (jl > T - 1 || M->es_host[jf]) continue;    // past the sequence, or step j-1 ended the episode
+                hb.push_back(b); hj.push_back(jf); hp.push_back(q);
+            }
+        }
+        if ((int)hb.size() == begin) break;
+        lev.push_back((int)hb.size());
+    }
+    const int np = (int)hb.size(), nl = (int)lev.size() - 1;
+    for (int p = 0; p < np; p++) {
+        const int jf = hj[p], jl = jf % T;
+        int k = 1;
+        while (lev[k] <= p) k++;
+        hlt.push_back(jl + 1 <= T - 1 && !M->es_host[jf + 1] ? jf + 1 : -1);
+        hhl.push_back(pc.dyn_h_horizon <= 0 || k <= pc.dyn_h_horizon);
+    }
+    int cap = M->ch_cap;
+    if (grow_ints(&M->ch_b, &cap, np, 0) || grow_ints(&M->ch_j, &cap, np, 1) || grow_ints(&M->ch_par, &cap, np, 2) ||
+        grow_ints(&M->ch_lt, &cap, np, 3) || grow_ints(&M->ch_hl, &cap, np, 4)) return -1;
+    M->ch_cap = std::max(M->ch_cap, np);
+    CK(cudaMemcpy(M->ch_b, hb.data(), np * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->ch_j, hj.data(), np * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->ch_par, hp.data(), np * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->ch_lt, hlt.data(), np * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->ch_hl, hhl.data(), np * sizeof(int), cudaMemcpyHostToDevice));
+    float* vf = M->vf.p;
+    float* uT = M->y_uT.get((size_t)np * UT); float* uH = M->y_uH.get((size_t)np * UH);
+    float* hT = M->y_hT.get((size_t)np * Hd); float* hH = M->y_hH.get((size_t)np * Hd);
+    float* h = M->y_h.get(np); float* ys = M->y_s.get((size_t)np * F);
+    float* hX = M->y_hX.get((size_t)np * Hd); float* x = M->y_x.get((size_t)np * R);
+    float* hX0 = M->y_hX0.get((size_t)B * Hd); float* x0 = M->y_x0.get((size_t)B * R);
+    for (int k = 1; k <= nl; k++) {   // level by level: each depends on the previous one
+        const int p0 = lev[k - 1], n = lev[k] - p0;
+        k_dyn_in<<<GRID((long)n * UH)>>>(vf, ys, M->ch_b + p0, M->ch_j + p0, M->ch_par + p0, M->act, M->drv, nullptr,
+                                          uT + (size_t)p0 * UT, uH + (size_t)p0 * UH, n, F);
+        linear(M, hH + (size_t)p0 * Hd, uH + (size_t)p0 * UH, P + off[H1W], P + off[H1B], n, UH, Hd, 1);
+        linear(M, h + p0, hH + (size_t)p0 * Hd, P + off[H2W], P + off[H2B], n, Hd, 1, 2);
+        linear(M, hT + (size_t)p0 * Hd, uT + (size_t)p0 * UT, P + off[T1W], P + off[T1B], n, UT, Hd, 1);
+        gemm(M, false, true, n, F, Hd, hT + (size_t)p0 * Hd, Hd, P + off[T2W], Hd, 0.f, ys + (size_t)p0 * F, F);
+        k_dyn_res<<<GRID((long)n * F)>>>(ys + (size_t)p0 * F, P + off[T2B], uT + (size_t)p0 * UT, n, F);
+    }
+    linear(M, hX, ys, P + off[X1W], P + off[X1B], np, F, Hd, 1);
+    linear(M, x, hX, P + off[X2W], P + off[X2B], np, Hd, R, 0);
+    linear(M, hX0, vf, P + off[X1W], P + off[X1B], B, F, Hd, 1);
+    linear(M, x0, hX0, P + off[X2W], P + off[X2B], B, Hd, R, 0);
+    float* gs = M->g_s.get((size_t)np * F); float* gh = M->g_h.get(np);
+    float* ghT = M->g_hT.get((size_t)np * Hd); float* ghH = M->g_hH.get((size_t)np * Hd);
+    float* guT = M->g_uT.get((size_t)np * UT); float* guH = M->g_uH.get((size_t)np * UH);
+    float* ghX = M->g_hX.get((size_t)np * Hd); float* gx = M->g_x.get((size_t)np * R);
+    float* ghX0 = M->g_hX0.get((size_t)B * Hd); float* gx0 = M->g_x0.get((size_t)B * R);
+    const float cs = inv_B * pc.dyn_coef * 2.0f / F, chh = inv_B * pc.dyn_h_coef * 2.0f, cx = inv_B * pc.dyn_x_coef * 2.0f / R;
+    k_dyn_loss<<<(np + 127) / 128, 128>>>(ys, h, vf, M->ch_lt, M->ch_hl, M->ch_j, M->ndrv, gs, gh, np, F, cs, chh, M->acc,
+                                          M->drv, pc.drive_changed_weight, pc.drive_change_eps);
+    k_dyn_xloss<<<(unsigned)(((long)np * R + 255) / 256), 256>>>(x, M->ns, M->ch_j, gx, np, D.pimg, cx, M->acc);
+    k_dyn_xloss<<<(unsigned)(((long)B * R + 255) / 256), 256>>>(x0, M->cs, nullptr, gx0, B, D.pimg, cx, M->acc);
+    // backward: the decoders, then the chains from the last level down
+    linear_bwd(M, gx, hX, P + off[X2W], np, Hd, R, ghX, false, G + off[X2W], G + off[X2B]);
+    k_mask<<<GRID((long)np * Hd)>>>(ghX, hX, (long)np * Hd);
+    linear_bwd(M, ghX, ys, P + off[X1W], np, F, Hd, gs, true, G + off[X1W], G + off[X1B]);
+    linear_bwd(M, gx0, hX0, P + off[X2W], B, Hd, R, ghX0, false, G + off[X2W], G + off[X2B]);
+    k_mask<<<GRID((long)B * Hd)>>>(ghX0, hX0, (long)B * Hd);
+    linear_bwd(M, ghX0, vf, P + off[X1W], B, F, Hd, nullptr, false, G + off[X1W], G + off[X1B]);
+    for (int k = nl; k >= 1; k--) {
+        const int p0 = lev[k - 1], n = lev[k] - p0;
+        linear_bwd(M, gh + p0, hH + (size_t)p0 * Hd, P + off[H2W], n, Hd, 1, ghH + (size_t)p0 * Hd, false,
+                   G + off[H2W], G + off[H2B]);
+        k_mask<<<GRID((long)n * Hd)>>>(ghH + (size_t)p0 * Hd, hH + (size_t)p0 * Hd, (long)n * Hd);
+        linear_bwd(M, ghH + (size_t)p0 * Hd, uH + (size_t)p0 * UH, P + off[H1W], n, UH, Hd, guH + (size_t)p0 * UH, false,
+                   G + off[H1W], G + off[H1B]);
+        linear_bwd(M, gs + (size_t)p0 * F, hT + (size_t)p0 * Hd, P + off[T2W], n, Hd, F, ghT + (size_t)p0 * Hd, false,
+                   G + off[T2W], G + off[T2B]);
+        k_mask<<<GRID((long)n * Hd)>>>(ghT + (size_t)p0 * Hd, hT + (size_t)p0 * Hd, (long)n * Hd);
+        linear_bwd(M, ghT + (size_t)p0 * Hd, uT + (size_t)p0 * UT, P + off[T1W], n, UT, Hd, guT + (size_t)p0 * UT, false,
+                   G + off[T1W], G + off[T1B]);
+        k_dyn_back<<<GRID((long)n * F)>>>(gs, guT, guH, M->ch_par, p0, n, F);
+    }
+    CK(cudaGetLastError());
+    return 0;
+}
+
+// The Transformer layers and final LayerNorm on B token rows M->xin -> M->lnf. Row b attends to rows start[b]..end[b]
+// (end = NULL: ..b), all within its block of K rows.
+static void transformer_fwd(Model* M, int B, int K, const int* start, const int* end) {
+    const Dims& D = M->D;
+    const int d = D.d, L = D.L;
+    const float* P = M->P;
+    const long* off = M->off;
+    const float* xin = M->xin.p;
     float* ln1 = M->ln1.get((size_t)L * B * d); float* ln1m = M->ln1m.get((size_t)L * B); float* ln1r = M->ln1r.get((size_t)L * B);
     float* qkv = M->qkv.get((size_t)L * B * 3 * d); float* att = M->att.get((size_t)L * B * D.nh * K);
     float* atty = M->atty.get((size_t)L * B * d); float* res1 = M->res1.get((size_t)L * B * d);
@@ -837,7 +1217,7 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
         const size_t bd = (size_t)l * B * d;
         k_ln_fwd<<<lnb, 256>>>(ln1 + bd, ln1m + l * B, ln1r + l * B, x, P + off[LN1W] + l * d, P + off[LN1B] + l * d, B, d);
         linear(M, qkv + bd * 3, ln1 + bd, P + off[QKVW] + (size_t)l * 3 * d * d, P + off[QKVB] + l * 3 * d, B, d, 3 * d, 0);
-        k_attn_fwd<<<(B * D.nh + 127) / 128, 128>>>(qkv + bd * 3, att + (size_t)l * B * D.nh * K, atty + bd, M->start, B, K, d, D.nh);
+        k_attn_fwd<<<(B * D.nh + 127) / 128, 128>>>(qkv + bd * 3, att + (size_t)l * B * D.nh * K, atty + bd, start, end, B, K, d, D.nh);
         cudaMemcpyAsync(res1 + bd, x, sizeof(float) * B * d, cudaMemcpyDeviceToDevice);
         gemm(M, false, true, B, d, d, atty + bd, d, P + off[APW] + (size_t)l * d * d, d, 1.f, res1 + bd, d);
         k_bias_act<<<GRID((long)B * d)>>>(res1 + bd, P + off[APB] + l * d, B, d, 0);
@@ -850,6 +1230,171 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
         x = res2 + bd;
     }
     k_ln_fwd<<<lnb, 256>>>(lnf, lnfm, lnfr, x, P + off[LNFW], P + off[LNFB], B, d);
+}
+
+// Backward of transformer_fwd: from M->dz (the gradient at M->lnf) to M->dres (at M->xin); parameter gradients into G.
+static int transformer_bwd(Model* M, int B, int K, const int* start, const int* end) {
+    const Dims& D = M->D;
+    const int d = D.d, L = D.L;
+    const float* P = M->P;
+    float* G = M->G;
+    const long* off = M->off;
+    const int lnb = (B + 7) / 8;
+    const float *xin = M->xin.p, *ln1 = M->ln1.p, *ln1m = M->ln1m.p, *ln1r = M->ln1r.p, *qkv = M->qkv.p, *att = M->att.p,
+                *atty = M->atty.p, *res1 = M->res1.p, *ln2 = M->ln2.p, *ln2m = M->ln2m.p, *ln2r = M->ln2r.p,
+                *fch = M->fch.p, *fchg = M->fchg.p, *res2 = M->res2.p, *lnfm = M->lnfm.p, *lnfr = M->lnfr.p, *dz = M->dz.p;
+    float* dres = M->dres.get((size_t)B * d);
+    float* dln = M->dln.get((size_t)B * d);
+    float* datty = M->datty.get((size_t)B * d);
+    float* dqkv = M->dqkv.get((size_t)B * 3 * d);
+    float* dfch = M->dfch.get((size_t)B * D.dff);
+    float* dfchg = M->dfchg.get((size_t)B * D.dff);
+    CK(cudaMemsetAsync(dres, 0, sizeof(float) * B * d));
+    k_ln_bwd<<<lnb, 256>>>(dres, G + off[LNFW], G + off[LNFB], dz, res2 + (size_t)(L - 1) * B * d, P + off[LNFW], lnfm, lnfr, B, d);
+    for (int l = L - 1; l >= 0; l--) {
+        const size_t bd = (size_t)l * B * d;
+        const float* xl = l == 0 ? xin : res2 + (size_t)(l - 1) * B * d;
+        linear_bwd(M, dres, fchg + (size_t)l * B * D.dff, P + off[FPW] + (size_t)l * d * D.dff, B, D.dff, d, dfchg, false,
+                   G + off[FPW] + (size_t)l * d * D.dff, G + off[FPB] + l * d);
+        k_gelu_bwd<<<GRID((long)B * D.dff)>>>(dfch, fch + (size_t)l * B * D.dff, dfchg, (long)B * D.dff);
+        linear_bwd(M, dfch, ln2 + bd, P + off[FCW] + (size_t)l * D.dff * d, B, d, D.dff, dln, false,
+                   G + off[FCW] + (size_t)l * D.dff * d, G + off[FCB] + l * D.dff);
+        k_ln_bwd<<<lnb, 256>>>(dres, G + off[LN2W] + l * d, G + off[LN2B] + l * d, dln, res1 + bd, P + off[LN2W] + l * d,
+                               ln2m + l * B, ln2r + l * B, B, d);
+        linear_bwd(M, dres, atty + bd, P + off[APW] + (size_t)l * d * d, B, d, d, datty, false,
+                   G + off[APW] + (size_t)l * d * d, G + off[APB] + l * d);
+        CK(cudaMemsetAsync(dqkv, 0, sizeof(float) * B * 3 * d));
+        k_attn_bwd<<<(B * D.nh + 127) / 128, 128>>>(dqkv, datty, qkv + bd * 3, att + (size_t)l * B * D.nh * K, start, end, B, K, d, D.nh);
+        linear_bwd(M, dqkv, ln1 + bd, P + off[QKVW] + (size_t)l * 3 * d * d, B, d, 3 * d, dln, false,
+                   G + off[QKVW] + (size_t)l * 3 * d * d, G + off[QKVB] + l * 3 * d);
+        k_ln_bwd<<<lnb, 256>>>(dres, G + off[LN1W] + l * d, G + off[LN1B] + l * d, dln, xl, P + off[LN1W] + l * d,
+                               ln1m + l * B, ln1r + l * B, B, d);
+    }
+    return 0;
+}
+
+// Patch tokens (D.patch > 0): the forward pass, and with train the losses and gradients (as run_model for the CNN
+// model; the frame, drives and move losses only).
+static int run_patch(Model* M, const PPOConfig* pcp, bool train, bool want_pred) {
+    const Dims& D = M->D;
+    const int B = M->B, T = M->T, d = D.d, np = D.npch, nt = D.ntok, Bx = B * nt, KT = T * nt, sp = D.pimg * D.pimg;
+    const float* P = M->P;
+    float* G = M->G;
+    const long* off = M->off;
+    float* tpx = M->tpx.get((size_t)B * np * D.pdim);
+    float* pemb = M->pemb.get((size_t)B * np * d);
+    float* xin = M->xin.get((size_t)Bx * d);
+    k_patch_px<<<GRID((long)B * np * D.pdim)>>>(M->img, tpx, B, D.img, D.patch, D.gp);
+    linear(M, pemb, tpx, P + off[PEW], P + off[PEB], B * np, D.pdim, d, 0);
+    k_ptok<<<GRID((long)Bx * d)>>>(pemb, P + off[POS2D], P + off[TYP], P + off[DEW], P + off[DEB], P + off[MEW],
+                                    P + off[MEB], P + off[CEW], P + off[CEB], P + off[WPE], M->pos, M->drv, M->pa, M->pr,
+                                    M->cfg.use_prev_reward, xin, B, np, d);
+    transformer_fwd(M, Bx, KT, M->tstart, M->tend);
+    float* lnf = M->lnf.p;
+    float* zm = M->zm.get((size_t)B * d);
+    k_tok_rows<<<GRID((long)B * d)>>>(zm, lnf, B, nt, np + 1, d, 0);
+    float* pi = M->pi.get((size_t)B * 3);
+    float* pih = D.pih ? M->pih.get((size_t)B * D.pih) : nullptr;
+    if (D.pih) {
+        linear(M, pih, zm, P + off[PHW], P + off[PHB], B, d, D.pih, 1);
+        linear(M, pi, pih, P + off[PIW], P + off[PIB], B, D.pih, 3, 0);
+    } else {
+        linear(M, pi, zm, P + off[PIW], P + off[PIB], B, d, 3, 0);
+    }
+    const long R = (long)B * (np + 1);
+    float* pin = M->pin.get((size_t)R * D.pin_dim);
+    float* ph1 = M->ph1.get((size_t)R * D.ph);
+    float* pdel = M->pdel.get((size_t)B * np * D.cpx);
+    float* pdrv = M->pdrv.get((size_t)B * 2);
+    float* pout = M->pout.get((size_t)3 * B * sp);
+    if (want_pred) {
+        k_ppin<<<GRID(R * D.pin_dim)>>>(lnf, M->act, pin, B, np, d, 0, 0.f);
+        linear(M, ph1, pin, P + off[PR1W], P + off[PR1B], (int)R, D.pin_dim, D.ph, 1);
+        linear(M, pdel, ph1, P + off[PR2W], P + off[PR2B], B * np, D.ph, D.cpx, 0);
+        linear(M, pdrv, ph1 + (size_t)B * np * D.ph, P + off[DRW], P + off[DRB], B, D.ph, 2, 2);
+        k_cells_frame<<<GRID((long)B * np * D.cpx)>>>(pdel, pout, B, D.pimg, D.gp, 1);
+        k_residual<<<GRID(3L * B * sp)>>>(pout, M->cs, B, sp);
+    }
+    if (!train) { CK(cudaGetLastError()); return 0; }
+    const PPOConfig& pc = *pcp;
+    CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
+    CK(cudaMemsetAsync(M->acc, 0, 21 * sizeof(double)));
+    M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef;
+    M->coef[3] = M->coef[4] = M->coef[5] = M->coef[6] = 0.f;
+    const float inv_B = 1.0f / B;
+    float* dpout = M->dpout.get((size_t)3 * B * sp);
+    float* dpdrv = M->dpdrv.get((size_t)B * 2);
+    float* dpi = M->dpi.get((size_t)B * 3);
+    const bool have_pred = pc.pred_coef > 0.f || pc.drive_coef > 0.f;
+    k_frame_loss<<<(B * sp + 255) / 256, 256>>>(pout, M->cs, M->ns, dpout, B, sp,
+                                                 inv_B * pc.pred_coef * 2.0f / D.small_px, 1.0f + pc.pred_changed_weight, M->acc);
+    k_head_loss<<<(B + 127) / 128, 128>>>(pdrv, M->ndrv, pi, M->act, P + off[LOGSTD], dpdrv, dpi, G + off[LOGSTD], B,
+                                          inv_B, pc.drive_coef, pc.move_coef, M->acc, M->drv, pc.drive_changed_weight,
+                                          pc.drive_change_eps);
+    // backward: the heads into the token outputs dz [Bx, d]
+    float* dz = M->dz.get((size_t)Bx * d);
+    CK(cudaMemsetAsync(dz, 0, sizeof(float) * Bx * d));
+    float* dzm = M->dzm.get((size_t)B * d);
+    CK(cudaMemsetAsync(dzm, 0, sizeof(float) * B * d));
+    float* dzm_pi = pc.pi_detach ? nullptr : dzm;
+    if (D.pih) {
+        float* dpih = M->dpih.get((size_t)B * D.pih);
+        linear_bwd(M, dpi, pih, P + off[PIW], B, D.pih, 3, dpih, false, G + off[PIW], G + off[PIB]);
+        k_mask<<<GRID((long)B * D.pih)>>>(dpih, pih, (long)B * D.pih);
+        linear_bwd(M, dpih, zm, P + off[PHW], B, d, D.pih, dzm_pi, true, G + off[PHW], G + off[PHB]);
+    } else {
+        linear_bwd(M, dpi, zm, P + off[PIW], B, d, 3, dzm_pi, true, G + off[PIW], G + off[PIB]);
+    }
+    k_tok_rows<<<GRID((long)B * d)>>>(dzm, dz, B, nt, np + 1, d, 1);
+    const float sc = pc.pred_backbone_scale;
+    if (have_pred) {
+        float* dpdel = M->dpdel.get((size_t)B * np * D.cpx);
+        float* dph1 = M->dph1.get((size_t)R * D.ph);
+        float* dpin = M->dpin.get((size_t)R * D.pin_dim);
+        k_cells_frame<<<GRID((long)B * np * D.cpx)>>>(dpdel, dpout, B, D.pimg, D.gp, 0);
+        linear_bwd(M, dpdel, ph1, P + off[PR2W], B * np, D.ph, D.cpx, dph1, false, G + off[PR2W], G + off[PR2B]);
+        linear_bwd(M, dpdrv, ph1 + (size_t)B * np * D.ph, P + off[DRW], B, D.ph, 2, dph1 + (size_t)B * np * D.ph, false,
+                   G + off[DRW], G + off[DRB]);
+        k_mask<<<GRID(R * D.ph)>>>(dph1, ph1, R * D.ph);
+        linear_bwd(M, dph1, pin, P + off[PR1W], (int)R, D.pin_dim, D.ph, dpin, false, G + off[PR1W], G + off[PR1B]);
+        if (sc != 0.f) k_ppin<<<GRID(R * d)>>>(dz, nullptr, dpin, B, np, d, 1, sc);
+    }
+    if (transformer_bwd(M, Bx, KT, M->tstart, M->tend)) return -1;
+    float* dpemb = M->dpemb.get((size_t)B * np * d);
+    k_ptok_grad<<<GRID((long)Bx * d)>>>(M->dres.p, M->pos, M->drv, M->pa, M->pr, M->cfg.use_prev_reward, G + off[WPE],
+                                         G + off[TYP], G + off[POS2D], G + off[DEW], G + off[DEB], G + off[MEW],
+                                         G + off[MEB], G + off[CEW], G + off[CEB], dpemb, B, np, d);
+    linear_bwd(M, dpemb, tpx, P + off[PEW], B * np, D.pdim, d, nullptr, false, G + off[PEW], G + off[PEB]);
+    CK(cudaGetLastError());
+    return 0;
+}
+
+// The forward pass of the uploaded batch (train = false: up to the outputs; the prediction head and decoder only
+// if want_pred), or the forward pass, the losses and the gradients (train = true).
+static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred) {
+    if (!M->B) return -1;
+    if (M->D.patch) return run_patch(M, pcp, train, want_pred);
+    const Dims& D = M->D;
+    const int B = M->B, K = M->T, d = D.d;   // K: the batch's sequence length (ctx when training)
+    const float* P = M->P;
+    float* G = M->G;
+    const long* off = M->off;
+    const int P1 = D.h1 * D.h1, P2 = D.h2 * D.h2, P3 = D.h3 * D.h3, q0 = D.p0 * D.p0, q1 = D.p1 * D.p1;
+    const int sp = D.pimg * D.pimg;
+
+    // ---- encoder (all frames) ----
+    encoder_fwd(M, B);
+    float *a1 = M->a1.p, *a2 = M->a2.p, *a3 = M->a3.p, *cols1 = M->cols1.p, *cols2 = M->cols2.p, *cols3 = M->cols3.p;
+
+    // ---- tokens and Transformer ----
+    float* vf = M->vf.p;
+    float* tin = M->tin.get((size_t)B * D.in_dim);
+    float* xin = M->xin.get((size_t)B * d);
+    k_token<<<GRID((long)B * D.in_dim)>>>(vf, M->drv, M->pa, M->pr, tin, B, D.feat, M->cfg.use_prev_reward);
+    gemm(M, false, true, B, d, D.in_dim, tin, D.in_dim, P + off[INW], D.in_dim, 0.f, xin, d);
+    k_bias_wpe<<<GRID((long)B * d)>>>(xin, P + off[INB], P + off[WPE], M->pos, B, d);
+    transformer_fwd(M, B, K, M->start, nullptr);
+    float* lnf = M->lnf.p;
 
     // ---- heads ----
     float* pi = M->pi.get((size_t)B * 3);
@@ -891,7 +1436,7 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     if (!train) { CK(cudaGetLastError()); return 0; }
     const PPOConfig& pc = *pcp;
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
-    CK(cudaMemsetAsync(M->acc, 0, 13 * sizeof(double)));
+    CK(cudaMemsetAsync(M->acc, 0, 21 * sizeof(double)));
     const bool have_inv = pc.inv_coef > 0.f && D.ih > 0;
     M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef; M->coef[3] = have_inv ? pc.inv_coef : 0.f;
 
@@ -904,7 +1449,8 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     k_frame_loss<<<(B * sp + 255) / 256, 256>>>(pout, M->cs, M->ns, dpout, B, sp,
                                                  inv_B * pc.pred_coef * 2.0f / D.small_px, 1.0f + pc.pred_changed_weight, M->acc);
     k_head_loss<<<(B + 127) / 128, 128>>>(pdrv, M->ndrv, pi, M->act, P + off[LOGSTD], dpdrv, dpi, G + off[LOGSTD], B,
-                                          inv_B, pc.drive_coef, pc.move_coef, M->acc);
+                                          inv_B, pc.drive_coef, pc.move_coef, M->acc, M->drv, pc.drive_changed_weight,
+                                          pc.drive_change_eps);
     float *iv_in = nullptr, *iv_h = nullptr, *div_out = nullptr;
     if (have_inv) {   // inverse dynamics: [v_t, v_t+1] -> the executed (dx, dy)
         const int F = D.feat;
@@ -917,6 +1463,8 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
         linear(M, iv_out, iv_h, P + off[IV2W], P + off[IV2B], B, D.ih, 2, 0);
         k_inv_loss<<<(B + 127) / 128, 128>>>(iv_out, M->act, M->ivalid, div_out, B, inv_B, pc.inv_coef, M->acc);
     }
+    const bool have_dyn = D.dh > 0 && pc.dyn_horizon > 0 && (pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f);
+    if (have_dyn && dyn_losses(M, pc, inv_B)) return -1;
     const float sc = pc.pred_backbone_scale;
 
     // ---- decoder backward ----
@@ -965,33 +1513,8 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     }
 
     // ---- Transformer backward ----
-    float* dres = M->dres.get((size_t)B * d);
-    float* dln = M->dln.get((size_t)B * d);
-    float* datty = M->datty.get((size_t)B * d);
-    float* dqkv = M->dqkv.get((size_t)B * 3 * d);
-    float* dfch = M->dfch.get((size_t)B * D.dff);
-    float* dfchg = M->dfchg.get((size_t)B * D.dff);
-    CK(cudaMemsetAsync(dres, 0, sizeof(float) * B * d));
-    k_ln_bwd<<<lnb, 256>>>(dres, G + off[LNFW], G + off[LNFB], dz, res2 + (size_t)(L - 1) * B * d, P + off[LNFW], lnfm, lnfr, B, d);
-    for (int l = L - 1; l >= 0; l--) {
-        const size_t bd = (size_t)l * B * d;
-        const float* xl = l == 0 ? xin : res2 + (size_t)(l - 1) * B * d;
-        linear_bwd(M, dres, fchg + (size_t)l * B * D.dff, P + off[FPW] + (size_t)l * d * D.dff, B, D.dff, d, dfchg, false,
-                   G + off[FPW] + (size_t)l * d * D.dff, G + off[FPB] + l * d);
-        k_gelu_bwd<<<GRID((long)B * D.dff)>>>(dfch, fch + (size_t)l * B * D.dff, dfchg, (long)B * D.dff);
-        linear_bwd(M, dfch, ln2 + bd, P + off[FCW] + (size_t)l * D.dff * d, B, d, D.dff, dln, false,
-                   G + off[FCW] + (size_t)l * D.dff * d, G + off[FCB] + l * D.dff);
-        k_ln_bwd<<<lnb, 256>>>(dres, G + off[LN2W] + l * d, G + off[LN2B] + l * d, dln, res1 + bd, P + off[LN2W] + l * d,
-                               ln2m + l * B, ln2r + l * B, B, d);
-        linear_bwd(M, dres, atty + bd, P + off[APW] + (size_t)l * d * d, B, d, d, datty, false,
-                   G + off[APW] + (size_t)l * d * d, G + off[APB] + l * d);
-        CK(cudaMemsetAsync(dqkv, 0, sizeof(float) * B * 3 * d));
-        k_attn_bwd<<<(B * D.nh + 127) / 128, 128>>>(dqkv, datty, qkv + bd * 3, att + (size_t)l * B * D.nh * K, M->start, B, K, d, D.nh);
-        linear_bwd(M, dqkv, ln1 + bd, P + off[QKVW] + (size_t)l * 3 * d * d, B, d, 3 * d, dln, false,
-                   G + off[QKVW] + (size_t)l * 3 * d * d, G + off[QKVB] + l * 3 * d);
-        k_ln_bwd<<<lnb, 256>>>(dres, G + off[LN1W] + l * d, G + off[LN1B] + l * d, dln, xl, P + off[LN1W] + l * d,
-                               ln1m + l * B, ln1r + l * B, B, d);
-    }
+    if (transformer_bwd(M, B, K, M->start, nullptr)) return -1;
+    float* dres = M->dres.p;
     k_wpe_grad<<<GRID((long)B * d)>>>(dres, M->pos, G + off[WPE], B, d);
     float* dtin = M->dtin.get((size_t)B * D.in_dim);
     float* dvf = M->dvf.get((size_t)B * D.feat);
@@ -1040,8 +1563,8 @@ extern "C" {
 int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
     Model* M = (Model*)h;
     const PPOConfig& pc = *pcp;
-    if (pc.use_ppo || pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f) {
-        fprintf(stderr, "vm_cuda: only the prediction-only update (use_ppo=0, no latent dynamics)\n");
+    if (pc.use_ppo) {
+        fprintf(stderr, "vm_cuda: only the prediction-only update (use_ppo=0)\n");
         return -1;
     }
     if (M->T != M->D.K) { fprintf(stderr, "vm_cuda: training sequences are ctx steps (vmc_set_batch)\n"); return -1; }
@@ -1058,7 +1581,8 @@ int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drive
     if (run_model(M, nullptr, false, want_pred)) return -1;
     const int B = M->B, sp = D.pimg * D.pimg;
     float* o = M->fout.get((size_t)B * 4);
-    k_fwd_out<<<(B + 127) / 128, 128>>>(M->pi.p, M->lnf.p, M->P + M->off[VW], M->P + M->off[VB], o, B, D.d);
+    const float* zsrc = D.patch ? M->zm.p : M->lnf.p;   // z: the move token's output with patch tokens
+    k_fwd_out<<<(B + 127) / 128, 128>>>(M->pi.p, zsrc, M->P + M->off[VW], M->P + M->off[VB], o, B, D.d);
     std::vector<float> ho((size_t)B * 4);
     CK(cudaMemcpy(ho.data(), o, ho.size() * sizeof(float), cudaMemcpyDeviceToHost));
     for (int b = 0; b < B; b++) {
@@ -1066,13 +1590,82 @@ int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drive
         if (click_p) click_p[b] = ho[4 * b + 2];
         if (value) value[b] = ho[4 * b + 3];
     }
-    if (z) CK(cudaMemcpy(z, M->lnf.p, (size_t)B * D.d * sizeof(float), cudaMemcpyDeviceToHost));
+    if (z) CK(cudaMemcpy(z, zsrc, (size_t)B * D.d * sizeof(float), cudaMemcpyDeviceToHost));
     if (want_pred && pred_frames) {
         float* f = M->fhwc.get((size_t)B * 3 * sp);
         k_to_hwc<<<GRID(3L * B * sp)>>>(M->pout.p, f, B, sp);
         CK(cudaMemcpy(pred_frames, f, (size_t)B * 3 * sp * sizeof(float), cudaMemcpyDeviceToHost));
     }
     if (want_pred && pred_drives) CK(cudaMemcpy(pred_drives, M->pdrv.p, (size_t)B * 2 * sizeof(float), cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+int vmc_encode(void* h, int n, const uint8_t* images, float* vf_out) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (n < 1 || D.patch) return -1;
+    alloc_batch(M, n);
+    CK(cudaMemcpy(M->img, images, (size_t)n * D.img * D.img * 3, cudaMemcpyHostToDevice));
+    M->B = 0;   // the uploaded batch is gone
+    encoder_fwd(M, n);
+    CK(cudaMemcpy(vf_out, M->vf.p, (size_t)n * D.feat * sizeof(float), cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+int vmc_imagine(void* h, int n, int H, const float* s0, const float* h0, const float* actions, float* hunger,
+                float* latents, float* frames) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.dh || n < 1 || H < 1) return -1;
+    const int F = D.feat, Hd = D.dh, R = D.rpx, UT = F + 3, UH = F + 4;
+    const float* P = M->P;
+    const long* off = M->off;
+    float* sv = M->im_s.get((size_t)n * F); float* s2 = M->im_s2.get((size_t)n * F);
+    float* hh = M->im_h.get((size_t)n * (H + 1));
+    float* act = M->im_act.get((size_t)n * H * 3);
+    float* uT = M->im_uT.get((size_t)n * UT); float* uH = M->im_uH.get((size_t)n * UH);
+    float* hT = M->im_hT.get((size_t)n * Hd); float* hHb = M->im_hH.get((size_t)n * Hd);
+    float* hX = M->im_hX.get((size_t)n * Hd);
+    float* lat = latents ? M->y_s.get((size_t)n * H * F) : nullptr;     // reuse training buffers as outputs
+    float* fr = frames ? M->y_x.get((size_t)n * H * R) : nullptr;
+    float* xx = frames ? M->im_x.get((size_t)n * R) : nullptr;
+    float* hout = M->y_h.get((size_t)n * H);
+    CK(cudaMemcpy(sv, s0, (size_t)n * F * sizeof(float), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(hh, h0, (size_t)n * sizeof(float), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(act, actions, (size_t)n * H * 3 * sizeof(float), cudaMemcpyHostToDevice));
+    for (int k = 0; k < H; k++) {
+        k_im_in<<<GRID((long)n * UH)>>>(sv, hh, act, uT, uH, n, H, k, F);
+        linear(M, hHb, uH, P + off[H1W], P + off[H1B], n, UH, Hd, 1);
+        linear(M, hh, hHb, P + off[H2W], P + off[H2B], n, Hd, 1, 2);
+        linear(M, hT, uT, P + off[T1W], P + off[T1B], n, UT, Hd, 1);
+        gemm(M, false, true, n, F, Hd, hT, Hd, P + off[T2W], Hd, 0.f, s2, F);
+        k_dyn_res<<<GRID((long)n * F)>>>(s2, P + off[T2B], uT, n, F);
+        std::swap(sv, s2);
+        k_store_step<<<GRID((long)n)>>>(hout, hh, n, H, k, 1);
+        if (lat) k_store_step<<<GRID((long)n * F)>>>(lat, sv, n, H, k, F);
+        if (fr) {
+            linear(M, hX, sv, P + off[X1W], P + off[X1B], n, F, Hd, 1);
+            linear(M, xx, hX, P + off[X2W], P + off[X2B], n, Hd, R, 0);
+            k_store_step<<<GRID((long)n * R)>>>(fr, xx, n, H, k, R);
+        }
+    }
+    CK(cudaMemcpy(hunger, hout, (size_t)n * H * sizeof(float), cudaMemcpyDeviceToHost));
+    if (lat) CK(cudaMemcpy(latents, lat, (size_t)n * H * F * sizeof(float), cudaMemcpyDeviceToHost));
+    if (fr) CK(cudaMemcpy(frames, fr, (size_t)n * H * R * sizeof(float), cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+int vmc_decode(void* h, int n, const float* latents, float* frames) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.dh || n < 1) return -1;
+    float* sv = M->im_s.get((size_t)n * D.feat);
+    float* hX = M->im_hX.get((size_t)n * D.dh);
+    float* xx = M->im_x.get((size_t)n * D.rpx);
+    CK(cudaMemcpy(sv, latents, (size_t)n * D.feat * sizeof(float), cudaMemcpyHostToDevice));
+    linear(M, hX, sv, M->P + M->off[X1W], M->P + M->off[X1B], n, D.feat, D.dh, 1);
+    linear(M, xx, hX, M->P + M->off[X2W], M->P + M->off[X2B], n, D.dh, D.rpx, 0);
+    CK(cudaMemcpy(frames, xx, (size_t)n * D.rpx * sizeof(float), cudaMemcpyDeviceToHost));
     return 0;
 }
 
@@ -1100,11 +1693,15 @@ int vmc_update(void* h, const PPOConfig* pcp) {
 
 int vmc_stats(void* h, VMCStats* out) {
     Model* M = (Model*)h;
-    double a[13];
+    double a[21];
     CK(cudaMemcpy(a, M->acc, sizeof(a), cudaMemcpyDeviceToHost));
     const double n = M->B > 0 ? M->B : 1;
     memset(out, 0, sizeof(VMCStats));
-    out->loss = (float)((M->coef[0] * a[0] + M->coef[1] * a[2] + M->coef[2] * a[3] + M->coef[3] * a[10]) / n);
+    out->loss = (float)((M->coef[0] * a[0] + M->coef[1] * a[19] + M->coef[2] * a[3] + M->coef[3] * a[10] +
+                         M->coef[4] * a[13] + M->coef[5] * a[20] + M->coef[6] * a[17]) / n);   // weighted drive terms
+    out->dyn_mse = a[14] > 0 ? (float)(a[13] / a[14]) : 0.f;
+    out->dyn_hunger_mse = a[16] > 0 ? (float)(a[15] / a[16]) : 0.f;
+    out->dyn_recon_mse = a[18] > 0 ? (float)(a[17] / a[18]) : 0.f;
     out->inv_mse = a[12] > 0 ? (float)(a[10] / a[12]) : 0.f;
     out->inv_r2 = a[11] > 0 ? (float)(1.0 - a[10] / a[11]) : 0.f;
     out->pred_mse = (float)(a[1] / n);

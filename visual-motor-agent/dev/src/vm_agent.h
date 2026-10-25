@@ -68,6 +68,9 @@ typedef struct {
                                 //     never the Transformer or the encoder
     int pi_own_clip;            // 1 = the policy/value heads' gradient is clipped by its own norm and left out of
                                 //     the rest's (with pi_detach, the head then cannot change the rest's update)
+    float drive_changed_weight; // extra weight of the drives loss (and the latent hunger loss) at steps where hunger
+                                //     changes by more than drive_change_eps (0 = plain MSE; vm-00013)
+    float drive_change_eps;
 } PPOConfig;
 
 typedef struct {

@@ -118,6 +118,9 @@ def agent(request):
          dyn_horizon=4, dyn_h_horizon=1),                                   # hunger head on real latents only
     dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, move_coef=1.5),          # next frame + drives + next move
     dict(pred_coef=1.0, drive_coef=0.5, move_coef=0.5),                     # PPO + move prediction
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, drive_changed_weight=9.0, drive_change_eps=0.3),   # vm-00013
+    dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=1.0, dyn_coef=1.0, dyn_h_coef=2.0, dyn_x_coef=1.0,
+         dyn_horizon=3, drive_changed_weight=4.0, drive_change_eps=0.3),     # weighted hunger head
     dict(use_ppo=0, pred_coef=1.0, drive_coef=0.5, inv_coef=1.0, move_coef=1.5, pi_detach=1),  # head-only move loss
     dict(pred_coef=1.0, drive_coef=0.5, move_coef=0.5, pi_detach=1),        # PPO + move, policy head detached
 ])

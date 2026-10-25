@@ -99,6 +99,14 @@ def dyn_decode(P, s):
     return F.linear(F.relu(F.linear(s, P["dx1w"], P["dx1b"])), P["dx2w"], P["dx2b"])
 
 
+def drive_weights(pc, batch):
+    """[S, T] weight of each step's drives loss: 1 + drive_changed_weight where hunger changes by more than
+    drive_change_eps over the step (C++ drive_weight)."""
+    w = pc.get("drive_changed_weight", 0.0)
+    ch = np.abs(np.asarray(batch["next_drives"], np.float32)[..., 0] - np.asarray(batch["drives"], np.float32)[..., 0])
+    return torch.tensor(np.where((w > 0) & (ch > np.float32(pc.get("drive_change_eps", 0.01))), 1.0 + w, 1.0))
+
+
 def dyn_losses(P, cfg, pc, batch, vf):
     """Latent-dynamics losses (sums over chain steps / tokens divided by S*T), as in C++ seq_dyn.
 
@@ -122,6 +130,7 @@ def dyn_losses(P, cfg, pc, batch, vf):
     cur = downsample_u8(downsample_u8(np.asarray(batch["images"]), cfg["img"] // cfg["pred_img"]), 2)
     tgt_cur = torch.tensor(cur, dtype=dt).reshape(S, T, -1) / 255.0
     lat = hun = rec = torch.zeros((), dtype=dt)
+    wd = drive_weights(pc, batch)
     for si in range(S):
         for t in range(T):
             s = vf[si, t]
@@ -133,7 +142,7 @@ def dyn_losses(P, cfg, pc, batch, vf):
                 if j + 1 <= T - 1 and not es[si, j + 1]:
                     lat = lat + ((s - vf[si, j + 1].detach()) ** 2).mean()
                 if Hh <= 0 or k <= Hh:
-                    hun = hun + (hh - nd[si, j, 0]) ** 2
+                    hun = hun + wd[si, j] * (hh - nd[si, j, 0]) ** 2
                 rec = rec + ((dyn_decode(P, s) - tgt_next[si, j]) ** 2).mean()
             rec = rec + ((dyn_decode(P, vf[si, t]) - tgt_cur[si, t]) ** 2).mean()
     n = S * T
@@ -407,7 +416,7 @@ def ppo_loss(P, cfg, pc, batch):
         w = torch.tensor(1.0 + pc.get("pred_changed_weight", 0.0) * changed, dtype=dt)[:, :, None]
         mse = (w * (pr["pred_frames"] - tgt) ** 2).mean(dim=(2, 3, 4))
         dmse = ((pr["pred_drives"] - torch.tensor(batch["next_drives"], dtype=dt)) ** 2).mean(-1)
-        total = total + pc["pred_coef"] * mse.mean() + pc["drive_coef"] * dmse.mean()
+        total = total + pc["pred_coef"] * mse.mean() + pc["drive_coef"] * (drive_weights(pc, batch) * dmse).mean()
         terms.update(pred=mse.mean().item(), drive=dmse.mean().item())
     if pc.get("inv_coef", 0) > 0 and cfg.get("inv_hidden", 0) > 0:
         vf = out["vf"]

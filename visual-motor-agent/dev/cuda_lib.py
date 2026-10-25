@@ -27,7 +27,8 @@ LIB_PATH = os.environ.get("VM_CUDA_LIB") or os.path.join(os.path.dirname(os.path
 
 class VMCStats(C.Structure):
     _fields_ = [(n, C.c_float) for n in ("loss", "pred_mse", "drive_mse", "move_nll", "click_p", "pred_changed_mse",
-                                         "grad_norm", "gn_backbone", "gn_policy", "gn_pred", "inv_mse", "inv_r2")]
+                                         "grad_norm", "gn_backbone", "gn_policy", "gn_pred", "inv_mse", "inv_r2",
+                                         "dyn_mse", "dyn_hunger_mse", "dyn_recon_mse")]
 
 
 _lib = None
@@ -52,6 +53,9 @@ def lib():
             "vmc_sync": (i32, [vp]),
             "vmc_forward": (i32, [vp, i32, i32, u8p, fp, fp, fp, u8p, fp, fp, fp, fp, fp, fp, fp]),
             "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
+            "vmc_encode": (i32, [vp, i32, u8p, fp]),
+            "vmc_imagine": (i32, [vp, i32, i32, fp, fp, fp, fp, fp, fp]),
+            "vmc_decode": (i32, [vp, i32, fp, fp]),
         }
         for name, (res, args) in sig.items():
             f = getattr(_lib, name)
@@ -148,7 +152,7 @@ class CudaModel:
     def update_rollout(self, ro, ppo_cfg, agent, sync=True):
         """One update from a filled Rollout. sync: all the weights are copied back to the C++ agent; else only the
         log-std (for sampling moves; call sync_to(agent) before saving it). Returns the stats under agent.update()'s
-        names (latent dynamics: 0, as the C++ model reports them when absent)."""
+        names."""
         self.set_batch(*ro.batch())
         st = self.update(ppo_cfg)
         p = agent.params()
@@ -158,14 +162,47 @@ class CudaModel:
             ls = np.empty(2, np.float32)
             _check(lib().vmc_get_range(self.handle, self.logstd_off, 2, _p(ls, C.c_float)), "get_range")
             p[self.logstd_off:self.logstd_off + 2] = ls
-        st.update(dyn_mse=0.0, dyn_hunger_mse=0.0, dyn_recon_mse=0.0,
-                  std_x=float(np.exp(np.clip(p[self.logstd_off], -5.0, 1.0))))
+        st.update(std_x=float(np.exp(np.clip(p[self.logstd_off], -5.0, 1.0))))
         return st
 
     def sync_to(self, agent):
         """Copies all the weights to the C++ agent."""
         agent.params()[:] = self.params()
         agent.params_changed()
+
+    def encode(self, images):
+        """agent_lib.Agent.encode on the GPU (v only): dict(vf [n, feat])."""
+        img = np.ascontiguousarray(images, np.uint8)
+        vf = np.empty((img.shape[0], self.config["feat"]), np.float32)
+        _check(lib().vmc_encode(self.handle, img.shape[0], _p(img, C.c_uint8), _p(vf, C.c_float)), "encode")
+        return dict(vf=vf)
+
+    def imagine(self, s0, h0, actions, latents=False, frames=False):
+        """agent_lib.Agent.imagine on the GPU: latent-dynamics rollouts from s0 [n, feat], h0 [n], actions [n, H, 3]."""
+        s0 = np.ascontiguousarray(s0, np.float32)
+        h0 = np.ascontiguousarray(h0, np.float32)
+        act = np.ascontiguousarray(actions, np.float32)
+        n, H = act.shape[:2]
+        c = self.config
+        r = c["pred_img"] // 2
+        out = dict(hunger=np.empty((n, H), np.float32))
+        if latents:
+            out["latents"] = np.empty((n, H, c["feat"]), np.float32)
+        if frames:
+            out["frames"] = np.empty((n, H, r, r, 3), np.float32)
+        opt = lambda a: None if a is None else _p(a, C.c_float)   # noqa: E731
+        _check(lib().vmc_imagine(self.handle, n, H, _p(s0, C.c_float), _p(h0, C.c_float), _p(act, C.c_float),
+                                 _p(out["hunger"], C.c_float), opt(out.get("latents")), opt(out.get("frames"))),
+               "imagine")
+        return out
+
+    def decode(self, latents):
+        """agent_lib.Agent.decode on the GPU: coarse frames [n, r, r, 3] from latents [n, feat]."""
+        s = np.ascontiguousarray(latents, np.float32)
+        r = self.config["pred_img"] // 2
+        out = np.empty((s.shape[0], r, r, 3), np.float32)
+        _check(lib().vmc_decode(self.handle, s.shape[0], _p(s, C.c_float), _p(out, C.c_float)), "decode")
+        return out
 
     def forward(self, images, drives, prev_action, prev_reward, ep_start=None, pred_actions=None):
         """agent_lib.Agent.forward on the GPU: S sequences of T <= ctx steps ([S, T, ...] inputs)."""

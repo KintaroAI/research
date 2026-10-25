@@ -1194,6 +1194,12 @@ struct LossAcc {
     }
 };
 
+// The drives-loss weight of a step: 1 + drive_changed_weight if hunger changes by more than drive_change_eps over it.
+static inline float drive_weight(const PPOConfig& pc, const float* drv, const float* next_drv) {
+    return (pc.drive_changed_weight > 0.f && fabsf(next_drv[0] - drv[0]) > pc.drive_change_eps)
+               ? 1.0f + pc.drive_changed_weight : 1.0f;
+}
+
 // Computes per-token losses for a forwarded sequence; fills W->dpi, W->dval, W->dpout, W->dpdrv and dls[2].
 static void seq_loss(const Model* M, Workspace* W, const SeqView& sv, const PPOConfig& pc, float inv_B,
                      float adv_mean, float adv_std, bool have_pred, float* dls, LossAcc& acc) {
@@ -1282,14 +1288,15 @@ static void seq_loss(const Model* M, Workspace* W, const SeqView& sv, const PPOC
         const float* nd = sv.next_drives + (size_t)t * sv.nd_st;
         const float* pdv = W->pdrv.data() + (size_t)t * 2;
         float* dpd = W->dpdrv.data() + (size_t)t * 2;
+        const float wd = drive_weight(pc, sv.drives + (size_t)t * sv.drv_st, nd);   // unusual hunger change: 1 + w
         double dse = 0;
         for (int j = 0; j < 2; j++) {
             float p = pdv[j], e = p - nd[j];
             dse += (double)e * e;
-            dpd[j] = inv_B * pc.drive_coef * e * p * (1.0f - p);  // d/dp of coef * mean_j e^2 = coef * e (2/2)
+            dpd[j] = wd * inv_B * pc.drive_coef * e * p * (1.0f - p);  // d/dp of coef * mean_j e^2 = coef * e (2/2)
         }
         acc.drive_se += dse / 2.0;
-        acc.total += pc.drive_coef * dse / 2.0;
+        acc.total += pc.drive_coef * wd * dse / 2.0;
     }
 }
 
@@ -1438,8 +1445,9 @@ static void seq_dyn(const Model* M, Workspace* W, const SeqView& sv, const PPOCo
         W->g_h[p] = 0.f;
         if (pc.dyn_h_horizon <= 0 || j - W->y_t[p] + 1 <= pc.dyn_h_horizon) {   // chain step k = j - t + 1
             const float hh = W->y_h[p], eh = hh - sv.next_drives[(size_t)j * sv.nd_st];
-            W->g_h[p] = ch * eh * hh * (1.0f - hh);
-            acc.dynh_se += (double)eh * eh; acc.dynh_n += 1; acc.total += pc.dyn_h_coef * (double)eh * eh;
+            const float wj = drive_weight(pc, sv.drives + (size_t)j * sv.drv_st, sv.next_drives + (size_t)j * sv.nd_st);
+            W->g_h[p] = wj * ch * eh * hh * (1.0f - hh);
+            acc.dynh_se += (double)eh * eh; acc.dynh_n += 1; acc.total += pc.dyn_h_coef * wj * (double)eh * eh;
         }
         downsample_u8(sv.next_small + (size_t)j * sv.ns_st, D.pimg, 2, W->y_tgt.data());
         const float* x = W->y_x.data() + (size_t)p * R;

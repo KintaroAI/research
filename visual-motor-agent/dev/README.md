@@ -284,7 +284,9 @@ on the GPU; the weights come back to the C++ agent only for checkpoints. The bas
 the CPU (16 threads), 62 with the GPU update alone, **202** with both (two lifetimes sharing the GPU: 137 each). A 50k
 lifetime takes 6 minutes. Reruns of vm-00008 D-U learn as the CPU runs did (test success, hit rate and probes in the
 same range; task 00012), but not bitwise. Inverse dynamics is supported too (task 00013), so DMI runs on the GPU.
-Not supported yet: PPO, the planner's latent dynamics, patch tokens.
+The planner agent's latent dynamics and patch tokens are supported too (task 00015): the planner agent L runs at 42 steps/s per lifetime with 12 lifetimes sharing the GPU (3.5 on the loaded CPU). Not supported: PPO (only `train.py` uses it).
+
+**Many lifetimes at once: the CUDA multi-process service.** Start `nvidia-cuda-mps-control -d` with `CUDA_MPS_PIPE_DIRECTORY` set (the same in the runs' environment). Without it, the processes take turns on the GPU; with it, their small kernels run at once. Twelve basic-agent lifetimes: 20 steps/s each without, 69 with.
 
 
 **The GPU, first check (2026-10-24), before the port.** One update of vm-00008's DMI model (forward, backward and AdamW;

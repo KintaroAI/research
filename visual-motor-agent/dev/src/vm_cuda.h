@@ -3,8 +3,8 @@
 // The same model and parameter layout as vm_agent.cpp (CNN model: CoordConv encoder, causal Transformer, policy
 // head, prediction MLP with the U-Net-skip frame decoder and the drives head), for the prediction-only update of the
 // basic agent: next frame, next drives and next move, gradient-norm clip and AdamW. All of an update runs on the
-// device without host synchronization. Inverse dynamics (task 00013) is supported. Refuses PPO, latent dynamics,
-// patch tokens, and models without coord, pred_residual and pred_skip.
+// device without host synchronization. Inverse dynamics (task 00013) and the planner agent's latent dynamics are
+// supported. Refuses PPO, patch tokens, and models without coord, pred_residual and pred_skip.
 #pragma once
 #include <stdint.h>
 #include "vm_agent.h"
@@ -19,6 +19,7 @@ typedef struct {
     float pred_changed_mse;   // frame MSE over the pixels that change between consecutive frames
     float grad_norm, gn_backbone, gn_policy, gn_pred;   // pre-clip gradient norms (after an update)
     float inv_mse, inv_r2;    // inverse dynamics: MSE of (dx, dy) and R^2 against predicting 0 (as vm_agent)
+    float dyn_mse, dyn_hunger_mse, dyn_recon_mse;   // latent dynamics (task 00014): latent, hunger, decoder MSE
 } VMCStats;
 
 // Creates the model from a config and the flat parameters (n_params floats, the layout of vm_param_layout: offsets
@@ -43,6 +44,11 @@ int vmc_update(void* h, const PPOConfig* pc);
 int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drives, const float* prev_action,
                 const float* prev_reward, const uint8_t* ep_start, const float* pred_actions, float* z, float* value,
                 float* mu, float* click_p, float* pred_frames, float* pred_drives);
+// The planner's model calls (latent dynamics, dyn_hidden > 0), as vm_encode (v only), vm_imagine and vm_decode.
+int vmc_encode(void* h, int n, const uint8_t* images, float* vf_out);
+int vmc_imagine(void* h, int n, int H, const float* s0, const float* h0, const float* actions, float* hunger,
+                float* latents, float* frames);
+int vmc_decode(void* h, int n, const float* latents, float* frames);
 // Copies n parameters starting at offset to the host (for example the log-std after an update).
 int vmc_get_range(void* h, long offset, long n, float* out);
 // Waits for the device and returns the statistics of the last loss_and_grads / update.

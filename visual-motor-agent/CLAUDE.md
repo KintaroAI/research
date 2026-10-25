@@ -27,13 +27,16 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     (replayed) experience. `model.one_frame=1`: each prediction uses only the current frame.
     `online.memory=gated` (vm-00007): 8-step chunks enter long-term memory by relief and surprise
     (`GatedMemory`). The default `stream` is the plain ring buffer, unchanged.
+    `analyze_hazards.py` (vm-00012): whether a planner agent's hunger model imagines the hazards' cost.
     `analyze_self_actor.py`: why the self actor does or does not aim (aim, probe, relief, inputs,
     momentum). `ppo.pi_detach=1`: the move loss trains the policy head only (vm-00008);
     `model.pi_hidden`: a hidden layer in the policy head.
   - `model.patch=16` (vm-00010): patch tokens instead of the CNN. Each step is 16 patch tokens plus one
     token each for drives, previous move and command; each predicts its own part of the next state.
     `env.distractors=K`: grey dots that move on their own (separate random streams: the episodes stay
-    the same). `analyze_patch.py`: coupling (attention between patches), action sensitivity and probes
+    the same). vm-00011: `env.respawn` (with `end_on_success=false`, a large `max_steps`: a world that never
+    resets), `env.target_speed`, `env.hazards`, `env.wrap` (a torus) and `env.egocentric` (the view centered
+    on the cursor). In a continual world with walls the basic agent starves at a wall: use `wrap`. `analyze_patch.py`: coupling (attention between patches), action sensitivity and probes
     per kind of token.
   - `src/vm_cuda.cu`, `src/vm_cuda.h`, `cuda_lib.py` (tasks 00011, 00012): the basic agent's forward pass and
     update on the GPU (`make libvmcuda.so`, `online.device=cuda`).
@@ -74,9 +77,14 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
     wrapped by `cuda_lib.py`; `online.py --set online.device=cuda`. Forward passes and updates run on the GPU;
     the weights come back to the C++ agent only for checkpoints. The update takes 1.8 ms against 31 ms in C++,
     and the online loop runs 202 steps/s against 24 (a 50k lifetime in 6 minutes). It supports the CNN model
-    with coord, residual frames and U-Net skips; the frame, drives, move and inverse-dynamics losses (task
-    00013: DMI runs there). Not PPO, latent dynamics (the planner agent) or patch tokens. GPU lifetimes are not
-    bitwise reproducible against CPU ones.
+    with coord, residual frames and U-Net skips; the frame, drives, move, inverse-dynamics and latent-dynamics
+    losses, the planner's `encode`/`imagine`/`decode`, and patch tokens (tasks 00013, 00015): DMI, the planner
+    agent L and vm-00010's patch-token agents run there. Not PPO (only `train.py` uses it). GPU lifetimes are not
+    bitwise reproducible against CPU ones. `online.py --eval RUN --eval-device cuda` runs the frozen tests'
+    forward passes on the GPU (about 10 s per checkpoint).
+  - **Many lifetimes on one GPU: start the CUDA multi-process service** (`nvidia-cuda-mps-control -d`, with
+    `CUDA_MPS_PIPE_DIRECTORY` set the same for the daemon and the runs). Twelve basic-agent lifetimes then run at
+    69 steps/s each instead of 20.
   - **Keep it equivalent:** `tests/test_cuda_model.py` checks the loss and every gradient against
     `vm_debug_grads` (about 1e-7) and the forward against `vm_forward`. Re-run it after touching either side. The same parameter layout is shared,
     so the CUDA code's `ParamId` order must follow `vm_agent.cpp`'s.

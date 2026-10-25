@@ -309,7 +309,9 @@ def sample_moves(agent, out, rng):
 
 def eval_self(agent, env_cfg, goal, n=128, seed=EVAL_SEED, rng_seed=0):
     """The self actor on the n test episodes (auto-reset off): the moves it predicts from its last ctx real states."""
-    env = CircleWorld(n, dataclasses.replace(env_cfg, auto_reset=False, bonuses=False), seed=seed)
+    # test episodes: the first hit within 200 steps, also in a continual world (its circles, motion and hazards kept)
+    env = CircleWorld(n, dataclasses.replace(env_cfg, auto_reset=False, bonuses=False, end_on_success=True,
+                                             respawn=False, max_steps=200), seed=seed)
     rng = np.random.default_rng(rng_seed)
     L = agent.config["ctx"]
     hist = []
@@ -344,6 +346,39 @@ def eval_self(agent, env_cfg, goal, n=128, seed=EVAL_SEED, rng_seed=0):
                 steps_success=[int(x) for x in np.where(success, length, -1)])
 
 
+def eval_forage(agent, env_cfg, goal, n=32, steps=1000, seed=EVAL_SEED, rng_seed=0):
+    """A continual world (respawn): hits per 1000 steps of the frozen self actor over n worlds of `steps` steps, and
+    the share of steps inside a hazard. Acting window: the last ctx real states, as in online.py."""
+    env = CircleWorld(n, dataclasses.replace(env_cfg, auto_reset=False, bonuses=False, max_steps=10 ** 9), seed=seed)
+    rng = np.random.default_rng(rng_seed)
+    L = agent.config["ctx"]
+    hist, obs = [], env.observe()
+    prev_a = np.zeros((n, 3), np.float32)
+    es = np.ones(n, np.uint8)
+    hits, in_hz = np.zeros(n), np.zeros(n)
+    for _ in range(steps):
+        cur = dict(img=obs["image"], drv=obs["drives"], pa=prev_a,
+                   cmd=(obs["drives"][:, 0] if goal else np.zeros(n)).astype(np.float32), es=es)
+        win = hist + [cur]
+        out = agent.forward(*[np.stack([w[k] for w in win], 1) for k in ("img", "drv", "pa", "cmd", "es")])
+        a = sample_moves(agent, out, rng)
+        obs, _, _, inf = env.step(a)
+        hits += inf["success"]
+        in_hz += inf.get("gt_in_hazard", np.zeros(n, bool))      # scoring only
+        hist = (hist + [cur])[-(L - 1):] if L > 1 else []
+        prev_a = executed_action(a)
+        es = np.zeros(n, np.uint8)
+    return dict(forage_hits_per_1k=float(hits.mean() * 1000 / steps), forage_hazard_frac=float(in_hz.mean() / steps),
+                forage_hunger=float(env.hunger.mean()))
+
+
+class _GpuEval:
+    """An agent for eval_self / eval_forage: the C++ agent's weights and config, the GPU's forward."""
+
+    def __init__(self, agent, gpu):
+        self.config, self.params, self.param_layout, self.forward = agent.config, agent.params, agent.param_layout, gpu.forward
+
+
 def load_config(path, overrides):
     with open(path) as f:
         cfg = json.load(f)
@@ -372,6 +407,8 @@ def main():
     ap.add_argument("--eval", metavar="RUN_DIR", help="evaluate a self-actor run's checkpoints on the test episodes "
                     "(-> RUN_DIR/eval/ckpt_NNNNNNNN.json) instead of training")
     ap.add_argument("--ckpts", type=int, nargs="*", default=[], help="with --eval: checkpoints (steps)")
+    ap.add_argument("--eval-device", default="cpu", choices=["cpu", "cuda"],
+                    help="with --eval: run the forward passes on the GPU (libvmcuda.so; same outputs to float precision)")
     ap.add_argument("--init", metavar="CKPT", help="start from these weights instead of a random initialization "
                     "(the model config comes from the checkpoint; fresh optimizer, empty memory)")
     args = ap.parse_args()
@@ -380,17 +417,26 @@ def main():
             info = json.load(f)
         agent_lib.set_threads(16)
         ec = dict(info["env_config"])
-        for k in ("bg_color", "target_color", "cursor_color", "cursor_outline"):
-            ec[k] = tuple(ec[k])
+        for k in ("bg_color", "target_color", "cursor_color", "cursor_outline", "hazard_color"):
+            if k in ec:
+                ec[k] = tuple(ec[k])
         os.makedirs(os.path.join(args.eval, "eval"), exist_ok=True)
         for st in args.ckpts:
             agent = agent_lib.Agent.load(os.path.join(args.eval, "ckpt_%08d.bin" % st))
-            res = eval_self(agent, EnvConfig(**ec), info["config"]["online"]["goal"])
+            ev = agent
+            if args.eval_device == "cuda":   # the CPU agent's weights (for sampling) and config, the GPU forward
+                import cuda_lib
+                ev = _GpuEval(agent, cuda_lib.CudaModel(agent))
+            res = eval_self(ev, EnvConfig(**ec), info["config"]["online"]["goal"])
+            if ec.get("respawn"):
+                res.update(eval_forage(ev, EnvConfig(**ec), info["config"]["online"]["goal"]))
             res.update(run=args.eval, step=st)
             with open(os.path.join(args.eval, "eval", "ckpt_%08d.json" % st), "w") as f:
                 json.dump(res, f)
             print("%s %8d  success %.3f  median %5.1f  clicks %5.1f" % (os.path.basename(args.eval.rstrip("/")), st,
-                  res["success"], res["median_steps"], res["clicks_per_episode"]), flush=True)
+                  res["success"], res["median_steps"], res["clicks_per_episode"])
+                  + ("  forage: hits/1k %.1f  in hazard %.3f" % (res["forage_hits_per_1k"], res["forage_hazard_frac"])
+                     if "forage_hits_per_1k" in res else ""), flush=True)
             agent.close()
         return
     if not args.config:
@@ -428,7 +474,6 @@ def main():
     lag = goal_k - 1 if goal_k else 0         # the newest window whose hindsight labels are complete
     if on["replay"] < L + lag:
         raise ValueError("online.replay must hold at least ctx + goal_k - 1 = %d steps" % (L + lag))
-    planner = CEMPlanner(agent, 1, seed=args.seed, **(on["planner"] or {}))
     rng = np.random.default_rng(args.seed)
     if on["memory"] not in ("stream", "gated"):
         raise ValueError("online.memory must be 'stream' or 'gated'")
@@ -451,6 +496,8 @@ def main():
     else:
         ro = agent.new_rollout(L, B)
     zeros_b = np.zeros(B, np.float32)
+    dm = gpu or agent   # the model the planner imagines with
+    planner = CEMPlanner(dm, 1, seed=args.seed, **(on["planner"] or {}))
     noop = np.zeros((1, planner.H, 3), np.float32)
 
     info = dict(command=" ".join(sys.argv), git=git_hash(), config=cfg, seed=args.seed, out_dir=out_dir,
@@ -467,7 +514,7 @@ def main():
     prev_a = np.zeros((1, 3), np.float32)
     prev_r = np.zeros(1, np.float32)
     ep_start = 1
-    win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[])
+    win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], step_hits=0, hazard=0)
     t0 = time.time()
     for step in range(1, on["steps"] + 1):
         h = obs["drives"][:, 0]
@@ -489,8 +536,8 @@ def main():
         elif on["explore_eps"] < 1:          # explore_eps >= 1: a pure babbler, no planning
             a_plan, _ = planner.act(obs["image"], h, np.ones(1, bool))
             plan = np.concatenate([np.clip(planner.plan, -1, 1), (planner.plan_click > 0.5)[..., None]], -1)
-            s0 = agent.encode(obs["image"])["vf"]
-            hp = agent.imagine(np.repeat(s0, 2, 0), np.repeat(h, 2).astype(np.float32),
+            s0 = dm.encode(obs["image"])["vf"]
+            hp = dm.imagine(np.repeat(s0, 2, 0), np.repeat(h, 2).astype(np.float32),
                                np.concatenate([plan.astype(np.float32), noop]))["hunger"]
             gain = float((hp[1] - hp[0]).mean())
         if self_actor:
@@ -507,6 +554,8 @@ def main():
         obs, rew, done, inf = env.step(a)
         mem.add(img=img, nimg=inf["terminal_image"][0], drv=drv, ndrv=inf["terminal_drives"][0], pa=prev_a[0],
                 pr=prev_r[0], es=ep_start, act=a[0], rew=rew[0], done=done[0], hit=inf["success"][0], cmd=cmd)
+        win["step_hits"] += int(inf["success"][0])                      # every hit (a continual world has no episodes)
+        win["hazard"] += int(inf["gt_in_hazard"][0]) if "gt_in_hazard" in inf else 0   # scoring only
         if done[0]:
             win["eps"].append((bool(inf["ep_success"][0]), float(inf["ep_length"][0]), float(inf["ep_clicks"][0])))
             planner.reset(np.ones(1, bool))
@@ -527,13 +576,13 @@ def main():
                 parts = surprise_parts(po, len(idx) - 1, mem.img[i], mem.nimg[i], mem.ndrv[i], mem.act[i], sd, ds,
                                        ppo["pred_changed_weight"])
             else:              # one-frame model: the token alone; the planner chose the move
-                po = agent.forward(mem.img[i][None, None], mem.drv[i][None, None], mem.pa[i][None, None],
+                po = fwd(mem.img[i][None, None], mem.drv[i][None, None], mem.pa[i][None, None],
                                    np.zeros((1, 1), np.float32), mem.es[i][None, None],
                                    pred_actions=mem.act[i][None, None])
                 parts = surprise_parts(po, 0, mem.img[i], mem.nimg[i], mem.ndrv[i], mem.act[i], None, ds,
                                        ppo["pred_changed_weight"], move=False)
                 if on["explore_eps"] < 1:      # diagnostic: the latent hunger head that the planner imagines with
-                    hd = agent.imagine(s0, h.astype(np.float32), a[None])["hunger"][0, 0]
+                    hd = dm.imagine(s0, h.astype(np.float32), a[None])["hunger"][0, 0]
                     win["dyn_h1"].append(float((hd - mem.ndrv[i][0]) ** 2))
             gm.note(parts)
             gm.decide(step)
@@ -554,7 +603,9 @@ def main():
                        episodes=len(eps), hits=sum(e[0] for e in eps),
                        ep_len=float(np.mean([e[1] for e in eps])) if eps else None,
                        ep_clicks=float(np.mean([e[2] for e in eps])) if eps else None,
-                       planned=win["planned"] / on["log_every"], gain=float(np.mean(win["gain"])))
+                       planned=win["planned"] / on["log_every"], gain=float(np.mean(win["gain"])),
+                       step_hits=win["step_hits"], hazard_frac=win["hazard"] / on["log_every"],
+                       hunger=float(h[0]))
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in STAT_KEYS})
             gate = ""
@@ -570,11 +621,13 @@ def main():
             mf.write(json.dumps(row) + "\n")
             mf.flush()
             print("step %7d  %5.1f sps  episodes %3d  hits %3d  len %5s  planned %.2f  gain %+.3f  pred %.5f  "
-                  "inv_r2 %.2f  dyn_h %.5f" % (step, row["sps"], row["episodes"], row["hits"],
+                  "inv_r2 %.2f  dyn_h %.5f" % (step, row["sps"], row["episodes"],
+                                               row["step_hits"] if env_cfg.respawn else row["hits"],
                                                "%.0f" % row["ep_len"] if eps else "-", row["planned"], row["gain"],
                                                row.get("pred_mse", float("nan")), row.get("inv_r2", float("nan")),
-                                               row.get("dyn_hunger_mse", float("nan"))) + gate, flush=True)
-            win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], t=time.time())
+                                               row.get("dyn_hunger_mse", float("nan"))) + gate
+                  + ("  in hazard %.3f" % row["hazard_frac"] if env_cfg.hazards else ""), flush=True)
+            win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], t=time.time(), step_hits=0, hazard=0)
     if gpu:
         gpu.sync_to(agent)
     agent.save(os.path.join(out_dir, "ckpt_final.bin"), with_optimizer=gpu is None)   # GPU: the optimizer state stays there

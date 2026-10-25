@@ -72,7 +72,7 @@ RGB = Tuple[int, int, int]
 #: The cursor is clamped to [0, size - CURSOR_EDGE_EPS] on both axes.
 CURSOR_EDGE_EPS = 1e-4
 
-_COLOR_FIELDS = ("bg_color", "target_color", "cursor_color", "cursor_outline")
+_COLOR_FIELDS = ("bg_color", "target_color", "cursor_color", "cursor_outline", "hazard_color")
 
 
 # =============================================================================
@@ -131,6 +131,23 @@ class EnvConfig:
     dot_speed_min: float = 0.5          # px per step ~ U[min, max] in a uniform direction; they bounce off the walls
     dot_speed_max: float = 2.0
 
+    # A richer world (vm-00011). All off by default: the world is unchanged. Their random draws use separate
+    # generators, so the first circle, the cursor and the drives of every episode are the same with or without them.
+    respawn: bool = False               # a hit circle is replaced at once by a new one, never on the cursor (with
+                                        # end_on_success=False and a large max_steps: a continual world)
+    target_speed: float = 0.0           # px per step of the circle in a uniform direction; it bounces off the walls
+    hazards: int = 0                    # blue circles, moving and bouncing, that add to hunger while the cursor is
+                                        # inside one; drawn under the circle
+    hazard_radius_min: float = 5.0
+    hazard_radius_max: float = 8.0
+    hazard_speed: float = 0.75          # px per step
+    hazard_cost: float = 0.02           # hunger added per step inside a hazard
+    hazard_color: RGB = (50, 90, 230)
+    wrap: bool = False                  # the screen is a torus: the cursor, circles and dots wrap around the edges
+                                        # (no walls); hit tests use the wrap-around distance
+    egocentric: bool = False            # (needs wrap) the view is centered on the cursor: moving shifts the scene,
+                                        # the cursor stays drawn at the center
+
     def __post_init__(self) -> None:
         # Colors loaded from JSON arrive as lists; store tuples (hashable, comparable).
         for name in _COLOR_FIELDS:
@@ -148,7 +165,8 @@ class EnvConfig:
                   "move_bonus", "move_budget_px", "click_bonus", "click_budget",
                   "h_init_min", "h_init_max", "h_rate", "h_relief", "hunger_cost",
                   "b_init_min", "b_init_max", "b_rate", "b_relief", "dot_brightness_min",
-                  "dot_brightness_max", "dot_speed_min", "dot_speed_max")
+                  "dot_brightness_max", "dot_speed_min", "dot_speed_max", "target_speed",
+                  "hazard_radius_min", "hazard_radius_max", "hazard_speed", "hazard_cost")
         for name in floats:
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite, got {getattr(self, name)!r}")
@@ -171,6 +189,14 @@ class EnvConfig:
             raise ValueError("need 0 <= dot_brightness_min <= dot_brightness_max <= 255")
         if not 0 <= self.dot_speed_min <= self.dot_speed_max:
             raise ValueError("need 0 <= dot_speed_min <= dot_speed_max")
+        if not (self.target_speed >= 0 and self.hazard_speed >= 0 and self.hazard_cost >= 0):
+            raise ValueError("target_speed, hazard_speed and hazard_cost must be >= 0")
+        if int(self.hazards) != self.hazards or self.hazards < 0:
+            raise ValueError(f"hazards must be an integer >= 0, got {self.hazards!r}")
+        if self.egocentric and not self.wrap:
+            raise ValueError("egocentric needs wrap")
+        if self.hazards and not 0 < self.hazard_radius_min <= self.hazard_radius_max <= self.size / 2:
+            raise ValueError("need 0 < hazard_radius_min <= hazard_radius_max <= size/2")
         for name in _COLOR_FIELDS:
             c = getattr(self, name)
             if len(c) != 3 or any(int(v) != v or not 0 <= v <= 255 for v in c):
@@ -314,8 +340,8 @@ def _draw_cursor(image: np.ndarray, cursor: np.ndarray, outline: RGB, color: RGB
 
 
 def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarray,
-                 target_alive: np.ndarray, config: EnvConfig, dots: Optional[Tuple[np.ndarray, np.ndarray]] = None
-                 ) -> np.ndarray:
+                 target_alive: np.ndarray, config: EnvConfig, dots: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+                 hazards: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> np.ndarray:
     """Render N world states to uint8 images of shape (N, size, size, 3).
 
     Pure function of (cursor hotspot pixel, set of circle pixels, colors).
@@ -332,8 +358,11 @@ def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarra
     (``dots`` = (positions (N,K,2), grey levels (N,K))), dot_size squares at
     (floor(x), floor(y)) drawn on background pixels only (under the circle);
     then the cursor sprite (black outline, then the white "+") at hotspot
-    (floor(x), floor(y)).
+    (floor(x), floor(y)).  Hazards (``hazards`` = (centers (N,H,2), radii (N,H))) are painted in hazard_color on the
+    background pixels after the circle (so under it) and before the dots, with the circle's pixel test.
     """
+    if config.wrap:
+        return _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots, hazards)
     size = int(config.size)
     cursor = np.asarray(cursor_xy, dtype=np.float64).reshape(-1, 2)
     target = np.asarray(target_xy, dtype=np.float64).reshape(-1, 2)
@@ -346,10 +375,61 @@ def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarra
     start, count = _circle_spans(target[:, 0], target[:, 1], radius, alive, size)
     bank = _row_bank(size, _rgb(config.bg_color), _rgb(config.target_color))
     image = bank[count, size - start].reshape(n, size, size, 3)
+    if hazards is not None and hazards[0].shape[1] > 0:
+        _paint_circles(image, hazards[0], hazards[1], _rgb(config.hazard_color), _rgb(config.bg_color))
     if dots is not None and dots[0].shape[1] > 0:
         _draw_dots(image, dots[0], dots[1], int(config.dot_size), _rgb(config.bg_color))
     _draw_cursor(image, cursor, _rgb(config.cursor_outline), _rgb(config.cursor_color))
     return image
+
+
+def wrap_delta(a: np.ndarray, b: np.ndarray, size: float) -> np.ndarray:
+    """a - b on a circle of circumference size, in [-size/2, size/2)."""
+    return np.mod(a - b + 0.5 * size, size) - 0.5 * size
+
+
+def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, hazards=None) -> np.ndarray:
+    """render_state for the wrap-around world: circles drawn with the wrap-around pixel test, the view shifted so the
+    cursor sits at the center if egocentric. Same layers as render_state."""
+    size = int(config.size)
+    S = float(size)
+    cursor = np.asarray(cursor_xy, dtype=np.float64).reshape(-1, 2)
+    target = np.asarray(target_xy, dtype=np.float64).reshape(-1, 2)
+    radius = np.asarray(radius, dtype=np.float64).reshape(-1)
+    alive = np.asarray(target_alive, dtype=bool).reshape(-1)
+    n = cursor.shape[0]
+    shift = (0.5 * S - cursor) if config.egocentric else np.zeros_like(cursor)          # world -> view
+    bg = np.array(_rgb(config.bg_color), np.uint8)
+    image = np.empty((n, size, size, 3), np.uint8)
+    image[:] = bg
+    c = np.arange(size, dtype=np.float64) + 0.5
+
+    def mask(centers, radii):            # centers (n, K, 2) in world coordinates, radii (n, K) -> (n, S, S)
+        v = np.mod(centers + shift[:, None], S)
+        dx = wrap_delta(c[None, None, None, :], v[..., 0, None, None], S)
+        dy = wrap_delta(c[None, None, :, None], v[..., 1, None, None], S)
+        return (dx * dx + dy * dy <= (radii * radii)[..., None, None]).any(1)
+
+    tmask = mask(target[:, None], radius[:, None]) & alive[:, None, None]
+    image[tmask] = np.array(_rgb(config.target_color), np.uint8)
+    if hazards is not None and hazards[0].shape[1] > 0:
+        hmask = mask(hazards[0], hazards[1]) & ~tmask
+        image[hmask] = np.array(_rgb(config.hazard_color), np.uint8)
+    if dots is not None and dots[0].shape[1] > 0:
+        _draw_dots(image, np.mod(dots[0] + shift[:, None], S), dots[1], int(config.dot_size), _rgb(config.bg_color))
+    _draw_cursor(image, np.mod(cursor + shift, S), _rgb(config.cursor_outline), _rgb(config.cursor_color))
+    return image
+
+
+def _paint_circles(image: np.ndarray, centers: np.ndarray, radii: np.ndarray, color: RGB, bg: RGB) -> None:
+    """Paint circles (centers (N,H,2), radii (N,H)) in color on the background pixels of image (N,S,S,3), in place."""
+    size = image.shape[1]
+    c = np.arange(size, dtype=np.float64) + 0.5
+    dx = c[None, None, None, :] - centers[..., 0, None, None]                 # (N,H,1,S)
+    dy = c[None, None, :, None] - centers[..., 1, None, None]                 # (N,H,S,1)
+    inside = (dx * dx + dy * dy <= (radii * radii)[..., None, None]).any(1)   # (N,S,S)
+    on_bg = np.all(image == np.array(bg, np.uint8), axis=-1)
+    image[inside & on_bg] = np.array(color, np.uint8)
 
 
 def _draw_dots(image: np.ndarray, pos: np.ndarray, val: np.ndarray, ds: int, bg: np.ndarray) -> None:
@@ -461,6 +541,19 @@ class CircleWorld:
         self.dot_pos = np.zeros((self.num_envs, k, 2))   # top-left corner (x, y), float px
         self.dot_vel = np.zeros((self.num_envs, k, 2))   # px per step
         self.dot_val = np.zeros((self.num_envs, k))      # grey level
+        c = self.config   # the richer world (vm-00011): own generators for respawns / target motion and for hazards
+        self._spawn_rngs = ([np.random.Generator(np.random.PCG64(s))
+                             for s in np.random.SeedSequence(seed, spawn_key=(0x5BA4,)).spawn(self.num_envs)]
+                            if (c.respawn or c.target_speed > 0) else [])
+        h = int(c.hazards)
+        self._hz_rngs = ([np.random.Generator(np.random.PCG64(s))
+                          for s in np.random.SeedSequence(seed, spawn_key=(0x4A2D,)).spawn(self.num_envs)]
+                         if h else [])
+        self.target_vel = np.zeros((self.num_envs, 2))
+        self.hz_pos = np.zeros((self.num_envs, h, 2))
+        self.hz_vel = np.zeros((self.num_envs, h, 2))
+        self.hz_rad = np.zeros((self.num_envs, h))
+        self.ep_hits = np.zeros(self.num_envs, np.int64)
         self._reset_envs(np.arange(self.num_envs))
 
     # ------------------------------------------------------------------ resets
@@ -538,6 +631,43 @@ class CircleWorld:
                 self.dot_pos[i] = u[:, :2] * (size - cfg.dot_size)
                 self.dot_vel[i] = np.stack((np.cos(ang), np.sin(ang)), axis=1) * speed[:, None]
                 self.dot_val[i] = cfg.dot_brightness_min + (cfg.dot_brightness_max - cfg.dot_brightness_min) * u[:, 4]
+        self.ep_hits[idx] = 0
+        if cfg.target_speed > 0:
+            for i in idx:
+                ang = 2.0 * np.pi * self._spawn_rngs[i].random()
+                self.target_vel[i] = cfg.target_speed * np.array([np.cos(ang), np.sin(ang)])
+        h = int(cfg.hazards)
+        if h:   # per env from its own hazard generator: H radii, centers, directions
+            for i in idx:
+                u = self._hz_rngs[i].random((h, 4))
+                r = cfg.hazard_radius_min + (cfg.hazard_radius_max - cfg.hazard_radius_min) * u[:, 0]
+                self.hz_rad[i] = r
+                self.hz_pos[i] = np.stack((r + (size - 2 * r) * u[:, 1], r + (size - 2 * r) * u[:, 2]), axis=1)
+                ang = 2.0 * np.pi * u[:, 3]
+                self.hz_vel[i] = cfg.hazard_speed * np.stack((np.cos(ang), np.sin(ang)), axis=1)
+
+    def _respawn(self, idx: np.ndarray) -> None:
+        """New circles for envs idx (their own spawn generators), resampled until the cursor is outside."""
+        cfg = self.config
+        size = float(cfg.size)
+        for i in idx:
+            g = self._spawn_rngs[i]
+            for _ in range(1000):
+                u = g.random(3)
+                r = cfg.radius_min + (cfg.radius_max - cfg.radius_min) * u[0]
+                if cfg.wrap:   # anywhere on the torus
+                    cx, cy = size * u[1], size * u[2]
+                    ddx, ddy = wrap_delta(self.cursor[i, 0], cx, size), wrap_delta(self.cursor[i, 1], cy, size)
+                else:
+                    cx, cy = r + (size - 2.0 * r) * u[1], r + (size - 2.0 * r) * u[2]
+                    ddx, ddy = self.cursor[i, 0] - cx, self.cursor[i, 1] - cy
+                if ddx * ddx + ddy * ddy > r * r:
+                    break
+            self.target[i] = (cx, cy)
+            self.radius[i] = r
+            if cfg.target_speed > 0:
+                ang = 2.0 * np.pi * g.random()
+                self.target_vel[i] = cfg.target_speed * np.array([np.cos(ang), np.sin(ang)])
 
     # ------------------------------------------------------------ observation
     def observe(self) -> Dict[str, np.ndarray]:
@@ -547,9 +677,10 @@ class CircleWorld:
     def _render(self, idx: Optional[np.ndarray] = None) -> np.ndarray:
         if idx is None:
             return render_state(self.cursor, self.target, self.radius, self.target_alive, self.config,
-                                (self.dot_pos, self.dot_val))
+                                (self.dot_pos, self.dot_val), (self.hz_pos, self.hz_rad))
         return render_state(self.cursor[idx], self.target[idx], self.radius[idx],
-                            self.target_alive[idx], self.config, (self.dot_pos[idx], self.dot_val[idx]))
+                            self.target_alive[idx], self.config, (self.dot_pos[idx], self.dot_val[idx]),
+                            (self.hz_pos[idx], self.hz_rad[idx]))
 
     def _drive_obs(self) -> np.ndarray:
         if self.config.drives:
@@ -587,17 +718,33 @@ class CircleWorld:
 
         # 1. Move; displacement is the actual (clamped) motion.
         old = self.cursor
-        new = np.clip(old + move * cfg.max_step_px, 0.0, cfg.size - CURSOR_EDGE_EPS)
-        delta = new - old
+        if cfg.wrap:   # a torus: no walls
+            new = np.mod(old + move * cfg.max_step_px, float(cfg.size))
+            delta = move * cfg.max_step_px
+        else:
+            new = np.clip(old + move * cfg.max_step_px, 0.0, cfg.size - CURSOR_EDGE_EPS)
+            delta = new - old
         disp = np.sqrt(delta[:, 0] * delta[:, 0] + delta[:, 1] * delta[:, 1])
         self.cursor = new
 
         # 2. Hit test at the new continuous position.
-        ddx = new[:, 0] - self.target[:, 0]
-        ddy = new[:, 1] - self.target[:, 1]
+        if cfg.wrap:
+            ddx = wrap_delta(new[:, 0], self.target[:, 0], float(cfg.size))
+            ddy = wrap_delta(new[:, 1], self.target[:, 1], float(cfg.size))
+        else:
+            ddx = new[:, 0] - self.target[:, 0]
+            ddy = new[:, 1] - self.target[:, 1]
         inside = (ddx * ddx + ddy * ddy <= self.radius * self.radius) & self.target_alive
         success = click & inside
         empty = click & ~success
+        if cfg.hazards:   # inside any hazard, at the new position
+            hdx = new[:, None, 0] - self.hz_pos[..., 0]
+            hdy = new[:, None, 1] - self.hz_pos[..., 1]
+            if cfg.wrap:
+                hdx, hdy = wrap_delta(hdx, 0.0, float(cfg.size)), wrap_delta(hdy, 0.0, float(cfg.size))
+            in_hazard = (hdx * hdx + hdy * hdy <= self.hz_rad * self.hz_rad).any(1)
+        else:
+            in_hazard = np.zeros(n, dtype=bool)
 
         # 3. Reward.  Budget factors use the counters from BEFORE this step.
         move_factor = np.maximum(0.0, 1.0 - self.cum_move / cfg.move_budget_px)
@@ -617,23 +764,48 @@ class CircleWorld:
         self.empty_clicks += empty
         self.clicks += click
         self.path_length += disp
-        self.hunger = np.clip(self.hunger + cfg.h_rate - cfg.h_relief * success, 0.0, 1.0)
+        self.hunger = np.clip(self.hunger + cfg.h_rate - cfg.h_relief * success + cfg.hazard_cost * in_hazard, 0.0, 1.0)
+        self.ep_hits += success
         self.restlessness = np.clip(
             self.restlessness + cfg.b_rate - cfg.b_relief * (disp / cfg.max_step_px) * move_factor,
             0.0, 1.0)
         self.t += 1
         self.ep_return += reward
         self.bonus_total += bonus
-        if cfg.distractors:   # dots move and bounce off the walls
+        if cfg.distractors and cfg.wrap:   # dots drift around the torus
+            self.dot_pos = np.mod(self.dot_pos + self.dot_vel, float(cfg.size))
+        elif cfg.distractors:   # dots move and bounce off the walls
             hi = float(cfg.size - cfg.dot_size)
             p = self.dot_pos + self.dot_vel
             low, high = p < 0.0, p > hi
             p = np.where(low, -p, np.where(high, 2.0 * hi - p, p))
             self.dot_vel = np.where(low | high, -self.dot_vel, self.dot_vel)
             self.dot_pos = np.clip(p, 0.0, hi)
+        if cfg.target_speed > 0 and cfg.wrap:
+            self.target = np.mod(self.target + self.target_vel, float(cfg.size))
+        elif cfg.target_speed > 0:   # the circle moves and bounces off the walls (its center stays r from them)
+            lo_, hi_ = self.radius[:, None], cfg.size - self.radius[:, None]
+            p = self.target + self.target_vel
+            low, high = p < lo_, p > hi_
+            p = np.where(low, 2.0 * lo_ - p, np.where(high, 2.0 * hi_ - p, p))
+            self.target_vel = np.where(low | high, -self.target_vel, self.target_vel)
+            self.target = np.clip(p, lo_, hi_)
+        if cfg.hazards and cfg.wrap:
+            self.hz_pos = np.mod(self.hz_pos + self.hz_vel, float(cfg.size))
+        elif cfg.hazards:
+            lo_, hi_ = self.hz_rad[..., None], cfg.size - self.hz_rad[..., None]
+            p = self.hz_pos + self.hz_vel
+            low, high = p < lo_, p > hi_
+            p = np.where(low, 2.0 * lo_ - p, np.where(high, 2.0 * hi_ - p, p))
+            self.hz_vel = np.where(low | high, -self.hz_vel, self.hz_vel)
+            self.hz_pos = np.clip(p, lo_, hi_)
 
-        # 5. A hit target disappears.
-        self.target_alive &= ~success
+        # 5. A hit target disappears, or is replaced at once (respawn).
+        if cfg.respawn:
+            if success.any():
+                self._respawn(np.flatnonzero(success))
+        else:
+            self.target_alive &= ~success
 
         # 6. Termination.
         done = (success & cfg.end_on_success) | (self.t >= cfg.max_steps)
@@ -653,7 +825,8 @@ class CircleWorld:
             "bonus": bonus,
             "ep_length": np.where(done, self.t, nan),
             "ep_return": np.where(done, self.ep_return, nan),
-            "ep_success": np.where(done, (~self.target_alive).astype(np.float64), nan),
+            "ep_success": np.where(done, ((self.ep_hits > 0) if cfg.respawn else ~self.target_alive).astype(np.float64),
+                                   nan),
             "ep_clicks": np.where(done, self.clicks, nan),
             "ep_empty_clicks": np.where(done, self.empty_clicks, nan),
             "ep_path_length": np.where(done, self.path_length, nan),
@@ -669,6 +842,11 @@ class CircleWorld:
         }
         if cfg.distractors:
             info["gt_dots"] = self.dot_pos.copy()
+        if cfg.respawn:
+            info["ep_hits"] = np.where(done, self.ep_hits, nan)
+        if cfg.hazards:
+            info["gt_hazards"] = self.hz_pos.copy()
+            info["gt_in_hazard"] = in_hazard
 
         # 8. Auto-reset: done envs return the first frame of their next episode.
         image = terminal_image.copy()
@@ -695,6 +873,15 @@ class CircleWorld:
             for name in ("dot_pos", "dot_vel", "dot_val"):
                 state[name] = getattr(self, name).copy()
             state["dot_rng_state"] = np.array([_encode_rng(g) for g in self._dot_rngs], dtype=np.uint64)
+        for name, on in (("target_vel", self.config.target_speed > 0), ("hz_pos", self.config.hazards),
+                         ("hz_vel", self.config.hazards), ("hz_rad", self.config.hazards),
+                         ("ep_hits", self.config.respawn)):
+            if on:
+                state[name] = getattr(self, name).copy()
+        if self._spawn_rngs:
+            state["spawn_rng_state"] = np.array([_encode_rng(g) for g in self._spawn_rngs], dtype=np.uint64)
+        if self._hz_rngs:
+            state["hz_rng_state"] = np.array([_encode_rng(g) for g in self._hz_rngs], dtype=np.uint64)
         return state
 
     def set_state(self, state: Dict[str, Any]) -> None:
@@ -723,6 +910,17 @@ class CircleWorld:
                     if arr.shape != getattr(self, key).shape:
                         raise ValueError(f"state[{key!r}] must have shape {getattr(self, key).shape}")
                     setattr(self, key, arr)
+                continue
+            if key in ("spawn_rng_state", "hz_rng_state"):
+                for gen, row in zip(self._spawn_rngs if key == "spawn_rng_state" else self._hz_rngs,
+                                    np.asarray(value, dtype=np.uint64)):
+                    gen.bit_generator.state = _decode_rng(row)
+                continue
+            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits"):
+                arr = np.array(value, dtype=getattr(self, key).dtype)
+                if arr.shape != getattr(self, key).shape:
+                    raise ValueError(f"state[{key!r}] must have shape {getattr(self, key).shape}")
+                setattr(self, key, arr)
                 continue
             if key not in self.STATE_SPEC:
                 raise KeyError(f"unknown state key {key!r}")

@@ -34,7 +34,8 @@ class PPOConfig(C.Structure):
                                          "dyn_x_coef")]
     _fields_ += [(n, C.c_int) for n in ("epochs", "minibatches", "use_ppo", "norm_adv", "clip_vloss", "dyn_horizon",
                                         "dyn_h_horizon")]
-    _fields_ += [("move_coef", C.c_float), ("pi_detach", C.c_int), ("pi_own_clip", C.c_int)]
+    _fields_ += [("move_coef", C.c_float), ("pi_detach", C.c_int), ("pi_own_clip", C.c_int),
+                ("drive_changed_weight", C.c_float), ("drive_change_eps", C.c_float)]
 
 
 class PPOStats(C.Structure):
@@ -57,7 +58,8 @@ DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.0
                    weight_decay=0.0, target_kl=0.0, reward_scale=0.1, vclip_eps=0.2, pred_changed_weight=0.0, inv_coef=0.0,
                    dyn_coef=0.0, dyn_h_coef=0.0, dyn_x_coef=0.0,
                    epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0, dyn_horizon=0, dyn_h_horizon=0,
-                   move_coef=0.0, pi_detach=0, pi_own_clip=0)
+                   move_coef=0.0, pi_detach=0, pi_own_clip=0, drive_changed_weight=0.0,
+                   drive_change_eps=0.01)
 
 
 def _struct(cls, values):
