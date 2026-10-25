@@ -1,8 +1,8 @@
 # vm-00012: The Planner Agent in the Continual Torus World, With Hazards
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00012`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00012` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00012/`
 **Task plan:** [`../tasks/00016-planner-continual-world.md`](../tasks/00016-planner-continual-world.md)
 
