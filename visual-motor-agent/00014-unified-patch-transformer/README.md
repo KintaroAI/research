@@ -1,8 +1,8 @@
 # vm-00014: One Transformer for Everything: Fine Patch Tokens, Nothing Detached, in the Hazard World
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00014`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00014` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00014/`
 **Task plan:** [`../tasks/00018-unified-patch-transformer.md`](../tasks/00018-unified-patch-transformer.md)
 
