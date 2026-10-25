@@ -38,10 +38,11 @@ static const int KK = 16;   // 4x4 kernels, stride 2, padding 1
 struct Dims {
     int img, in_ch, c1, c2, c3, h1, h2, h3, enc_flat, feat, d, L, nh, hs, dff, K, in_dim;
     int pimg, p0, p1, pc1, pc2, ph, pred_flat, pin_dim, small_px, pb, d1_in, d2_in, skip1_off, skip_off, pih;
+    int ih;   // inverse-dynamics hidden size (0: no inverse head)
 };
 
 static bool make_dims(const VMConfig& c, Dims& D) {
-    if (!c.coord || !c.pred_residual || !c.pred_skip || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.patch > 0) return false;
+    if (!c.coord || !c.pred_residual || !c.pred_skip || c.dyn_hidden > 0 || c.patch > 0) return false;
     if (c.img % 8 || c.pred_img % 4 || c.img / c.pred_img != 2 || c.d_model % c.n_head || c.pb <= 0) return false;
     D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
     D.h1 = c.img / 2; D.h2 = c.img / 4; D.h3 = c.img / 8; D.enc_flat = c.c3 * D.h3 * D.h3;
@@ -53,6 +54,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
     D.skip1_off = D.pc2 + D.pb + 2; D.d1_in = D.skip1_off + D.c3 + 3;
     D.skip_off = D.pc1 + 2; D.d2_in = D.skip_off + D.c2 + 3;
     D.pih = c.pi_hidden > 0 ? c.pi_hidden : 0;
+    D.ih = c.inv_hidden > 0 ? c.inv_hidden : 0;
     return D.p1 == D.h2 && D.p0 == D.h3 && D.K <= 64;   // U-Net skips need equal map sizes; k_attn_bwd: K <= 64
 }
 
@@ -71,6 +73,7 @@ static void expected_sizes(const Dims& D, long* s) {
     s[PBW] = (long)D.pb * D.ph; s[PBB] = D.pb;
     s[D1W] = (long)D.d1_in * D.pc1 * KK; s[D1B] = D.pc1; s[D2W] = (long)D.d2_in * 3 * KK; s[D2B] = 3;
     s[DRW] = 2L * D.ph; s[DRB] = 2;
+    s[IV1W] = (long)D.ih * 2 * D.feat; s[IV1B] = D.ih; s[IV2W] = 2L * D.ih; s[IV2B] = D.ih ? 2 : 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -497,11 +500,50 @@ __global__ void k_wpe_grad(const float* dres, const int* pos, float* gwpe, int B
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x)
         atomicAdd(gwpe + (long)pos[i / d] * d + i % d, dres[i]);
 }
-// dvf = vf > 0 ? dtin[:, :F] : 0
-__global__ void k_dvf(const float* dtin, const float* vf, float* dvf, int B, int F, int in_dim) {
+// dvf = vf > 0 ? dtin[:, :F] + the inverse head's gradient : 0. The head's input at step t is [v_t, v_t1], t1 = t + 1
+// (t at the sequence's last step), so v_t receives div_in[t, :F], div_in[t-1, F:] (t > 0), and div_in[t, F:] at the
+// last step. div_in [B, 2F] may be NULL.
+__global__ void k_dvf(const float* dtin, const float* vf, const float* div_in, float* dvf, int B, int T, int F,
+                      int in_dim) {
     const long n = (long)B * F;
-    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x)
-        dvf[i] = vf[i] > 0.f ? dtin[(i / F) * in_dim + i % F] : 0.f;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const long b = i / F;
+        const int f = i % F, t = b % T;
+        float g = dtin[b * in_dim + f];
+        if (div_in) {
+            g += div_in[b * 2 * F + f];
+            if (t > 0) g += div_in[(b - 1) * 2 * F + F + f];
+            if (t == T - 1) g += div_in[b * 2 * F + F + f];
+        }
+        dvf[i] = vf[i] > 0.f ? g : 0.f;
+    }
+}
+// Inverse-dynamics input [B, 2F] = [v_t, v_t1]
+__global__ void k_inv_in(const float* vf, float* in, int B, int T, int F) {
+    const long n = (long)B * 2 * F;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const long b = i / (2 * F);
+        const int j = i % (2 * F);
+        const long src = j < F ? b : (b % T + 1 < T ? b + 1 : b);
+        in[i] = vf[src * F + j % F];
+    }
+}
+// Inverse-dynamics loss where valid[b]: inv_coef * 1/2 |out - clip(a)|^2. acc[10] += SE/2, acc[11] += |a|^2/2,
+// acc[12] += valid steps
+__global__ void k_inv_loss(const float* out, const float* act, const int* valid, float* dout, int B, float inv_B,
+                           float coef, double* acc) {
+    const int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B) return;
+    dout[b * 2] = dout[b * 2 + 1] = 0.f;
+    if (!valid[b]) return;
+    double se = 0, var = 0;
+    for (int k = 0; k < 2; k++) {
+        const float tgt = clampf_(act[b * 3 + k], -1.f, 1.f), e = out[b * 2 + k] - tgt;
+        se += 0.5 * (double)e * e;
+        var += 0.5 * (double)tgt * tgt;
+        dout[b * 2 + k] = inv_B * coef * e;
+    }
+    atomicAdd(acc + 10, se); atomicAdd(acc + 11, var); atomicAdd(acc + 12, 1.0);
 }
 // Squared gradient norms of the three groups: [0] backbone, [1] policy/value heads [h0, h1), [2] prediction heads
 // [p0, p1)
@@ -581,19 +623,20 @@ struct Model {
     int S = 0, T = 0, B = 0;   // the batch: S sequences of T <= ctx steps
     // batch
     uint8_t *img = nullptr, *ns = nullptr, *cs = nullptr, *nfull = nullptr;
-    int *start = nullptr, *pos = nullptr;
+    int *start = nullptr, *pos = nullptr, *ivalid = nullptr;   // ivalid: t+1 is in the sequence and episode
     float *drv = nullptr, *pa = nullptr, *pr = nullptr, *act = nullptr, *ndrv = nullptr;
     int cap = 0;   // frames allocated
     // activations and gradients
     Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, xin, ln1, ln1m, ln1r, qkv, att, atty, res1, ln2, ln2m, ln2r,
         fch, fchg, res2, lnf, lnfm, lnfr, pih, pi, pin, ph1, ph2, ub, pdrv, d1in, dc1, d2in, dc2, pout;
+    Buf iv_in, iv_h, iv_out, div_out, div_h, div_in;   // inverse dynamics
     Buf fout, fhwc;   // forward outputs: [B, 4] mu, click p, value; predicted frames HWC
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
         dtin, dvf, da3, da2, da1, dY;
     double* acc = nullptr;    // [0] weighted frame SE, [1] frame SE, [2] drive SE, [3] -logp, [4] click p, [5..7] norms,
-                              // [8] SE of the changed pixels, [9] their count (x3)
+                              // [8] SE of the changed pixels, [9] their count (x3), [10..12] inverse SE, var, count
     float* clip = nullptr;
-    float coef[3] = {0, 0, 0};   // pred, drive, move coefficients of the last loss (for the reported total)
+    float coef[4] = {0, 0, 0, 0};   // pred, drive, move, inverse coefficients of the last loss (the reported total)
 };
 
 static void gemm(Model* M, bool ta, bool tb, int m, int n, int k, const float* A, int lda, const float* B, int ldb,
@@ -620,13 +663,13 @@ static void linear_bwd(Model* M, const float* dout, const float* inp, const floa
 static void alloc_batch(Model* M, int B) {
     const Dims& D = M->D;
     if (B > M->cap) {
-        cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos);
+        cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos); cudaFree(M->ivalid);
         cudaFree(M->drv); cudaFree(M->pa); cudaFree(M->pr); cudaFree(M->act); cudaFree(M->ndrv);
         cudaMalloc(&M->img, (size_t)B * D.img * D.img * 3);
         cudaMalloc(&M->ns, (size_t)B * D.small_px);
         cudaMalloc(&M->cs, (size_t)B * D.small_px);
         cudaMalloc(&M->nfull, (size_t)B * D.img * D.img * 3);
-        cudaMalloc(&M->start, B * sizeof(int)); cudaMalloc(&M->pos, B * sizeof(int));
+        cudaMalloc(&M->start, B * sizeof(int)); cudaMalloc(&M->pos, B * sizeof(int)); cudaMalloc(&M->ivalid, B * sizeof(int));
         cudaMalloc(&M->drv, B * 2 * sizeof(float)); cudaMalloc(&M->pa, B * 3 * sizeof(float));
         cudaMalloc(&M->pr, B * sizeof(float)); cudaMalloc(&M->act, B * 3 * sizeof(float));
         cudaMalloc(&M->ndrv, B * 2 * sizeof(float));
@@ -656,11 +699,11 @@ void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const 
     for (int i = 0; i < NUM_P; i++) { M->off[i] = offsets[i]; M->sz[i] = sizes[i]; }
     const size_t nb = n_params * sizeof(float);
     if (cudaMalloc(&M->P, nb) || cudaMalloc(&M->G, nb) || cudaMalloc(&M->m, nb) || cudaMalloc(&M->v, nb) ||
-        cudaMalloc(&M->acc, 10 * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
+        cudaMalloc(&M->acc, 13 * sizeof(double)) || cudaMalloc(&M->clip, 2 * sizeof(float))) {
         fprintf(stderr, "vm_cuda: out of device memory\n"); return nullptr;
     }
     cudaMemcpy(M->P, params, nb, cudaMemcpyHostToDevice);
-    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, 10 * sizeof(double));
+    cudaMemset(M->G, 0, nb); cudaMemset(M->m, 0, nb); cudaMemset(M->v, 0, nb); cudaMemset(M->acc, 0, 13 * sizeof(double));
     if (cublasCreate(&M->cb) != CUBLAS_STATUS_SUCCESS) return nullptr;
     cublasSetMathMode(M->cb, CUBLAS_PEDANTIC_MATH);   // no TF32
     return M;
@@ -670,7 +713,7 @@ void vmc_free(void* h) {
     Model* M = (Model*)h;
     if (!M) return;
     cudaFree(M->P); cudaFree(M->G); cudaFree(M->m); cudaFree(M->v); cudaFree(M->acc); cudaFree(M->clip);
-    cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos);
+    cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos); cudaFree(M->ivalid);
     cudaFree(M->drv); cudaFree(M->pa); cudaFree(M->pr); cudaFree(M->act); cudaFree(M->ndrv);
     for (Buf* b : {&M->x0, &M->cols1, &M->cols2, &M->cols3, &M->Y, &M->a1, &M->a2, &M->a3, &M->vf, &M->tin, &M->xin,
                    &M->ln1, &M->ln1m, &M->ln1r, &M->qkv, &M->att, &M->atty, &M->res1, &M->ln2, &M->ln2m, &M->ln2r,
@@ -678,7 +721,8 @@ void vmc_free(void* h) {
                    &M->ph2, &M->ub, &M->pdrv, &M->d1in, &M->dc1, &M->d2in, &M->dc2, &M->pout, &M->dpout, &M->dpdrv,
                    &M->dpi, &M->dcols, &M->dx2, &M->dx1, &M->dph2, &M->dub, &M->dskip3, &M->dph1, &M->dpin, &M->dz,
                    &M->dpih, &M->dres, &M->dln, &M->datty, &M->dqkv, &M->dfch, &M->dfchg, &M->dtin, &M->dvf, &M->da3,
-                   &M->da2, &M->da1, &M->dY})
+                   &M->da2, &M->da1, &M->dY, &M->iv_in, &M->iv_h, &M->iv_out, &M->div_out, &M->div_h, &M->div_in,
+                   &M->fout, &M->fhwc})
         if (b->p) cudaFree(b->p);
     cublasDestroy(M->cb);
     delete M;
@@ -695,14 +739,16 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
     const int B = S * T;
     alloc_batch(M, B);
     M->S = S; M->T = T; M->B = B;
-    std::vector<int> start(B), pos(B);
+    std::vector<int> start(B), pos(B), valid(B);
     for (int s = 0; s < S; s++)
         for (int t = 0; t < T; t++) {
             const int b = s * T + t;
             const bool st = t == 0 || M->cfg.one_frame || (ep_start && ep_start[b]);
             start[b] = st ? b : start[b - 1];
             pos[b] = b - start[b];
+            valid[b] = t + 1 < T && !(ep_start && ep_start[b + 1]);   // inverse dynamics (one_frame aside)
         }
+    CK(cudaMemcpy(M->ivalid, valid.data(), B * sizeof(int), cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->img, images, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->start, start.data(), B * sizeof(int), cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->pos, pos.data(), B * sizeof(int), cudaMemcpyHostToDevice));
@@ -845,8 +891,9 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     if (!train) { CK(cudaGetLastError()); return 0; }
     const PPOConfig& pc = *pcp;
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
-    CK(cudaMemsetAsync(M->acc, 0, 10 * sizeof(double)));
-    M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef;
+    CK(cudaMemsetAsync(M->acc, 0, 13 * sizeof(double)));
+    const bool have_inv = pc.inv_coef > 0.f && D.ih > 0;
+    M->coef[0] = pc.pred_coef; M->coef[1] = pc.drive_coef; M->coef[2] = pc.move_coef; M->coef[3] = have_inv ? pc.inv_coef : 0.f;
 
     // ---- losses ----
     const float inv_B = 1.0f / B;
@@ -858,6 +905,18 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
                                                  inv_B * pc.pred_coef * 2.0f / D.small_px, 1.0f + pc.pred_changed_weight, M->acc);
     k_head_loss<<<(B + 127) / 128, 128>>>(pdrv, M->ndrv, pi, M->act, P + off[LOGSTD], dpdrv, dpi, G + off[LOGSTD], B,
                                           inv_B, pc.drive_coef, pc.move_coef, M->acc);
+    float *iv_in = nullptr, *iv_h = nullptr, *div_out = nullptr;
+    if (have_inv) {   // inverse dynamics: [v_t, v_t+1] -> the executed (dx, dy)
+        const int F = D.feat;
+        iv_in = M->iv_in.get((size_t)B * 2 * F);
+        iv_h = M->iv_h.get((size_t)B * D.ih);
+        float* iv_out = M->iv_out.get((size_t)B * 2);
+        div_out = M->div_out.get((size_t)B * 2);
+        k_inv_in<<<GRID((long)B * 2 * F)>>>(vf, iv_in, B, K, F);
+        linear(M, iv_h, iv_in, P + off[IV1W], P + off[IV1B], B, 2 * F, D.ih, 1);
+        linear(M, iv_out, iv_h, P + off[IV2W], P + off[IV2B], B, D.ih, 2, 0);
+        k_inv_loss<<<(B + 127) / 128, 128>>>(iv_out, M->act, M->ivalid, div_out, B, inv_B, pc.inv_coef, M->acc);
+    }
     const float sc = pc.pred_backbone_scale;
 
     // ---- decoder backward ----
@@ -938,7 +997,15 @@ static int run_model(Model* M, const PPOConfig* pcp, bool train, bool want_pred)
     float* dvf = M->dvf.get((size_t)B * D.feat);
     float* da3 = M->da3.get((size_t)B * D.enc_flat);
     linear_bwd(M, dres, tin, P + off[INW], B, D.in_dim, d, dtin, false, G + off[INW], G + off[INB]);
-    k_dvf<<<GRID((long)B * D.feat)>>>(dtin, vf, dvf, B, D.feat, D.in_dim);
+    float* div_in = nullptr;
+    if (have_inv) {
+        float* div_h = M->div_h.get((size_t)B * D.ih);
+        div_in = M->div_in.get((size_t)B * 2 * D.feat);
+        linear_bwd(M, div_out, iv_h, P + off[IV2W], B, D.ih, 2, div_h, false, G + off[IV2W], G + off[IV2B]);
+        k_mask<<<GRID((long)B * D.ih)>>>(div_h, iv_h, (long)B * D.ih);
+        linear_bwd(M, div_h, iv_in, P + off[IV1W], B, 2 * D.feat, D.ih, div_in, false, G + off[IV1W], G + off[IV1B]);
+    }
+    k_dvf<<<GRID((long)B * D.feat)>>>(dtin, vf, div_in, dvf, B, K, D.feat, D.in_dim);
     linear_bwd(M, dvf, a3, P + off[EFW], B, D.enc_flat, D.feat, da3, false, G + off[EFW], G + off[EFB]);
 
     // ---- encoder backward ----
@@ -973,8 +1040,8 @@ extern "C" {
 int vmc_loss_and_grads(void* h, const PPOConfig* pcp) {
     Model* M = (Model*)h;
     const PPOConfig& pc = *pcp;
-    if (pc.use_ppo || pc.inv_coef > 0.f || pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f) {
-        fprintf(stderr, "vm_cuda: only the prediction-only update (use_ppo=0, no inverse or latent dynamics)\n");
+    if (pc.use_ppo || pc.dyn_coef > 0.f || pc.dyn_h_coef > 0.f || pc.dyn_x_coef > 0.f) {
+        fprintf(stderr, "vm_cuda: only the prediction-only update (use_ppo=0, no latent dynamics)\n");
         return -1;
     }
     if (M->T != M->D.K) { fprintf(stderr, "vm_cuda: training sequences are ctx steps (vmc_set_batch)\n"); return -1; }
@@ -1033,11 +1100,13 @@ int vmc_update(void* h, const PPOConfig* pcp) {
 
 int vmc_stats(void* h, VMCStats* out) {
     Model* M = (Model*)h;
-    double a[10];
+    double a[13];
     CK(cudaMemcpy(a, M->acc, sizeof(a), cudaMemcpyDeviceToHost));
     const double n = M->B > 0 ? M->B : 1;
     memset(out, 0, sizeof(VMCStats));
-    out->loss = (float)((M->coef[0] * a[0] + M->coef[1] * a[2] + M->coef[2] * a[3]) / n);
+    out->loss = (float)((M->coef[0] * a[0] + M->coef[1] * a[2] + M->coef[2] * a[3] + M->coef[3] * a[10]) / n);
+    out->inv_mse = a[12] > 0 ? (float)(a[10] / a[12]) : 0.f;
+    out->inv_r2 = a[11] > 0 ? (float)(1.0 - a[10] / a[11]) : 0.f;
     out->pred_mse = (float)(a[1] / n);
     out->drive_mse = (float)(a[2] / n);
     out->move_nll = (float)(a[3] / n);

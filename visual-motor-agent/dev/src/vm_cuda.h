@@ -3,8 +3,8 @@
 // The same model and parameter layout as vm_agent.cpp (CNN model: CoordConv encoder, causal Transformer, policy
 // head, prediction MLP with the U-Net-skip frame decoder and the drives head), for the prediction-only update of the
 // basic agent: next frame, next drives and next move, gradient-norm clip and AdamW. All of an update runs on the
-// device without host synchronization. Refuses PPO, inverse and latent dynamics, patch tokens, and models without
-// coord, pred_residual and pred_skip.
+// device without host synchronization. Inverse dynamics (task 00013) is supported. Refuses PPO, latent dynamics,
+// patch tokens, and models without coord, pred_residual and pred_skip.
 #pragma once
 #include <stdint.h>
 #include "vm_agent.h"
@@ -18,6 +18,7 @@ typedef struct {
     float pred_mse, drive_mse, move_nll, click_p;
     float pred_changed_mse;   // frame MSE over the pixels that change between consecutive frames
     float grad_norm, gn_backbone, gn_policy, gn_pred;   // pre-clip gradient norms (after an update)
+    float inv_mse, inv_r2;    // inverse dynamics: MSE of (dx, dy) and R^2 against predicting 0 (as vm_agent)
 } VMCStats;
 
 // Creates the model from a config and the flat parameters (n_params floats, the layout of vm_param_layout: offsets

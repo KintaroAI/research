@@ -46,10 +46,14 @@ def compare(agent, g_cpu, g_gpu, tol):
 
 MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
           "small": dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1),
-          "small_one_frame": dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, one_frame=1, pi_hidden=5)}
+          "small_one_frame": dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, one_frame=1, pi_hidden=5),
+          "dmi": dict(BASIC, pi_hidden=128, inv_hidden=128),                                  # vm-00008 DMI
+          "small_inverse_one_frame": dict(SMALL, coord=1, pb=4, pred_residual=1, pred_skip=1, one_frame=1,
+                                          inv_hidden=6)}
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
-          "no_move": dict(PC, move_coef=0.0)}
+          "no_move": dict(PC, move_coef=0.0),
+          "inverse": dict(PC, inv_coef=0.1), "inverse_strong_scaled": dict(PC, inv_coef=2.0, pred_backbone_scale=0.3)}
 
 
 @pytest.fixture(scope="module", params=list(MODELS), ids=list(MODELS))
@@ -74,14 +78,14 @@ def test_loss_and_grads_match_cpp(setup, loss):
     g_gpu = m.grads()
     m.close()
     assert abs(st["loss"] - loss_cpu) < 1e-4 * max(1.0, abs(loss_cpu)), (st["loss"], loss_cpu)
-    for k in ("pred_mse", "pred_changed_mse", "drive_mse", "move_nll"):
+    for k in ("pred_mse", "pred_changed_mse", "drive_mse", "move_nll", "inv_mse", "inv_r2"):
         assert abs(st[k] - st_cpu[k]) < 1e-5 * max(1.0, abs(st_cpu[k])), (k, st[k], st_cpu[k])
     compare(agent, g_cpu, g_gpu, 1e-3)
 
 
 def test_update_matches_cpp(setup):
     agent, ro, data, lv, N = setup
-    pc = dict(PC, max_grad_norm=0.5, pi_own_clip=1)
+    pc = dict(PC, max_grad_norm=0.5, pi_own_clip=1, inv_coef=0.1)
     p0 = agent.params().copy()
     a2 = agent_lib.Agent(agent.config, seed=4)          # a copy with fresh optimizer state
     a2.params()[:] = p0
@@ -103,7 +107,7 @@ def test_update_matches_cpp(setup):
 
 
 def test_refuses_unsupported():
-    agent = agent_lib.Agent(dict(BASIC, inv_hidden=16), seed=1)
+    agent = agent_lib.Agent(dict(BASIC, dyn_hidden=16), seed=1)
     with pytest.raises(ValueError):
         cuda_lib.CudaModel(agent)
     agent.close()

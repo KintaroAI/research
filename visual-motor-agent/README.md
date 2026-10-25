@@ -34,7 +34,8 @@ of, reward. Then test whether that knowledge helps it learn the task.
 
 ## Setup
 
-- **Hardware:** QEMU VM, 128 vCPUs (SSE4.2 only), 251 GB RAM, **no GPU**.
+- **Hardware:** QEMU VM, 128 vCPUs (SSE4.2 only), 251 GB RAM; since 2026-10-24 an RTX 3090 (24 GB). The basic
+  agent's lifetime can run on it (`online.device=cuda`, tasks 00011–00013: 202 against 24 steps/s).
 - **Model:** C++17 + OpenMP + hand-written SSE GEMM, verified against a float64 PyTorch reference
   (gradients match to about 1e-7 relative error).
 - **World:** Python/numpy, with an HTML/JS replica that renders pixel-identical frames.

@@ -27,7 +27,7 @@ LIB_PATH = os.environ.get("VM_CUDA_LIB") or os.path.join(os.path.dirname(os.path
 
 class VMCStats(C.Structure):
     _fields_ = [(n, C.c_float) for n in ("loss", "pred_mse", "drive_mse", "move_nll", "click_p", "pred_changed_mse",
-                                         "grad_norm", "gn_backbone", "gn_policy", "gn_pred")]
+                                         "grad_norm", "gn_backbone", "gn_policy", "gn_pred", "inv_mse", "inv_r2")]
 
 
 _lib = None
@@ -148,7 +148,7 @@ class CudaModel:
     def update_rollout(self, ro, ppo_cfg, agent, sync=True):
         """One update from a filled Rollout. sync: all the weights are copied back to the C++ agent; else only the
         log-std (for sampling moves; call sync_to(agent) before saving it). Returns the stats under agent.update()'s
-        names (inverse and latent dynamics: 0, as the C++ model reports them when absent)."""
+        names (latent dynamics: 0, as the C++ model reports them when absent)."""
         self.set_batch(*ro.batch())
         st = self.update(ppo_cfg)
         p = agent.params()
@@ -158,7 +158,7 @@ class CudaModel:
             ls = np.empty(2, np.float32)
             _check(lib().vmc_get_range(self.handle, self.logstd_off, 2, _p(ls, C.c_float)), "get_range")
             p[self.logstd_off:self.logstd_off + 2] = ls
-        st.update(inv_mse=0.0, inv_r2=0.0, dyn_mse=0.0, dyn_hunger_mse=0.0, dyn_recon_mse=0.0,
+        st.update(dyn_mse=0.0, dyn_hunger_mse=0.0, dyn_recon_mse=0.0,
                   std_x=float(np.exp(np.clip(p[self.logstd_off], -5.0, 1.0))))
         return st
 

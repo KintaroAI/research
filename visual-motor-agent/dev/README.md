@@ -283,8 +283,8 @@ update and the forward passes run on the GPU (below).
 on the GPU; the weights come back to the C++ agent only for checkpoints. The basic agent's online loop: 24 steps/s on
 the CPU (16 threads), 62 with the GPU update alone, **202** with both (two lifetimes sharing the GPU: 137 each). A 50k
 lifetime takes 6 minutes. Reruns of vm-00008 D-U learn as the CPU runs did (test success, hit rate and probes in the
-same range; task 00012), but not bitwise. Not supported yet: PPO, inverse dynamics (DMI), the planner's latent
-dynamics, patch tokens.
+same range; task 00012), but not bitwise. Inverse dynamics is supported too (task 00013), so DMI runs on the GPU.
+Not supported yet: PPO, the planner's latent dynamics, patch tokens.
 
 
 **The GPU, first check (2026-10-24), before the port.** One update of vm-00008's DMI model (forward, backward and AdamW;

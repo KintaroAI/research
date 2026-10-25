@@ -74,8 +74,9 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
     wrapped by `cuda_lib.py`; `online.py --set online.device=cuda`. Forward passes and updates run on the GPU;
     the weights come back to the C++ agent only for checkpoints. The update takes 1.8 ms against 31 ms in C++,
     and the online loop runs 202 steps/s against 24 (a 50k lifetime in 6 minutes). It supports the CNN model
-    with coord, residual frames and U-Net skips, and the frame, drives and move losses only (not PPO, inverse
-    or latent dynamics, patch tokens). GPU lifetimes learn like CPU ones but are not bitwise reproducible.
+    with coord, residual frames and U-Net skips; the frame, drives, move and inverse-dynamics losses (task
+    00013: DMI runs there). Not PPO, latent dynamics (the planner agent) or patch tokens. GPU lifetimes are not
+    bitwise reproducible against CPU ones.
   - **Keep it equivalent:** `tests/test_cuda_model.py` checks the loss and every gradient against
     `vm_debug_grads` (about 1e-7) and the forward against `vm_forward`. Re-run it after touching either side. The same parameter layout is shared,
     so the CUDA code's `ParamId` order must follow `vm_agent.cpp`'s.
