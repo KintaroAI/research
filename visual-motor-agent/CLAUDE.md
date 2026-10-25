@@ -35,6 +35,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `env.distractors=K`: grey dots that move on their own (separate random streams: the episodes stay
     the same). `analyze_patch.py`: coupling (attention between patches), action sensitivity and probes
     per kind of token.
+  - `src/vm_cuda.cu`, `src/vm_cuda.h`, `cuda_lib.py` (task 00011): the basic agent's update on the GPU
+    (`make libvmcuda.so`, `online.device=cuda`).
   - `reference/torch_reference.py`: float64 PyTorch re-implementation, used by the tests (and by
     `analyze_patch.py tokens` for all token outputs).
   - `configs/*.json`: runs from the plan's experiment matrix (A–F) plus reward-free babbling (P_*).
@@ -50,6 +52,7 @@ make                # libvmagent.so
 make test           # C++ unit tests (GEMM, acting == training bitwise, determinism, checkpoints)
 make pytest         # world/reward/leak tests, JS equivalence, PyTorch gradient equivalence
 make bench          # acting / update throughput
+make libvmcuda.so   # optional: the GPU update (nvcc, cuBLAS); tests/test_cuda_model.py skips without it
 ```
 
 ## Run
@@ -65,8 +68,16 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
 
 ## Key Design Decisions
 
-- **No GPU on this machine** (QEMU VM, 128 vCPUs, SSE4.2 only). Everything is CPU C++17 with
-  OpenMP and a hand-written SSE GEMM.
+- **The agent runs on the CPU** (QEMU VM, 128 vCPUs, SSE4.2 only): C++17 with OpenMP and a hand-written
+  SSE GEMM. Since 2026-10-24 the VM also has an RTX 3090 (24 GB, sm_86, driver 595, nvcc 12.0).
+  - **The basic agent's update can run on it** (task 00011): `src/vm_cuda.cu` → `make libvmcuda.so`,
+    wrapped by `cuda_lib.py`; `online.py --set online.device=cuda`. The update takes 1.8 ms against 31 ms in
+    C++, and the online loop runs 2.6× faster (62 against 24 steps/s); acting stays on the CPU. It supports
+    the CNN model with coord, residual frames and U-Net skips, and the frame, drives and move losses only.
+  - **Keep it equivalent:** `tests/test_cuda_model.py` checks the loss and every gradient against
+    `vm_debug_grads` (about 1e-7). Re-run it after touching either side. The same parameter layout is shared,
+    so the CUDA code's `ParamId` order must follow `vm_agent.cpp`'s.
+  - CUDA PyTorch (for experiments only) is in `~/venvs/vm-gpu`; the project venv keeps CPU torch.
   - Use 64 threads per run. Acting is about 2× faster than with 128, and two runs fit on the
     machine at once.
   - Expect about 1.7–2.0k env-steps/s per run with 4 PPO epochs.

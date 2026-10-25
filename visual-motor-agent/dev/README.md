@@ -266,7 +266,44 @@ are used for scoring only):
 ./venv/bin/python analyze_patch.py coupling RUN_DIR --step 50000
 ```
 
-## Performance (this machine: 128 vCPUs, SSE4.2, no GPU)
+## Performance (this machine: 128 vCPUs, SSE4.2; an RTX 3090 since 2026-10-24)
+
+**The update on the GPU (task 00011, `libvmcuda.so`).** A CUDA port of the basic agent's update (the CNN model
+with coord, residual frames and U-Net skips; frame, drives and move losses; clip and AdamW). Its gradients match
+the C++ model's to about 1e-7 (`tests/test_cuda_model.py`). Run a lifetime with `--set online.device=cuda`: the
+update runs on the GPU, the weights are copied back, and acting stays on the CPU.
+
+| vm-00008 D-U, sequences × 8 steps | C++, 16 threads | C++, 64 threads | CUDA (with the batch upload) |
+|---|---:|---:|---:|
+| 8 (the online update) | 31.3 ms | 37.0 ms | 1.8 ms (2.1) |
+| 32 | 73.4 ms | 52.9 ms | 4.2 ms (4.6) |
+| 128 | 263.6 ms | 141.0 ms | 14.4 ms (16.0) |
+
+The basic agent's online loop, 16 threads: 24 steps/s on the CPU, 62 with `online.device=cuda`. Per step, the CPU
+forward passes (6.3 ms) and the weight copy and refresh (4.3 ms) are now the largest parts. Not supported yet:
+PPO, inverse dynamics (DMI), the planner's latent dynamics, patch tokens.
+
+
+**The GPU, first check (2026-10-24), before the port.** One update of vm-00008's DMI model (forward, backward and AdamW;
+1.35M parameters), timed on a quiet machine. The C++ column uses 16 or 64 threads. The GPU column runs the
+PyTorch reference in fp32 on the RTX 3090, with the frames downsampled on the GPU (the reference's NumPy
+downsampling alone took 80% of the time). CUDA PyTorch is in `~/venvs/vm-gpu`; the project venv keeps CPU
+torch.
+
+| Sequences × 8 steps | C++, 16 threads | C++, 64 threads | GPU (PyTorch reference) | GPU busy |
+|---|---:|---:|---:|---:|
+| 8 (the online update) | 31.3 ms | 30.9 ms | 32.4 ms | 5.3 ms |
+| 32 | 72.4 ms | 52.4 ms | 56.1 ms | – |
+| 128 | 263.2 ms | 142.8 ms | 97.4 ms | 30.0 ms |
+
+- At the online batch size the GPU computes for 5 ms of the 32. The rest is Python and the launches of about
+  500 kernels per update. TF32 changes nothing.
+- A GPU version pays only without that overhead (CUDA graphs, or a fused CUDA implementation): about 6× at the
+  online batch size, judging by the busy time. The other way is to batch more, for example many lifetimes in
+  one update.
+- The basic agent's online loop on the quiet machine: 11 steps/s at 4 threads, 22 at 16. The update takes
+  85% of the time.
+
 
 **Small updates spread frames over threads.** When a minibatch has fewer sequences than threads, the
 update and the batched forward split each sequence into per-frame work. That covers the convolutional

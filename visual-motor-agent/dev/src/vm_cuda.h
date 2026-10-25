@@ -1,0 +1,48 @@
+// vm_cuda.h — the basic agent's update on the GPU (task 00011).
+//
+// The same model and parameter layout as vm_agent.cpp (CNN model: CoordConv encoder, causal Transformer, policy
+// head, prediction MLP with the U-Net-skip frame decoder and the drives head), for the prediction-only update of the
+// basic agent: next frame, next drives and next move, gradient-norm clip and AdamW. All of an update runs on the
+// device without host synchronization. Refuses PPO, inverse and latent dynamics, patch tokens, and models without
+// coord, pred_residual and pred_skip.
+#pragma once
+#include <stdint.h>
+#include "vm_agent.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    float loss;          // total loss per token (as vm_debug_grads returns)
+    float pred_mse, drive_mse, move_nll, click_p;
+    float pred_changed_mse;   // frame MSE over the pixels that change between consecutive frames
+    float grad_norm, gn_backbone, gn_policy, gn_pred;   // pre-clip gradient norms (after an update)
+} VMCStats;
+
+// Creates the model from a config and the flat parameters (n_params floats, the layout of vm_param_layout: offsets
+// and sizes of every parameter tensor in ParamId order, n_tensors of them). NULL if the config is not supported or
+// the layout differs from the one expected.
+void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const long* offsets, const long* sizes,
+                 int n_tensors);
+void vmc_free(void* h);
+// One batch of S sequences of ctx steps, [S, ctx, ...] C-contiguous host arrays (images u8 HWC, next_small u8 HWC
+// at pred_img, or the full-size next frames if next_full: then downsampled on the device). prev_reward is the
+// command slot. Copied to the device.
+int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, const float* prev_action,
+                  const float* prev_reward, const uint8_t* ep_start, const float* action, const uint8_t* next_small,
+                  const float* next_drives, int next_full);
+// Loss and gradients of the current batch (gradients stay on the device; vmc_grads copies them out).
+int vmc_loss_and_grads(void* h, const PPOConfig* pc);
+// loss_and_grads, the gradient-norm clip and an AdamW step.
+int vmc_update(void* h, const PPOConfig* pc);
+// Waits for the device and returns the statistics of the last loss_and_grads / update.
+int vmc_stats(void* h, VMCStats* out);
+int vmc_params(void* h, float* out);   // device -> host copies of n_params floats
+int vmc_grads(void* h, float* out);
+int vmc_set_params(void* h, const float* params);   // host -> device (resets nothing else)
+int vmc_sync(void* h);
+
+#ifdef __cplusplus
+}
+#endif

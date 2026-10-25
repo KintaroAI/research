@@ -1,7 +1,7 @@
 # Makefile for the visual-motor agent (C++ model, Python world)
 #
 # CPU build: g++ + OpenMP + SSE intrinsics. -ffp-contract=off keeps acting (KV cache, M=1 GEMMs) and
-# training (M=T GEMMs) bitwise identical. No GPU is required.
+# training (M=T GEMMs) bitwise identical. No GPU is required (libvmcuda.so, the optional GPU update, needs one).
 
 CXX = g++
 CXXFLAGS = -O3 -march=native -ffp-contract=off -fopenmp -std=c++17 -Wall -Wextra -Wno-unused-parameter
@@ -12,6 +12,12 @@ all: libvmagent.so
 # Built under a temporary name and renamed: running trainers keep their mapped copy intact.
 libvmagent.so: src/vm_agent.cpp src/vm_agent.h
 	$(CXX) $(CXXFLAGS) -fPIC -shared -o $@.tmp src/vm_agent.cpp && mv $@.tmp $@
+
+# The GPU update (task 00011): nvcc + cuBLAS, RTX 3090 (sm_86). Optional: not part of `all`; its tests skip
+# without it.
+NVCC = nvcc
+libvmcuda.so: src/vm_cuda.cu src/vm_cuda.h src/vm_agent.h
+	$(NVCC) -O3 -arch=sm_86 -Xcompiler -fPIC -shared -o $@.tmp src/vm_cuda.cu -lcublas && mv $@.tmp $@
 
 test_vm_agent: src/test_vm_agent.cpp src/vm_agent.cpp src/vm_agent.h
 	$(CXX) $(CXXFLAGS) -o $@ src/test_vm_agent.cpp

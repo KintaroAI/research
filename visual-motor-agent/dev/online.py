@@ -66,7 +66,7 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       babble_sigma=0.607, babble_click=0.1, save_every=10_000, log_every=1_000, threads=8,
                       planner=None, actor="planner", goal=0, goal_k=12, click_bias=None,
                       memory="stream", stm=256, relief_k=12, store_relief=0, store_surprise=0.0, store_base=1.0,
-                      store_warmup=1_000, surprise_window=1_000)
+                      store_warmup=1_000, surprise_window=1_000, device="cpu")
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -440,7 +440,15 @@ def main():
         sd_off = {name: o for name, o, _ in agent.param_layout()}["logstd"]
     else:
         mem = Replay(on["replay"], env_cfg.size)
-    ro = agent.new_rollout(L, B)
+    gpu = None
+    if on["device"] == "cuda":   # the update on the GPU (task 00011); acting stays on the C++ agent
+        import cuda_lib
+        gpu = cuda_lib.CudaModel(agent)
+        ro = cuda_lib.Rollout(L, B, agent.config["img"])
+    elif on["device"] != "cpu":
+        raise ValueError("online.device must be 'cpu' or 'cuda'")
+    else:
+        ro = agent.new_rollout(L, B)
     zeros_b = np.zeros(B, np.float32)
     noop = np.zeros((1, planner.H, 3), np.float32)
 
@@ -534,7 +542,7 @@ def main():
                 fill_rollout(ro, gm.rows(B, rng, lag), L)
             else:
                 mem.fill(ro, mem.starts(L, B, rng, lag), L, goal_k)
-            win["stats"].append(agent.update(ro, zeros_b, ppo))
+            win["stats"].append(gpu.update_rollout(ro, ppo, agent) if gpu else agent.update(ro, zeros_b, ppo))
         if step % on["save_every"] == 0:
             agent.save(os.path.join(out_dir, "ckpt_%08d.bin" % step), with_optimizer=False)
         if step % on["log_every"] == 0:
@@ -564,7 +572,7 @@ def main():
                                                row.get("pred_mse", float("nan")), row.get("inv_r2", float("nan")),
                                                row.get("dyn_hunger_mse", float("nan"))) + gate, flush=True)
             win = dict(eps=[], planned=0, gain=[], stats=[], dyn_h1=[], t=time.time())
-    agent.save(os.path.join(out_dir, "ckpt_final.bin"), with_optimizer=True)
+    agent.save(os.path.join(out_dir, "ckpt_final.bin"), with_optimizer=gpu is None)   # GPU: the optimizer state stays there
     mf.close()
 
 
