@@ -220,13 +220,22 @@ __global__ void k_rowsum(const float* M, long N, float* out) {
     }
     if (threadIdx.x == 0) out[blockIdx.x] += sh[0];
 }
-// db[o] += sum_t dout[t, o]
+// db[o] += sum_t dout[t, o]. Blocks of 32 columns x 8 row lanes (coalesced reads), each over COLSUM_ROWS rows; the
+// blocks' partial sums meet in one atomic add per column (one thread per column over all rows left most of the GPU
+// idle: a fifth of the 8x8-patch update, found with Nsight Compute)
+#define COLSUM_ROWS 256
 __global__ void k_colsum(const float* dout, int T, int OC, float* db) {
-    const int o = blockIdx.x * blockDim.x + threadIdx.x;
-    if (o >= OC) return;
+    __shared__ float sh[8][33];
+    const int o = blockIdx.x * 32 + threadIdx.x, t1 = min(T, (blockIdx.y + 1) * COLSUM_ROWS);
     float s = 0.f;
-    for (int t = 0; t < T; t++) s += dout[(long)t * OC + o];
-    db[o] += s;
+    if (o < OC)
+        for (int t = blockIdx.y * COLSUM_ROWS + threadIdx.y; t < t1; t += 8) s += dout[(long)t * OC + o];
+    sh[threadIdx.y][threadIdx.x] = s;
+    __syncthreads();
+    if (threadIdx.y == 0 && o < OC) {
+        for (int k = 1; k < 8; k++) s += sh[k][threadIdx.x];
+        atomicAdd(db + o, s);
+    }
 }
 // out[t, o] = act(out[t, o] + b[o]); act: 0 none, 1 relu, 2 sigmoid
 __global__ void k_bias_act(float* out, const float* b, long T, int OC, int act) {
@@ -1061,7 +1070,7 @@ static void linear_bwd(Model* M, const float* dout, const float* inp, const floa
                        float* dinp, bool acc, float* dW, float* db) {
     if (dinp) gemm(M, false, false, T, C, OC, dout, OC, W, C, acc ? 1.f : 0.f, dinp, C);
     gemm(M, true, false, OC, C, T, dout, OC, inp, C, 1.f, dW, C);
-    k_colsum<<<(OC + 255) / 256, 256>>>(dout, T, OC, db);
+    k_colsum<<<dim3((OC + 31) / 32, (T + COLSUM_ROWS - 1) / COLSUM_ROWS), dim3(32, 8)>>>(dout, T, OC, db);
 }
 
 static void alloc_batch(Model* M, int B) {

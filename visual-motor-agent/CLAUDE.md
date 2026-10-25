@@ -82,8 +82,10 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
   2026-10-25 an RTX 4090 (24 GB, sm_89). `libvmcuda.so` carries native code for both.
   - **Pick a GPU with `CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=N`.** CUDA numbers devices fastest-first by
     default, so without the order variable `CUDA_VISIBLE_DEVICES=0` is the 4090, while `nvidia-smi`'s GPU 0 is the
-    3090. The 4090 is about 1.6× faster (8×8-patch update 4.5 ms against 7.0); three 8×8-patch lifetimes per card at
+    3090. The 4090 is about 1.5× faster (8×8-patch update with the act token 3.8 ms against 5.6); three 8×8-patch lifetimes per card at
     once run at 113 ticks/s each on the 4090 and 74 on the 3090. One MPS daemon serves both cards.
+  - **Profiling:** Nsight Compute works for this user (`NVreg_RestrictProfilingToAdminUsers=0` in
+    `/etc/modprobe.d/nvidia-profiling.conf`): `ncu --metrics gpu__time_duration.sum --csv ./venv/bin/python SCRIPT`.
   - **The basic agent's lifetime can run on it** (tasks 00011, 00012): `src/vm_cuda.cu` → `make libvmcuda.so`,
     wrapped by `cuda_lib.py`; `online.py --set online.device=cuda`. Forward passes and updates run on the GPU;
     the weights come back to the C++ agent only for checkpoints. The update takes 1.8 ms against 31 ms in C++,
