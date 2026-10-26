@@ -7,6 +7,8 @@ exactly the windows eval_predict.py scores with --env-set split=val --env-set ti
 pages, non-overlapping windows of the universal model's ctx steps), each window a fresh context. Nats per letter.
 
     ~/venvs/vm-gpu/bin/python reference/char_gpt.py --config configs/T_text_B.json --updates 100000 -o OUT_DIR
+
+--data lifetime (task 00034): the batches a text lifetime trains on instead of random windows (LifetimeBatches).
 """
 
 import argparse
@@ -40,6 +42,33 @@ def init_params(n_vocab, ctx, d, L, d_ff, gen, device):
                 attprojw=nrm(L, d, d, std=r), attprojb=full(0, L, d), ln2w=full(1, L, d), ln2b=full(0, L, d),
                 fcw=nrm(L, d_ff, d), fcb=full(0, L, d_ff), fcprojw=nrm(L, d, d_ff, std=r), fcprojb=full(0, L, d),
                 lnfw=full(1, d), lnfb=full(0, d), out_w=nrm(n_vocab, d), out_b=full(0, n_vocab))
+
+
+class LifetimeBatches:
+    """The windows a lifetime (lifetime.py, memory U, one body) trains on, as letter offsets into the train split: a
+    stream from a seeded offset that reads one page per tick; at tick t (t pages read, training from t = L on) the
+    newest window (pages t-L .. t-1), then B-1 chunks drawn uniformly from the chunks decided so far (chunk m = pages
+    mL .. mL+L-1, decided delay pages after it ends), or, before the first chunk, B-1 windows from the last stm pages
+    (the short-term memory). No eviction (memory holds replay // L chunks, enough for the runs here)."""
+
+    def __init__(self, n_letters, page, L, B, seed, delay=11, stm=256, cap=12500):
+        self.n, self.page, self.L, self.B, self.delay, self.stm, self.cap = n_letters, page, L, B, delay, stm, cap
+        self.rng = np.random.default_rng([seed, 34])
+        self.pos0 = int(self.rng.integers(0, n_letters))
+        self.t = L
+
+    def next(self):
+        """Letter offsets [B] of this tick's windows (each L * page letters), then advance one tick."""
+        t, L = self.t, self.L
+        chunks = min(max((t - self.delay) // L, 0), self.cap)
+        if chunks:
+            pages = np.concatenate([[t - L], (self.rng.integers(0, chunks, self.B - 1) + max(0, (t - self.delay) // L
+                                                                                            - self.cap)) * L])
+        else:
+            lo = max(0, t - self.stm)
+            pages = np.concatenate([[t - L], self.rng.integers(lo, t - L + 1, self.B - 1)])
+        self.t += 1
+        return (self.pos0 + pages * self.page) % self.n
 
 
 def logits(P, cfg, x):
@@ -84,6 +113,8 @@ def main():
     ap.add_argument("--eval-every", type=int, default=10000)
     ap.add_argument("--bodies", type=int, default=16, help="eval_predict.py's readers (the val windows)")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--data", default="random", choices=("random", "lifetime"),
+                    help="random windows of the train split, or the windows a lifetime trains on (task 00034)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("-o", "--out", required=True)
     args = ap.parse_args()
@@ -105,9 +136,10 @@ def main():
     win = val_windows(cfg["env"], args.bodies, L)
     train = torch.tensor(world.codes, device=args.device)
     rng = np.random.default_rng(args.seed)
+    lb = LifetimeBatches(len(world.codes), page, L, B, args.seed) if args.data == "lifetime" else None
     os.makedirs(args.out, exist_ok=True)
     nparams = sum(p.numel() for p in P.values())
-    info = dict(command=" ".join(sys.argv), config=args.config, model=m, ctx_letters=ctx, n_vocab=n_vocab,
+    info = dict(command=" ".join(sys.argv), config=args.config, data=args.data, model=m, ctx_letters=ctx, n_vocab=n_vocab,
                 batch=B, ppo=ppo, params=nparams, train_letters=len(world.codes), val_windows=len(win))
     json.dump(info, open(os.path.join(args.out, "info.json"), "w"), indent=2)
     print("params %d  vocab %d  context %d letters  batch %d  val windows %d" % (nparams, n_vocab, ctx, B, len(win)),
@@ -125,8 +157,11 @@ def main():
             print("update %7d  val %.4f nats/letter  %.0f s" % (u, v, row["time"]), flush=True)
         if u == args.updates:
             break
-        st = torch.tensor(rng.integers(0, len(train) - ctx - 1, B), device=args.device)
-        x = train[st[:, None] + torch.arange(ctx + 1, device=args.device)[None]]
+        if lb is None:
+            st = torch.tensor(rng.integers(0, len(train) - ctx - 1, B), device=args.device)
+        else:
+            st = torch.tensor(lb.next(), device=args.device)
+        x = train[(st[:, None] + torch.arange(ctx + 1, device=args.device)[None]) % len(train)]
         loss = F.cross_entropy(logits(P, m, x[:, :-1]).reshape(-1, n_vocab), x[:, 1:].reshape(-1))
         opt.zero_grad(set_to_none=True)
         loss.backward()

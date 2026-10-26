@@ -161,9 +161,31 @@ every tick:
   embedding is then `Σ_e softmax(g(values))_e · table_e + slot + step` instead of `W_in · values`. What a token *is*
   becomes a learned choice from a vocabulary of embeddings. It replaces only the input map; the rest stays universal.
   The hard version with a reconstruction target is the VQ codebook below.
-- **Learned discrete tokens (a VQ codebook):** each patch becomes an index into a learned vocabulary, as an LLM's tokens
-  are, and the model predicts a softmax over the codebook. It turns the value vectors into true tokens; the risk is that
-  small things like the cursor are lost in the codebook. After the universal model works on value vectors.
+- **Learned discrete tokens: a patch tokenizer (VQ-VAE or FSQ)** (to test; the owner, 2026-10-26): one
+  encoder → bottleneck → decoder for every token's values, trained to reconstruct them; the bottleneck snapped to one of
+  K codes (a learned codebook, VQ-VAE; or FSQ: a few latent numbers each rounded to a few levels, e.g. 8·8·8·5·5·5 =
+  64,000 codes, no codebook to collapse). The code is the token: an embedding table in, a softmax over K out, as GPT-2.
+  Gains: a coherent joint prediction of a whole patch (the cursor here *or* there, not a per-pixel smear: task 00029),
+  an embedding per code (vm-00027: faster learning), one loss in nats per token for every world. Risks:
+  - **Rate allocation (the owner's concern):** reconstruction error spends codes where variation is large (patches),
+    so low-variance tokens (the body: hunger drifting 0.001 per step) get few codes and lose their fine changes, though
+    they matter most to the instinct. Universal countermeasures, the same for every token: each token's reconstruction
+    loss is the mean over its own values (as the prediction loss); each value slot normalized by its own running spread
+    before encoding; FSQ's fixed levels (no token type takes codes from another); residual quantization (a second,
+    finer code) only if still short.
+  - Codebook collapse (VQ): k-means initialisation, running-average codebook updates, dead-code restarts; or FSQ.
+  - Lossy: small things (the 3-pixel cursor) may merge into the background's code.
+  - Online learning: code meanings drift under the transformer; train the tokenizer first, or update it slowly.
+  - **Two arms to compare:** (a) one tokenizer shared by all slots, the embedding = code embedding + slot embedding;
+    (b) **a tokenizer per slot** (the owner's idea, 2026-10-26): slot i has its own small codebook of K codes, and the
+    token index is i·K + j, so the embedding table learns content and position jointly and no slot can take codes from
+    another (it answers the rate-allocation risk directly). Its costs: no sharing across positions (an edge at patch 5
+    and at patch 37 get unrelated codes and embeddings; each slot learns from 1/64 of the patches), and K must cover a
+    slot's contents (10 codes cannot hold the cursor's 64 positions or 65 letters: several small codes per slot, as
+    FSQ, would). Expected: (b) wins on the body and move tokens, (a) on patches.
+  Checks: reconstruction error and codes used per token type; hunger resolution (the smallest hunger difference that
+  changes the code, against today's 32 bins: 0.03); whether relief and poison jumps and the cursor survive the round
+  trip. The bins of today are already a fixed per-value quantizer; the tokenizer's gain is for patches.
 - **A faster lookahead:** the imagined steps recompute the whole window for every candidate and pass; the real
   prefix is the same for all of them, so its keys and values could be cached once per tick (as the one-step
   candidates do).
