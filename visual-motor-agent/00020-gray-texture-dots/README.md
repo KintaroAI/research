@@ -1,8 +1,8 @@
 # vm-00020: The Universal Model in Grayscale, With a Textured Poison and Moving Dots
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00020`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00020` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00020/`
 **Task plan:** [`../tasks/00024-gray-texture-dots.md`](../tasks/00024-gray-texture-dots.md)
 
