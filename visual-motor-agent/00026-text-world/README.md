@@ -1,8 +1,8 @@
 # vm-00026: The Universal Model Reads Shakespeare
 
 **Date:** 2026-10-26
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00026`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00026` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00026/`
 **Task plan:** [`../tasks/00032-text-world.md`](../tasks/00032-text-world.md)
 
