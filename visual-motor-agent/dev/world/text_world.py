@@ -1,8 +1,10 @@
 """TextWorld (task 00032): a text drawn as grey frames, with CircleWorld's interface, so that the universal model
 lives in it unchanged.
 
-A letter is a brightness: the corpus's sorted alphabet gives letter k the grey level round(k * 255 / (n - 1)).
-A frame is a page of (size / cell)^2 letters, each a cell x cell block of its level, written in block x block blocks of
+A letter is a glyph, a cell x cell block from a table of one glyph per letter of the corpus's sorted alphabet
+(encoding): level (letter k's every pixel at the grey level round(k * 255 / (n - 1)): a letter is a brightness) or
+onehot (task 00033: pixel k of the cell, row by row, at 255, the rest 0; needs cell^2 >= n).
+A frame is a page of (size / cell)^2 letters, written in block x block blocks of
 consecutive letters (blocks in raster order, letters within a block row by row; block 1: an ordinary page, line by
 line). Each step shows the next page; each body reads from its own seeded offset and wraps around at the end of its
 split (train: the first train_frac of the corpus, val: the rest), or with tile from evenly spaced pages (scoring: N
@@ -29,6 +31,7 @@ class TextConfig:
     cell: int = 2                 # letter side in pixels
     block: int = 1                # letters per side of a block of consecutive letters
     tile: bool = False            # readers start evenly spaced, whole pages apart (together they read the split once)
+    encoding: str = "level"       # the glyphs: level | onehot
     # read by the agent loops, as in EnvConfig: drives are observed (always 0 here), no hunger, no episodes
     drives: bool = True
     h_rate: float = 0.0
@@ -46,6 +49,8 @@ class TextConfig:
             raise ValueError("the page's letters per side (size / cell) must be a multiple of block")
         if not 0.0 < self.train_frac < 1.0:
             raise ValueError("train_frac must be in (0, 1)")
+        if self.encoding not in ("level", "onehot"):
+            raise ValueError("encoding must be 'level' or 'onehot'")
         return self
 
     @property
@@ -79,6 +84,14 @@ class TextWorld:
         if n < 2 or n > 256:
             raise ValueError("the corpus needs 2 to 256 distinct characters, has %d" % n)
         self.levels = np.round(np.arange(n) * 255.0 / (n - 1)).astype(np.uint8)
+        if c.encoding == "level":
+            self.glyphs = np.repeat(self.levels[:, None, None], c.cell, 1).repeat(c.cell, 2)   # [n, cell, cell]
+        else:
+            if c.cell ** 2 < n:
+                raise ValueError("onehot needs cell^2 >= %d letters" % n)
+            self.glyphs = np.zeros((n, c.cell * c.cell), np.uint8)
+            self.glyphs[np.arange(n), np.arange(n)] = 255
+            self.glyphs = self.glyphs.reshape(n, c.cell, c.cell)
         lut = np.zeros(0x110000 if any(ord(ch) > 255 for ch in self.alphabet) else 256, np.int64)
         for k, ch in enumerate(self.alphabet):
             lut[ord(ch)] = k
@@ -108,21 +121,30 @@ class TextWorld:
     def render(self, codes: np.ndarray) -> np.ndarray:
         """Pages of letter codes (N, page) -> frames (N, size, size, 3) uint8."""
         c, G = self.config, self.config.side
-        grid = np.zeros((len(codes), G * G), np.uint8)
-        grid[:, self.grid_index] = self.levels[codes]
-        img = grid.reshape(-1, G, G).repeat(c.cell, 1).repeat(c.cell, 2)
+        grid = np.zeros((len(codes), G * G), np.int64)
+        grid[:, self.grid_index] = codes
+        img = self.glyphs[grid.reshape(-1, G, G)].transpose(0, 1, 3, 2, 4).reshape(-1, c.size, c.size)
         return np.repeat(img[..., None], 3, axis=-1)
 
     def decode_levels(self, values: np.ndarray) -> np.ndarray:
         """Grey levels (any shape, 0..255) -> the nearest letter's code."""
         return np.abs(np.asarray(values, np.float64)[..., None] - self.levels.astype(np.float64)).argmin(-1)
 
-    def read(self, images: np.ndarray) -> list:
-        """Frames (N, size, size, 3) -> the pages' text (N strings), read at each letter's top-left pixel."""
+    def decode_glyphs(self, cells: np.ndarray) -> np.ndarray:
+        """Cells (..., cell, cell) of grey values -> the nearest glyph's letter code."""
+        g = self.glyphs.reshape(len(self.glyphs), -1).astype(np.float64)
+        x = np.asarray(cells, np.float64).reshape(cells.shape[:-2] + (1, -1))
+        return ((x - g) ** 2).sum(-1).argmin(-1)
+
+    def letters(self, images: np.ndarray) -> np.ndarray:
+        """Frames (N, size, size, 3) -> the pages' letter codes in reading order (N, page): the nearest glyphs."""
         c, G = self.config, self.config.side
-        grid = images[:, ::c.cell, ::c.cell, 0].reshape(len(images), G * G)
-        codes = self.decode_levels(grid[:, self.grid_index])
-        return ["".join(self.alphabet[k] for k in row) for row in codes]
+        cells = images[..., 0].reshape(len(images), G, c.cell, G, c.cell).transpose(0, 1, 3, 2, 4)
+        return self.decode_glyphs(cells.reshape(len(images), G * G, c.cell, c.cell)[:, self.grid_index])
+
+    def read(self, images: np.ndarray) -> list:
+        """Frames (N, size, size, 3) -> the pages' text (N strings)."""
+        return ["".join(self.alphabet[k] for k in row) for row in self.letters(images)]
 
     # ------------------------------------------------------------------ CircleWorld's interface
     def observe(self) -> Dict[str, np.ndarray]:

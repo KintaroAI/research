@@ -169,3 +169,47 @@ def test_char_gpt_starts_at_ln_vocab(corpus):
     win = np.random.default_rng(0).integers(0, 40, (8, 64))
     v, by = char_gpt.evaluate(P, m, win, "cpu")
     assert abs(v - np.log(40)) < 0.05 and by.shape == (63,)
+
+
+def test_onehot_glyphs_read_back_and_are_what_the_model_sees(corpus):
+    """encoding=onehot (task 00033): letter k is pixel k of its cell at 255; a token (cell = patch) is the one-hot
+    vector of its letter."""
+    from reference import torch_reference as ref
+    w = world(corpus, n=2, size=24, cell=6, encoding="onehot")
+    n = len(w.alphabet)
+    assert w.glyphs.shape == (n, 6, 6) and (w.glyphs.reshape(n, -1)[:, :n] == 255 * np.eye(n)).all()
+    assert (w.glyphs.reshape(n, -1)[:, n:] == 0).all()
+    codes = w.page_codes(w.pos)
+    assert ["".join(w.alphabet[k] for k in r) for r in codes] == w.read(w.observe()["image"])
+    v, _ = ref.uni_values(dict(img=24, patch=6, gray=1, bins=2), w.observe()["image"][:, None], np.zeros((2, 1, 2)),
+                          np.zeros((2, 1, 3)))
+    assert np.allclose(v[:, 0, 1:-1, :n], np.eye(n)[codes]) and (v[:, 0, 1:-1, n:] == 0).all()
+    with pytest.raises(ValueError):
+        world(corpus, size=16, cell=2, encoding="onehot")                # 4 values < the alphabet
+
+
+def test_glyph_scoring_is_the_normalized_factorized_probability(corpus):
+    torch = pytest.importorskip("torch")
+    import eval_predict
+    from reference import torch_reference as ref
+    w = world(corpus, n=3, size=24, cell=6, encoding="onehot", seed=2)
+    cfg_m = dict(SMALL_TEXT, img=24, patch=6, bins=2, ctx=3)
+    agent = agent_lib.Agent(cfg_m, seed=4)
+    cfg = agent.config
+    ro = eval_predict.rollout(agent, w, 6, np.random.default_rng(0))
+    win = eval_predict.windows(ro, 3)
+    P = ref.params_from_flat(agent.params(), agent.param_layout(), cfg, dtype=torch.float64)
+    g = w.glyphs.reshape(len(w.glyphs), -1) / 255.0
+    res = eval_predict.score(P, cfg, win, batch=2, glyphs=g)
+    out = ref.forward_uni(P, cfg, win["img"], win["drv"], win["act"], win["es"])
+    nt, V, K = ref.uni_dims(cfg)
+    pr = out["logits"].detach().softmax(-1).reshape(len(win["img"]), 3, nt, V, K).numpy()[:, :, :nt - 2]   # [S, T, np, V, 2]
+    p1 = pr[..., 1]                                                                # p(value = 1)
+    lp = np.log(np.where(g[None, None, None] > 0.5, p1[..., None, :], 1 - p1[..., None, :])).sum(-1)   # [.., n]
+    lp -= np.log(np.exp(lp).sum(-1, keepdims=True))
+    true = out["values"][:, :, 1:nt - 1, :len(g)].argmax(-1)
+    want = -np.take_along_axis(lp, true[..., None], -1).mean()
+    assert abs(res["nll_glyph"] - want) < 1e-6
+    odds = p1[..., :len(g)] / (1 - p1[..., :len(g)])                                # one-vs-all: odds normalized
+    alt = -np.log(np.take_along_axis(odds, true[..., None], -1)[..., 0] / odds.sum(-1)).mean()
+    assert abs(res["nll_glyph"] - alt) < 1e-6

@@ -6,7 +6,10 @@ cut into non-overlapping windows of ctx steps, each starting a context (as the c
 token's prediction of the next token's values is scored by the PyTorch reference: the two-hot cross-entropy per value
 (nats), as the training loss. Reported by what the token predicts (patch, move, body), for the patch targets also by
 value position within a token and by step within the window. In the text world a patch value is a letter, so the patch
-cross-entropy is nats per letter.
+cross-entropy is nats per letter. With a world that draws symbols as glyphs, one per token (the text world with cell =
+patch), also by glyph (task 00033): each glyph's factorized probability (the product over the token's values of the
+probability of the glyph's value), normalized over the glyphs; the true glyph's -log (nll_glyph). For one-hot glyphs
+this is the one-vs-all normalization; for glyphs of equal values it multiplies copies of one prediction.
 
     ./venv/bin/python eval_predict.py RUN_DIR --ckpts 50000 100000 --env-set split=val --env-set tile=true
     -> RUN_DIR/eval/ckpt_NNNNNNNN_predict[_TAG].json (or ckpt_final_...)
@@ -60,13 +63,30 @@ def windows(ro, L):
     return w
 
 
-def score(P, cfg, w, batch=64):
+def glyph_ll(logp, gl, K):
+    """logp [..., V, K] of patch-target tokens, glyphs gl [n, V] in [0, 1] -> [..., n]: the sum over values of
+    log p(the glyph's value) (two-hot: the two neighbouring bins' probabilities, weighted)."""
+    import torch
+    pos = np.clip(gl, 0, 1) * (K - 1)
+    lo = np.minimum(np.floor(pos).astype(np.int64), K - 2)
+    wt = torch.tensor(pos - lo, dtype=logp.dtype)
+    p = logp.exp().unsqueeze(-3)                                          # [..., 1, V, K]
+    shape = p.shape[:-3] + (len(gl),) + p.shape[-2:-1]
+    g = lambda i: p.expand(shape + (K,)).gather(-1, torch.tensor(i).expand(shape)[..., None])[..., 0]  # noqa: E731
+    return torch.log((1 - wt) * g(lo) + wt * g(lo + 1) + 1e-30).sum(-1)
+
+
+def score(P, cfg, w, batch=64, glyphs=None):
     """Per-value two-hot cross-entropy of every token's prediction of the next token, summed by target kind, by value
-    position (patch targets) and by step in the window (patch targets)."""
+    position (patch targets) and by step in the window (patch targets); with glyphs [n, V] (values in [0, 1]) the
+    patch targets' glyph NLL as well."""
     import torch
     from reference import torch_reference as ref
     nt, V, K = ref.uni_dims(cfg)
     T = w["img"].shape[1]
+    if glyphs is not None:
+        batch = max(1, min(batch, int(2e8 // (T * (nt - 2) * len(glyphs) * V))))
+    gsum, gn = 0.0, 0
     kind = np.array([0] * (nt - 2) + [1, 2])                          # what token i predicts
     used = np.concatenate([np.full(nt - 2, V), [3, 2]])             # values used by token i's target
     m = np.arange(V)[None, :] < used[:, None]                        # [nt, V]
@@ -82,6 +102,11 @@ def score(P, cfg, w, batch=64):
             tgt[:, :, nt - 1, :2] = b["ndrv"]
             logp = out["logits"].float().log_softmax(-1).reshape(S, T, nt, V, K)
             ce = -(torch.tensor(ref.two_hot(tgt, K), dtype=logp.dtype) * logp).sum(-1).numpy()   # [S, T, nt, V]
+            if glyphs is not None:   # the patch targets (tokens 0 .. nt-3 predict patches 1 .. nt-2)
+                gll = glyph_ll(logp[:, :, :nt - 2], glyphs, K).log_softmax(-1)              # [S, T, np, n]
+                true = ((v[:, :, 1:nt - 1, None, :] - glyphs) ** 2).sum(-1).argmin(-1)     # [S, T, np]
+                gsum -= gll.gather(-1, torch.tensor(true)[..., None]).sum().item()
+                gn += true.size
         for k in range(3):
             sel = ce[:, :, kind == k] * m[kind == k]
             acc["sum"][k] += sel.sum()
@@ -94,6 +119,8 @@ def score(P, cfg, w, batch=64):
     res = {"ce_" + KINDS[k]: float(acc["sum"][k] / acc["n"][k]) for k in range(3)}
     res.update(ce_patch_by_value=(acc["by_value"] / acc["n_value"]).tolist(),
                ce_patch_by_step=(acc["by_step"] / acc["n_step"]).tolist(), windows=len(w["img"]))
+    if glyphs is not None:
+        res["nll_glyph"] = gsum / gn
     return res
 
 
@@ -133,16 +160,18 @@ def main():
             model = _GpuEval(agent, cuda_lib.CudaModel(agent))
         ro = rollout(model, world, steps, np.random.default_rng(args.seed), (args.instinct, 0.005))
         P = ref.params_from_flat(agent.params(), agent.param_layout(), cfg, dtype=torch.float32)
-        res = score(P, cfg, windows(ro, L))
+        gw = world.config if hasattr(world, "glyphs") else None
+        one = gw is not None and gw.cell == cfg["patch"] and gw.size == cfg["img"] and cfg.get("gray")   # a glyph a token
+        res = score(P, cfg, windows(ro, L), glyphs=world.glyphs.reshape(len(world.glyphs), -1) / 255.0 if one else None)
         res.update(step=st, env=env, bodies=args.bodies, steps=steps, instinct=args.instinct,
                    values_scored=int(res["windows"] * L * ((cfg["img"] // cfg["patch"]) ** 2)
                                      * cfg["patch"] ** 2 * (1 if cfg.get("gray") else 3)))
         tag = "_" + args.tag if args.tag else ""
         with open(os.path.join(args.run, "eval", "%s_predict%s.json" % (name, tag)), "w") as f:
             json.dump(res, f)
-        print("%s %8s  ce patch %.4f  move %.4f  body %.4f  (%d windows)" % (
+        print("%s %8s  ce patch %.4f  move %.4f  body %.4f%s  (%d windows)" % (
             os.path.basename(os.path.normpath(args.run)), st, res["ce_patch"], res["ce_move"], res["ce_body"],
-            res["windows"]), flush=True)
+            "  glyph nll %.4f" % res["nll_glyph"] if "nll_glyph" in res else "", res["windows"]), flush=True)
 
 
 if __name__ == "__main__":
