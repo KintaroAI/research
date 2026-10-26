@@ -1,8 +1,8 @@
 # vm-00025: A Long Life with a Fixed Memory
 
 **Date:** 2026-10-26
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00025`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00025` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00025/`
 **Task plan:** [`../tasks/00031-long-life-memory.md`](../tasks/00031-long-life-memory.md)
 
