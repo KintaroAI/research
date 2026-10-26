@@ -73,7 +73,10 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       explore_decay=0,
                       # task 00023 (the universal model): the hunger instinct, one-step lookahead over instinct_m
                       # candidate moves (0: the policy alone), keeping the first sample within instinct_tol of the best
-                      instinct_m=0, instinct_tol=0.005)
+                      instinct_m=0, instinct_tol=0.005,
+                      # lifetime.py on the GPU: read the update's stats every stats_every ticks (each read waits for
+                      # the GPU; the metrics average the samples)
+                      stats_every=10)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -365,32 +368,44 @@ def fill_rollout(ro, r, L):
 UNI_CHUNK = 256   # windows per forward pass when acting
 
 
-def uni_act(fwd_uni, img, drv, act, es, bins, rng, m=0, tol=0.005):
+def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
-    lowest, keeping the first sample when it is within tol of the lowest. Returns the moves [N, 3] (dx, dy in [-1, 1],
-    click 0 / 1), the share of bodies where the instinct overrode the first sample, and the mean predicted gain."""
+    lowest, keeping the first sample when it is within tol of the lowest. model: an Agent or CudaModel (forward_uni;
+    with uni_candidates, the candidates reuse the policy pass instead of a full pass each). Returns the moves [N, 3]
+    (dx, dy in [-1, 1], click 0 / 1), the share of bodies where the instinct overrode the first sample, and the mean
+    predicted gain."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
-
-    def chunked(key, *xs, **kw):   # forward passes over at most UNI_CHUNK windows at a time (bounded memory)
-        return np.concatenate([fwd_uni(*[x[i:i + UNI_CHUNK] for x in xs], values=False, **kw)[key]
-                               for i in range(0, len(xs[0]), UNI_CHUNK)])
-    probs = chunked("move_probs", img, drv, a0, es, move_probs=True)[:, -1]                  # [N, 3, bins]
     M = max(1, m)
-    cdf = np.cumsum(probs, -1)
-    u = rng.random((N, M, 3, 1))
-    idx = np.minimum((cdf[:, None] < u).sum(-1), bins - 1)                                  # [N, M, 3]
-    c = idx / (bins - 1)
-    cand = np.stack([2 * c[..., 0] - 1, 2 * c[..., 1] - 1, (c[..., 2] > 0.5).astype(np.float64)], -1).astype(np.float32)
+    fast = m > 1 and hasattr(model, "uni_candidates")
+    cand, h = [], []
+    for i in range(0, N, UNI_CHUNK):   # at most UNI_CHUNK windows per forward pass (bounded memory)
+        sl = slice(i, i + UNI_CHUNK)
+        probs = model.forward_uni(img[sl], drv[sl], a0[sl], es[sl], values=False, move_probs=True)["move_probs"][:, -1]
+        n = probs.shape[0]
+        idx = np.minimum((np.cumsum(probs, -1)[:, None] < rng.random((n, M, 3, 1))).sum(-1), bins - 1)   # [n, M, 3]
+        c = idx / (bins - 1)
+        cc = np.stack([2 * c[..., 0] - 1, 2 * c[..., 1] - 1, (c[..., 2] > 0.5).astype(np.float64)], -1).astype(np.float32)
+        cand.append(cc)
+        if fast:   # right after the policy pass of these windows: its keys and values are reused
+            h.append(model.uni_candidates(cc))
+    cand = np.concatenate(cand)
     if m <= 1:
         return cand[:, 0], 0.0, 0.0
-    rep = lambda x: np.repeat(x, M, axis=0)   # noqa: E731
-    ac = rep(a0)
-    ac[:, -1] = cand.reshape(N * M, 3)
-    h = chunked("next_body", rep(img), rep(drv), ac, rep(es), move_probs=False, next_body=True)[:, -1, 0].reshape(N, M)
+    if fast:
+        h = np.concatenate(h)
+    else:
+        rep = lambda x: np.repeat(x, M, axis=0)   # noqa: E731
+        ac = rep(a0)
+        ac[:, -1] = cand.reshape(N * M, 3)
+        ri, rd, re = rep(img), rep(drv), rep(es)
+        h = np.concatenate([model.forward_uni(ri[j:j + UNI_CHUNK], rd[j:j + UNI_CHUNK], ac[j:j + UNI_CHUNK],
+                                              re[j:j + UNI_CHUNK], values=False, move_probs=False,
+                                              next_body=True)["next_body"][:, -1, 0]
+                            for j in range(0, N * M, UNI_CHUNK)]).reshape(N, M)
     best = np.argmin(h, 1)
     pick = np.where(h[:, 0] - h[np.arange(N), best] <= tol, 0, best)
     gain = h[:, 0] - h[np.arange(N), pick]
@@ -412,7 +427,7 @@ def eval_moves(agent, win, rng, instinct=(0, 0.005)):
     step): the policy head's sample, or for the universal model its own prediction plus the instinct (m, tol)."""
     st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
     if agent.config.get("universal"):
-        return uni_act(agent.forward_uni, st("img"), st("drv"), st("act").astype(np.float32), st("es"),
+        return uni_act(agent, st("img"), st("drv"), st("act").astype(np.float32), st("es"),
                        agent.config["bins"], rng, *instinct)[0]
     return sample_moves(agent, agent.forward(st("img"), st("drv"), st("pa"), st("cmd"), st("es")), rng)
 
@@ -494,6 +509,7 @@ class _GpuEval:
     def __init__(self, agent, gpu):
         self.config, self.params, self.param_layout, self.forward = agent.config, agent.params, agent.param_layout, gpu.forward
         self.forward_uni = gpu.forward_uni
+        self.uni_candidates = gpu.uni_candidates
 
 
 def load_config(path, overrides):

@@ -119,12 +119,14 @@ def main():
         fwd = gpu.forward
     elif on["device"] != "cpu":
         raise ValueError("online.device must be 'cpu' or 'cuda'")
-    fwd_uni = (gpu or agent).forward_uni if uni else None
+    umodel = (gpu or agent) if uni else None   # the universal model's forward (and, on the GPU, its fast candidates)
     rollouts = {}
 
     def rollout(n):   # one per batch size (the batch grows with the active bodies)
         if n not in rollouts:
-            rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"]) if gpu else agent.new_rollout(L, n)
+            # the universal model needs no next frames; builds before task 00026 still expect them
+            nf = not (uni and cuda_lib.has("vmc_uni_candidates"))
+            rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"], next_frames=nf) if gpu else agent.new_rollout(L, n)
         return rollouts[n]
 
     info = dict(command=" ".join(sys.argv), git=git_hash(), config=cfg, seed=args.seed, out_dir=out_dir,
@@ -160,7 +162,7 @@ def main():
                   (("img", obs["image"][:N, None]), ("drv", obs["drives"][:N, None]), ("pa", prev_a[:N, None]),
                    ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
         if uni:   # the universal model: its own move prediction, and the instinct
-            a, over, gain = uni_act(fwd_uni, win_in[0], win_in[1], win_in[5].astype(np.float32),
+            a, over, gain = uni_act(umodel, win_in[0], win_in[1], win_in[5].astype(np.float32),
                                     win_in[4].astype(np.uint8), agent.config["bins"], rng, on["instinct_m"],
                                     on["instinct_tol"])
             win["override"] += over * N
@@ -216,7 +218,12 @@ def main():
             ro = rollout(len(rows["img"]))
             fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
-            win["stats"].append(gpu.update_rollout(ro, ppo, agent, sync=False) if gpu else agent.update(ro, zeros, ppo))
+            if gpu:
+                st = gpu.update_rollout(ro, ppo, agent, sync=False, stats=tick % on["stats_every"] == 0)
+            else:
+                st = agent.update(ro, zeros, ppo)
+            if st is not None:
+                win["stats"].append(st)
         if tick % on["save_every"] == 0:
             if gpu:
                 gpu.sync_to(agent)

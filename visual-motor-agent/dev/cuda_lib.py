@@ -55,6 +55,7 @@ def lib():
             "vmc_sync": (i32, [vp]),
             "vmc_forward": (i32, [vp, i32, i32, u8p, fp, fp, fp, u8p, fp, fp, fp, fp, fp, fp, fp]),
             "vmc_forward_uni": (i32, [vp, i32, i32, u8p, fp, fp, u8p, fp, fp, fp]),
+            "vmc_uni_candidates": (i32, [vp, i32, fp, fp]),
             "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
             "vmc_encode": (i32, [vp, i32, u8p, fp]),
             "vmc_imagine": (i32, [vp, i32, i32, fp, fp, fp, fp, fp, fp]),
@@ -81,10 +82,11 @@ class Rollout:
     """The store / outcome interface of agent_lib's rollout ([T, N]: N sequences of T = ctx steps), kept in numpy for
     the GPU update. The next frames are kept full size; the GPU downsamples them as the C++ rollout does."""
 
-    def __init__(self, T, N, img):
+    def __init__(self, T, N, img, next_frames=True):
         self.T, self.N = T, N
         self.img = np.zeros((T, N, img, img, 3), np.uint8)
-        self.nimg = np.zeros((T, N, img, img, 3), np.uint8)
+        # the next frames (next_frames=False: not kept, e.g. for the universal model, whose targets are in the window)
+        self.nimg = np.zeros((T, N, img, img, 3), np.uint8) if next_frames else None
         self.drv, self.ndrv = np.zeros((T, N, 2), np.float32), np.zeros((T, N, 2), np.float32)
         self.pa, self.act = np.zeros((T, N, 3), np.float32), np.zeros((T, N, 3), np.float32)
         self.pr = np.zeros((T, N), np.float32)
@@ -95,11 +97,18 @@ class Rollout:
             images, drives, prev_action, prev_reward, ep_start, action)
 
     def outcome(self, t, reward, done, next_images, next_drives):
-        self.nimg[t], self.ndrv[t] = next_images, next_drives
+        if self.nimg is not None:
+            self.nimg[t] = next_images
+        self.ndrv[t] = next_drives
 
     def batch(self):
-        return [np.ascontiguousarray(a.swapaxes(0, 1)) for a in (self.img, self.drv, self.pa, self.pr, self.es,
-                                                                 self.act, self.nimg, self.ndrv)]
+        return [None if a is None else np.ascontiguousarray(a.swapaxes(0, 1))
+                for a in (self.img, self.drv, self.pa, self.pr, self.es, self.act, self.nimg, self.ndrv)]
+
+
+def has(name):
+    """Whether the loaded libvmcuda.so has a function (older builds lack the newer ones)."""
+    return hasattr(lib(), name)
 
 
 def _p(a, ct):
@@ -129,7 +138,7 @@ class CudaModel:
 
     def set_batch(self, images, drives, prev_action, prev_reward, ep_start, action, next_small, next_drives):
         """next_small: [S, ctx, pred_img, pred_img, 3], or the full-size next frames (downsampled on the GPU)."""
-        a = [np.ascontiguousarray(x, t) for x, t in ((images, np.uint8), (drives, np.float32),
+        a = [None if x is None else np.ascontiguousarray(x, t) for x, t in ((images, np.uint8), (drives, np.float32),
                                                      (prev_action, np.float32), (prev_reward, np.float32),
                                                      (ep_start, np.uint8), (action, np.float32),
                                                      (next_small, np.uint8), (next_drives, np.float32))]
@@ -138,8 +147,9 @@ class CudaModel:
             raise ValueError("sequences must be ctx = %d steps" % self.ctx)
         cts = (C.c_uint8, C.c_float, C.c_float, C.c_float, C.c_uint8, C.c_float, C.c_uint8, C.c_float)
         self._batch = a   # keep alive until copied
-        full = int(a[6].shape[2] == a[0].shape[2])
-        _check(lib().vmc_set_batch(self.handle, S, *[_p(x, ct) for x, ct in zip(a, cts)], full), "set_batch")
+        full = int(next_small is not None and a[6].shape[2] == a[0].shape[2])
+        _check(lib().vmc_set_batch(self.handle, S, *[None if x is None else _p(x, ct) for x, ct in zip(a, cts)], full),
+               "set_batch")
 
     def _pc(self, ppo_cfg):
         cfg = dict(DEFAULT_PPO)
@@ -154,20 +164,23 @@ class CudaModel:
         _check(lib().vmc_update(self.handle, C.byref(self._pc(ppo_cfg))), "update")
         return self.stats() if stats else None
 
-    def update_rollout(self, ro, ppo_cfg, agent, sync=True):
+    def update_rollout(self, ro, ppo_cfg, agent, sync=True, stats=True):
         """One update from a filled Rollout. sync: all the weights are copied back to the C++ agent; else only the
         log-std (for sampling moves; call sync_to(agent) before saving it). Returns the stats under agent.update()'s
         names."""
         self.set_batch(*ro.batch())
-        st = self.update(ppo_cfg)
+        st = self.update(ppo_cfg, stats=stats)   # stats=False: no wait for the GPU here
         p = agent.params()
         if sync:
             self.sync_to(agent)
+        elif agent.config.get("universal"):   # no policy log-std to sample with
+            return st
         else:
             ls = np.empty(2, np.float32)
             _check(lib().vmc_get_range(self.handle, self.logstd_off, 2, _p(ls, C.c_float)), "get_range")
             p[self.logstd_off:self.logstd_off + 2] = ls
-        st.update(std_x=float(np.exp(np.clip(p[self.logstd_off], -5.0, 1.0))))
+        if st is not None:
+            st.update(std_x=float(np.exp(np.clip(p[self.logstd_off], -5.0, 1.0))))
         return st
 
     def sync_to(self, agent):
@@ -252,6 +265,22 @@ class CudaModel:
                                      opt(out.get("move_probs"), C.c_float), opt(out.get("next_body"), C.c_float)),
                "forward_uni")
         return out
+
+    @property
+    def uni_candidates(self):
+        """The instinct's candidates, right after forward_uni of S windows: cand [S, Mc, 3] -> predicted next hunger
+        [S, Mc] (only the move token is computed; the forward pass's keys and values are reused). Absent (an
+        AttributeError) with an older libvmcuda.so, so callers fall back to full passes."""
+        if not hasattr(lib(), "vmc_uni_candidates"):
+            raise AttributeError("uni_candidates")
+
+        def run(cand):
+            c = np.ascontiguousarray(cand, np.float32)
+            out = np.empty(c.shape[:2], np.float32)
+            _check(lib().vmc_uni_candidates(self.handle, c.shape[1], _p(c, C.c_float), _p(out, C.c_float)),
+                   "uni_candidates")
+            return out
+        return run
 
     def stats(self):
         st = VMCStats()

@@ -47,6 +47,9 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,
     the instinct; `lifetime.py`). Its forward is `Agent.forward_uni` / `CudaModel.forward_uni`; `vm_forward` refuses it.
     `online.click_bias` is skipped for models without a policy head (it used to write into the next parameter).
+    Speed (task 00026): the instinct's candidates reuse the policy pass's keys and values (`CudaModel.uni_candidates`),
+    the universal model's batches carry no next frames, and `lifetime.py` reads the update's stats every
+    `online.stats_every` ticks: 178 ticks/s for a gray lifetime with the instinct alone on the RTX 4090.
   - `lifetime.py` (task 00020, `../ARCHITECTURE.md`): the self actor with N parallel bodies early in life
     (`online.bodies`, `bodies_hold`, `bodies_halve`; one shared long-term memory, `ChunkStore`), the signed hindsight
     command (`online.goal_mode=delta`) and exploration decay. With one body it reproduces `online.py` bit for bit.

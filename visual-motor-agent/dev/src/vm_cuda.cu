@@ -995,6 +995,7 @@ struct Model {
     int *ch_b = nullptr, *ch_j = nullptr, *ch_par = nullptr, *ch_lt = nullptr, *ch_hl = nullptr, *ch_fr = nullptr;
     int ch_cap = 0;
     std::vector<uint8_t> es_host;   // the batch's episode starts (chains stop at them)
+    std::vector<int> start_host, pos_host;   // the batch's context starts and step positions (per frame)
     Buf im_s, im_s2, im_h, im_uT, im_uH, im_hT, im_hH, im_x, im_hX, im_act;   // imagination
     int *im_idx = nullptr, *im_par = nullptr;
     int im_cap = 0;
@@ -1002,6 +1003,8 @@ struct Model {
     Buf tpx, pemb, dpemb, zm, dzm, pdel, dpdel;   // patch tokens
     Buf ax_in, ax_h, ax_drv, ax_frm, dax_in, dax_h, dax_drv, dax_frm;   // the act token's auxiliary heads
     Buf u_in, u_tgt, u_log, u_val;   // universal model: token inputs, targets, head logits (then gradients), values
+    // the instinct's candidates (vmc_uni_candidates): their inputs, activations and outputs, one row per candidate
+    Buf c_in, c_x, c_ln, c_lnm, c_lnr, c_qkv, c_att, c_res, c_fch, c_fchg, c_lg, c_val;
     int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
     int tcap = 0;
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
@@ -1185,6 +1188,7 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
     CK(cudaMemcpy(M->ivalid, valid.data(), B * sizeof(int), cudaMemcpyHostToDevice));
     M->es_host.assign(B, 0);
     if (ep_start) for (int b = 0; b < B; b++) M->es_host[b] = ep_start[b];
+    M->start_host = start; M->pos_host = pos;
     if (D.patch) {   // a token sees every token of its own step and of the earlier steps of its block
         const int nt = D.ntok, Bx = B * nt;
         std::vector<int> ts(Bx), te(Bx);
@@ -1209,7 +1213,7 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
     CK(cudaMemcpy(M->pr, prev_reward, B * sizeof(float), cudaMemcpyHostToDevice));
     if (action) CK(cudaMemcpy(M->act, action, B * 3 * sizeof(float), cudaMemcpyHostToDevice));
     else CK(cudaMemset(M->act, 0, B * 3 * sizeof(float)));
-    k_downsample<<<GRID((long)B * D.small_px)>>>(M->img, M->cs, B, D.img);
+    if (!D.uni) k_downsample<<<GRID((long)B * D.small_px)>>>(M->img, M->cs, B, D.img);   // universal: no frame targets
     CK(cudaGetLastError());
     return 0;
 }
@@ -1223,7 +1227,8 @@ int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, co
     const Dims& D = M->D;
     if (upload_inputs(M, S, D.K, images, drives, prev_action, prev_reward, ep_start, action)) return -1;
     const int B = M->B;
-    if (next_full) {   // full-size next frames: downsampled here
+    if (D.uni || !next_small) {   // the universal model's targets come from the window and the next drives
+    } else if (next_full) {   // full-size next frames: downsampled here
         CK(cudaMemcpy(M->nfull, next_small, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
         k_downsample<<<GRID((long)B * D.small_px)>>>(M->nfull, M->ns, B, D.img);
     } else {
@@ -1482,43 +1487,89 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
         else x[i] += slot[(long)k * d + j] + wpe[(long)pos[b] * d + j];
     }
 }
-// One block per token row: the softmax of each used value's K logits, the two-hot cross-entropy of the next token's
-// values, and in place the logits' gradient (p - target) * inv_tok / used (0 for unused values). Accumulators:
-// acc[24 + kind] += token CE, acc[27 + kind] += token squared error of the expected value, acc[30 + kind] += 1,
-// acc[33] += token CE; kind 0 the next body (move tokens), 1 a patch, 2 the move (the last patch).
+// One block per token row, one warp per value (a lane per bin): the softmax of each used value's K logits, the two-hot
+// cross-entropy of the next token's values, and in place the logits' gradient (p - target) * inv_tok / used (0 for
+// unused values). Accumulators: acc[24 + kind] += token CE, acc[27 + kind] += token squared error of the expected
+// value, acc[30 + kind] += 1, acc[33] += token CE; kind 0 the next body (move tokens), 1 a patch, 2 the move (the last
+// patch). Launch with UNI_LOSS_THREADS threads (a multiple of 32).
+#define UNI_LOSS_THREADS 256
 __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc) {
-    __shared__ double sh[2][128];
-    const int r = blockIdx.x, k = r % nt;
+    __shared__ double sh[2][UNI_LOSS_THREADS / 32];
+    const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
     const int u = k == nt - 1 ? 2 : uni_used_(k + 1, nt, V), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
-    double ce = 0, se = 0;
-    for (int v = threadIdx.x; v < V; v += blockDim.x) {
+    double ce = 0, se = 0;   // lane 0 of each warp
+    for (int v = w; v < V; v += nw) {
         float* l = lg + ((long)r * V + v) * K;
-        if (v >= u) { for (int b = 0; b < K; b++) l[b] = 0.f; continue; }
-        float mx = l[0];
-        for (int b = 1; b < K; b++) mx = fmaxf(mx, l[b]);
+        if (v >= u) { for (int b = lane; b < K; b += 32) l[b] = 0.f; continue; }
+        float mx = -1e30f;
+        for (int b = lane; b < K; b += 32) mx = fmaxf(mx, l[b]);
+        for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
         float sum = 0.f;
-        for (int b = 0; b < K; b++) { l[b] = expf(l[b] - mx); sum += l[b]; }
+        for (int b = lane; b < K; b += 32) { const float e = expf(l[b] - mx); l[b] = e; sum += e; }
+        for (int o = 16; o; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
         const float inv = 1.0f / sum, t = fminf(fmaxf(tgt[(long)r * V + v], 0.f), 1.f), pos = t * (K - 1);
         int lo = (int)pos;
         if (lo > K - 2) lo = K - 2;
         const float whi = pos - lo, wlo = 1.0f - whi, sc = inv_tok / u;
-        float ev = 0.f;
-        for (int b = 0; b < K; b++) { l[b] *= inv; ev += l[b] * (float)b / (K - 1); }
-        ce -= wlo * logf(fmaxf(l[lo], 1e-30f)) + whi * logf(fmaxf(l[lo + 1], 1e-30f));
-        se += (double)(ev - t) * (ev - t);
-        l[lo] -= wlo; l[lo + 1] -= whi;
-        for (int b = 0; b < K; b++) l[b] *= sc;
+        float ev = 0.f, c = 0.f;
+        for (int b = lane; b < K; b += 32) {
+            const float p = l[b] * inv, tb = b == lo ? wlo : (b == lo + 1 ? whi : 0.f);
+            ev += p * (float)b / (K - 1);
+            if (b == lo || b == lo + 1) c -= tb * logf(fmaxf(p, 1e-30f));
+            l[b] = (p - tb) * sc;
+        }
+        for (int o = 16; o; o >>= 1) { ev += __shfl_xor_sync(0xffffffff, ev, o); c += __shfl_xor_sync(0xffffffff, c, o); }
+        if (lane == 0) { ce += c; se += (double)(ev - t) * (ev - t); }
     }
-    sh[0][threadIdx.x] = ce; sh[1][threadIdx.x] = se;
+    if (lane == 0) { sh[0][w] = ce; sh[1][w] = se; }
     __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) { sh[0][threadIdx.x] += sh[0][threadIdx.x + s]; sh[1][threadIdx.x] += sh[1][threadIdx.x + s]; }
-        __syncthreads();
-    }
     if (threadIdx.x == 0) {
-        atomicAdd(acc + 24 + kind, sh[0][0] / u); atomicAdd(acc + 27 + kind, sh[1][0] / u);
-        atomicAdd(acc + 30 + kind, 1.0); atomicAdd(acc + 33, sh[0][0] / u);
+        double a0 = 0, a1 = 0;
+        for (int i = 0; i < nw; i++) { a0 += sh[0][i]; a1 += sh[1][i]; }
+        atomicAdd(acc + 24 + kind, a0 / u); atomicAdd(acc + 27 + kind, a1 / u);
+        atomicAdd(acc + 30 + kind, 1.0); atomicAdd(acc + 33, a0 / u);
     }
+}
+// The instinct's candidates: one query row per candidate (its own q, k, v in qc [R, 3d]) attending to the cached keys
+// lo[r]..hi[r]-1 of one layer's qkv [rows, 3d] (the window's earlier tokens) and to itself. One warp per (row, head):
+// each lane runs an online softmax over every 32nd key, then the lanes' partial results are merged (head size <= 64).
+__global__ void k_attn_decode(const float* qc, const float* qkv, const int* lo, const int* hi, float* out, int R, int d,
+                              int nh) {
+    const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x & 31;
+    if (i >= R * nh) return;
+    const int r = i / nh, h = i % nh, hs = d / nh, d3 = 3 * d;
+    const float scale = 1.0f / sqrtf((float)hs);
+    const float* q = qc + (long)r * d3 + h * hs;
+    float acc[64];
+    for (int c = 0; c < hs; c++) acc[c] = 0.f;
+    float m = -1e30f, l = 0.f;
+    for (int j = lo[r] + lane; j <= hi[r]; j += 32) {   // hi[r]: the candidate itself
+        const float* kv = j < hi[r] ? qkv + (long)j * d3 : qc + (long)r * d3;
+        float s = 0.f;
+        for (int c = 0; c < hs; c++) s += q[c] * kv[d + h * hs + c];
+        s *= scale;
+        const float mn = fmaxf(m, s), a = expf(m - mn), e = expf(s - mn);
+        for (int c = 0; c < hs; c++) acc[c] = acc[c] * a + e * kv[2 * d + h * hs + c];
+        l = l * a + e;
+        m = mn;
+    }
+    float M = m;   // merge the lanes: rescale each to the warp's max
+    for (int o = 16; o; o >>= 1) M = fmaxf(M, __shfl_xor_sync(0xffffffff, M, o));
+    const float f = l > 0.f ? expf(m - M) : 0.f;
+    float L = l * f;
+    for (int o = 16; o; o >>= 1) L += __shfl_xor_sync(0xffffffff, L, o);
+    float* y = out + (long)r * d + h * hs;
+    for (int c = 0; c < hs; c++) {
+        float v = acc[c] * f;
+        for (int o = 16; o; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
+        if (lane == 0) y[c] = v / L;
+    }
+}
+// x [R, d] += slot row + wpe[pos[r]]
+__global__ void k_cand_embed(float* x, const float* slot, const float* wpe, const int* pos, int R, int d) {
+    const long n = (long)R * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x)
+        x[i] += slot[i % d] + wpe[(long)pos[i / d] * d + i % d];
 }
 // out [B*2, d]: the outputs of the last patch and the move token of each frame (the move and next-body predictions)
 __global__ void k_uni_last2(const float* lnf, float* out, int B, int nt, int d) {
@@ -1703,7 +1754,7 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
     CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     for (int i = 0; i < 8; i++) M->coef[i] = 0.f;
-    k_uni_loss<<<rows, 128>>>(lg, tgt, rows, nt, V, K, 1.0f / rows, M->acc);
+    k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / rows, M->acc);
     float* dz = M->dz.get((size_t)rows * d);
     linear_bwd(M, lg, lnf, P + off[UOW], rows, d, D.OV, dz, false, G + off[UOW], G + off[UOB]);
     if (transformer_bwd(M, rows, KT, M->tstart, M->tend)) return -1;
@@ -1964,6 +2015,71 @@ int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* d
     if (next_body)   // the move token's expected next drives: its first 2 values
         CK(cudaMemcpy2D(next_body, 2 * sizeof(float), M->u_val.p + (size_t)brow * V, (size_t)stride * V * sizeof(float),
                         2 * sizeof(float), B, cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.uni || !M->B || D.hs > 64 || (int)M->start_host.size() != M->B) return -1;
+    const int S = M->S, T = M->T, B = M->B, nt = D.ntok, V = D.V, d = D.d, L = D.L, rows = B * nt, R = S * Mc;
+    const float* P = M->P;
+    const long* off = M->off;
+    // inputs: each candidate's move values, centred; its key range and step position (the last step of its window)
+    std::vector<float> in((size_t)R * V, 0.f);
+    std::vector<int> lo(R), hi(R), pos(R);
+    for (int s = 0; s < S; s++) {
+        const int b = s * T + T - 1;   // the window's last frame; its move token is row b * nt + nt - 1
+        for (int m = 0; m < Mc; m++) {
+            const int r = s * Mc + m;
+            const float* a = cand + (size_t)r * 3;
+            in[(size_t)r * V + 0] = 0.5f * (fminf(fmaxf(a[0], -1.f), 1.f) + 1.f) - 0.5f;
+            in[(size_t)r * V + 1] = 0.5f * (fminf(fmaxf(a[1], -1.f), 1.f) + 1.f) - 0.5f;
+            in[(size_t)r * V + 2] = (a[2] > 0.5f ? 1.f : 0.f) - 0.5f;
+            lo[r] = M->start_host[b] * nt;
+            hi[r] = b * nt + nt - 1;
+            pos[r] = M->pos_host[b];
+        }
+    }
+    float* cin = M->c_in.get((size_t)R * V);
+    CK(cudaMemcpy(cin, in.data(), in.size() * sizeof(float), cudaMemcpyHostToDevice));
+    int* ip = (int*)M->c_val.get((size_t)R * 3 + (size_t)R * V);   // the int arrays, then the values
+    CK(cudaMemcpy(ip, lo.data(), R * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(ip + R, hi.data(), R * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(ip + 2 * R, pos.data(), R * sizeof(int), cudaMemcpyHostToDevice));
+    float* val = (float*)(ip + 3 * R);
+    float* x = M->c_x.get((size_t)R * d);
+    float* ln = M->c_ln.get((size_t)R * d);
+    float* lnm = M->c_lnm.get(R);
+    float* lnr = M->c_lnr.get(R);
+    float* qc = M->c_qkv.get((size_t)R * 3 * d);
+    float* att = M->c_att.get((size_t)R * d);
+    float* res = M->c_res.get((size_t)R * d);
+    float* fch = M->c_fch.get((size_t)R * D.dff);
+    float* fchg = M->c_fchg.get((size_t)R * D.dff);
+    linear(M, x, cin, P + off[UIW], P + off[UIB], R, V, d, 0);
+    k_cand_embed<<<GRID((long)R * d)>>>(x, P + off[USL] + (long)(nt - 1) * d, P + off[WPE], ip + 2 * R, R, d);
+    const int lnb = (R + 7) / 8;
+    for (int l = 0; l < L; l++) {   // as transformer_fwd, for the candidate rows, against the cached keys and values
+        k_ln_fwd<<<lnb, 256>>>(ln, lnm, lnr, x, P + off[LN1W] + l * d, P + off[LN1B] + l * d, R, d);
+        linear(M, qc, ln, P + off[QKVW] + (size_t)l * 3 * d * d, P + off[QKVB] + l * 3 * d, R, d, 3 * d, 0);
+        k_attn_decode<<<(R * D.nh * 32 + 127) / 128, 128>>>(qc, M->qkv.p + (size_t)l * rows * 3 * d, ip, ip + R, att, R, d,
+                                                            D.nh);
+        cudaMemcpyAsync(res, x, sizeof(float) * R * d, cudaMemcpyDeviceToDevice);
+        gemm(M, false, true, R, d, d, att, d, P + off[APW] + (size_t)l * d * d, d, 1.f, res, d);
+        k_bias_act<<<GRID((long)R * d)>>>(res, P + off[APB] + l * d, R, d, 0);
+        k_ln_fwd<<<lnb, 256>>>(ln, lnm, lnr, res, P + off[LN2W] + l * d, P + off[LN2B] + l * d, R, d);
+        linear(M, fch, ln, P + off[FCW] + (size_t)l * D.dff * d, P + off[FCB] + l * D.dff, R, d, D.dff, 0);
+        k_gelu_fwd<<<GRID((long)R * D.dff)>>>(fchg, fch, (long)R * D.dff);
+        cudaMemcpyAsync(x, res, sizeof(float) * R * d, cudaMemcpyDeviceToDevice);
+        gemm(M, false, true, R, d, D.dff, fchg, D.dff, P + off[FPW] + (size_t)l * d * D.dff, D.dff, 1.f, x, d);
+        k_bias_act<<<GRID((long)R * d)>>>(x, P + off[FPB] + l * d, R, d, 0);
+    }
+    k_ln_fwd<<<lnb, 256>>>(ln, lnm, lnr, x, P + off[LNFW], P + off[LNFB], R, d);
+    float* lg = M->c_lg.get((size_t)R * D.OV);
+    linear(M, lg, ln, P + off[UOW], P + off[UOB], R, d, D.OV, 0);
+    k_uni_probs<<<GRID((long)R * V)>>>(lg, val, (long)R * V, D.nbin);
+    CK(cudaMemcpy2D(hunger, sizeof(float), val, (size_t)V * sizeof(float), sizeof(float), R, cudaMemcpyDeviceToHost));
     return 0;
 }
 

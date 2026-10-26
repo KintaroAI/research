@@ -236,3 +236,56 @@ def test_planner_calls_match_cpp(setup):
         np.testing.assert_allclose(rg[k], rc[k], rtol=1e-4, atol=2e-5, err_msg=k)
     np.testing.assert_allclose(m.decode(rc["latents"][:, -1]), agent.decode(rc["latents"][:, -1]), rtol=1e-4, atol=2e-5)
     m.close()
+
+
+@pytest.mark.parametrize("model", ["universal_gray", "small_universal", "small_universal_p16"])
+def test_uni_candidates_match_full_pass(model):
+    """The instinct's fast path (task 00026): each candidate's predicted next hunger from the move token alone, against
+    the full forward pass with that candidate as the window's last move."""
+    agent = agent_lib.Agent(MODELS[model], seed=5)
+    c = agent.config
+    rng = np.random.default_rng(1)
+    S, T, Mc = 3, c["ctx"], 5
+    img = rng.integers(0, 256, (S, T, c["img"], c["img"], 3), dtype=np.uint8)
+    drv = rng.random((S, T, 2)).astype(np.float32)
+    act = np.concatenate([rng.uniform(-1, 1, (S, T, 2)), rng.random((S, T, 1)) < 0.5], -1).astype(np.float32)
+    es = np.zeros((S, T), np.uint8)
+    es[:, 0] = 1
+    es[1, 4] = 1                                                      # an episode start inside one window
+    cand = np.concatenate([rng.uniform(-1.2, 1.2, (S, Mc, 2)), rng.random((S, Mc, 1)) < 0.5], -1).astype(np.float32)
+    m = cuda_lib.CudaModel(agent)
+    m.forward_uni(img, drv, act, es, values=False, move_probs=True)
+    fast = m.uni_candidates(cand)
+    full = np.empty((S, Mc), np.float32)
+    for k in range(Mc):
+        a2 = act.copy()
+        a2[:, -1] = cand[:, k]
+        full[:, k] = m.forward_uni(img, drv, a2, es, values=False, move_probs=False, next_body=True)["next_body"][:, -1, 0]
+    ref = np.empty((S, Mc), np.float32)
+    for k in range(Mc):
+        a2 = act.copy()
+        a2[:, -1] = cand[:, k]
+        ref[:, k] = agent.forward_uni(img, drv, a2, es, values=False, move_probs=False, next_body=True)["next_body"][:, -1, 0]
+    m.close()
+    agent.close()
+    np.testing.assert_allclose(fast, full, atol=1e-5)
+    np.testing.assert_allclose(fast, ref, atol=2e-5)
+
+
+def test_universal_batch_without_next_frames():
+    """The universal model needs no next frames (task 00026): a batch without them gives the same loss and gradients."""
+    agent = agent_lib.Agent(MODELS["small_universal"], seed=4)
+    N, T = 4, 2 * agent.config["ctx"]
+    from test_patch_tokens import store_rollout
+    ro, data = store_rollout(agent, T=T, N=N, seed=2, p_done=0.12)
+    b = cuda_batch(agent, data, [0, 2, 3, 5, 6], N)
+    m = cuda_lib.CudaModel(agent)
+    m.set_batch(*b)
+    st, g = m.loss_and_grads(PC), m.grads().copy()
+    b[6] = None
+    m.set_batch(*b)
+    st2, g2 = m.loss_and_grads(PC), m.grads()
+    m.close()
+    assert abs(st["loss"] - st2["loss"]) < 1e-6
+    np.testing.assert_allclose(g2, g, rtol=1e-5, atol=1e-8)
+

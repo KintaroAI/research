@@ -50,6 +50,10 @@ int vmc_forward(void* h, int S, int T, const uint8_t* images, const float* drive
 // The universal model (universal = 1), as vm_forward_uni: values [S, T*ntok, V], move_probs [S, T, 3*bins] (either NULL).
 int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
                     const uint8_t* ep_start, float* values, float* move_probs, float* next_body);
+// The instinct's candidates (universal model), right after a vmc_forward_uni of S windows: for Mc candidate moves per
+// window, cand [S, Mc, 3], each candidate's predicted next hunger [S, Mc], as if it were the move of the window's last
+// step. Computes only the move token, against the forward pass's cached keys and values.
+int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger);
 // The planner's model calls (latent dynamics, dyn_hidden > 0), as vm_encode (v only), vm_imagine and vm_decode.
 int vmc_encode(void* h, int n, const uint8_t* images, float* vf_out);
 int vmc_imagine(void* h, int n, int H, const float* s0, const float* h0, const float* actions, float* hunger,
