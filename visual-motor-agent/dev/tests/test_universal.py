@@ -22,12 +22,14 @@ from test_patch_tokens import store_rollout  # noqa: E402
 UNI = dict(SMALL, patch=8, universal=1, bins=8)
 
 
-@pytest.fixture(scope="module", params=[(8, 8, 0), (16, 5, 0), (4, 8, 0), (8, 8, 1), (4, 6, 1)],
-                ids=["p8_bins8", "p16_bins5", "p4_bins8", "p8_gray", "p4_gray"])
+@pytest.fixture(scope="module", params=[(8, 8, 0, 0), (16, 5, 0, 0), (4, 8, 0, 0), (8, 8, 1, 0), (4, 6, 1, 0),
+                                        (8, 8, 0, 1), (16, 5, 0, 1), (4, 6, 1, 1)],
+                ids=["p8_bins8", "p16_bins5", "p4_bins8", "p8_gray", "p4_gray", "p8_bins8_inbins", "p16_bins5_inbins",
+                     "p4_gray_inbins"])
 def uni_agent(request):
     agent_lib.set_threads(4)
-    patch, bins, gray = request.param
-    return agent_lib.Agent(dict(UNI, patch=patch, bins=bins, gray=gray), seed=7)
+    patch, bins, gray, in_bins = request.param
+    return agent_lib.Agent(dict(UNI, patch=patch, bins=bins, gray=gray, in_bins=in_bins), seed=7)
 
 
 def ref_batch(agent, data, ids, N):
@@ -164,7 +166,8 @@ def test_update_lowers_the_loss():
 
 @pytest.mark.parametrize("bad", [dict(universal=1, patch=0), dict(universal=1, patch=8, bins=1),
                                  dict(universal=1, patch=8, act_token=1, pred_residual=1), dict(patch=8, gray=1),
-                                 dict(universal=1, patch=1, gray=1)])
+                                 dict(universal=1, patch=1, gray=1), dict(patch=8, in_bins=1),
+                                 dict(universal=1, patch=8, in_bins=2)])
 def test_invalid_configs(bad):
     with pytest.raises(Exception):
         agent_lib.Agent(dict(SMALL, **bad), seed=1)
@@ -178,3 +181,35 @@ def test_gray_reads_the_first_channel():
     assert v.shape[-1] == 256 and list(used) == [2, 256, 256, 256, 256, 3]
     np.testing.assert_allclose(v[0, 0, 1, 1 * 16 + 2], 0.4)            # patch 0, (y 1, x 2): 102 / 255
 
+
+
+def test_bin_embedding_input_is_the_sum_of_bin_embeddings():
+    """in_bins (task 00036): a token's input is b + the sum over its used values of (1 - w) E[v, lo] + w E[v, lo + 1],
+    E[v, k] = W_in's column v * K + k; a value on a bin centre picks one embedding (a lookup); init at 0.02."""
+    torch = pytest.importorskip("torch")
+    agent = agent_lib.Agent(dict(UNI, patch=8, bins=8, gray=1, in_bins=1), seed=3)
+    cfg = agent.config
+    nt, V, K = ref.uni_dims(cfg)
+    lay = {n: (o, k) for n, o, k in agent.param_layout()}
+    o, k = lay["uni_in_w"]
+    assert k == cfg["d_model"] * V * K
+    W = np.asarray(agent.params()[o:o + k]).reshape(cfg["d_model"], V, K)
+    assert 0.015 < W.std() < 0.025
+    rng = np.random.default_rng(0)
+    v = rng.random((2, 1, nt, V))
+    v[..., 5] = 3 / 7                                                   # a bin centre
+    _, used = ref.uni_values(cfg, np.zeros((2, 1, 32, 32, 3), np.uint8), np.zeros((2, 1, 2)), np.zeros((2, 1, 3)))
+    m = np.arange(V)[None] < used[:, None]
+    x = ref.two_hot(v, K) * m[..., None]
+    got = x.reshape(2, nt, V * K) @ W.reshape(cfg["d_model"], V * K).T
+    want = np.zeros((2, nt, cfg["d_model"]))
+    for s in range(2):
+        for t in range(nt):
+            for j in range(used[t]):
+                p = v[s, 0, t, j] * (K - 1)
+                lo = min(int(np.floor(p)), K - 2)
+                w = p - lo
+                want[s, t] += (1 - w) * W[:, j, lo] + w * W[:, j, lo + 1]
+    assert np.allclose(got, want)
+    assert np.allclose(x[0, 0, 1, 5], np.eye(K)[3])                     # on a centre: one-hot
+    agent.close()

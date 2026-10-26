@@ -522,6 +522,7 @@ struct Dims {
     int act, cds, cfx;                    // act token on/off; prediction frame -> coarse frame block side; coarse values
     int uni, V, nbin, OV, ch;             // universal model: on/off; values per token; bins per value; head outputs;
                                           // channels per patch pixel (1 with gray, else 3)
+    int ib, VI;                           // bin-embedding input on/off (task 00036); W_in's input width (V or V * bins)
 };
 static Dims make_dims(const VMConfig& c) {
     Dims D;
@@ -564,6 +565,8 @@ static Dims make_dims(const VMConfig& c) {
     D.V = D.uni ? D.patch * D.patch * D.ch : 0;
     D.nbin = D.uni ? c.bins : 0;
     D.OV = D.V * D.nbin;
+    D.ib = D.uni ? c.in_bins : 0;
+    D.VI = D.ib ? D.V * D.nbin : D.V;
     D.cell = D.patch ? c.pred_img / D.gp : 0;
     D.cpx = D.cell * D.cell * 3;
     D.KT = D.K * D.ntok;
@@ -661,7 +664,7 @@ static Workspace* ws_create(const Dims& D) {
         W->ax_cur.resize(K * (size_t)D.cfx);
     }
     if (D.uni) {
-        W->u_in.resize(KT * (size_t)D.V); W->u_tgt.resize(KT * (size_t)D.V); W->u_use.resize(KT);
+        W->u_in.resize(KT * (size_t)D.VI); W->u_tgt.resize(KT * (size_t)D.V); W->u_use.resize(KT);
         W->u_row.resize(D.OV); W->u_prob.resize(D.OV);
     }
     W->dpd1.resize((size_t)D.pc1 * D.p1 * D.p1);
@@ -749,13 +752,13 @@ static void model_layout(Model* M) {
     if (un)   // the universal model: one input map, slot embeddings, one output head; no per-type heads
         for (int p : {PIW, PIB, PHW, PHB, VW, VB, PR1W, PR1B, PR2W, PR2B, DRW, DRB, PEW, PEB, POS2D, TYP, DEW, DEB,
                       MEW, MEB, CEW, CEB}) s[p] = 0;
-    s[UIW] = un * d * D.V; s[UIB] = un * d; s[USL] = un * D.ntok * d; s[UOW] = un * D.OV * d; s[UOB] = un * D.OV;
+    s[UIW] = un * d * D.VI; s[UIB] = un * d; s[USL] = un * D.ntok * d; s[UOW] = un * D.OV * d; s[UOB] = un * D.OV;
     long o = 0;
     for (int i = 0; i < NUM_P; i++) { M->off[i] = o; M->sz[i] = s[i]; o += s[i]; }
     M->n_params = o;
     if (D.uni) {
         M->tlist = {{QKVW, 3 * D.d, D.d, D.L}, {APW, D.d, D.d, D.L}, {FCW, D.dff, D.d, D.L}, {FPW, D.d, D.dff, D.L},
-                    {UIW, D.d, D.V, 1}, {UOW, D.OV, D.d, 1}};
+                    {UIW, D.d, D.VI, 1}, {UOW, D.OV, D.d, 1}};
         return;
     }
     if (pm) {
@@ -871,7 +874,8 @@ static void model_init_params(Model* M, uint64_t seed) {
         fill_normal(r, P + M->off[AXFW], M->sz[AXFW], 0.1f * sqrtf(1.0f / D.ph));   // residual: near "no change"
     }
     if (D.uni) {   // drawn after everything else: the other models are unchanged
-        fill_normal(r, P + M->off[UIW], M->sz[UIW], sqrtf(3.0f / D.V));   // inputs in [-0.5, 0.5]: about unit scale
+        // inputs in [-0.5, 0.5]: about unit scale; bin embeddings: GPT-2's 0.02, as the slots (vm-00029)
+        fill_normal(r, P + M->off[UIW], M->sz[UIW], D.ib ? 0.02f : sqrtf(3.0f / D.V));
         fill_normal(r, P + M->off[USL], M->sz[USL], 0.02f);
         fill_normal(r, P + M->off[UOW], M->sz[UOW], 0.02f);                // near-uniform bins at birth
         // the patch slots (1..npch) add the 2D sine-cosine code of their cell, as pos2d
@@ -907,6 +911,7 @@ static bool config_valid(const VMConfig& c) {
     if (c.universal < 0 || c.universal > 1) return false;
     if (c.universal && (c.patch <= 0 || c.act_token || c.bins < 2 || c.patch * c.patch * (c.gray ? 1 : 3) < 3)) return false;
     if (c.gray < 0 || c.gray > 1 || (c.gray && !c.universal)) return false;
+    if (c.in_bins < 0 || c.in_bins > 1 || (c.in_bins && !c.universal)) return false;
     return true;
 }
 static Model* model_new(const VMConfig& cfg) {
@@ -1274,6 +1279,19 @@ static void seq_fwd_patch(const Model* M, Workspace* W, const SeqView& sv, bool 
 static inline int uni_used(const Dims& D, int k) { return k == 0 ? 2 : (k == D.ntok - 1 ? 3 : D.V); }
 
 // The token values of step t, slot k, into v [V] (raw, in [0, 1]); returns the number used.
+// Bin-embedding input (task 00036): the first u of V values in [0, 1], each split two-hot over K bins (centres
+// k / (K - 1)), into out [V * K]; unused values and bins 0.
+static void uni_twohot(const float* v, int u, int V, int K, float* out) {
+    for (int i = 0; i < V * K; i++) out[i] = 0.f;
+    for (int j = 0; j < u; j++) {
+        const float p = fminf(fmaxf(v[j], 0.f), 1.f) * (K - 1);
+        const int lo = std::min((int)floorf(p), K - 2);
+        const float w = p - lo;
+        out[(size_t)j * K + lo] = 1.f - w;
+        out[(size_t)j * K + lo + 1] = w;
+    }
+}
+
 static int uni_values(const Dims& D, const SeqView& sv, int t, int k, float* v) {
     const int V = D.V, ps = D.patch, S = D.img;
     for (int i = 0; i < V; i++) v[i] = 0.f;
@@ -1307,13 +1325,15 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
         for (int k = 0; k < nt; k++) {
             const int i = t * nt + k;
             W->tss[i] = W->ss[t] * nt;
-            float* in = W->u_in.data() + (size_t)i * V;
-            const int u = uni_values(D, sv, t, k, in);
+            float* in = W->u_in.data() + (size_t)i * D.VI;
+            float* val = D.ib ? W->u_row.data() : in;
+            const int u = uni_values(D, sv, t, k, val);
             if (k > 0) {   // this token is the target of the one before it (in the same step)
-                memcpy(W->u_tgt.data() + (size_t)(i - 1) * V, in, sizeof(float) * V);
+                memcpy(W->u_tgt.data() + (size_t)(i - 1) * V, val, sizeof(float) * V);
                 W->u_use[i - 1] = u;
             }
-            for (int j = 0; j < u; j++) in[j] -= 0.5f;
+            if (D.ib) uni_twohot(val, u, V, D.nbin, in);
+            else for (int j = 0; j < u; j++) in[j] -= 0.5f;
             if (k == nt - 1) {   // the move token predicts the drives after its step
                 float* tg = W->u_tgt.data() + (size_t)i * V;
                 for (int j = 0; j < V; j++) tg[j] = 0.f;
@@ -1321,7 +1341,7 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
                 W->u_use[i] = 2;
             }
         }
-    linear_fwd(W->xin.data(), W->u_in.data(), M->wt.data() + M->off[UIW], P + M->off[UIB], T * nt, V, d);
+    linear_fwd(W->xin.data(), W->u_in.data(), M->wt.data() + M->off[UIW], P + M->off[UIB], T * nt, D.VI, d);
     for (int t = 0; t < T; t++) {
         const float* pe = P + M->off[WPE] + (size_t)W->pos[t] * d;
         for (int k = 0; k < nt; k++) {
@@ -2082,7 +2102,7 @@ static void seq_bwd_uni(const Model* M, Workspace* W, const SeqView& sv, float* 
     const int T = sv.T, nt = D.ntok, d = D.d;
     transformer_bwd(M, W, T * nt, W->tss.data(), nullptr, G);
     const float* dres = W->dres.data();
-    linear_bwd(dres, W->u_in.data(), M->params.data() + M->off[UIW], T * nt, D.V, d, nullptr, false, G + M->off[UIW],
+    linear_bwd(dres, W->u_in.data(), M->params.data() + M->off[UIW], T * nt, D.VI, d, nullptr, false, G + M->off[UIW],
                G + M->off[UIB], W->scr.data());
     for (int t = 0; t < T; t++) {
         float* gpe = G + M->off[WPE] + (size_t)W->pos[t] * d;
@@ -2477,6 +2497,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[40] = c.universal;
     h[41] = c.bins;
     h[42] = c.gray;
+    h[43] = c.in_bins;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2496,6 +2517,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.universal = h[40];
     c.bins = h[41];
     c.gray = h[42];
+    c.in_bins = h[43];
 }
 
 // =====================================================================================

@@ -46,6 +46,7 @@ struct Dims {
     int patch, gp, npch, ntok, pdim, cell, cpx;   // patch tokens (0: the CNN model): side, grid, patches, tokens per
                                                   // step, values per patch, predicted cell side and values
     int act, cds, cfx;   // act token on/off (task 00020); prediction frame -> coarse frame block side; coarse values
+    int ib, VI;                 // bin-embedding input (task 00036): on/off; the input map's width (V or V * bins)
     int uni, V, nbin, OV, ch;   // universal model (task 00023): on/off; values per token; bins per value; head
                                 // outputs; channels per patch pixel (1 with gray, else 3)
 };
@@ -62,6 +63,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = D.npch + 2; }
         D.ch = (D.uni && c.gray) ? 1 : 3;
         D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
+        D.ib = D.uni ? c.in_bins : 0; D.VI = D.ib ? D.V * D.nbin : D.V;
         if (c.pred_img % D.gp || c.d_model % c.n_head) return false;
         D.cell = c.pred_img / D.gp; D.cpx = D.cell * D.cell * 3;
         D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
@@ -125,7 +127,7 @@ static void expected_sizes(const Dims& D, long* s) {
         if (D.uni) {   // one input map, slot embeddings, one output head; no per-type heads (as vm_agent.cpp)
             for (int q : {PIW, PIB, PHW, PHB, VW, VB, PR1W, PR1B, PR2W, PR2B, DRW, DRB, PEW, PEB, POS2D, TYP, DEW, DEB,
                           MEW, MEB, CEW, CEB}) s[q] = 0;
-            s[UIW] = d * D.V; s[UIB] = d; s[USL] = (long)D.ntok * d; s[UOW] = (long)D.OV * d; s[UOB] = D.OV;
+            s[UIW] = d * D.VI; s[UIB] = d; s[USL] = (long)D.ntok * d; s[UOW] = (long)D.OV * d; s[UOB] = D.OV;
         }
     }
 }
@@ -1003,6 +1005,7 @@ struct Model {
     Buf tpx, pemb, dpemb, zm, dzm, pdel, dpdel;   // patch tokens
     Buf ax_in, ax_h, ax_drv, ax_frm, dax_in, dax_h, dax_drv, dax_frm;   // the act token's auxiliary heads
     Buf u_in, u_tgt, u_log, u_val;   // universal model: token inputs, targets, head logits (then gradients), values
+    Buf u_hot, c_hot;                // bin-embedding input: the two-hot inputs of the batch and of the candidates
     Buf u_ce;                        // and each token's cross-entropy in the last update (S x T x ntok, its shape)
     Buf u_mode;                      // vmc_forward_uni_step's most probable values
     int ce_S = 0, ce_T = 0;
@@ -1479,6 +1482,24 @@ __global__ void k_uni_tokens(const uint8_t* img, const float* drv, const float* 
         else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : 0.f;
     }
 }
+// Bin-embedding input (task 00036): hot [rows, V*K] = each used value of in [rows, V] (centred) split two-hot over
+// the K bins, unused values and bins 0. Row r is token r % nt (cand: every row a move token, nt - 1).
+__global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int K, int cand) {
+    const long n = rows * V;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int j = i % V;
+        const long r = i / V;
+        const int k = cand ? nt - 1 : (int)(r % nt);
+        float* o = hot + i * K;
+        for (int b = 0; b < K; b++) o[b] = 0.f;
+        if (j >= uni_used_(k, nt, V)) continue;
+        const float p = fminf(fmaxf(in[i] + 0.5f, 0.f), 1.f) * (K - 1);
+        const int lo = min((int)floorf(p), K - 2);
+        const float w = p - lo;
+        o[lo] = 1.f - w;
+        o[lo + 1] = w;
+    }
+}
 // xin [B*nt, d] += slot[k] + wpe[pos[b]] (back: their gradients from x = dres, atomics)
 __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const int* pos, int B, int nt, int d,
                             int back, float* gslot, float* gwpe) {
@@ -1749,7 +1770,13 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     float* xin = M->xin.get((size_t)rows * d);
     k_uni_tokens<<<GRID((long)rows * V)>>>(M->img, M->drv, M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img,
                                          D.patch, D.gp, D.ch);
-    linear(M, xin, in, P + off[UIW], P + off[UIB], rows, V, d, 0);
+    const float* uin = in;   // W_in's input: the centred values, or their two-hot bins
+    if (D.ib) {
+        float* hot = M->u_hot.get((size_t)rows * D.VI);
+        k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, K, 0);
+        uin = hot;
+    }
+    linear(M, xin, uin, P + off[UIW], P + off[UIB], rows, D.VI, d, 0);
     k_uni_embed<<<GRID((long)rows * d)>>>(xin, P + off[USL], P + off[WPE], M->pos, B, nt, d, 0, nullptr, nullptr);
     transformer_fwd(M, rows, KT, M->tstart, M->tend);
     float* lnf = M->lnf.p;
@@ -1779,7 +1806,7 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     linear_bwd(M, lg, lnf, P + off[UOW], rows, d, D.OV, dz, false, G + off[UOW], G + off[UOB]);
     if (transformer_bwd(M, rows, KT, M->tstart, M->tend)) return -1;
     float* dres = M->dres.p;
-    linear_bwd(M, dres, in, P + off[UIW], rows, V, d, nullptr, false, G + off[UIW], G + off[UIB]);
+    linear_bwd(M, dres, uin, P + off[UIW], rows, D.VI, d, nullptr, false, G + off[UIW], G + off[UIB]);
     k_uni_embed<<<GRID((long)rows * d)>>>(dres, nullptr, nullptr, M->pos, B, nt, d, 1, G + off[USL], G + off[WPE]);
     CK(cudaGetLastError());
     return 0;
@@ -2111,7 +2138,13 @@ int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger) {
     float* res = M->c_res.get((size_t)R * d);
     float* fch = M->c_fch.get((size_t)R * D.dff);
     float* fchg = M->c_fchg.get((size_t)R * D.dff);
-    linear(M, x, cin, P + off[UIW], P + off[UIB], R, V, d, 0);
+    const float* cuin = cin;
+    if (D.ib) {
+        float* hot = M->c_hot.get((size_t)R * D.VI);
+        k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.nbin, 1);
+        cuin = hot;
+    }
+    linear(M, x, cuin, P + off[UIW], P + off[UIB], R, D.VI, d, 0);
     k_cand_embed<<<GRID((long)R * d)>>>(x, P + off[USL] + (long)(nt - 1) * d, P + off[WPE], ip + 2 * R, R, d);
     const int lnb = (R + 7) / 8;
     for (int l = 0; l < L; l++) {   // as transformer_fwd, for the candidate rows, against the cached keys and values

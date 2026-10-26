@@ -72,7 +72,8 @@ def uni_shapes(cfg):
     if not on:
         return {"uni_in_w": (0,), "uni_in_b": (0,), "uni_slot": (0,), "uni_out_w": (0,), "uni_out_b": (0,)}
     nt, V, K = uni_dims(cfg)
-    return {"uni_in_w": (d, V), "uni_in_b": (d,), "uni_slot": (nt, d), "uni_out_w": (V * K, d), "uni_out_b": (V * K,)}
+    VI = V * K if cfg.get("in_bins", 0) else V                      # bin-embedding input (task 00036)
+    return {"uni_in_w": (d, VI), "uni_in_b": (d,), "uni_slot": (nt, d), "uni_out_w": (V * K, d), "uni_out_b": (V * K,)}
 
 
 def patch_dims(cfg):
@@ -431,7 +432,10 @@ def forward_uni(P, cfg, images, drives, actions, ep_start):
     nt, V, K = uni_dims(cfg)
     v, used = uni_values(cfg, images, drives, actions)
     m = (np.arange(V)[None, :] < used[:, None]).astype(np.float64)               # [nt, V]
-    x = torch.tensor((v - 0.5) * m, dtype=dt).reshape(S, T * nt, V)
+    if cfg.get("in_bins", 0):   # bin-embedding input (task 00036): each used value two-hot over the K bins
+        x = torch.tensor(two_hot(v, K) * m[..., None], dtype=dt).reshape(S, T * nt, V * K)
+    else:
+        x = torch.tensor((v - 0.5) * m, dtype=dt).reshape(S, T * nt, V)
     ss = segment_starts(np.asarray(ep_start, bool))
     pos = np.arange(T)[None, :] - ss
     h = F.linear(x, P["uni_in_w"], P["uni_in_b"]).reshape(S, T, nt, -1) + P["uni_slot"][None, None]

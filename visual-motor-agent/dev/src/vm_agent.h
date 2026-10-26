@@ -48,6 +48,9 @@ typedef struct {
     int bins;           // universal: bins per predicted value (centres k / (bins - 1))
     int gray;           // universal: 1 = each patch token carries one channel (the frame's first; for env.gray worlds),
                         //     patch^2 values instead of patch^2 * 3 (task 00024)
+    int in_bins;        // universal: 1 = bin-embedding input (task 00036): each used value split two-hot over the bins,
+                        //     W_in d x (V * bins), a learned embedding per value slot and bin; 0 = W_in d x V on the
+                        //     centred values
 } VMConfig;
 
 typedef struct {

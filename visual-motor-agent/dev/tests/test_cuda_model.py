@@ -62,7 +62,9 @@ MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
           "small_universal": dict(SMALL, patch=8, universal=1, bins=8),
           "small_universal_p16": dict(SMALL, patch=16, universal=1, bins=5),
           "universal_gray": dict(BASIC, patch=8, universal=1, bins=32, gray=1),           # task 00024
-          "small_universal_gray": dict(SMALL, patch=4, universal=1, bins=6, gray=1)}
+          "small_universal_gray": dict(SMALL, patch=4, universal=1, bins=6, gray=1),
+          "universal_gray_inbins": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1),   # task 00036
+          "small_universal_inbins": dict(SMALL, patch=8, universal=1, bins=8, in_bins=1)}
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
           "no_move": dict(PC, move_coef=0.0),
@@ -238,7 +240,8 @@ def test_planner_calls_match_cpp(setup):
     m.close()
 
 
-@pytest.mark.parametrize("model", ["universal_gray", "small_universal", "small_universal_p16"])
+@pytest.mark.parametrize("model", ["universal_gray", "small_universal", "small_universal_p16", "universal_gray_inbins",
+                                   "small_universal_inbins"])
 def test_uni_candidates_match_full_pass(model):
     """The instinct's fast path (task 00026): each candidate's predicted next hunger from the move token alone, against
     the full forward pass with that candidate as the window's last move."""
