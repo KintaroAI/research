@@ -1,8 +1,8 @@
 # vm-00023: The Instinct Looks 4 Steps Ahead
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00023`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00023` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00023/` (the frozen tests on vm-00021: its run directories' `eval/`)
 **Task plan:** [`../tasks/00029-instinct-lookahead.md`](../tasks/00029-instinct-lookahead.md)
 
