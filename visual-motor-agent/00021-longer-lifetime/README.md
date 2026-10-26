@@ -1,8 +1,8 @@
 # vm-00021: A Longer Lifetime for the Universal Model
 
 **Date:** 2026-10-25
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00021`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00021` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00021/`
 **Task plan:** [`../tasks/00025-longer-lifetime.md`](../tasks/00025-longer-lifetime.md)
 
