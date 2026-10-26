@@ -1,7 +1,7 @@
 # Task 00029: The Instinct Looks 4 Steps Ahead (experiment vm-00023)
 
 **Date:** 2026-10-25
-**Status:** In progress
+**Status:** Complete (results in vm-00023)
 
 ## Context
 
@@ -65,3 +65,13 @@ move; scoring only), split by what the true path clicks:
   predictions are biased. The drift is the same for all candidates, so it does not change their order.
 - Added `online.instinct_decode` (`mean` | `mode`, GPU only), `vmc_forward_uni_step(..., mode, ...)`; test against the
   PyTorch reference's argmax.
+
+## Results (vm-00023)
+
+- Frozen (vm-00021's six seeds, 100k and 200k): the lookahead is no better than the 1-step instinct; poison clicks are
+  lower in two seeds and higher in three. Mode decoding raises food clicks in four seeds of six but not poison.
+- Lifetimes (100k, seeds 1–3): more poison clicks and more time at the hunger cap than vm-00022's U in all three; their
+  models at 100k do better with the 1-step instinct than with their own lookahead (poison 5.6 / 4.0 / 11.9 against
+  14.9 / 6.8 / 19.2).
+- The 1-step instinct stays the default. Imagination would need one coherent sampled frame (the cursor), or a hunger
+  prediction several moves ahead learned from real futures.

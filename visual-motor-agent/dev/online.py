@@ -613,6 +613,7 @@ class _GpuEval:
         self.config, self.params, self.param_layout, self.forward = agent.config, agent.params, agent.param_layout, gpu.forward
         self.forward_uni = gpu.forward_uni
         self.uni_candidates = gpu.uni_candidates
+        self.forward_uni_step = gpu.forward_uni_step
 
 
 def load_config(path, overrides):

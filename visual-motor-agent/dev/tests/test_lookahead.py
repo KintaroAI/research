@@ -183,6 +183,8 @@ def test_gpu_mode_decoding_matches_the_reference():
         assert (np.abs(got - want[:, t]) > 1e-6).mean() < 1e-3                # (near-ties aside)
     h = online.uni_lookahead(m, img, drv, act, es, cand, 3, decode="mode")
     assert h.shape == (3, 4) and np.isfinite(h).all()
+    ev = online._GpuEval(agent, m)                                           # the frozen tests' model
+    np.testing.assert_array_equal(online.uni_lookahead(ev, img, drv, act, es, cand, 3, decode="mode"), h)
     with pytest.raises(ValueError):
         online.uni_lookahead(agent, img, drv, act, es, cand, 3, decode="mode")
     m.close()
