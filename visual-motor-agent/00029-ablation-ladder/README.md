@@ -1,8 +1,8 @@
 # vm-00029: The Ablation Ladder — the Input Map Is the Gap
 
 **Date:** 2026-10-26
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00029`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00029` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00029/`
 **Task plan:** [`../tasks/00035-ablation-ladder.md`](../tasks/00035-ablation-ladder.md)
 
