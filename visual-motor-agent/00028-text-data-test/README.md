@@ -1,8 +1,8 @@
 # vm-00028: Is the Gap the Data?
 
 **Date:** 2026-10-26
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00028`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00028` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00028/`
 **Task plan:** [`../tasks/00034-text-data-test.md`](../tasks/00034-text-data-test.md)
 
