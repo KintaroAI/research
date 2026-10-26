@@ -1,8 +1,8 @@
 # vm-00024: Gated Memory at Equal Size
 
 **Date:** 2026-10-26
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00024`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00024` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00024/`
 **Task plan:** [`../tasks/00030-gated-memory-equal-size.md`](../tasks/00030-gated-memory-equal-size.md)
 
