@@ -1,7 +1,7 @@
 # Task 00024: Grayscale, a Textured Poison, and Moving Dots for the Universal Model (experiment vm-00020)
 
 **Date:** 2026-10-25
-**Status:** In Progress
+**Status:** Complete (results in vm-00020)
 
 ## Context
 
