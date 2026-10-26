@@ -53,7 +53,13 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     largest token cross-entropy relative to that slot's recent mean (`GatedMemory.note_tokens`, read one tick late from
     `CudaModel.uni_token_ce`, after acting). Once long-term memory is full, `online.ltm_evict` (task 00031) says what a
     stored chunk replaces: `oldest` (the ring, default) or `reservoir` (a uniform sample of the life); vm-00025: in a
-    life longer than the memory, surprise gating with the ring is the rule that avoids traps. The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
+    life longer than the memory, surprise gating with the ring is the rule that avoids traps. The text world (task 00032):
+    `env.kind = text` (`world/text_world.py`, made by `world.make_config` / `make_world`, which `lifetime.py` uses):
+    Tiny Shakespeare as grey pages, configs `T_text_A.json` (64 letters in one 8x8 patch token) and `T_text_B.json`
+    (one 2x2 letter per token), `bins = 256`, `pred_img = 8` (unused by the universal model but validated: it must
+    divide `img`). `eval_predict.py` scores any world's held-out prediction (nats per value; text: per letter);
+    `reference/char_gpt.py` (run with `~/venvs/vm-gpu/bin/python`) is the classical character-level GPT on the same
+    windows. The corpus is read from `../llm-fundamentals/dev/data/tinyshakespeare/input.txt` (`./venv/bin/python prepare_tinyshakespeare.py` there downloads it). The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
     holds each candidate for H steps, imagined by the model (`online.uni_lookahead`, Jacobi decoding); it costs
     (H − 1)·J + 1 forward passes per tick. `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
     bin instead of the mean; imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps

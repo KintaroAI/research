@@ -49,7 +49,7 @@ from evaluate import executed_action  # noqa: E402
 from online import FIELDS, STAT_KEYS, GatedMemory, fill_rollout, load_config, sample_moves, uni_act  # noqa: E402
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
-from world import CircleWorld, EnvConfig  # noqa: E402
+from world import make_config, make_world  # noqa: E402
 
 LIFE_STATS = STAT_KEYS + ("act_drive_mse", "act_frame_mse", "uni_ce_body", "uni_ce_patch", "uni_ce_move",
                           "uni_mse_body", "uni_mse_patch", "uni_mse_move")
@@ -90,8 +90,8 @@ def main():
     agent_lib.set_threads(on["threads"])
 
     N0 = max(1, int(on["bodies"]))
-    env_cfg = dataclasses.replace(EnvConfig(**cfg["env"]), auto_reset=True)
-    env = CircleWorld(N0, env_cfg, seed=args.seed)
+    env_cfg = make_config(cfg["env"], auto_reset=True)   # CircleWorld, or TextWorld with env.kind = text
+    env = make_world(N0, env_cfg, seed=args.seed)
     agent = agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)
     pib = {name: (o, n) for name, o, n in agent.param_layout()}["pi_b"]
     if on["click_bias"] is not None and not args.init and pib[1]:   # initial click-logit bias, e.g. -2.197 = p 0.1

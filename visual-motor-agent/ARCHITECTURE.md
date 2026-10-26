@@ -26,6 +26,9 @@ Behaviour is not the primary goal at this stage; whether the predictions are rig
   start, shrinking to one (vm-00016: the strongest basic agent so far).
 - **The model senses only what a body would:** the RGB frame, its drives, its own previous move. True positions are
   for scoring only.
+- **The model does not know its world** (the owner's, 2026-10-26): pixels and text (task 00032) are interchangeable;
+  only the world draws its state into a frame. Nothing in the model treats one kind of world differently. When a world
+  shows a limitation of the model, the model is changed so that it goes away for every world alike.
 
 ## 3. The World
 
@@ -37,6 +40,11 @@ Behaviour is not the primary goal at this stage; whether the predictions are rig
 - **Eight moving grey dots** (`env.distractors=8`, vm-00010): content and motion the agent does not cause, so it must
   work out which moving thing obeys its moves.
 - All of this is the universal model's default world: `dev/configs/U_universal.json`.
+- **The text world** (`world/text_world.py`, task 00032): a text as grey pages, a letter as a brightness (letter k of
+  the sorted alphabet at level round(k · 255 / (n − 1))), each step the next page; drives 0, moves ignored. The same
+  model, unchanged, with `bins = 256` (every grey level a bin centre, so a value's prediction is a softmax over
+  letters); its prediction is measured in nats per letter against a classical character-level GPT of the same size
+  (`reference/char_gpt.py`, `eval_predict.py`).
 - Slow hunger (0.001 per step) so that hunger rarely sits at its cap of 1, where changes leave no trace (vm-00015).
 
 ## 4. Tokens: One Format for Everything
@@ -160,6 +168,9 @@ every tick:
   prefix is the same for all of them, so its keys and values could be cached once per tick (as the one-step
   candidates do).
 - **Other instincts** (restlessness) through the same one-step lookahead on other body values.
+- **Letters as glyphs** (the owner's idea, 2026-10-26): the text world draws each letter as an 8 × 8 bitmap of its
+  shape (a font), one patch per letter, instead of a brightness: reading text as vision. The model must then learn the
+  letters' shapes too, and text and images become literally the same kind of input.
 
 ## 10. Open Questions, Each an Experiment
 
