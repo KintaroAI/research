@@ -51,7 +51,9 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `online.click_bias` is skipped for models without a policy head (it used to write into the next parameter).
     Surprise gating (task 00028): `online.store_surprise` with the universal model on the GPU; a step's surprise is its
     largest token cross-entropy relative to that slot's recent mean (`GatedMemory.note_tokens`, read one tick late from
-    `CudaModel.uni_token_ce`, after acting). The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
+    `CudaModel.uni_token_ce`, after acting). Once long-term memory is full, `online.ltm_evict` (task 00031) says what a
+    stored chunk replaces: `oldest` (the ring, default) or `reservoir` (a uniform sample of the life); vm-00025: in a
+    life longer than the memory, surprise gating with the ring is the rule that avoids traps. The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
     holds each candidate for H steps, imagined by the model (`online.uni_lookahead`, Jacobi decoding); it costs
     (H − 1)·J + 1 forward passes per tick. `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
     bin instead of the mean; imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps

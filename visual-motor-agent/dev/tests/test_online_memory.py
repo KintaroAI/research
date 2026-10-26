@@ -124,6 +124,51 @@ def test_gate_reasons_and_rates():
     assert 0.18 < frac_base < 0.32
 
 
+def test_full_memory_oldest_keeps_the_most_recent_chunks():
+    n = 300 * L
+    hit, done, h = make_stream(n, 5)
+    gm = gated(replay=L * 50)
+    feed(gm, hit, done, h)
+    n_dec = (n - (K - 1)) // L
+    first = sorted(int(gm.ltm["drv"][m, 0, 1]) // L for m in range(gm.n))
+    assert gm.n == 50 and first == list(range(n_dec - 50, n_dec))
+    m = gm.metrics()
+    assert m["ltm_not_kept"] == 0 and m["ltm_age_max"] == (n - (K - 1)) - (n_dec - 49) * L   # from the last decision
+
+
+def test_full_memory_reservoir_keeps_a_uniform_sample_of_the_life():
+    """ltm_evict=reservoir: the k-th stored chunk is kept with probability cap / k, replacing a random one; the memory
+    is a uniform sample of every chunk, the first ones included."""
+    n, cap = 2000 * L, 100
+    hit, done, h = make_stream(n, 6)
+    held = []
+    for seed in range(20):
+        on = dict(online.DEFAULT_ONLINE, memory="gated", stm=64, replay=L * cap, relief_k=K, store_relief=0,
+                  store_surprise=0.0, store_base=1.0, store_warmup=0, surprise_window=200, ltm_evict="reservoir")
+        gm = online.GatedMemory(on, L, 8, K, seed=seed)
+        feed(gm, hit, done, h)
+        assert gm.n == cap
+        ids = gm.ltm["drv"][:, :, 1].astype(int)
+        assert (ids == ids[:, :1] + np.arange(L)).all() and (ids[:, 0] % L == 0).all()   # whole chunks
+        assert (gm.store.end == ids[:, -1] + 1).all()
+        held.append(ids[:, 0] // L)
+        m = gm.metrics()
+        n_dec = (n - (K - 1)) // L
+        writes = cap * (1 + np.log(n_dec / cap))                                # expected: cap + sum cap / k
+        assert m["ltm_chunks"] == cap and gm.store.k == n_dec
+        assert abs(n_dec - m["ltm_not_kept"] - writes) < 60
+    held = np.concatenate(held)
+    n_dec = (n - (K - 1)) // L
+    counts = np.histogram(held, bins=10, range=(0, n_dec))[0]
+    assert counts.sum() == 20 * cap
+    assert np.abs(counts / counts.mean() - 1).max() < 0.25                      # every tenth of the life alike
+
+
+def test_ltm_evict_is_checked():
+    with pytest.raises(ValueError):
+        gated(ltm_evict="newest")
+
+
 def test_surprise_gate_stores_the_top_fraction():
     n = 3000 * L
     hit = done = np.zeros(n, np.uint8)

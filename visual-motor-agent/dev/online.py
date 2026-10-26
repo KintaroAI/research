@@ -67,6 +67,8 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       planner=None, actor="planner", goal=0, goal_k=12, click_bias=None,
                       memory="stream", stm=256, relief_k=12, store_relief=0, store_surprise=0.0, store_base=1.0,
                       store_warmup=1_000, surprise_window=1_000, device="cpu",
+                      # task 00031: which stored chunk a new one replaces once long-term memory is full
+                      ltm_evict="oldest",
                       # task 00020 (lifetime.py; online.py reads goal_mode only): the hindsight command's form, and
                       # parallel bodies with a shrinking schedule, exploration decay
                       goal_mode="relief", bodies=1, bodies_hold=0, bodies_halve=0, explore_eps_end=None,
@@ -216,17 +218,33 @@ def surprise_parts(out, t, img, nimg, ndrv, act, sd, f, changed_weight, move=Tru
 
 
 class ChunkStore:
-    """Long-term memory of whole chunks of L steps (a ring of replay // L chunks); several GatedMemory gates (one per
-    body, lifetime.py) can share one."""
+    """Long-term memory of whole chunks of L steps (replay // L chunks); several GatedMemory gates (one per body,
+    lifetime.py) can share one. Once full, a chunk the gate stores replaces (ltm_evict):
+      oldest     the oldest stored chunk (a ring: the memory holds the most recent stored chunks);
+      reservoir  a random stored chunk, and only with probability cap / k for the k-th stored chunk (reservoir
+                 sampling: the memory stays a uniform sample of every chunk the gate ever stored, the oldest included)."""
 
     def __init__(self, on, L, fields_like):
+        if on.get("ltm_evict", "oldest") not in ("oldest", "reservoir"):
+            raise ValueError("online.ltm_evict must be 'oldest' or 'reservoir'")
+        self.evict = on.get("ltm_evict", "oldest")
         self.cap = on["replay"] // L
         self.ltm = {k: np.zeros((self.cap, L) + getattr(fields_like, k).shape[1:], getattr(fields_like, k).dtype)
                     for k in FIELDS}
         self.ltm["lbl"] = np.zeros((self.cap, L), np.float32)     # hindsight labels (goal), fixed at writing
         self.reason = np.zeros(self.cap, np.uint8)
         self.relief = np.zeros(self.cap, bool)                     # leads to relief, whatever the reason it was stored
+        self.end = np.zeros(self.cap, np.int64)                    # the step each chunk ended
         self.n = self.w = 0                                        # chunks stored, write position
+        self.k = 0                                                 # chunks the gates chose to store, ever
+
+    def slot(self, rng):
+        """Where the next chunk a gate chose goes (None: not kept, reservoir only)."""
+        self.k += 1
+        if self.n < self.cap or self.evict == "oldest":
+            return self.w
+        j = int(rng.integers(self.k))
+        return j if j < self.cap else None
 
 
 class GatedMemory:
@@ -258,6 +276,7 @@ class GatedMemory:
         self.hist = collections.deque(maxlen=on["surprise_window"])
         self.rng = np.random.default_rng([seed, 7, *rng_key])      # the gate's own draws
         self.thr = float("nan")
+        self.last_end = 0
         self.counts = collections.Counter()
         self.part_names = TOKEN_KINDS if tokens else SURPRISE_PARTS
         self.tok, self.tok_n, self.kinds = None, 0, None             # tokens: the slots' recent cross-entropies
@@ -300,6 +319,7 @@ class GatedMemory:
     def decide(self, step):
         """After step `step` (counted from 1) was added and noted: decide the chunk that ended D steps ago."""
         end, L, on, s = step - self.D, self.L, self.on, self.stm
+        self.last_end = end
         if end < L or end % L:
             return
         ext = s.last(L + self.D)                                   # the chunk and the D steps after it
@@ -328,14 +348,18 @@ class GatedMemory:
         if not reason:
             return
         st = self.store
-        w = st.w
+        w = st.slot(self.rng)
+        if w is None:
+            self.counts["evicted_new"] += 1
+            return
         for k in FIELDS:
             st.ltm[k][w] = getattr(s, k)[idx]
         if self.goal_k:
             st.ltm["lbl"][w] = goal_labels(s, ext, self.goal_k, self.goal_mode)[:L]
-        st.reason[w], st.relief[w] = reason, relief
-        st.w = (w + 1) % st.cap
-        st.n = min(st.n + 1, st.cap)
+        st.reason[w], st.relief[w], st.end[w] = reason, relief, end
+        if st.n < st.cap or st.evict == "oldest":
+            st.w = (w + 1) % st.cap
+            st.n = min(st.n + 1, st.cap)
 
     def _from_stm(self, starts, lag):
         s, L = self.stm, self.L
@@ -373,7 +397,10 @@ class GatedMemory:
         c, n = self.counts, self.store.n
         m = dict(chunks=c["chunks"], stored=c["chunks"] - c["dropped"], relief_seen=c["relief_seen"],
                  ltm_chunks=n, ltm_relief_share=float(self.store.relief[:n].mean()) if n else None,
-                 surprise_thr=self.thr if np.isfinite(self.thr) else None)
+                 surprise_thr=self.thr if np.isfinite(self.thr) else None, ltm_not_kept=c["evicted_new"])
+        if n:   # how far back long-term memory reaches, in steps
+            age = self.last_end - self.store.end[:n]
+            m.update(ltm_age_mean=float(age.mean()), ltm_age_max=int(age.max()))
         m.update({"stored_" + r: c[r] for r in REASONS[1:]})
         m.update({"surprise_top_" + p: c["top_" + p] for p in self.part_names})
         if self.tok is not None:   # tokens: the mean cross-entropy of each kind's slots
