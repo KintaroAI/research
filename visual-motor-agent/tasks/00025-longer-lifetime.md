@@ -1,7 +1,7 @@
 # Task 00025: A Longer Lifetime for the Universal Model (experiment vm-00021)
 
 **Date:** 2026-10-25
-**Status:** In Progress
+**Status:** Complete (results in vm-00021)
 
 ## Context
 
