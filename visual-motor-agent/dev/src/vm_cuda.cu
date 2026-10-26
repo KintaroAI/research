@@ -1003,6 +1003,9 @@ struct Model {
     Buf tpx, pemb, dpemb, zm, dzm, pdel, dpdel;   // patch tokens
     Buf ax_in, ax_h, ax_drv, ax_frm, dax_in, dax_h, dax_drv, dax_frm;   // the act token's auxiliary heads
     Buf u_in, u_tgt, u_log, u_val;   // universal model: token inputs, targets, head logits (then gradients), values
+    Buf u_ce;                        // and each token's cross-entropy in the last update (S x T x ntok, its shape)
+    Buf u_mode;                      // vmc_forward_uni_step's most probable values
+    int ce_S = 0, ce_T = 0;
     // the instinct's candidates (vmc_uni_candidates): their inputs, activations and outputs, one row per candidate
     Buf c_in, c_x, c_ln, c_lnm, c_lnr, c_qkv, c_att, c_res, c_fch, c_fchg, c_lg, c_val;
     int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
@@ -1493,7 +1496,8 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
 // value, acc[30 + kind] += 1, acc[33] += token CE; kind 0 the next body (move tokens), 1 a patch, 2 the move (the last
 // patch). Launch with UNI_LOSS_THREADS threads (a multiple of 32).
 #define UNI_LOSS_THREADS 256
-__global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc) {
+__global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc,
+                           float* tok_ce) {
     __shared__ double sh[2][UNI_LOSS_THREADS / 32];
     const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
     const int u = k == nt - 1 ? 2 : uni_used_(k + 1, nt, V), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
@@ -1528,6 +1532,7 @@ __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V,
         for (int i = 0; i < nw; i++) { a0 += sh[0][i]; a1 += sh[1][i]; }
         atomicAdd(acc + 24 + kind, a0 / u); atomicAdd(acc + 27 + kind, a1 / u);
         atomicAdd(acc + 30 + kind, 1.0); atomicAdd(acc + 33, a0 / u);
+        tok_ce[r] = (float)(a0 / u);
     }
 }
 // The instinct's candidates: one query row per candidate (its own q, k, v in qc [R, 3d]) attending to the cached keys
@@ -1592,6 +1597,19 @@ __global__ void k_uni_probs(float* lg, float* val, long n, int K) {
         float ev = 0.f;
         for (int b = 0; b < K; b++) { l[b] *= inv; ev += l[b] * (float)b / (K - 1); }
         val[i] = ev;
+    }
+}
+
+// Step t's values of S sequences of T frames as the most probable bin's centre (the instinct's sharp decoding, task
+// 00029): prob [S*T*ntV, K] (k_uni_probs' probabilities) -> out [S, ntV].
+__global__ void k_uni_mode_step(const float* prob, float* out, int S, int T, int t, int ntV, int K) {
+    const long n = (long)S * ntV;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const long s = i / ntV, j = i % ntV;
+        const float* p = prob + ((s * T + t) * (long)ntV + j) * K;
+        int best = 0;
+        for (int b = 1; b < K; b++) if (p[b] > p[best]) best = b;
+        out[i] = (float)best / (K - 1);
     }
 }
 
@@ -1754,7 +1772,9 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
     CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     for (int i = 0; i < 8; i++) M->coef[i] = 0.f;
-    k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / rows, M->acc);
+    k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / rows, M->acc, M->u_ce.get(rows));
+    M->ce_S = M->S;
+    M->ce_T = T;
     float* dz = M->dz.get((size_t)rows * d);
     linear_bwd(M, lg, lnf, P + off[UOW], rows, d, D.OV, dz, false, G + off[UOW], G + off[UOB]);
     if (transformer_bwd(M, rows, KT, M->tstart, M->tend)) return -1;
@@ -2015,6 +2035,40 @@ int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* d
     if (next_body)   // the move token's expected next drives: its first 2 values
         CK(cudaMemcpy2D(next_body, 2 * sizeof(float), M->u_val.p + (size_t)brow * V, (size_t)stride * V * sizeof(float),
                         2 * sizeof(float), B, cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                         const uint8_t* ep_start, int t, int mode, float* values_t, float* next_body) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.uni || t < 0 || t >= T) return -1;
+    std::vector<float> zero((size_t)S * T, 0.f);
+    if (upload_inputs(M, S, T, images, drives, actions, zero.data(), ep_start, actions)) return -1;
+    if (run_uni(M, nullptr, false, true)) return -1;
+    const int nt = D.ntok, V = D.V, B = M->B;
+    const size_t row = (size_t)nt * V * sizeof(float);
+    if (mode) {
+        float* mv = M->u_mode.get((size_t)S * nt * V);
+        k_uni_mode_step<<<GRID((long)S * nt * V)>>>(M->u_log.p, mv, S, T, t, nt * V, D.nbin);
+        CK(cudaGetLastError());
+        CK(cudaMemcpy(values_t, mv, (size_t)S * row, cudaMemcpyDeviceToHost));
+    } else {
+        CK(cudaMemcpy2D(values_t, row, M->u_val.p + (size_t)t * nt * V, (size_t)T * row, row, S,
+                        cudaMemcpyDeviceToHost));
+    }
+    if (next_body)
+        CK(cudaMemcpy2D(next_body, 2 * sizeof(float), M->u_val.p + (size_t)(nt - 1) * V, row, 2 * sizeof(float), B,
+                        cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+int vmc_uni_token_ce(void* h, int S0, float* out) {
+    Model* M = (Model*)h;
+    const int nt = M->D.ntok, T = M->ce_T;
+    if (!M->D.uni || !M->ce_S || S0 < 1 || S0 > M->ce_S) return -1;
+    CK(cudaMemcpy2D(out, nt * sizeof(float), M->u_ce.p + (size_t)(T - 1) * nt, (size_t)T * nt * sizeof(float),
+                    nt * sizeof(float), S0, cudaMemcpyDeviceToHost));
     return 0;
 }
 

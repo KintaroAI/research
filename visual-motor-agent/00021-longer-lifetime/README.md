@@ -96,9 +96,17 @@ All patch tokens: cursor 0.95–0.97, direction 0.88–0.91; the last patch's ou
 2. **The placed-state click test under-measures that prediction**; it should use real windows with history.
 3. **The policy does not absorb the instinct's choices**, and one lifetime fell into a trap at the hunger cap.
 
+## Follow-up: the click test on real windows (task 00027, 2026-10-25)
+
+The frozen agent lives as in the forage test; every chosen move is tried with and without a click on copies of the
+world. At 200k, four seeds of six (1, 2, 3, 6) predict that a poison click raises hunger in 66–79% of the felt cases
+(seed 4: 46%, seed 5: 18%), where the placed test showed −0.03 to +0.16. The sign is mostly right but the size is
+5–30% of the true +0.47. The frames use two steps of history (the patch error halves from one step to two, and does
+not fall further at four or eight). Details: [`../tasks/00027-click-test-real-windows.md`](../tasks/00027-click-test-real-windows.md).
+
 ## Next Steps
 
-- The click test on real windows (states from the agent's own lifetime, the last 7 steps as context).
+- ~~The click test on real windows~~ (done: the follow-up above).
 - A general remedy for the cap trap (an entropy floor on the move distribution, or the instinct also comparing "click"
   against "no click" so that it can choose relief).
 - A larger share of instinct choices in what the policy learns from (e.g. more candidates, or the instinct's moves

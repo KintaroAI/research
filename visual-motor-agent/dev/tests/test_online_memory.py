@@ -151,6 +151,51 @@ def test_combined_surprise_is_the_sum_of_normalized_parts():
         assert gm.top[j] == int(np.argmax([p[0] / np.mean(hist[0]), p[1] / np.mean(hist[1]), 0]))
 
 
+def test_token_surprise_is_the_largest_slot_ratio():
+    """The universal model's surprise (task 00028): the largest ratio of a token's cross-entropy to its slot's recent
+    mean, its kind recorded; an unmeasured step counts 0; the surprise gate then stores by it."""
+    gm = online.GatedMemory(dict(online.DEFAULT_ONLINE, memory="gated", stm=64, replay=L * 400, relief_k=K,
+                                 store_relief=0, store_surprise=0.5, store_base=0.0, store_warmup=0,
+                                 surprise_window=3), L, 8, K, seed=3, tokens=True)
+    kinds = np.array([0, 0, 1, 2])
+    seq = [np.array([1.0, 2.0, 1.0, 1.0]), np.array([1.0, 2.0, 1.0, 5.0]), None, np.array([3.0, 2.0, 1.0, 1.0]),
+           np.array([1.0, 1.0, 1.0, 1.0]), np.array([1.0, 8.0, 1.0, 1.0])]
+    rows = []
+    for j, ce in enumerate(seq):
+        gm.stm.add(img=np.zeros((8, 8, 3), np.uint8), nimg=np.zeros((8, 8, 3), np.uint8), drv=np.zeros(2),
+                   ndrv=np.zeros(2), pa=np.zeros(3), pr=0.0, es=0, act=np.zeros(3), rew=0.0, done=0, hit=0, cmd=0.0)
+        gm.note_tokens(ce, kinds)
+        if ce is None:
+            assert gm.sur[j] == 0.0
+            continue
+        rows = (rows + [ce])[-3:]                                    # the window: the last 3 measured steps
+        z = ce / np.mean(rows, 0)
+        assert np.isclose(gm.sur[j], z.max()) and gm.top[j] == kinds[np.argmax(z)]
+    assert np.isclose(gm.sur[1], 5.0 / 3.0) and gm.top[1] == 2       # the body token (the drives after the move)
+    assert gm.top[5] == 0                                             # a patch
+    m = gm.metrics()
+    assert set(k for k in m if k.startswith("surprise_mean_")) == {"surprise_mean_" + p for p in online.TOKEN_KINDS}
+    assert np.isclose(m["surprise_mean_move"], 1.0)
+
+
+def test_token_surprise_gate_stores_the_top_fraction():
+    n = 3000 * L
+    rng = np.random.default_rng(5)
+    gm = online.GatedMemory(dict(online.DEFAULT_ONLINE, memory="gated", stm=64, replay=L * 4000, relief_k=K,
+                                 store_relief=0, store_surprise=0.1, store_base=0.0, store_warmup=0,
+                                 surprise_window=1000), L, 8, K, seed=3, tokens=True)
+    kinds = np.array([0] * 6 + [1, 2])
+    for j in range(n):
+        gm.stm.add(img=np.zeros((8, 8, 3), np.uint8), nimg=np.zeros((8, 8, 3), np.uint8), drv=np.zeros(2),
+                   ndrv=np.zeros(2), pa=np.zeros(3), pr=0.0, es=0, act=np.zeros(3), rew=0.0, done=0, hit=0, cmd=0.0)
+        gm.note_tokens(rng.exponential(1.0, 8) * np.arange(1, 9), kinds)
+        gm.decide(j + 1)
+    frac = gm.n / ((n - (K - 1)) // L)
+    assert 0.08 < frac < 0.12 and (gm.reason[:gm.n] == 3).all()
+    c = gm.metrics()
+    assert sum(c["surprise_top_" + p] for p in online.TOKEN_KINDS) == c["stored_surprise"]
+
+
 SMALL = dict(img=32, c1=4, c2=8, c3=8, feat=16, d_model=16, n_layer=2, n_head=4, d_ff=32, ctx=8,
              pred_img=16, pc1=4, pc2=8, pred_hidden=16, use_prev_reward=1, logstd_init=-0.3, coord=1, pb=8,
              pred_residual=1, pred_skip=1)

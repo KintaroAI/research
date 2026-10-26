@@ -107,7 +107,11 @@ token of 66 per step, in the same units as every other token.
   rule. If the agent's moves collapse (the earlier agents drifted into never clicking without babbling), that is a
   finding to fix generally, e.g. by an entropy floor that applies to every token's distribution.
 - One step ahead only reaches what one move can change: a click on food or poison, not the approach to a far circle.
-  Longer lookahead is a later step (§9).
+- **Longer lookahead (task 00029, `online.instinct_h`):** each candidate is held for H steps and scored by the
+  predicted hunger after the last. The steps after the first are imagined by the model itself: the body from the move
+  token's prediction, the patches decoded from the model's own expected values by Jacobi iteration from the current
+  frame (`online.instinct_jacobi` passes per step; patches + 1 passes are exactly sequential decoding). Only the first
+  move is made; the next tick plans again.
 
 ## 7. Learning: One Update per Tick, Many Bodies at First
 
@@ -133,8 +137,12 @@ every tick:
 | weights | everything learned | 0.68M parameters in grayscale (the output head 0.26M; RGB: 1.22M, head 0.79M) |
 
 - To begin with, long-term memory keeps every chunk (vm-00007's uniform control). A universal salience rule is the
-  model's own surprise: the loss of the chunk's tokens, which counts every kind of token the same way. Gating by
-  hunger relief is a special case and is dropped.
+  model's own surprise, which counts every kind of token the same way. Gating by hunger relief is a special case and
+  is dropped.
+- **Surprise gating (task 00028, `online.store_surprise` on the GPU):** each token's cross-entropy in the update that
+  trains on its step (as the newest window), divided by that slot's mean over the last `surprise_window` steps; a
+  step's surprise is the largest ratio, a chunk's its largest step's; the top fraction of recent chunks is kept. A
+  token is surprising when it is much more surprising than usual for its own slot, whatever kind it is.
 
 ## 9. To Do Later
 
@@ -148,9 +156,9 @@ every tick:
 - **Learned discrete tokens (a VQ codebook):** each patch becomes an index into a learned vocabulary, as an LLM's tokens
   are, and the model predicts a softmax over the codebook. It turns the value vectors into true tokens; the risk is that
   small things like the cursor are lost in the codebook. After the universal model works on value vectors.
-- **Longer lookahead:** the instinct evaluates a sequence of moves by rolling the model forward (the next body token
-  after several moves). Needs the next frames generated patch by patch, or a cheaper latent.
-- **Salience-gated memory** by the model's own surprise.
+- **A faster lookahead:** the imagined steps recompute the whole window for every candidate and pass; the real
+  prefix is the same for all of them, so its keys and values could be cached once per tick (as the one-step
+  candidates do).
 - **Other instincts** (restlessness) through the same one-step lookahead on other body values.
 
 ## 10. Open Questions, Each an Experiment

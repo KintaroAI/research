@@ -54,6 +54,13 @@ int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* d
 // window, cand [S, Mc, 3], each candidate's predicted next hunger [S, Mc], as if it were the move of the window's last
 // step. Computes only the move token, against the forward pass's cached keys and values.
 int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger);
+// As vmc_forward_uni, but returning only step t's values, values_t [S, ntok, V] (mode = 0: the expected values; 1: the
+// most probable bin's centre), and the expected next bodies [S, T, 2] (the instinct's lookahead, task 00029).
+int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                         const uint8_t* ep_start, int t, int mode, float* values_t, float* next_body);
+// The universal model's last update: each token's cross-entropy (its mean over the used values of the token it
+// predicts) at the last step of the first S0 sequences, out [S0, ntok] (the gate's surprise, task 00028).
+int vmc_uni_token_ce(void* h, int S0, float* out);
 // The planner's model calls (latent dynamics, dyn_hidden > 0), as vm_encode (v only), vm_imagine and vm_decode.
 int vmc_encode(void* h, int n, const uint8_t* images, float* vf_out);
 int vmc_imagine(void* h, int n, int H, const float* s0, const float* h0, const float* actions, float* hunger,

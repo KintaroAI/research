@@ -14,6 +14,10 @@ The same weights drive every body; bodies have no identity input. N(tick) is onl
 online.bodies_hold ticks, then halves every online.bodies_halve ticks down to 1; body 0 lives on. With online.bodies=1
 this is online.py's self actor with gated memory (the same checkpoints, bit for bit, without surprise gating).
 
+Surprise gating (online.store_surprise > 0) for the universal model on the GPU (task 00028): a step's surprise is the
+largest of its tokens' cross-entropies in the update that trained on it (as the newest window), each divided by its
+slot's recent mean (GatedMemory.note_tokens). It is read on the next tick, after acting, when the GPU is idle.
+
 Command (online.goal=1): online.goal_mode = "relief" (vm-00006: its hunger if a hit follows within goal_k steps, else
 0) or "delta" (the change of hunger over the next goal_k steps: relief positive, hazards and time negative). When
 acting, the command is the current hunger: "relieve all of it".
@@ -80,8 +84,6 @@ def main():
     on = cfg["online"]
     if on["actor"] != "self" or on["memory"] != "gated":
         raise ValueError("lifetime.py runs the self actor with gated memory (online.actor=self, online.memory=gated)")
-    if on["store_surprise"]:
-        raise ValueError("lifetime.py does not measure surprise: online.store_surprise must be 0")
     name = cfg.get("name", os.path.splitext(os.path.basename(args.config))[0])
     out_dir = args.out or next_output(args.exp, "%s_s%d" % (name, args.seed))
     os.makedirs(out_dir, exist_ok=True)
@@ -97,6 +99,9 @@ def main():
         agent.params_changed()
     goal_k = on["goal_k"] if on["goal"] else 0
     uni = bool(agent.config["universal"])
+    tok_sur = bool(on["store_surprise"])
+    if tok_sur and not (uni and on["device"] == "cuda"):
+        raise ValueError("lifetime.py measures surprise for the universal model on the GPU only (online.device=cuda)")
     if uni and goal_k:
         raise ValueError("the universal model has no command: set online.goal=0")
     if goal_k and not agent.config["use_prev_reward"]:
@@ -109,8 +114,9 @@ def main():
     L, B = agent.config["ctx"], on["batch"]
     lag = goal_k - 1 if goal_k else 0         # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
-    gms = [GatedMemory(on, L, env_cfg.size, goal_k, args.seed)]
-    gms += [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, store=gms[0].store, rng_key=(b,)) for b in range(1, N0)]
+    gms = [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, tokens=tok_sur)]
+    gms += [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur)
+            for b in range(1, N0)]
     store = gms[0].store
     gpu, fwd = None, agent.forward
     if on["device"] == "cuda":
@@ -120,13 +126,21 @@ def main():
     elif on["device"] != "cpu":
         raise ValueError("online.device must be 'cpu' or 'cuda'")
     umodel = (gpu or agent) if uni else None   # the universal model's forward (and, on the GPU, its fast candidates)
+    if tok_sur and not cuda_lib.has("vmc_uni_token_ce"):
+        raise ValueError("surprise gating needs a libvmcuda.so with vmc_uni_token_ce (task 00028): rebuild it")
+    nt = (agent.config["img"] // agent.config["patch"]) ** 2 + 2 if uni else 0
+    kinds = np.array([0] * (nt - 2) + [1, 2]) if uni else None   # what each token predicts: patch, move, body
+    ce_n = prev_N = 0   # bodies whose newest window the last update trained on (their surprise is read next tick)
     rollouts = {}
 
     def rollout(n):   # one per batch size (the batch grows with the active bodies)
         if n not in rollouts:
             # the universal model needs no next frames; builds before task 00026 still expect them
-            nf = not (uni and cuda_lib.has("vmc_uni_candidates"))
-            rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"], next_frames=nf) if gpu else agent.new_rollout(L, n)
+            if not gpu:
+                rollouts[n] = agent.new_rollout(L, n)
+            else:
+                nf = not (uni and cuda_lib.has("vmc_uni_candidates"))
+                rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"], next_frames=nf)
         return rollouts[n]
 
     info = dict(command=" ".join(sys.argv), git=git_hash(), config=cfg, seed=args.seed, out_dir=out_dir,
@@ -164,12 +178,16 @@ def main():
         if uni:   # the universal model: its own move prediction, and the instinct
             a, over, gain = uni_act(umodel, win_in[0], win_in[1], win_in[5].astype(np.float32),
                                     win_in[4].astype(np.uint8), agent.config["bins"], rng, on["instinct_m"],
-                                    on["instinct_tol"])
+                                    on["instinct_tol"], on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"])
             win["override"] += over * N
             win["gain"] += gain * N
         else:
             out = fwd(win_in[0], win_in[1], win_in[2], win_in[3].astype(np.float32), win_in[4].astype(np.uint8))
             a = sample_moves(agent, out, rng)
+        if tok_sur and prev_N:   # each body's previous step: its surprise in the last update (the GPU is idle now)
+            ce = gpu.uni_token_ce(ce_n) if ce_n else None
+            for b in range(prev_N):
+                gms[b].note_tokens(None if ce is None else ce[b], kinds)
         bab = rng.random(N) < eps_at(on, tick)
         if bab.any():   # keeps trying: own moves alone drift to never clicking
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
@@ -205,7 +223,9 @@ def main():
         for b in range(N):
             gms[b].decide(tick)
         # 3. learn from the newest window of every active body plus replayed ones
+        ce_n, prev_N = 0, N
         if gms[0].stm.n >= L + lag:
+            ce_n = N
             if N == 1:
                 rows = gms[0].rows(B, rng, lag)
             else:

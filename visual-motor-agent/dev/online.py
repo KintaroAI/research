@@ -74,6 +74,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00023 (the universal model): the hunger instinct, one-step lookahead over instinct_m
                       # candidate moves (0: the policy alone), keeping the first sample within instinct_tol of the best
                       instinct_m=0, instinct_tol=0.005,
+                      # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
+                      # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
+                      instinct_h=1, instinct_jacobi=2, instinct_decode="mean",
                       # lifetime.py on the GPU: read the update's stats every stats_every ticks (each read waits for
                       # the GPU; the metrics average the samples)
                       stats_every=10)
@@ -141,6 +144,7 @@ class Replay:
 
 FIELDS = ("img", "nimg", "drv", "ndrv", "pa", "pr", "es", "act", "rew", "done", "hit", "cmd")
 SURPRISE_PARTS = ("frame", "drives", "move")
+TOKEN_KINDS = ("patch", "move", "body")   # what a universal model's token predicts (GatedMemory.note_tokens)
 REASONS = ("dropped", "warmup", "relief", "surprise", "base")
 
 
@@ -235,10 +239,12 @@ class GatedMemory:
       surprise  store_surprise = q > 0 and its surprise (the largest of its steps) is in the top fraction q of the
                 last surprise_window chunks;
       base      a draw with probability store_base (1 = store everything: the uniform control).
-    A step's surprise is the sum of its surprise_parts, each divided by its mean over the last surprise_window steps.
+    A step's surprise is the sum of its surprise_parts, each divided by its mean over the last surprise_window steps;
+    with tokens (the universal model, note_tokens): the largest of its tokens' cross-entropies, each divided by its
+    slot's mean over the last surprise_window steps.
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
-    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=()):
+    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
         self.D = max(on["relief_k"], goal_k, 1) - 1
@@ -253,6 +259,8 @@ class GatedMemory:
         self.rng = np.random.default_rng([seed, 7, *rng_key])      # the gate's own draws
         self.thr = float("nan")
         self.counts = collections.Counter()
+        self.part_names = TOKEN_KINDS if tokens else SURPRISE_PARTS
+        self.tok, self.tok_n, self.kinds = None, 0, None             # tokens: the slots' recent cross-entropies
 
     # the long-term memory's state, under its earlier names
     ltm = property(lambda self: self.store.ltm)
@@ -271,6 +279,23 @@ class GatedMemory:
         i = (self.stm.w - 1) % self.stm.cap
         self.sur[i] = z.sum()
         self.top[i] = int(np.argmax(z))
+
+    def note_tokens(self, ce, kinds):
+        """The universal model (task 00028): the cross-entropies ce [ntok] of the step just added to stm (each token's
+        prediction of the next token; None: not measured), kinds [ntok] (index into TOKEN_KINDS). The step's surprise
+        is the largest ratio of a token's cross-entropy to its slot's mean over the last surprise_window steps: one
+        rule for every token."""
+        i = (self.stm.w - 1) % self.stm.cap
+        if ce is None:
+            self.sur[i], self.top[i] = 0.0, 0
+            return
+        if self.tok is None:
+            self.tok, self.kinds = np.zeros((self.on["surprise_window"], len(ce))), np.asarray(kinds)
+        self.tok[self.tok_n % len(self.tok)] = ce
+        self.tok_n += 1
+        z = ce / np.maximum(self.tok[:min(self.tok_n, len(self.tok))].mean(0), 1e-12)
+        j = int(np.argmax(z))
+        self.sur[i], self.top[i] = z[j], self.kinds[j]
 
     def decide(self, step):
         """After step `step` (counted from 1) was added and noted: decide the chunk that ended D steps ago."""
@@ -292,7 +317,7 @@ class GatedMemory:
             reason = 2
         elif q > 0 and sur >= self.thr:
             reason = 3
-            self.counts["top_" + SURPRISE_PARTS[self.top[idx][j]]] += 1
+            self.counts["top_" + self.part_names[self.top[idx][j]]] += 1
         elif u < on["store_base"]:
             reason = 4
         else:
@@ -350,8 +375,13 @@ class GatedMemory:
                  ltm_chunks=n, ltm_relief_share=float(self.store.relief[:n].mean()) if n else None,
                  surprise_thr=self.thr if np.isfinite(self.thr) else None)
         m.update({"stored_" + r: c[r] for r in REASONS[1:]})
-        m.update({"surprise_top_" + p: c["top_" + p] for p in SURPRISE_PARTS})
-        m.update({"surprise_mean_" + p: float(np.mean(d)) if d else None for p, d in zip(SURPRISE_PARTS, self.recent)})
+        m.update({"surprise_top_" + p: c["top_" + p] for p in self.part_names})
+        if self.tok is not None:   # tokens: the mean cross-entropy of each kind's slots
+            mean = self.tok[:min(self.tok_n, len(self.tok))].mean(0)
+            m.update({"surprise_mean_" + p: float(mean[self.kinds == j].mean()) for j, p in enumerate(TOKEN_KINDS)})
+        elif self.part_names is SURPRISE_PARTS:
+            m.update({"surprise_mean_" + p: float(np.mean(d)) if d else None
+                      for p, d in zip(SURPRISE_PARTS, self.recent)})
         if self.goal_k:
             m["ltm_label_share"] = float((self.store.ltm["lbl"][:n] > 0).mean()) if n else None
         self.counts = collections.Counter()
@@ -368,19 +398,90 @@ def fill_rollout(ro, r, L):
 UNI_CHUNK = 256   # windows per forward pass when acting
 
 
-def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005):
+def uni_patches(cfg, img):
+    """The patch tokens' values [n, patches, V] in [0, 1] of frames [n, H, W, 3] (as the universal model reads them)."""
+    n, ps = img.shape[0], cfg["patch"]
+    g = cfg["img"] // ps
+    x = img.reshape(n, g, ps, g, ps, 3).astype(np.float32) / 255.0
+    if cfg.get("gray"):
+        x = x[..., :1]
+    return x.transpose(0, 1, 3, 2, 4, 5).reshape(n, g * g, -1)
+
+
+def uni_frame(cfg, pv):
+    """Frames [n, H, W, 3] u8 from patch values [n, patches, V] (uni_patches' inverse; gray: the value in every
+    channel)."""
+    n, ps = pv.shape[0], cfg["patch"]
+    g, ch = cfg["img"] // ps, 1 if cfg.get("gray") else 3
+    x = np.clip(np.rint(np.asarray(pv, np.float64) * 255.0), 0, 255).astype(np.uint8)
+    x = x.reshape(n, g, g, ps, ps, ch).transpose(0, 1, 3, 2, 4, 5).reshape(n, g * ps, g * ps, ch)
+    return np.repeat(x, 3, -1) if ch == 1 else x
+
+
+def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
+    """The instinct's horizon (task 00029): each candidate move sequence cand [N, M, H, 3] (or [N, M, 3]: one move held
+    for H steps) made from the end of the windows [N, T, ...] (act's last step ignored), and the model's predicted
+    hunger after the H-th move [N, M]. The window keeps its last ctx - (H - 1) real steps; each imagined step's body is
+    the previous move token's predicted next body, its patches are decoded from the model's own expected values by J
+    Jacobi iterations from the current frame (J = patches + 1: exactly sequential decoding). decode: each imagined
+    pixel the expected value ("mean") or the most probable bin's centre ("mode", sharp; the GPU only)."""
+    if decode not in ("mean", "mode"):
+        raise ValueError("decode must be 'mean' or 'mode'")
+    if decode == "mode" and not hasattr(model, "forward_uni_step"):
+        raise ValueError("decode='mode' needs the GPU model (CudaModel.forward_uni_step)")
+    c = model.config
+    N, T = img.shape[:2]
+    M = cand.shape[1]
+    cs = np.asarray(cand, np.float32)
+    if cs.ndim == 3:
+        cs = np.repeat(cs[:, :, None], H, 2)
+    R = min(T, c["ctx"] - (H - 1))
+    if R < 1:
+        raise ValueError("instinct_h must be at most ctx")
+    nt = (c["img"] // c["patch"]) ** 2 + 2
+    rep = lambda x: np.repeat(x[:, T - R:], M, axis=0)   # noqa: E731
+    im, dv = rep(img), rep(drv).astype(np.float32)
+    im = np.concatenate([im] + [im[:, -1:]] * (H - 1), 1)       # the imagined frames start as the current one
+    dv = np.concatenate([dv] + [dv[:, -1:]] * (H - 1), 1)
+    ac = np.concatenate([rep(act).astype(np.float32), np.zeros((N * M, H - 1, 3), np.float32)], 1)
+    ac[:, R - 1:] = cs.reshape(N * M, H, 3)
+    e = np.concatenate([rep(es), np.zeros((N * M, H - 1), np.uint8)], 1)
+    e[:, 0] = 1
+
+    def fwd(j, st):   # windows j: the next bodies, and (st >= 0) step st's values
+        x = (im[j:j + UNI_CHUNK], dv[j:j + UNI_CHUNK], ac[j:j + UNI_CHUNK], e[j:j + UNI_CHUNK])
+        if st < 0:
+            return model.forward_uni(*x, values=False, move_probs=False, next_body=True)
+        if hasattr(model, "forward_uni_step"):   # the GPU: only step st's values come back
+            return model.forward_uni_step(*x, st, mode=decode == "mode")
+        o = model.forward_uni(*x, values=True, move_probs=False, next_body=True)
+        return dict(values_t=o["values"][:, st], next_body=o["next_body"])
+
+    def run(st):
+        outs = [fwd(j, st) for j in range(0, N * M, UNI_CHUNK)]
+        return {k: np.concatenate([o[k] for o in outs]) for k in outs[0]}
+    for st in range(R, R + H - 1):
+        for _ in range(J):
+            out = run(st)
+            dv[:, st] = np.clip(out["next_body"][:, st - 1], 0.0, 1.0)
+            im[:, st] = uni_frame(c, out["values_t"][:, :nt - 2])
+    return run(-1)["next_body"][:, -1, 0].reshape(N, M)
+
+
+def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean"):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
     lowest, keeping the first sample when it is within tol of the lowest. model: an Agent or CudaModel (forward_uni;
-    with uni_candidates, the candidates reuse the policy pass instead of a full pass each). Returns the moves [N, 3]
+    with uni_candidates, the candidates reuse the policy pass instead of a full pass each). horizon > 1: each candidate
+    held for that many steps and scored by the predicted hunger after the last (uni_lookahead). Returns the moves [N, 3]
     (dx, dy in [-1, 1], click 0 / 1), the share of bodies where the instinct overrode the first sample, and the mean
     predicted gain."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
     M = max(1, m)
-    fast = m > 1 and hasattr(model, "uni_candidates")
+    fast = m > 1 and horizon == 1 and hasattr(model, "uni_candidates")
     cand, h = [], []
     for i in range(0, N, UNI_CHUNK):   # at most UNI_CHUNK windows per forward pass (bounded memory)
         sl = slice(i, i + UNI_CHUNK)
@@ -395,7 +496,9 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005):
     cand = np.concatenate(cand)
     if m <= 1:
         return cand[:, 0], 0.0, 0.0
-    if fast:
+    if horizon > 1:
+        h = uni_lookahead(model, img, drv, act, es, cand, horizon, jacobi, decode)
+    elif fast:
         h = np.concatenate(h)
     else:
         rep = lambda x: np.repeat(x, M, axis=0)   # noqa: E731
@@ -542,6 +645,13 @@ def main():
     ap.add_argument("--ckpts", type=int, nargs="*", default=[], help="with --eval: checkpoints (steps)")
     ap.add_argument("--eval-instinct", type=int, default=None,
                     help="universal model: the instinct's candidates in the frozen tests (default: the run's; 0: off)")
+    ap.add_argument("--eval-tests", default="both", choices=["both", "forage"],
+                    help="with --eval: both frozen tests, or the forage test alone (e.g. for a costly instinct)")
+    ap.add_argument("--eval-worlds", type=int, default=32, help="with --eval: the forage test's worlds")
+    ap.add_argument("--eval-horizon", type=int, default=None,
+                    help="universal model: the instinct's horizon in the frozen tests (default: the run's)")
+    ap.add_argument("--eval-decode", default=None, choices=["mean", "mode"],
+                    help="universal model: how the lookahead decodes imagined frames (default: the run's)")
     ap.add_argument("--eval-device", default="cpu", choices=["cpu", "cuda"],
                     help="with --eval: run the forward passes on the GPU (libvmcuda.so; same outputs to float precision)")
     ap.add_argument("--init", metavar="CKPT", help="start from these weights instead of a random initialization "
@@ -563,23 +673,32 @@ def main():
                 import cuda_lib
                 ev = _GpuEval(agent, cuda_lib.CudaModel(agent))
             ion = dict(DEFAULT_ONLINE, **info["config"]["online"])
-            inst = (ion["instinct_m"] if args.eval_instinct is None else args.eval_instinct, ion["instinct_tol"])
-            res = eval_self(ev, EnvConfig(**ec), info["config"]["online"]["goal"], instinct=inst)
+            inst = (ion["instinct_m"] if args.eval_instinct is None else args.eval_instinct, ion["instinct_tol"],
+                    ion["instinct_h"] if args.eval_horizon is None else args.eval_horizon, ion["instinct_jacobi"],
+                    ion["instinct_decode"] if args.eval_decode is None else args.eval_decode)
+            res = {} if args.eval_tests == "forage" else eval_self(ev, EnvConfig(**ec), info["config"]["online"]["goal"],
+                                                                  instinct=inst)
             if ec.get("respawn"):
-                res.update(eval_forage(ev, EnvConfig(**ec), info["config"]["online"]["goal"], instinct=inst))
-            res["instinct_m"] = inst[0]
+                res.update(eval_forage(ev, EnvConfig(**ec), info["config"]["online"]["goal"], n=args.eval_worlds,
+                                       instinct=inst))
+            res["instinct_m"], res["instinct_h"] = inst[0], inst[2]
             res.update(run=args.eval, step=st)
-            tag = "" if args.eval_instinct is None else "_instinct%d" % args.eval_instinct
+            tag = ("" if args.eval_instinct is None else "_instinct%d" % args.eval_instinct) + (
+                "" if args.eval_horizon is None else "_h%d" % args.eval_horizon) + (
+                "" if args.eval_decode is None else "_" + args.eval_decode) + (
+                "" if args.eval_tests == "both" else "_forage%d" % args.eval_worlds)
             with open(os.path.join(args.eval, "eval", "ckpt_%08d%s.json" % (st, tag)), "w") as f:
                 json.dump(res, f)
-            print("%s %8d  success %.3f  median %5.1f  clicks %5.1f" % (os.path.basename(args.eval.rstrip("/")), st,
-                  res["success"], res["median_steps"], res["clicks_per_episode"])
+            print("%s %8d" % (os.path.basename(args.eval.rstrip("/")), st)
+                  + ("  success %.3f  median %5.1f  clicks %5.1f" % (res["success"], res["median_steps"],
+                                                                      res["clicks_per_episode"]) if "success" in res else "")
                   + ("  forage: hits/1k %.1f  in hazard %.3f (felt %.3f)  hunger capped %.2f" % (
                       res["forage_hits_per_1k"], res["forage_hazard_frac"], res["forage_hazard_felt"],
                       res["forage_capped"])
                      if "forage_hits_per_1k" in res else "")
                   + ("  poison clicks/1k %.1f" % res["forage_poison_per_1k"] if res.get("forage_poison_per_1k") else "")
-                  + ("  instinct %d" % inst[0] if inst[0] else ""), flush=True)
+                  + ("  instinct %d" % inst[0] if inst[0] else "") + ("  horizon %d" % inst[2] if inst[2] > 1 else ""),
+                  flush=True)
             agent.close()
         return
     if not args.config:

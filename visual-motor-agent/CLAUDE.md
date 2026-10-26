@@ -41,12 +41,21 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     on the cursor). In a continual world with walls the basic agent starves at a wall: use `wrap`.
     Hunger is capped at 1: at the cap a hazard step leaves no trace; use slow hunger (`env.h_rate=0.001`, vm-00015).
     `env.hazard_click=1` (vm-00017): a click inside a hazard sets hunger to 1 (poison); `analyze_hazards.py click`
-    tests whether a model predicts what each kind of click does.
+    tests whether a model predicts what each kind of click does (placed one-step windows); `click-real` (task 00027,
+    universal model) tests it on real windows: the frozen agent lives as in the forage test, each chosen move is tried
+    with and without a click on copies of the world, and the prediction is read from its last 1, 2, 4 and ctx steps.
   - **The universal model** (task 00023, `../ARCHITECTURE.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
     channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,
     the instinct; `lifetime.py`). Its forward is `Agent.forward_uni` / `CudaModel.forward_uni`; `vm_forward` refuses it.
     `online.click_bias` is skipped for models without a policy head (it used to write into the next parameter).
+    Surprise gating (task 00028): `online.store_surprise` with the universal model on the GPU; a step's surprise is its
+    largest token cross-entropy relative to that slot's recent mean (`GatedMemory.note_tokens`, read one tick late from
+    `CudaModel.uni_token_ce`, after acting). The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
+    holds each candidate for H steps, imagined by the model (`online.uni_lookahead`, Jacobi decoding); it costs
+    (H − 1)·J + 1 forward passes per tick. `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
+    bin instead of the mean; imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps
+    the frozen test affordable.
     Speed (task 00026): the instinct's candidates reuse the policy pass's keys and values (`CudaModel.uni_candidates`),
     the universal model's batches carry no next frames, and `lifetime.py` reads the update's stats every
     `online.stats_every` ticks: 178 ticks/s for a gray lifetime with the instinct alone on the RTX 4090.

@@ -133,3 +133,27 @@ def test_short_lifetime_universal(tmp_path, instinct):
                         capture_output=True, text=True, check=True)
     assert "success" in ev.stdout and "forage: hits/1k" in ev.stdout
 
+
+
+def test_short_lifetime_universal_surprise(tmp_path):
+    """Surprise gating for the universal model on the GPU (task 00028): two bodies, chunks stored by surprise only
+    (after a short warm-up), the gate's metrics by kind of token."""
+    cuda_lib = pytest.importorskip("cuda_lib")
+    if not cuda_lib.available() or not cuda_lib.has("vmc_uni_token_ce"):
+        pytest.skip("libvmcuda.so with vmc_uni_token_ce not available")
+    out = str(tmp_path / "run")
+    sets = ["model.img=32", "env.size=32", "model.d_model=16", "model.n_head=2", "model.d_ff=32", "model.bins=8",
+            "online.steps=160", "online.log_every=80", "online.save_every=160", "online.stm=64",
+            "online.replay=2000", "online.instinct_m=4", "online.bodies=2", "online.bodies_hold=60",
+            "online.bodies_halve=40", "online.store_warmup=24", "online.store_base=0", "online.store_surprise=0.25",
+            "online.surprise_window=200"]
+    cmd = [sys.executable, os.path.join(DEV, "lifetime.py"), "--config", os.path.join(DEV, "configs", "U_universal.json"),
+           "--seed", "4", "-o", out] + sum([["--set", s] for s in sets], [])
+    subprocess.run(cmd, check=True, cwd=DEV, capture_output=True)
+    rows = [json.loads(line) for line in open(os.path.join(out, "metrics.jsonl"))]
+    assert rows[-1]["stored_surprise"] > 0 and rows[-1]["stored_base"] == 0
+    assert sum(rows[-1]["surprise_top_" + p] for p in online.TOKEN_KINDS) == rows[-1]["stored_surprise"]
+    assert all(rows[-1]["surprise_mean_" + p] > 0 for p in online.TOKEN_KINDS)
+    bad = subprocess.run(cmd[:-2 * len(sets)] + sum([["--set", s] for s in sets + ["online.device=cpu"]], []),
+                         cwd=DEV, capture_output=True, text=True)
+    assert bad.returncode != 0 and "GPU only" in bad.stderr

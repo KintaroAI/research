@@ -289,3 +289,36 @@ def test_universal_batch_without_next_frames():
     assert abs(st["loss"] - st2["loss"]) < 1e-6
     np.testing.assert_allclose(g2, g, rtol=1e-5, atol=1e-8)
 
+
+
+@pytest.mark.parametrize("model", ["small_universal", "small_universal_gray"])
+def test_uni_token_ce_matches_reference(model):
+    """The gate's surprise (task 00028): each token's cross-entropy at the last step of the update's first sequences,
+    against the PyTorch reference's per-token loss."""
+    pytest.importorskip("torch")
+    from reference import torch_reference as ref
+    from test_patch_tokens import store_rollout
+    if not cuda_lib.has("vmc_uni_token_ce"):
+        pytest.skip("libvmcuda.so without vmc_uni_token_ce")
+    agent = agent_lib.Agent(MODELS[model], seed=4)
+    c = agent.config
+    N, T = 4, 2 * c["ctx"]
+    ro, data = store_rollout(agent, T=T, N=N, seed=2, p_done=0.12)
+    ids = [0, 2, 3, 5, 6]
+    m = cuda_lib.CudaModel(agent)
+    m.set_batch(*cuda_batch(agent, data, ids, N))
+    m.loss_and_grads(PC)
+    ce = m.uni_token_ce(3)
+    z = np.zeros((T, N))
+    P = ref.params_from_flat(agent.params(), agent.param_layout(), c)
+    _, terms = ref.ppo_loss(P, c, dict(agent_lib.DEFAULT_PPO, use_ppo=0),
+                            seq_batch(data, ids, c["ctx"], N, z, z, c["img"] // c["pred_img"]))
+    pt = terms["per_token"].detach().numpy()                          # [S, T, ntok]
+    np.testing.assert_allclose(ce, pt[:3, -1], rtol=1e-4, atol=1e-5)
+    m.forward_uni(data["images"][:2, :2].transpose(1, 0, 2, 3, 4), np.zeros((2, 2, 2), np.float32),
+                  np.zeros((2, 2, 3), np.float32))                    # acting in between leaves the last update's
+    np.testing.assert_array_equal(m.uni_token_ce(3), ce)
+    with pytest.raises(RuntimeError):
+        m.uni_token_ce(len(ids) + 1)
+    m.close()
+    agent.close()

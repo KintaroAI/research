@@ -56,6 +56,8 @@ def lib():
             "vmc_forward": (i32, [vp, i32, i32, u8p, fp, fp, fp, u8p, fp, fp, fp, fp, fp, fp, fp]),
             "vmc_forward_uni": (i32, [vp, i32, i32, u8p, fp, fp, u8p, fp, fp, fp]),
             "vmc_uni_candidates": (i32, [vp, i32, fp, fp]),
+            "vmc_uni_token_ce": (i32, [vp, i32, fp]),
+            "vmc_forward_uni_step": (i32, [vp, i32, i32, u8p, fp, fp, u8p, i32, i32, fp, fp]),
             "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
             "vmc_encode": (i32, [vp, i32, u8p, fp]),
             "vmc_imagine": (i32, [vp, i32, i32, fp, fp, fp, fp, fp, fp]),
@@ -266,6 +268,22 @@ class CudaModel:
                "forward_uni")
         return out
 
+    def forward_uni_step(self, images, drives, actions, ep_start, t, mode=False):
+        """forward_uni's values of step t only, values_t [S, ntok, V] (mode: each value's most probable bin centre
+        instead of the expectation), and next_body [S, T, 2] (task 00029)."""
+        img = np.ascontiguousarray(images, np.uint8)
+        S, T = img.shape[:2]
+        c = self.config
+        nt, V = (c["img"] // c["patch"]) ** 2 + 2, c["patch"] ** 2 * (1 if c.get("gray") else 3)
+        vt, nb = np.empty((S, nt, V), np.float32), np.empty((S, T, 2), np.float32)
+        es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
+        _check(lib().vmc_forward_uni_step(self.handle, S, T, _p(img, C.c_uint8),
+                                          _p(np.ascontiguousarray(drives, np.float32), C.c_float),
+                                          _p(np.ascontiguousarray(actions, np.float32), C.c_float),
+                                          None if es is None else _p(es, C.c_uint8), t, int(mode), _p(vt, C.c_float),
+                                          _p(nb, C.c_float)), "forward_uni_step")
+        return dict(values_t=vt, next_body=nb)
+
     @property
     def uni_candidates(self):
         """The instinct's candidates, right after forward_uni of S windows: cand [S, Mc, 3] -> predicted next hunger
@@ -281,6 +299,14 @@ class CudaModel:
                    "uni_candidates")
             return out
         return run
+
+    def uni_token_ce(self, S0):
+        """The universal model's last update: each token's cross-entropy at the last step of the batch's first S0
+        sequences [S0, ntok] (token k's prediction of token k + 1; the move token's of the next body)."""
+        c = self.config
+        out = np.empty((S0, (c["img"] // c["patch"]) ** 2 + 2), np.float32)
+        _check(lib().vmc_uni_token_ce(self.handle, S0, _p(out, C.c_float)), "uni_token_ce")
+        return out
 
     def stats(self):
         st = VMCStats()
