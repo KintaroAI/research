@@ -8,7 +8,7 @@ from the model's move prediction (as in its lifetime, no instinct), also for the
 letter by letter from its last 512 letters. Starts: the val windows of eval_predict / char_gpt (8 real pages each).
 
 Measures: (1) greedy continuations against the real text: the share of letters right at each position after the
-context, and the first error's position; (2) continuations sampled at temperature 1, scored by both models
+context, and the first error's position; (2) continuations sampled at temperature 1 (--temp), scored by both models
 teacher-forced (nats per letter), against the real continuations; (3) text samples.
 
     ~/venvs/vm-gpu/bin/python reference/text_dream.py --uni RUN/ckpt_00030000.bin --gpt GPT_RUN/params.pt \\
@@ -160,6 +160,7 @@ def main():
     ap.add_argument("--pages", type=int, default=4, help="pages generated (64 letters each)")
     ap.add_argument("--samples", type=int, default=3, help="texts printed")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--temp", type=float, default=1.0, help="the samples' temperature (both models)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("-o", "--out", required=True)
     args = ap.parse_args()
@@ -199,10 +200,10 @@ def run(args):
     # the real continuations: the G pages after each window
     real = np.stack([world.codes[(i0 + np.arange(L * page, (L + G) * page)) % len(world.codes)]
                      for i0 in window_offsets(cfg, wv, pick, L, page)])
-    res = dict(uni=args.uni, gpt=args.gpt, windows=len(codes), pages=G, torch_vs_reference=err)
+    res = dict(uni=args.uni, gpt=args.gpt, windows=len(codes), pages=G, temp=args.temp, torch_vs_reference=err)
     gens = {}
-    for name, f in (("uni", lambda mode: uni_generate(uni, codes, lev, G, mode, gen)),
-                    ("gpt", lambda mode: gpt_generate(P, m, codes, n, mode, gen))):
+    for name, f in (("uni", lambda mode: uni_generate(uni, codes, lev, G, mode, gen, args.temp)),
+                    ("gpt", lambda mode: gpt_generate(P, m, codes, n, mode, gen, args.temp))):
         for mode in ("greedy", "sample"):
             gens[name, mode] = f(mode)
         right = gens[name, "greedy"] == real

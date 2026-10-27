@@ -1,7 +1,7 @@
 # Task 00041: Self-Forcing in the Text World (experiment vm-00034)
 
 **Date:** 2026-10-27
-**Status:** In progress
+**Status:** Complete (results in vm-00034)
 
 ## Context
 
@@ -26,3 +26,13 @@
 - Val nats per letter every 10k (`eval_predict.py --env-set split=val --env-set tile=true`), best and at 100k.
 - Generation at each arm's best checkpoint (`reference/text_dream.py`, seed 1): greedy continuation against the truth,
   samples judged by the classical GPT (vm-00033's).
+
+## Results (vm-00034)
+
+- Prediction (the expectation was wrong): val nats per letter better at every checkpoint of every seed; best
+  1.703–1.714 against 1.718–1.745 (now level with the classical GPT on the same data, 1.696–1.716); less overfitting
+  at 100k (1.903–1.949 against 1.940–2.019). A denoising regularizer.
+- Generation (the expectation was right): samples worse, 2.67 nats per letter under GPT at temperature 1 (baseline
+  1.67), mostly a flatter distribution but not only: at matched sharpness still 0.06–0.09 worse; greedy first letter
+  right 0.38 against 0.47. `text_dream.py --temp` added.
+- Not a default: in text it trades generation for prediction, in the circle world behaviour did not improve.
