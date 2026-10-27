@@ -1,6 +1,6 @@
 {
   "name": "T_text_C",
-  "description": "Task 00033, arm C (the one-hot control): the universal model (unchanged) in the text world, one letter per token, each letter drawn as a one-hot glyph: a 9x9 cell (81 values) with pixel k bright for letter k of the 65; 72x72 pages of 8x8 letters, 64 letters per step, 512 in the context; W_in . one-hot = one column per letter (an embedding table). bins=2 (the values are 0 or 1). Drives constant 0, moves ignored, no instinct, memory U.",
+  "description": "Task 00033, arm C (the one-hot control): the universal model (unchanged) in the text world, one letter per token, each letter drawn as a one-hot glyph: a 9x9 cell (81 values) with pixel k bright for letter k of the 65; 72x72 pages of 8x8 letters, 64 letters per step, 512 in the context; W_in . one-hot = one column per letter (an embedding table). bins=2 (the values are 0 or 1). Drives constant 0, moves ignored, no instinct, memory U. Bin-embedding input (model.in_bins=1, task 00036 / vm-00030): the default since 2026-10-26.",
   "env": {
     "kind": "text",
     "size": 72,
@@ -21,7 +21,8 @@
     "ctx": 8,
     "patch": 9,
     "img": 72,
-    "pred_img": 8
+    "pred_img": 8,
+    "in_bins": 1
   },
   "online": {
     "actor": "self",

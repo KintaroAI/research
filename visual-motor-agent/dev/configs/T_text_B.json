@@ -1,6 +1,6 @@
 {
   "name": "T_text_B",
-  "description": "Task 00032, arm B: the universal model (unchanged) in the text world, one letter per token: Tiny Shakespeare as 16x16 grey pages of 8x8 letters, each letter a 2x2 block of its grey level (letter k of the 65 at round(k*255/64)); 64 letters per step, 512 in the context; bins=256 so that every grey level is a bin centre (a value's prediction is a softmax over letters). Drives constant 0, moves ignored, no instinct, memory U.",
+  "description": "Task 00032, arm B: the universal model (unchanged) in the text world, one letter per token: Tiny Shakespeare as 16x16 grey pages of 8x8 letters, each letter a 2x2 block of its grey level (letter k of the 65 at round(k*255/64)); 64 letters per step, 512 in the context; bins=256 so that every grey level is a bin centre (a value's prediction is a softmax over letters). Drives constant 0, moves ignored, no instinct, memory U. Bin-embedding input (model.in_bins=1, task 00036 / vm-00030): the default since 2026-10-26.",
   "env": {
     "kind": "text",
     "size": 16,
@@ -20,7 +20,8 @@
     "ctx": 8,
     "patch": 2,
     "img": 16,
-    "pred_img": 8
+    "pred_img": 8,
+    "in_bins": 1
   },
   "online": {
     "actor": "self",

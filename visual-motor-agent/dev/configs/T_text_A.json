@@ -1,6 +1,6 @@
 {
   "name": "T_text_A",
-  "description": "Task 00032, arm A: the universal model (unchanged) in the text world, 64 letters in one token (as 64 pixels): Tiny Shakespeare as 8x8 grey pages, one pixel per letter, the page's 64 consecutive letters row by row in the one patch token; 512 letters in the context; bins=256. Drives constant 0, moves ignored, no instinct, memory U.",
+  "description": "Task 00032, arm A: the universal model (unchanged) in the text world, 64 letters in one token (as 64 pixels): Tiny Shakespeare as 8x8 grey pages, one pixel per letter, the page's 64 consecutive letters row by row in the one patch token; 512 letters in the context; bins=256. Drives constant 0, moves ignored, no instinct, memory U. Bin-embedding input (model.in_bins=1, task 00036 / vm-00030): the default since 2026-10-26.",
   "env": {
     "kind": "text",
     "size": 8,
@@ -20,7 +20,8 @@
     "ctx": 8,
     "patch": 8,
     "img": 8,
-    "pred_img": 8
+    "pred_img": 8,
+    "in_bins": 1
   },
   "online": {
     "actor": "self",

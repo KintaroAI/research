@@ -1,6 +1,6 @@
 {
   "name": "U_universal",
-  "description": "The universal model (ARCHITECTURE.md, tasks 00023-00024) and its world, the defaults for universal-model experiments: 8x8 grayscale patch tokens (one channel), 32 bins, fully causal next-token prediction, one head, nothing detached; acting by its own move prediction plus the hunger instinct (16 candidates), no babbling, no command; memory U. The world: a continual torus in grayscale, food (a solid disc) relieves hunger on a click, poison (a checkerboard disc) adds 0.5 on a click, contact costs nothing, slow hunger, 8 moving grey dots.",
+  "description": "The universal model (ARCHITECTURE.md, tasks 00023-00024) and its world, the defaults for universal-model experiments: 8x8 grayscale patch tokens (one channel), 32 bins, fully causal next-token prediction, one head, nothing detached; acting by its own move prediction plus the hunger instinct (16 candidates), no babbling, no command; memory U. The world: a continual torus in grayscale, food (a solid disc) relieves hunger on a click, poison (a checkerboard disc) adds 0.5 on a click, contact costs nothing, slow hunger, 8 moving grey dots. Bin-embedding input (model.in_bins=1, task 00036 / vm-00030): the default since 2026-10-26.",
   "env": {
     "bonuses": false,
     "drives": true,
@@ -28,7 +28,8 @@
     "universal": 1,
     "bins": 32,
     "gray": 1,
-    "ctx": 8
+    "ctx": 8,
+    "in_bins": 1
   },
   "online": {
     "actor": "self",

@@ -60,7 +60,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     divide `img`). `eval_predict.py` scores any world's held-out prediction (nats per value; text: per letter);
     `reference/char_gpt.py` (run with `~/venvs/vm-gpu/bin/python`) is the classical character-level GPT on the same
     windows. `model.in_bins = 1` (task 00036, vm-00030): bin-embedding input, `W_in` d x (V * bins) over each used value's
-    two-hot bins (init 0.02), in C++, CUDA and the reference; header slot 43. The corpus is read from `../llm-fundamentals/dev/data/tinyshakespeare/input.txt` (`./venv/bin/python prepare_tinyshakespeare.py` there downloads it). The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
+    two-hot bins (init 0.02), in C++, CUDA and the reference; header slot 43. Set in every universal config since task 00037 (vm-00031: with surprise-gated memory no 500k-tick life was trapped). The corpus is read from `../llm-fundamentals/dev/data/tinyshakespeare/input.txt` (`./venv/bin/python prepare_tinyshakespeare.py` there downloads it). The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
     holds each candidate for H steps, imagined by the model (`online.uni_lookahead`, Jacobi decoding); it costs
     (H − 1)·J + 1 forward passes per tick. `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
     bin instead of the mean; imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps
