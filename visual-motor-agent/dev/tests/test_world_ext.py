@@ -218,3 +218,59 @@ def test_gray_and_checker_hazard(wrap):
     assert (ci[hz & ~even] == np.array(cfg.bg_color, np.uint8)).all()
     assert hz.sum() > 50
 
+
+
+TOUCH = dataclasses.replace(RICH, target_speed=0.0, h_rate=0.001, hazard_cost=0.0, hazard_click_add=0.5, wrap=True,
+                            touch=True)
+
+
+def test_touch_food_and_poison_act_on_contact():
+    """env.touch (task 00042): contact alone relieves (food) or poisons (a hazard); both are replaced away from the
+    cursor; a click changes nothing."""
+    env = CircleWorld(4, TOUCH, seed=7)
+    base = dict(hunger=np.full(4, 0.3), target=np.full((4, 2), 50.0), radius=np.full(4, 9.0),
+                hz_pos=np.tile([[16.0, 16.0], [40.0, 16.0]], (4, 1, 1)), hz_rad=np.full((4, 2), 6.0))
+    # cursors: in the food (no click), in hazard 0 (no click), in hazard 0 (click), on the background
+    env.set_state(dict(base, cursor=np.array([[50.0, 50.0], [16.2, 16.2], [16.2, 16.2], [30.0, 40.0]])))
+    old_t, old_h = env.target.copy(), env.hz_pos.copy()
+    _, _, _, info = env.step(np.array([[0, 0, 0], [0, 0, 0], [0, 0, 1], [0, 0, 0]], float))
+    np.testing.assert_array_equal(info["success"], [True, False, False, False])
+    np.testing.assert_array_equal(info["gt_hazard_click"], [False, True, True, False])
+    np.testing.assert_allclose(env.hunger, [0.0, 0.801, 0.801, 0.301])
+    assert (np.abs(env.target[0] - old_t[0]).sum() > 0) and (env.target[1:] == old_t[1:]).all()
+    for i in (1, 2):   # hazard 0 replaced, away from the cursor, radius in range; hazard 1 only moved
+        assert np.abs(env.hz_pos[i, 0] - old_h[i, 0]).sum() > 2 * TOUCH.hazard_speed
+        d = np.linalg.norm(((env.cursor[i] - env.hz_pos[i, 0]) + 32.0) % 64.0 - 32.0)
+        assert d > env.hz_rad[i, 0] and TOUCH.hazard_radius_min <= env.hz_rad[i, 0] <= TOUCH.hazard_radius_max
+        assert np.linalg.norm(env.hz_pos[i, 1] - old_h[i, 1]) <= TOUCH.hazard_speed + 1e-9
+    _, _, _, info = env.step(np.zeros((4, 3)))       # nobody is inside anything any more
+    assert not info["success"].any() and not info["gt_hazard_click"].any()
+
+
+def test_without_touch_contact_does_nothing():
+    cfg = dataclasses.replace(TOUCH, touch=False)
+    env = CircleWorld(2, cfg, seed=8)
+    env.set_state(dict(hunger=np.full(2, 0.3), target=np.full((2, 2), 50.0), radius=np.full(2, 9.0),
+                       hz_pos=np.tile([[16.0, 16.0], [40.0, 16.0]], (2, 1, 1)), hz_rad=np.full((2, 2), 6.0),
+                       cursor=np.array([[50.0, 50.0], [16.2, 16.2]])))
+    old_t = env.target.copy()
+    _, _, _, info = env.step(np.zeros((2, 3)))
+    assert not info["success"].any() and not info["gt_hazard_click"].any()
+    np.testing.assert_allclose(env.hunger, 0.301)
+    np.testing.assert_array_equal(env.target, old_t)
+    with pytest.raises(ValueError):
+        EnvConfig(touch=True).validate()
+
+
+def test_touch_state_round_trip():
+    env = CircleWorld(8, TOUCH, seed=9)
+    rng = np.random.default_rng(3)
+    for _ in range(50):
+        env.step(random_actions(rng, 8))
+    st = env.get_state()
+    acts = [random_actions(rng, 8) for _ in range(200)]
+    first = [env.step(a)[0]["image"] for a in acts]
+    env.set_state(st)
+    second = [env.step(a)[0]["image"] for a in acts]
+    for x, y in zip(first, second):
+        np.testing.assert_array_equal(x, y)

@@ -23,7 +23,7 @@ Step order (per env)
 1. Move:   cursor = clip(cursor + [dx, dy] * max_step_px, 0, size - 1e-4);
            disp = actual displacement (0 when pushing into an edge).
 2. Hit:    inside = (x-cx)^2 + (y-cy)^2 <= r^2 at the new position, and the
-           target is alive; success = click & inside; empty = click & ~success.
+           target is alive; success = click & inside (touch: inside); empty = click & ~success.
 3. Reward: success_reward * success - step_cost
            + movement / empty-click bonuses        (bonuses=True)
            - hunger_cost * hunger_before_step      (drives=True)
@@ -155,6 +155,9 @@ class EnvConfig:
                                         # (no walls); hit tests use the wrap-around distance
     egocentric: bool = False            # (needs wrap) the view is centered on the cursor: moving shifts the scene,
                                         # the cursor stays drawn at the center
+    touch: bool = False                 # (task 00042) food and poison act on contact, no click needed: the cursor
+                                        # inside the circle is a success; inside a hazard it applies hazard_click /
+                                        # hazard_click_add and that hazard is replaced by a new one away from the cursor
 
     def __post_init__(self) -> None:
         # Colors loaded from JSON arrive as lists; store tuples (hashable, comparable).
@@ -210,6 +213,8 @@ class EnvConfig:
             raise ValueError(f"hazards must be an integer >= 0, got {self.hazards!r}")
         if self.egocentric and not self.wrap:
             raise ValueError("egocentric needs wrap")
+        if self.touch and not self.respawn:
+            raise ValueError("touch needs respawn")
         if self.hazards and not 0 < self.hazard_radius_min <= self.hazard_radius_max <= self.size / 2:
             raise ValueError("need 0 < hazard_radius_min <= hazard_radius_max <= size/2")
         for name in _COLOR_FIELDS:
@@ -706,6 +711,29 @@ class CircleWorld:
                 ang = 2.0 * np.pi * g.random()
                 self.target_vel[i] = cfg.target_speed * np.array([np.cos(ang), np.sin(ang)])
 
+    def _respawn_hazards(self, hit: np.ndarray) -> None:
+        """New hazards where hit (N, H) bool (touch): radius, center and direction from the env's hazard generator,
+        the center resampled until the cursor is outside."""
+        cfg = self.config
+        size = float(cfg.size)
+        for i, k in zip(*np.nonzero(hit)):
+            g = self._hz_rngs[i]
+            for _ in range(1000):
+                u = g.random(4)
+                r = cfg.hazard_radius_min + (cfg.hazard_radius_max - cfg.hazard_radius_min) * u[0]
+                if cfg.wrap:
+                    cx, cy = size * u[1], size * u[2]
+                    ddx, ddy = wrap_delta(self.cursor[i, 0], cx, size), wrap_delta(self.cursor[i, 1], cy, size)
+                else:
+                    cx, cy = r + (size - 2 * r) * u[1], r + (size - 2 * r) * u[2]
+                    ddx, ddy = self.cursor[i, 0] - cx, self.cursor[i, 1] - cy
+                if ddx * ddx + ddy * ddy > r * r:
+                    break
+            self.hz_rad[i, k] = r
+            self.hz_pos[i, k] = (cx, cy)
+            ang = 2.0 * np.pi * u[3]
+            self.hz_vel[i, k] = cfg.hazard_speed * np.array([np.cos(ang), np.sin(ang)])
+
     # ------------------------------------------------------------ observation
     def observe(self) -> Dict[str, np.ndarray]:
         """Observation of the current state: {'image': (N,S,S,3) uint8, 'drives': (N,2) float32}."""
@@ -772,14 +800,15 @@ class CircleWorld:
             ddx = new[:, 0] - self.target[:, 0]
             ddy = new[:, 1] - self.target[:, 1]
         inside = (ddx * ddx + ddy * ddy <= self.radius * self.radius) & self.target_alive
-        success = click & inside
+        success = (click | cfg.touch) & inside         # touch: contact alone
         empty = click & ~success
         if cfg.hazards:   # inside any hazard, at the new position
             hdx = new[:, None, 0] - self.hz_pos[..., 0]
             hdy = new[:, None, 1] - self.hz_pos[..., 1]
             if cfg.wrap:
                 hdx, hdy = wrap_delta(hdx, 0.0, float(cfg.size)), wrap_delta(hdy, 0.0, float(cfg.size))
-            in_hazard = (hdx * hdx + hdy * hdy <= self.hz_rad * self.hz_rad).any(1)
+            hz_hit = hdx * hdx + hdy * hdy <= self.hz_rad * self.hz_rad      # (N, H)
+            in_hazard = hz_hit.any(1)
         else:
             in_hazard = np.zeros(n, dtype=bool)
 
@@ -802,7 +831,7 @@ class CircleWorld:
         self.clicks += click
         self.path_length += disp
         self.hunger = np.clip(self.hunger + cfg.h_rate - cfg.h_relief * success + cfg.hazard_cost * in_hazard, 0.0, 1.0)
-        poison = click & in_hazard if (cfg.hazard_click >= 0 or cfg.hazard_click_add > 0) else None
+        poison = (click | cfg.touch) & in_hazard if (cfg.hazard_click >= 0 or cfg.hazard_click_add > 0) else None
         if poison is not None and cfg.hazard_click >= 0:   # a click inside a hazard: hunger is set (it wins over relief)
             self.hunger = np.where(poison, cfg.hazard_click, self.hunger)
         if poison is not None and cfg.hazard_click_add > 0:   # or raised (after relief)
@@ -842,12 +871,14 @@ class CircleWorld:
             self.hz_vel = np.where(low | high, -self.hz_vel, self.hz_vel)
             self.hz_pos = np.clip(p, lo_, hi_)
 
-        # 5. A hit target disappears, or is replaced at once (respawn).
+        # 5. A hit target disappears, or is replaced at once (respawn); with touch, so is a touched hazard.
         if cfg.respawn:
             if success.any():
                 self._respawn(np.flatnonzero(success))
         else:
             self.target_alive &= ~success
+        if cfg.touch and cfg.hazards and in_hazard.any():
+            self._respawn_hazards(hz_hit)
 
         # 6. Termination.
         done = (success & cfg.end_on_success) | (self.t >= cfg.max_steps)
