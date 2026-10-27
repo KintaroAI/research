@@ -1,8 +1,8 @@
 # vm-00033: Predicting the Future in the Text World
 
 **Date:** 2026-10-27
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00033`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00033` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00033/`
 **Task plan:** [`../tasks/00040-text-dream.md`](../tasks/00040-text-dream.md)
 
