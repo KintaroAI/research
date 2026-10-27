@@ -1621,16 +1621,23 @@ __global__ void k_uni_probs(float* lg, float* val, long n, int K) {
     }
 }
 
-// Step t's values of S sequences of T frames as the most probable bin's centre (the instinct's sharp decoding, task
-// 00029): prob [S*T*ntV, K] (k_uni_probs' probabilities) -> out [S, ntV].
-__global__ void k_uni_mode_step(const float* prob, float* out, int S, int T, int t, int ntV, int K) {
+// Step t's values of S sequences of T frames, sharp (task 00029): prob [S*T*ntV, K] (k_uni_probs' probabilities) ->
+// out [S, ntV]. mode 1: the most probable bin's centre. mode 2 ("pair", task 00038): the most probable bin and its more
+// probable neighbour, their probability-weighted centre (a two-hot value decodes exactly; distinct values still choose).
+__global__ void k_uni_mode_step(const float* prob, float* out, int S, int T, int t, int ntV, int K, int mode) {
     const long n = (long)S * ntV;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const long s = i / ntV, j = i % ntV;
         const float* p = prob + ((s * T + t) * (long)ntV + j) * K;
         int best = 0;
         for (int b = 1; b < K; b++) if (p[b] > p[best]) best = b;
-        out[i] = (float)best / (K - 1);
+        if (mode == 2) {
+            const int nb = best == 0 ? 1 : best == K - 1 ? K - 2 : (p[best + 1] > p[best - 1] ? best + 1 : best - 1);
+            const float w = p[best] + p[nb];
+            out[i] = w > 0.f ? (p[best] * best + p[nb] * nb) / (w * (K - 1)) : (float)best / (K - 1);
+        } else {
+            out[i] = (float)best / (K - 1);
+        }
     }
 }
 
@@ -2069,7 +2076,7 @@ int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const flo
                          const uint8_t* ep_start, int t, int mode, float* values_t, float* next_body) {
     Model* M = (Model*)h;
     const Dims& D = M->D;
-    if (!D.uni || t < 0 || t >= T) return -1;
+    if (!D.uni || t < 0 || t >= T || mode < 0 || mode > 2) return -1;
     std::vector<float> zero((size_t)S * T, 0.f);
     if (upload_inputs(M, S, T, images, drives, actions, zero.data(), ep_start, actions)) return -1;
     if (run_uni(M, nullptr, false, true)) return -1;
@@ -2077,7 +2084,7 @@ int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const flo
     const size_t row = (size_t)nt * V * sizeof(float);
     if (mode) {
         float* mv = M->u_mode.get((size_t)S * nt * V);
-        k_uni_mode_step<<<GRID((long)S * nt * V)>>>(M->u_log.p, mv, S, T, t, nt * V, D.nbin);
+        k_uni_mode_step<<<GRID((long)S * nt * V)>>>(M->u_log.p, mv, S, T, t, nt * V, D.nbin, mode);
         CK(cudaGetLastError());
         CK(cudaMemcpy(values_t, mv, (size_t)S * row, cudaMemcpyDeviceToHost));
     } else {

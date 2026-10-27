@@ -189,3 +189,63 @@ def test_gpu_mode_decoding_matches_the_reference():
         online.uni_lookahead(agent, img, drv, act, es, cand, 3, decode="mode")
     m.close()
     agent.close()
+
+
+def pair_decode(p):
+    """The reference of 'pair' decoding (task 00038): probabilities [..., K] -> the most probable bin and its more
+    probable neighbour, their probability-weighted centre."""
+    K = p.shape[-1]
+    b = p.argmax(-1)
+    lo, hi = np.take_along_axis(p, np.maximum(b - 1, 0)[..., None], -1)[..., 0], \
+        np.take_along_axis(p, np.minimum(b + 1, K - 1)[..., None], -1)[..., 0]
+    nb = np.where(b == 0, 1, np.where(b == K - 1, K - 2, np.where(hi > lo, b + 1, b - 1)))
+    pb, pn = np.take_along_axis(p, b[..., None], -1)[..., 0], np.take_along_axis(p, nb[..., None], -1)[..., 0]
+    return (pb * b + pn * nb) / ((pb + pn) * (K - 1))
+
+
+def test_pair_decoding_recovers_two_hot_values():
+    """A two-hot distribution decodes to its own value (mode would give the nearest bin centre); a mixture of two
+    distinct values chooses the more probable one."""
+    K = 32
+    v = np.array([0.0, 21 / 255, 94 / 255, 0.5, 1.0])
+    x = v * (K - 1)
+    lo = np.floor(x).astype(int)
+    p = np.zeros((len(v), K))
+    p[np.arange(len(v)), lo] = 1 - (x - lo)
+    p[np.arange(len(v)), np.minimum(lo + 1, K - 1)] += x - lo
+    np.testing.assert_allclose(pair_decode(p), v, atol=1e-12)
+    q = 0.4 * p[1] + 0.6 * p[2]                     # background 21 or circle 94: the circle, exactly
+    np.testing.assert_allclose(pair_decode(q), 94 / 255, atol=1e-12)
+
+
+def test_gpu_pair_decoding_matches_the_reference():
+    """mode=2: the GPU's 'pair' values equal the reference formula on the PyTorch reference's probabilities; the
+    lookahead accepts decode='pair' (the GPU only); other modes are refused."""
+    torch = pytest.importorskip("torch")
+    cuda_lib = pytest.importorskip("cuda_lib")
+    if not cuda_lib.available() or not cuda_lib.has("vmc_forward_uni_step"):
+        pytest.skip("libvmcuda.so with vmc_forward_uni_step not available")
+    from reference import torch_reference as ref
+    for in_bins in (0, 1):
+        agent = agent_lib.Agent(dict(SMALL_UNI, gray=1, in_bins=in_bins), seed=3)
+        c = agent.config
+        m = cuda_lib.CudaModel(agent)
+        img, drv, act, es, cand = windows(c, 3, 5, 4, 6)
+        P = ref.params_from_flat(agent.params(), agent.param_layout(), c, dtype=torch.float64)
+        with torch.no_grad():
+            lg = ref.forward_uni(P, c, img, drv, act, es)["logits"]      # [S, T*nt, V, K]
+        nt, V, K = ref.uni_dims(c)
+        want = pair_decode(torch.softmax(lg, -1).numpy().reshape(3, 5, nt, V, K))
+        for t in (0, 4):
+            got = m.forward_uni_step(img, drv, act, es, t, mode=2)["values_t"]
+            assert (np.abs(got - want[:, t]) > 1e-5).mean() < 1e-3            # (near-ties aside)
+            mean = m.forward_uni_step(img, drv, act, es, t, mode=0)["values_t"]
+            assert not np.allclose(got, mean)
+        h = online.uni_lookahead(m, img, drv, act, es, cand, 3, decode="pair")
+        assert h.shape == (3, 4) and np.isfinite(h).all()
+        with pytest.raises(RuntimeError):
+            m.forward_uni_step(img, drv, act, es, 0, mode=3)
+        with pytest.raises(ValueError):
+            online.uni_lookahead(agent, img, drv, act, es, cand, 3, decode="pair")
+        m.close()
+        agent.close()

@@ -269,8 +269,9 @@ class CudaModel:
         return out
 
     def forward_uni_step(self, images, drives, actions, ep_start, t, mode=False):
-        """forward_uni's values of step t only, values_t [S, ntok, V] (mode: each value's most probable bin centre
-        instead of the expectation), and next_body [S, T, 2] (task 00029)."""
+        """forward_uni's values of step t only, values_t [S, ntok, V], and next_body [S, T, 2] (task 00029). mode: 0
+        (False) each value's expectation, 1 (True) its most probable bin's centre, 2 ("pair", task 00038) the most
+        probable bin and its more probable neighbour, weighted by their probabilities."""
         img = np.ascontiguousarray(images, np.uint8)
         S, T = img.shape[:2]
         c = self.config

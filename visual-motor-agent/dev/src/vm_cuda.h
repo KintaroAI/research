@@ -55,7 +55,7 @@ int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* d
 // step. Computes only the move token, against the forward pass's cached keys and values.
 int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger);
 // As vmc_forward_uni, but returning only step t's values, values_t [S, ntok, V] (mode = 0: the expected values; 1: the
-// most probable bin's centre), and the expected next bodies [S, T, 2] (the instinct's lookahead, task 00029).
+// most probable bin's centre; 2: the most probable bin and its more probable neighbour, weighted: task 00038), and the expected next bodies [S, T, 2] (the instinct's lookahead, task 00029).
 int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
                          const uint8_t* ep_start, int t, int mode, float* values_t, float* next_body);
 // The universal model's last update: each token's cross-entropy (its mean over the used values of the token it

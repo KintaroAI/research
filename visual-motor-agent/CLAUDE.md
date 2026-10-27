@@ -63,7 +63,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     two-hot bins (init 0.02), in C++, CUDA and the reference; header slot 43. Set in every universal config since task 00037 (vm-00031: with surprise-gated memory no 500k-tick life was trapped). The corpus is read from `../llm-fundamentals/dev/data/tinyshakespeare/input.txt` (`./venv/bin/python prepare_tinyshakespeare.py` there downloads it). The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
     holds each candidate for H steps, imagined by the model (`online.uni_lookahead`, Jacobi decoding); it costs
     (H − 1)·J + 1 forward passes per tick. `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
-    bin instead of the mean; imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps
+    bin instead of the mean (its bin centres are not the world's grey levels: use `pair`, task 00038, the most probable
+    bin and its more probable neighbour, weighted: sharp, and exact for two-hot values); imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps
     the frozen test affordable.
     Speed (task 00026): the instinct's candidates reuse the policy pass's keys and values (`CudaModel.uni_candidates`),
     the universal model's batches carry no next frames, and `lifetime.py` reads the update's stats every

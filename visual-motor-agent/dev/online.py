@@ -445,17 +445,23 @@ def uni_frame(cfg, pv):
     return np.repeat(x, 3, -1) if ch == 1 else x
 
 
+# imagined pixels: the expected value, the most probable bin's centre, or the most probable two-hot pair (task 00038)
+DECODE = dict(mean=0, mode=1, pair=2)
+
+
 def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
     """The instinct's horizon (task 00029): each candidate move sequence cand [N, M, H, 3] (or [N, M, 3]: one move held
     for H steps) made from the end of the windows [N, T, ...] (act's last step ignored), and the model's predicted
     hunger after the H-th move [N, M]. The window keeps its last ctx - (H - 1) real steps; each imagined step's body is
     the previous move token's predicted next body, its patches are decoded from the model's own expected values by J
     Jacobi iterations from the current frame (J = patches + 1: exactly sequential decoding). decode: each imagined
-    pixel the expected value ("mean") or the most probable bin's centre ("mode", sharp; the GPU only)."""
-    if decode not in ("mean", "mode"):
-        raise ValueError("decode must be 'mean' or 'mode'")
-    if decode == "mode" and not hasattr(model, "forward_uni_step"):
-        raise ValueError("decode='mode' needs the GPU model (CudaModel.forward_uni_step)")
+    pixel the expected value ("mean"), the most probable bin's centre ("mode", sharp) or the most probable bin and its
+    more probable neighbour, weighted ("pair": sharp, but a two-hot value exactly; task 00038); the last two on the GPU
+    only."""
+    if decode not in DECODE:
+        raise ValueError("decode must be one of %s" % ", ".join(DECODE))
+    if decode != "mean" and not hasattr(model, "forward_uni_step"):
+        raise ValueError("decode='%s' needs the GPU model (CudaModel.forward_uni_step)" % decode)
     c = model.config
     N, T = img.shape[:2]
     M = cand.shape[1]
@@ -480,7 +486,7 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
         if st < 0:
             return model.forward_uni(*x, values=False, move_probs=False, next_body=True)
         if hasattr(model, "forward_uni_step"):   # the GPU: only step st's values come back
-            return model.forward_uni_step(*x, st, mode=decode == "mode")
+            return model.forward_uni_step(*x, st, mode=DECODE[decode])
         o = model.forward_uni(*x, values=True, move_probs=False, next_body=True)
         return dict(values_t=o["values"][:, st], next_body=o["next_body"])
 
@@ -678,7 +684,7 @@ def main():
     ap.add_argument("--eval-worlds", type=int, default=32, help="with --eval: the forage test's worlds")
     ap.add_argument("--eval-horizon", type=int, default=None,
                     help="universal model: the instinct's horizon in the frozen tests (default: the run's)")
-    ap.add_argument("--eval-decode", default=None, choices=["mean", "mode"],
+    ap.add_argument("--eval-decode", default=None, choices=["mean", "mode", "pair"],
                     help="universal model: how the lookahead decodes imagined frames (default: the run's)")
     ap.add_argument("--eval-device", default="cpu", choices=["cpu", "cuda"],
                     help="with --eval: run the forward passes on the GPU (libvmcuda.so; same outputs to float precision)")
