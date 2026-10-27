@@ -1,8 +1,8 @@
 # vm-00032: Self-Forcing — Training on the Model's Own Predictions
 
 **Date:** 2026-10-27
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00032`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00032` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00032/`
 **Task plan:** [`../tasks/00039-self-forcing.md`](../tasks/00039-self-forcing.md)
 
