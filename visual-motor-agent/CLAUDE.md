@@ -48,7 +48,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     with and without a click on copies of the world, and the prediction is read from its last 1, 2, 4 and ctx steps.
     `env.touch` (task 00042, needs `respawn`): food and poison act on contact, no click, and a touched poison is
     replaced away from the cursor (`configs/U_touch.json`, smaller food; a random walk touches 4.7 food and 11.8 poison
-    per 1k).
+    per 1k; `forage_chance.py`: blind walks, food : poison at most 0.78; vm-00035).
   - **The universal model** (task 00023, `../ARCHITECTURE.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
     channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,

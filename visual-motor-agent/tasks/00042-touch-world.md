@@ -1,7 +1,7 @@
 # Task 00042: The Touch World — Collect and Avoid by Moving Alone (experiment vm-00035)
 
 **Date:** 2026-10-27
-**Status:** In progress
+**Status:** Complete (results in vm-00035)
 
 ## Context
 
@@ -44,5 +44,15 @@
 ## Verification
 
 - World tests: contact without a click relieves hunger and respawns the food; contact with a hazard applies the poison
-  and moves the hazard away from the cursor (radius within range); with `touch = false` the world is unchanged (a
-  random action sequence gives the same frames and drives as before the change); state round trip with `touch`.
+  and moves the hazard away from the cursor (radius within range); without `touch` contact does nothing (and the
+  existing world tests pass unchanged); state round trip with `touch`.
+
+## Results (vm-00035)
+
+- Implemented and tested (`tests/test_world_ext.py`: contact food and poison, the poison replaced away from the
+  cursor, no effect without touch, state round trip); `forage_chance.py` for blind walks (food : poison at most 0.78).
+- Frozen at 100k, every arm steers above chance, most with the 4-step pair lookahead (all 9 runs). Mean decoding gains
+  nothing over one step. Self-forcing cuts the pair lookahead's poison: 10.7 per 1k (TB) → 5.8 (TSF) → 3.0 (TSF4),
+  food ~20 in all; its dream stays truer (cursor 2.5–3.6 px off after 16 steps against 6.3–14.6).
+- In life, TSF4 (self-forcing + the pair lookahead) cuts its poison from 11–14 to 3.6–5.2 per 1k over the life; TB and
+  TSF (1-step instinct) stay at 7–17. TSF4 costs 11–13 ticks/s (and ~1 next to other jobs on one GPU).
