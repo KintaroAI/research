@@ -1,8 +1,8 @@
 # vm-00034: Self-Forcing in the Text World
 
 **Date:** 2026-10-27
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00034`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00034` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00034/`
 **Task plan:** [`../tasks/00041-text-self-forcing.md`](../tasks/00041-text-self-forcing.md)
 
