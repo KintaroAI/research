@@ -20,8 +20,10 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `dynamics_over_training.py` and `compare_dynamics.py`). `plot_runs.py`: learning curves.
     `record_episodes.py`: GIFs, replay JSON and imagination strips. `make_video.py`: MP4s and
     screenshot sheets across checkpoints (needs dense checkpoints via `train.milestones`).
-    For the universal model: `forage_video.py` (a frozen agent foraging, a sheet every 100 steps) and `dream_video.py`
-    (forage, then the model dreams on its own predictions; `--decode pair` by default).
+    For the universal model: `forage_video.py` (a frozen agent foraging, a sheet every 100 steps; `--horizon` /
+    `--decode` override the run's instinct, `--vs RUN2` adds `compare.mp4`: two agents side by side in the same worlds)
+    and `dream_video.py` (forage, then the model dreams on its own predictions; `--decode pair` by default). Both show
+    touches, not clicks, in the touch world.
   - `plan.py`: CEM planner on the latent dynamics (acting without reward). `analyze_imagination.py`:
     imagined vs real rollouts, read out by retrieval. `analyze_planner.py`: where the planner fails.
     `train.py --set train.actor=planner`: the model learns from the planner's own experience.

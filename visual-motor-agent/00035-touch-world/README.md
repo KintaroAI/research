@@ -85,6 +85,29 @@ Means, 4-step pair: TB 19.9 food / 10.7 poison; TSF 21.0 / 5.8; TSF4 19.7 / 3.0.
 | TSF | 2.5 / 3.1 / 3.6 | 0.049 / 0.074 / 0.120 | 0.922 / 0.923 / 0.917 |
 | TSF4 | 3.6 / 2.8 / 3.2 | 0.034 / 0.022 / 0.053 | 0.932 / 0.919 / 0.904 |
 
+### R5. Videos (made after the tag, with the video scripts as changed since: `make video`)
+
+In `~/data/research/visual-motor-agent/exp_00035/` (not in git):
+
+- **`video_TSF4_s3_vs_TB_s1/compare.mp4`** (1,000 steps, 15 fps): TSF4 seed 3 and TB seed 1 side by side, both
+  frozen at 100k with the 4-step pair lookahead, in the same world (the forage test's world 0); each with its path,
+  touches (green food, red poison) and hunger. `forage.mp4` and `forage_sheet.png` are TSF4 alone. The run's 16 worlds
+  reproduce the frozen test exactly (TSF4 24.1 / 2.9 per 1k, TB 24.3 / 12.9). In world 0: **TSF4 23 food, 2 poison;
+  TB 15 food, 18 poison**, its hunger often at 1.
+- **`video_TSF4_s3/dream_pair.mp4`, `video_TB_s1/dream_pair.mp4`** (200 real steps, then 200 dreamed with the
+  model's own moves, the real world beside it): TB's dream draws the cursor for 2 dreamed steps and never again (no
+  white pixel from step 3 to 200); TSF4's draws one in every dreamed step (9–39 white pixels; the whole real cross
+  has 39), at the wrong place after the first tens of steps. In both, the dreamed food stays where it was after the
+  real one is eaten, the dots fade, and poison drifts on (TSF4's sometimes merging into the food).
+
+What the videos show of the behaviour:
+
+- **TSF4 moves in long, mostly diagonal sweeps** with small zigzags; food is touched along the sweeps, rarely by
+  turning towards it from afar (the gain is avoidance, R2).
+- **TB with the same lookahead** moves in long straight runs and touches poison 18 times in the same 1,000 steps,
+  consistent with R4: a dream that loses the cursor within a few steps cannot show the lookahead a contact 4 steps
+  ahead.
+
 ## Analysis
 
 - **The agent steers, without being rewarded for it.** Every run's own move prediction (instinct off) is near the
@@ -123,4 +146,6 @@ Means, 4-step pair: TB 19.9 food / 10.7 poison; TSF 21.0 / 5.8; TSF4 19.7 / 3.0.
 
 - TB4 (the pair lookahead in life without self-forcing): the missing control for R3.
 - Seeking: a longer horizon or more candidate paths (the lookahead sees 16–23 px), at its cost (TSF4 11–13 ticks/s).
-- The touch world with moving food (`env.target_speed`) and a dream video of TSF4 avoiding poison.
+- The touch world with moving food (`env.target_speed`).
+- The dream keeps eaten food: the model does not predict a touched circle disappearing over many steps. Self-forcing
+  with longer dreamed stretches (`sf_steps` > 3) may.

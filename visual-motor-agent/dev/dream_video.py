@@ -59,9 +59,11 @@ def run(args):
     rec = []
     pending = dict(kind=None, cursor=env.cursor[0].copy(), dkind=None)   # the last move's outcome, shown with its frame
 
+    touch = env.config.touch                # the touch world: a click does nothing, so clicks are not shown
+
     def outcome(inf):
         return ("food" if inf["success"][0] else "poison" if inf.get("gt_hazard_click", [False])[0]
-                else "empty" if inf["click"][0] else None)
+                else "empty" if inf["click"][0] and not touch else None)
     # 1. forage: the agent acts (instinct on); the right view shows the model's prediction of each frame
     for t in range(args.real):
         cur = dict(img=obs["image"], drv=obs["drives"], pa=prev_a, cmd=np.zeros(1, np.float32), es=es,
@@ -76,7 +78,7 @@ def run(args):
                         real_h=float(obs["drives"][0, 0]), pred_h=float(pred["next_body"][0, -2, 0]) if len(win) > 1
                         else float("nan"), **pending))
         obs, _, _, inf = env.step(a)
-        pending = dict(kind=outcome(inf), cursor=inf["gt_cursor"][0].copy(), dkind="click" if a[0, 2] > 0.5 else None)
+        pending = dict(kind=outcome(inf), cursor=inf["gt_cursor"][0].copy(), dkind="click" if a[0, 2] > 0.5 and not touch else None)
         hist = (hist + [cur])[-(L - 1):]
         prev_a, es = executed_action(a), np.zeros(1, np.uint8)
     # 2. dream: the window is the last ctx steps (real ones first); each new step is the model's own prediction
@@ -109,7 +111,7 @@ def run(args):
         act[0, -1] = sample_move(probs, rng)
         rec.append(dict(phase="dream", real=obs["image"][0], pred=img[0, -1].copy(), real_h=float(obs["drives"][0, 0]),
                         pred_h=float(drv[0, -1, 0]), kind=outcome(inf), cursor=inf["gt_cursor"][0].copy(),
-                        dkind="click" if real_a[0, 2] > 0.5 else None, iters=it + 1))
+                        dkind="click" if real_a[0, 2] > 0.5 and not touch else None, iters=it + 1))
     return rec
 
 

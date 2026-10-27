@@ -10,6 +10,8 @@
 #   make tsf4     — TSF4: self-forcing with the 4-step pair lookahead in life (seeds 1-2 on the 4090, 3 on the 3090;
 #                   run it alone: next to other jobs on one GPU it slows to ~1 tick/s)
 #   make analysis — frozen forage tests at 100k (instinct off, 1-step, 4-step mean, 4-step pair) and the dream curve
+#   make video    — TSF4 s3 vs TB s1 foraging side by side (4-step pair lookahead, 1,000 steps) and both dreaming
+#                   (needs dev/ after the tag: forage_video.py --vs and the touch-world labels came after it)
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -20,7 +22,7 @@ SF = --set online.sf_windows=8 --set online.sf_steps=3 --set online.sf_jacobi=2
 H4 = --set online.instinct_h=4 --set online.instinct_decode=pair
 F = --eval-device cuda --eval-tests forage --eval-worlds 16
 
-.PHONY: all chance runs tsf4 analysis
+.PHONY: all chance runs tsf4 analysis video
 
 all: chance runs tsf4 analysis
 
@@ -48,4 +50,12 @@ analysis:
 	  $(G)=0 $(PY) online.py --eval $$r --ckpts 100000 $(F) --eval-horizon 4 --eval-decode mean; \
 	  $(G)=0 $(PY) online.py --eval $$r --ckpts 100000 $(F) --eval-horizon 4 --eval-decode pair; \
 	  $(G)=0 $(PY) eval_dream.py $$r --ckpts 100000; \
+	done
+
+video:
+	cd $(DEV) && $(G)=1 $(PY) forage_video.py $(OUT)/009_TSF4_s3 --step 100000 --steps 1000 --worlds 16 \
+	  --horizon 4 --decode pair --title "TSF4 seed 3 (self-forcing)" --vs $(OUT)/001_TB_s1 \
+	  --vs-title "TB seed 1 (no self-forcing)" -o $(OUT)/video_TSF4_s3_vs_TB_s1
+	cd $(DEV) && for r in 009_TSF4_s3 001_TB_s1; do \
+	  $(G)=0 $(PY) dream_video.py $(OUT)/$$r --step 100000 --real 200 --dream 200 -o $(OUT)/video_$${r#*_}; \
 	done

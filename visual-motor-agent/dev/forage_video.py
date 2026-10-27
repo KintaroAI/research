@@ -2,6 +2,9 @@
 
 Usage (from visual-motor-agent/dev):
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 ./venv/bin/python forage_video.py RUN --step 500000 -o OUT_DIR
+
+--horizon / --decode override the run's own instinct (instinct_h, instinct_decode). --vs RUN2 also runs a second
+agent in the same worlds (same seeds) and writes compare.mp4: the two views side by side.
 """
 import argparse
 import dataclasses
@@ -27,16 +30,20 @@ FOOD, POISON, EMPTY, TRAIL = (90, 225, 125), (255, 95, 75), (200, 200, 210), (25
 SCALE, VX, VY = 10, 40, 40          # the agent's 64x64 view, upscaled to 640x640
 
 
-def run(args):
-    with open(os.path.join(args.run, "info.json")) as f:
+def run(args, path):
+    with open(os.path.join(path, "info.json")) as f:
         info = json.load(f)
     ec = dict(info["env_config"])
     for k in ("bg_color", "target_color", "cursor_color", "cursor_outline", "hazard_color"):
         if k in ec:
             ec[k] = tuple(ec[k])
-    agent = agent_lib.Agent.load(os.path.join(args.run, "ckpt_%08d.bin" % args.step))
+    agent = agent_lib.Agent.load(os.path.join(path, "ckpt_%08d.bin" % args.step))
     ev = _GpuEval(agent, cuda_lib.CudaModel(agent))
     ion = dict(DEFAULT_ONLINE, **info["config"]["online"])
+    if args.horizon:
+        ion["instinct_h"] = args.horizon
+    if args.decode:
+        ion["instinct_decode"] = args.decode
     inst = (ion["instinct_m"], ion["instinct_tol"], ion["instinct_h"], ion["instinct_jacobi"], ion["instinct_decode"])
     goal = info["config"]["online"]["goal"]
     n = args.worlds
@@ -59,13 +66,20 @@ def run(args):
         hz = inf.get("gt_hazard_click", np.zeros(n, bool))
         food += inf["success"]
         poison += hz
-        kind = "food" if inf["success"][0] else "poison" if hz[0] else "empty" if inf["click"][0] else None
+        kind = ("food" if inf["success"][0] else "poison" if hz[0]
+                else "empty" if inf["click"][0] and not cfg.touch else None)
         rec.append(dict(img=obs["image"][0].copy(), cursor=inf["gt_cursor"][0].copy(), kind=kind, hunger=float(inf["gt_drives"][0, 0]),
                         food=int(food[0]), poison=int(poison[0])))
         hist = (hist + [cur])[-(L - 1):] if L > 1 else []
         prev_a = executed_action(a)
         es = np.zeros(n, np.uint8)
-    return rec, food, poison
+    m = ion["instinct_m"]
+    how = ("the instinct off" if not m else "the 1-step instinct" if ion["instinct_h"] == 1
+           else "a %d-step lookahead (%s)" % (ion["instinct_h"], ion["instinct_decode"]))
+    meta = dict(touch=cfg.touch, verb="touches" if cfg.touch else "clicks",
+                sub="frozen, %s; the agent's own 64x64 view" % how,
+                poison_add=cfg.hazard_click_add)
+    return rec, food, poison, meta
 
 
 def view(img):
@@ -75,32 +89,22 @@ def view(img):
     return Image.fromarray(a.astype(np.uint8)).resize((64 * SCALE, 64 * SCALE), Image.NEAREST)
 
 
-def frame(rec, t, title):
+def frame(rec, t, title, meta):
     im = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(im)
     im.paste(view(rec[t]["img"]), (VX, VY))
-    # the cursor's last 30 positions (wrapping world: break the line where it jumps across an edge)
-    pts = [r["cursor"] for r in rec[max(0, t - 30):t + 1]]
-    for p, q in zip(pts, pts[1:]):
-        if np.abs(p - q).max() < 20:
-            d.line([(VX + p[0] * SCALE, VY + p[1] * SCALE), (VX + q[0] * SCALE, VY + q[1] * SCALE)], fill=TRAIL, width=2)
-    for k in range(max(0, t - 8), t + 1):        # clicks fade over 8 steps
-        r = rec[k]
-        if r["kind"]:
-            c = dict(food=FOOD, poison=POISON, empty=EMPTY)[r["kind"]]
-            rad = 14 + 3 * (t - k)
-            x, y = VX + r["cursor"][0] * SCALE, VY + r["cursor"][1] * SCALE
-            d.ellipse([x - rad, y - rad, x + rad, y + rad], outline=c, width=3 if t - k < 4 else 1)
+    trail(d, rec, t, VX, VY, SCALE)
+    rings(d, rec, t, VX, VY, SCALE)
     # the panel
     px = VX + 64 * SCALE + 40
     d.rectangle([px, VY, W - 40, VY + 640], fill=PANEL)
     x0 = px + 24
     d.text((x0, VY + 20), title, font=font(24, True), fill=TEXT)
-    d.text((x0, VY + 56), "frozen, the 1-step instinct; the agent's own 64x64 view", font=font(16), fill=MUTED)
+    d.text((x0, VY + 56), meta["sub"], font=font(16), fill=MUTED)
     d.text((x0, VY + 100), "step %4d / %d" % (t + 1, len(rec)), font=font(22), fill=TEXT)
     r = rec[t]
-    d.text((x0, VY + 140), "food clicks  %d" % r["food"], font=font(22, True), fill=FOOD)
-    d.text((x0 + 260, VY + 140), "poison clicks  %d" % r["poison"], font=font(22, True), fill=POISON)
+    d.text((x0, VY + 140), "food %s  %d" % (meta["verb"], r["food"]), font=font(22, True), fill=FOOD)
+    d.text((x0 + 260, VY + 140), "poison %s  %d" % (meta["verb"], r["poison"]), font=font(22, True), fill=POISON)
     # hunger bar
     d.text((x0, VY + 190), "hunger %.2f" % r["hunger"], font=font(18), fill=TEXT)
     bw = W - 40 - 24 - x0
@@ -110,8 +114,8 @@ def frame(rec, t, title):
     # hunger over the whole video so far, with click marks
     cx, cy, cw, ch = x0, VY + 280, bw, 220
     d.rectangle([cx, cy, cx + cw, cy + ch], outline=(60, 62, 78))
-    d.text((cx, cy - 22), "hunger over the 1,000 steps", font=font(16), fill=MUTED)
     T = len(rec)
+    d.text((cx, cy - 22), "hunger over the %d steps" % T, font=font(16), fill=MUTED)
     hs = [(cx + cw * k / (T - 1), cy + ch * (1 - min(1.0, rec[k]["hunger"]))) for k in range(t + 1)]
     if len(hs) > 1:
         d.line(hs, fill=TRAIL, width=2)
@@ -121,12 +125,87 @@ def frame(rec, t, title):
             d.line([(xk, cy + ch + 4), (xk, cy + ch + 16)], fill=FOOD if rec[k]["kind"] == "food" else POISON, width=2)
     # legend
     ly = VY + 540
-    for i, (c, s) in enumerate(((FOOD, "click on food: hunger to 0"), (POISON, "click on poison (checkered): +0.5"),
-                                (EMPTY, "click on nothing"), (TRAIL, "cursor path"))):
+    for i, (c, s) in enumerate(legend(meta)):
         y = ly + 24 * i
         d.ellipse([x0, y + 3, x0 + 14, y + 17], outline=c, width=3)
         d.text((x0 + 24, y), s, font=font(16), fill=MUTED)
     return im
+
+
+def legend(meta):
+    v = "touch" if meta["touch"] else "click on"
+    return ((FOOD, "%s food: hunger to 0" % v), (POISON, "%s poison (checkered): +%g" % (v, meta["poison_add"]))) \
+        + (() if meta["touch"] else ((EMPTY, "click on nothing"),)) + ((TRAIL, "cursor path"),)
+
+
+def trail(d, rec, t, x0, y0, sc, n=30, width=2):
+    """The cursor's last n positions (wrapping world: break the line where it jumps across an edge)."""
+    pts = [r["cursor"] for r in rec[max(0, t - n):t + 1]]
+    for p, q in zip(pts, pts[1:]):
+        if np.abs(p - q).max() < 20:
+            d.line([(x0 + p[0] * sc, y0 + p[1] * sc), (x0 + q[0] * sc, y0 + q[1] * sc)], fill=TRAIL, width=width)
+
+
+def rings(d, rec, t, x0, y0, sc):
+    """Each touch or click as a ring at the cursor, fading over 8 steps."""
+    for k in range(max(0, t - 8), t + 1):
+        r = rec[k]
+        if r["kind"]:
+            c = dict(food=FOOD, poison=POISON, empty=EMPTY)[r["kind"]]
+            rad = 14 + 3 * (t - k)
+            x, y = x0 + r["cursor"][0] * sc, y0 + r["cursor"][1] * sc
+            d.ellipse([x - rad, y - rad, x + rad, y + rad], outline=c, width=3 if t - k < 4 else 1)
+
+
+def frame_vs(recs, t, titles, metas):
+    """Two agents in the same world: each view (512x512) with its path, touches and counts; hunger of both below."""
+    S2, top = 8, 64
+    im = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(im)
+    xs = (40, W - 40 - 64 * S2)
+    T = len(recs[0])
+    for rec, x0, title, meta in zip(recs, xs, titles, metas):
+        im.paste(view(rec[t]["img"]).resize((64 * S2, 64 * S2), Image.NEAREST), (x0, top))
+        trail(d, rec, t, x0, top, S2)
+        rings(d, rec, t, x0, top, S2)
+        d.text((x0, 8), title, font=font(20, True), fill=TEXT)
+        d.text((x0, 36), meta["sub"].split(";")[0], font=font(15), fill=MUTED)
+        r = rec[t]
+        y = top + 64 * S2 + 10
+        d.text((x0, y), "food %d" % r["food"], font=font(22, True), fill=FOOD)
+        d.text((x0 + 140, y), "poison %d" % r["poison"], font=font(22, True), fill=POISON)
+        d.text((x0 + 300, y + 2), "hunger %.2f" % r["hunger"], font=font(18), fill=TEXT)
+        # hunger over the video so far, with touch marks
+        cy, ch, cw = y + 34, 64, 64 * S2
+        d.rectangle([x0, cy, x0 + cw, cy + ch], outline=(60, 62, 78))
+        hs = [(x0 + cw * k / (T - 1), cy + ch * (1 - min(1.0, rec[k]["hunger"]))) for k in range(t + 1)]
+        if len(hs) > 1:
+            d.line(hs, fill=TRAIL, width=2)
+        for k in range(t + 1):
+            if rec[k]["kind"] in ("food", "poison"):
+                xk = x0 + cw * k / (T - 1)
+                d.line([(xk, cy + ch + 3), (xk, cy + ch + 13)], fill=FOOD if rec[k]["kind"] == "food" else POISON,
+                       width=2)
+    mx = xs[0] + 64 * S2 + 12
+    d.text((mx, top + 10), "step", font=font(16), fill=MUTED)
+    d.text((mx, top + 30), "%d" % (t + 1), font=font(22, True), fill=TEXT)
+    d.text((mx, top + 58), "/ %d" % T, font=font(16), fill=MUTED)
+    for i, (c, s) in enumerate(legend(metas[0])):
+        yy = top + 120 + 80 * i
+        d.ellipse([mx + 40, yy, mx + 60, yy + 20], outline=c, width=3)
+        for j, w in enumerate(s.replace(": ", "\n").replace(" (", "\n(").split("\n")):
+            d.text((mx, yy + 26 + 17 * j), w, font=font(13), fill=MUTED)
+    return im
+
+
+def write_mp4(path, frames):
+    import imageio_ffmpeg
+    gen = imageio_ffmpeg.write_frames(path, (W, H), fps=FPS, codec="libx264", quality=None, bitrate="4M",
+                                      macro_block_size=8)
+    gen.send(None)
+    for im in frames:
+        gen.send(np.asarray(im).tobytes())
+    gen.close()
 
 
 def main():
@@ -136,21 +215,26 @@ def main():
     ap.add_argument("--steps", type=int, default=1000)
     ap.add_argument("--worlds", type=int, default=8, help="worlds run at once (the video shows the first)")
     ap.add_argument("--title", default="")
+    ap.add_argument("--horizon", type=int, default=0, help="override the run's instinct_h")
+    ap.add_argument("--decode", default="", choices=["", "mean", "mode", "pair"], help="override instinct_decode")
+    ap.add_argument("--vs", default="", help="a second run: compare.mp4 shows both in the same worlds")
+    ap.add_argument("--vs-title", default="")
     ap.add_argument("-o", "--out", required=True)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
-    rec, food, poison = run(args)
+    rec, food, poison, meta = run(args, args.run)
     title = args.title or "%s at %dk ticks" % (os.path.basename(args.run.rstrip("/")), args.step // 1000)
     print("world 0: clicks on nothing %d;" % sum(r["kind"] == "empty" for r in rec), end=" ")
     print("world 0: food %d poison %d; all %d worlds: food %.1f poison %.1f per %d steps"
           % (food[0], poison[0], len(food), food.mean(), poison.mean(), args.steps))
-    import imageio_ffmpeg
-    gen = imageio_ffmpeg.write_frames(os.path.join(args.out, "forage.mp4"), (W, H), fps=FPS, codec="libx264",
-                                      quality=None, bitrate="4M", macro_block_size=8)
-    gen.send(None)
-    for t in range(len(rec)):
-        gen.send(np.asarray(frame(rec, t, title)).tobytes())
-    gen.close()
+    write_mp4(os.path.join(args.out, "forage.mp4"), (frame(rec, t, title, meta) for t in range(len(rec))))
+    if args.vs:
+        rec2, food2, poison2, meta2 = run(args, args.vs)
+        title2 = args.vs_title or "%s at %dk ticks" % (os.path.basename(args.vs.rstrip("/")), args.step // 1000)
+        print("vs: world 0: food %d poison %d; all %d worlds: food %.1f poison %.1f per %d steps"
+              % (food2[0], poison2[0], len(food2), food2.mean(), poison2.mean(), args.steps))
+        write_mp4(os.path.join(args.out, "compare.mp4"),
+                  (frame_vs((rec, rec2), t, (title, title2), (meta, meta2)) for t in range(len(rec))))
     # a sheet: every 100th step, the view with the last 100 steps' path and clicks
     sheet = Image.new("RGB", (5 * 330 + 10, 2 * 360 + 10), BG)
     for i, t in enumerate(range(99, len(rec), 100)):
