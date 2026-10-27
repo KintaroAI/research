@@ -1,8 +1,8 @@
 # vm-00035: The Touch World — Collect and Avoid by Moving Alone
 
 **Date:** 2026-10-27
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00035`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00035` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00035/`
 **Task plan:** [`../tasks/00042-touch-world.md`](../tasks/00042-touch-world.md)
 
