@@ -37,6 +37,9 @@ void vmc_free(void* h);
 int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, const float* prev_action,
                   const float* prev_reward, const uint8_t* ep_start, const float* action, const uint8_t* next_small,
                   const float* next_drives, int next_full);
+// The universal model (task 00039, self-forcing): the token inputs' frames and bodies of the current batch (S sequences
+// as in vmc_set_batch), used instead of the batch's own; the targets stay the batch's. Cleared by the next batch.
+int vmc_set_uni_inputs(void* h, int S, const uint8_t* images, const float* drives);
 // Loss and gradients of the current batch (gradients stay on the device; vmc_grads copies them out).
 int vmc_loss_and_grads(void* h, const PPOConfig* pc);
 // loss_and_grads, the gradient-norm clip and an AdamW step.

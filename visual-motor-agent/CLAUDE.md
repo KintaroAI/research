@@ -66,7 +66,14 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     holds each candidate for H steps, imagined by the model (`online.uni_lookahead`, Jacobi decoding); it costs
     (H − 1)·J + 1 forward passes per tick. `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
     bin instead of the mean (its bin centres are not the world's grey levels: use `pair`, task 00038, the most probable
-    bin and its more probable neighbour, weighted: sharp, and exact for two-hot values); imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps
+    bin and its more probable neighbour, weighted: sharp, and exact for two-hot values); Self-forcing (task 00039, lifetime.py on the GPU): `online.sf_windows` replayed windows per update
+    get their last 1..`sf_steps` steps' inputs (frame and body) from the model's own predictions (`online.dream_inputs`:
+    `sf_jacobi` Jacobi iterations, pair decoding; moves stay real), the targets stay real (`CudaModel.set_uni_inputs`);
+    8 windows of up to 3 steps cost ~70% of the speed (29 ticks/s per lifetime). `eval_dream.py` measures the dream:
+    the frozen agent forages, then the model dreams 16 steps with the real moves that followed (pixels exactly right,
+    cursor lost / distance, hunger error per dream step). `reference/text_dream.py` (task 00040, `~/venvs/vm-gpu`): the text world's dream is generation;
+    the universal model and the classical GPT continue the same val contexts, greedy and sampled, scored by both (a letter's
+    probability: the mean of its glyph values' log-probabilities; eval_predict's `nll_glyph` sums them, a temperature of 1 / V). imagined frames lose the moving cursor either way (task 00029). `online.py --eval-tests forage --eval-worlds 16 --eval-horizon 4` keeps
     the frozen test affordable.
     Speed (task 00026): the instinct's candidates reuse the policy pass's keys and values (`CudaModel.uni_candidates`),
     the universal model's batches carry no next frames, and `lifetime.py` reads the update's stats every

@@ -46,7 +46,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import FIELDS, STAT_KEYS, GatedMemory, fill_rollout, load_config, sample_moves, uni_act  # noqa: E402
+from online import (FIELDS, STAT_KEYS, GatedMemory, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
+                    uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
 from world import make_config, make_world  # noqa: E402
@@ -99,6 +100,8 @@ def main():
         agent.params_changed()
     goal_k = on["goal_k"] if on["goal"] else 0
     uni = bool(agent.config["universal"])
+    if on["sf_windows"] and not (uni and on["device"] == "cuda"):
+        raise ValueError("self-forcing (online.sf_windows) needs the universal model on the GPU (online.device=cuda)")
     tok_sur = bool(on["store_surprise"])
     if tok_sur and not (uni and on["device"] == "cuda"):
         raise ValueError("lifetime.py measures surprise for the universal model on the GPU only (online.device=cuda)")
@@ -161,7 +164,7 @@ def main():
 
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
-                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, t=time.time())
+                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time())
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -239,7 +242,17 @@ def main():
             fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
             if gpu:
-                st = gpu.update_rollout(ro, ppo, agent, sync=False, stats=tick % on["stats_every"] == 0)
+                inputs = None
+                if on["sf_windows"]:   # self-forcing (task 00039): replayed windows only, none with an episode start
+                    ok = np.flatnonzero(~rows["es"][:, 1:].any(1))
+                    ok = ok[ok >= ce_n]
+                    idx = rng.choice(ok, min(on["sf_windows"], len(ok)), replace=False)
+                    k = rng.integers(1, on["sf_steps"] + 1, len(idx))
+                    inputs = dream_inputs(gpu, rows["img"], rows["drv"], rows["act"], rows["es"], idx, k,
+                                          on["sf_jacobi"])
+                    win["sf"] += len(idx)
+                st = gpu.update_rollout(ro, ppo, agent, sync=False, stats=tick % on["stats_every"] == 0,
+                                        inputs=inputs)
             else:
                 st = agent.update(ro, zeros, ppo)
             if st is not None:
@@ -258,7 +271,7 @@ def main():
                        all_hits_per_1k=1000.0 * win["all_hits"] / bs, all_hazard_frac=win["all_hazard"] / bs,
                        babbled=win["babbled"] / bs, eps=eps_at(on, tick), poison=win["poison"],
                        all_poison_per_1k=1000.0 * win["all_poison"] / bs, instinct_override=win["override"] / bs,
-                       instinct_gain=win["gain"] / bs)
+                       instinct_gain=win["gain"] / bs, sf_dreamed=win["sf"])
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

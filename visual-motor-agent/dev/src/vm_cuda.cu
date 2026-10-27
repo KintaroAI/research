@@ -987,6 +987,10 @@ struct Model {
     uint8_t *img = nullptr, *ns = nullptr, *cs = nullptr, *nfull = nullptr;
     int *start = nullptr, *pos = nullptr, *ivalid = nullptr;   // ivalid: t+1 is in the sequence and episode
     float *drv = nullptr, *pa = nullptr, *pr = nullptr, *act = nullptr, *ndrv = nullptr;
+    // the universal model's token inputs when they differ from the batch (self-forcing, task 00039; vmc_set_uni_inputs)
+    uint8_t* iimg = nullptr;
+    float* idrv = nullptr;
+    bool has_in = false;
     int cap = 0;   // frames allocated
     // activations and gradients
     Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, xin, ln1, ln1m, ln1r, qkv, att, datt, atty, res1, ln2, ln2m, ln2r,
@@ -1103,6 +1107,8 @@ static void alloc_batch(Model* M, int B) {
     if (B > M->cap) {
         cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos); cudaFree(M->ivalid);
         cudaFree(M->drv); cudaFree(M->pa); cudaFree(M->pr); cudaFree(M->act); cudaFree(M->ndrv);
+        cudaFree(M->iimg); cudaFree(M->idrv);
+        cudaMalloc(&M->iimg, (size_t)B * D.img * D.img * 3); cudaMalloc(&M->idrv, B * 2 * sizeof(float));
         cudaMalloc(&M->img, (size_t)B * D.img * D.img * 3);
         cudaMalloc(&M->ns, (size_t)B * D.small_px);
         cudaMalloc(&M->cs, (size_t)B * D.small_px);
@@ -1151,6 +1157,7 @@ void vmc_free(void* h) {
     Model* M = (Model*)h;
     if (!M) return;
     cudaFree(M->P); cudaFree(M->G); cudaFree(M->m); cudaFree(M->v); cudaFree(M->acc); cudaFree(M->clip);
+    cudaFree(M->iimg); cudaFree(M->idrv);
     cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos); cudaFree(M->ivalid);
     cudaFree(M->drv); cudaFree(M->pa); cudaFree(M->pr); cudaFree(M->act); cudaFree(M->ndrv);
     for (Buf* b : {&M->x0, &M->cols1, &M->cols2, &M->cols3, &M->Y, &M->a1, &M->a2, &M->a3, &M->vf, &M->tin, &M->xin,
@@ -1182,6 +1189,7 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
     const int B = S * T;
     alloc_batch(M, B);
     M->S = S; M->T = T; M->B = B;
+    M->has_in = false;
     std::vector<int> start(B), pos(B), valid(B);
     for (int s = 0; s < S; s++)
         for (int t = 0; t < T; t++) {
@@ -1242,6 +1250,17 @@ int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, co
     }
     CK(cudaMemcpy(M->ndrv, next_drives, B * 2 * sizeof(float), cudaMemcpyHostToDevice));
     CK(cudaGetLastError());
+    return 0;
+}
+
+int vmc_set_uni_inputs(void* h, int S, const uint8_t* images, const float* drives) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.uni || !M->B || S != M->S || !images || !drives) return -1;
+    const int B = M->B;
+    CK(cudaMemcpy(M->iimg, images, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->idrv, drives, B * 2 * sizeof(float), cudaMemcpyHostToDevice));
+    M->has_in = true;
     return 0;
 }
 
@@ -1469,14 +1488,16 @@ __device__ inline float uni_value_(const uint8_t* img, const float* drv, const f
     const int p = k - 1, c = j % ch, x = (j / ch) % ps, y = j / (ch * ps), py = (p / gp) * ps, px = (p % gp) * ps;
     return img[((b * S + py + y) * S + px + x) * 3 + c] / 255.0f;
 }
-// in [B*nt, V]: the centred inputs (unused 0); tgt [B*nt, V]: the next token's values (the move: the next drives)
-__global__ void k_uni_tokens(const uint8_t* img, const float* drv, const float* act, const float* ndrv, float* in,
-                             float* tgt, int B, int nt, int V, int S, int ps, int gp, int ch) {
+// in [B*nt, V]: the centred inputs (unused 0), from iimg / idrv; tgt [B*nt, V]: the next token's values (the move:
+// the next drives), from img / drv. The two differ only with self-forcing (task 00039).
+__global__ void k_uni_tokens(const uint8_t* iimg, const float* idrv, const uint8_t* img, const float* drv,
+                             const float* act, const float* ndrv, float* in, float* tgt, int B, int nt, int V, int S,
+                             int ps, int gp, int ch) {
     const long n = (long)B * nt * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V, k = (i / V) % nt;
         const long b = i / ((long)V * nt);
-        const float v = uni_value_(img, drv, act, b, k, j, nt, V, S, ps, gp, ch);
+        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch);
         in[i] = j < uni_used_(k, nt, V) ? v - 0.5f : 0.f;
         if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch);
         else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : 0.f;
@@ -1775,8 +1796,9 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     float* in = M->u_in.get((size_t)rows * V);
     float* tgt = M->u_tgt.get((size_t)rows * V);
     float* xin = M->xin.get((size_t)rows * d);
-    k_uni_tokens<<<GRID((long)rows * V)>>>(M->img, M->drv, M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img,
-                                         D.patch, D.gp, D.ch);
+    k_uni_tokens<<<GRID((long)rows * V)>>>(M->has_in ? M->iimg : M->img, M->has_in ? M->idrv : M->drv, M->img, M->drv,
+                                         M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img, D.patch, D.gp,
+                                         D.ch);
     const float* uin = in;   // W_in's input: the centred values, or their two-hot bins
     if (D.ib) {
         float* hot = M->u_hot.get((size_t)rows * D.VI);

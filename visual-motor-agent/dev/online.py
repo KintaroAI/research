@@ -81,7 +81,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",
                       # lifetime.py on the GPU: read the update's stats every stats_every ticks (each read waits for
                       # the GPU; the metrics average the samples)
-                      stats_every=10)
+                      stats_every=10,
+                      # task 00039 (lifetime.py, the universal model on the GPU): self-forcing: sf_windows replayed
+                      # windows per update (0: off) get their last 1..sf_steps steps' inputs (frame, body) from the
+                      # model's own predictions (sf_jacobi Jacobi iterations per frame, pair decoding); targets stay real
+                      sf_windows=0, sf_steps=3, sf_jacobi=2)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -499,6 +503,36 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
             dv[:, st] = np.clip(out["next_body"][:, st - 1], 0.0, 1.0)
             im[:, st] = uni_frame(c, out["values_t"][:, :nt - 2])
     return run(-1)["next_body"][:, -1, 0].reshape(N, M)
+
+
+def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
+    """Self-forcing (task 00039): the token inputs of windows [N, T, ...] with the last k[i] steps of window idx[i]
+    replaced by the model's own predictions, in order: each dreamed step's body is the previous step's move token's
+    prediction, its frame J Jacobi iterations from the previous frame (J = patches + 1: exactly sequential decoding),
+    values decoded `decode` (DECODE). Moves and the other steps stay real. model: a CudaModel (forward_uni_step).
+    Returns copies (frames u8, bodies f32) [N, T, ...]."""
+    c = model.config
+    T = img.shape[1]
+    P = (c["img"] // c["patch"]) ** 2
+    im, dv = img.copy(), np.array(drv, np.float32)
+    idx, k = np.asarray(idx, int), np.asarray(k, int)
+    if not len(idx):
+        return im, dv
+    if k.min() < 1 or k.max() > T - 1:
+        raise ValueError("dreamed steps must be 1 .. T - 1")
+    wi, wd = im[idx], dv[idx]
+    wa, we = np.ascontiguousarray(act[idx], np.float32), np.ascontiguousarray(es[idx], np.uint8)
+    start = T - k
+    for s in range(int(start.min()), T):
+        on = s >= start
+        o = model.forward_uni_step(wi, wd, wa, we, s - 1, mode=DECODE[decode])   # the move token's next body
+        wd[on, s] = np.clip(o["values_t"][on, P + 1, :2], 0.0, 1.0)
+        wi[on, s] = wi[on, s - 1]
+        for _ in range(J):
+            o = model.forward_uni_step(wi, wd, wa, we, s, mode=DECODE[decode])
+            wi[on, s] = uni_frame(c, o["values_t"][on, :P])
+    im[idx], dv[idx] = wi, wd
+    return im, dv
 
 
 def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean"):

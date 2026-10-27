@@ -46,6 +46,7 @@ def lib():
             "vmc_create": (vp, [C.POINTER(VMConfig), fp, C.c_long, lp, lp, i32]),
             "vmc_free": (None, [vp]),
             "vmc_set_batch": (i32, [vp, i32, u8p, fp, fp, fp, u8p, fp, u8p, fp, i32]),
+            "vmc_set_uni_inputs": (i32, [vp, i32, u8p, fp]),
             "vmc_loss_and_grads": (i32, [vp, C.POINTER(PPOConfig)]),
             "vmc_update": (i32, [vp, C.POINTER(PPOConfig)]),
             "vmc_stats": (i32, [vp, C.POINTER(VMCStats)]),
@@ -153,6 +154,14 @@ class CudaModel:
         _check(lib().vmc_set_batch(self.handle, S, *[None if x is None else _p(x, ct) for x, ct in zip(a, cts)], full),
                "set_batch")
 
+    def set_uni_inputs(self, images, drives):
+        """The universal model's token inputs (frames [S, ctx, H, W, 3], bodies [S, ctx, 2]) for the current batch,
+        instead of its own; the targets stay the batch's (self-forcing, task 00039). Cleared by the next set_batch."""
+        img, drv = np.ascontiguousarray(images, np.uint8), np.ascontiguousarray(drives, np.float32)
+        self._inputs = (img, drv)
+        _check(lib().vmc_set_uni_inputs(self.handle, img.shape[0], _p(img, C.c_uint8), _p(drv, C.c_float)),
+               "set_uni_inputs")
+
     def _pc(self, ppo_cfg):
         cfg = dict(DEFAULT_PPO)
         cfg.update(ppo_cfg or {})
@@ -166,11 +175,14 @@ class CudaModel:
         _check(lib().vmc_update(self.handle, C.byref(self._pc(ppo_cfg))), "update")
         return self.stats() if stats else None
 
-    def update_rollout(self, ro, ppo_cfg, agent, sync=True, stats=True):
+    def update_rollout(self, ro, ppo_cfg, agent, sync=True, stats=True, inputs=None):
         """One update from a filled Rollout. sync: all the weights are copied back to the C++ agent; else only the
-        log-std (for sampling moves; call sync_to(agent) before saving it). Returns the stats under agent.update()'s
-        names."""
+        log-std (for sampling moves; call sync_to(agent) before saving it). inputs: (frames, bodies) [N, T, ...] as the
+        universal model's token inputs instead of the rollout's (set_uni_inputs). Returns the stats under
+        agent.update()'s names."""
         self.set_batch(*ro.batch())
+        if inputs is not None:
+            self.set_uni_inputs(*inputs)
         st = self.update(ppo_cfg, stats=stats)   # stats=False: no wait for the GPU here
         p = agent.params()
         if sync:

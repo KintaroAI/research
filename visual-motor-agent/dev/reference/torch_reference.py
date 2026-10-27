@@ -462,12 +462,15 @@ def two_hot(v, K):
 
 def uni_loss(P, cfg, batch):
     """The universal model's loss: every token predicts the next token's values (the move token: the drives after its
-    step); two-hot cross-entropy, the mean over the target's used values, the mean over tokens."""
+    step); two-hot cross-entropy, the mean over the target's used values, the mean over tokens. Optional
+    batch["input_images"] / ["input_drives"] (self-forcing, task 00039): the tokens' inputs, the targets still from
+    batch["images"] / ["drives"]."""
     dt = P["uni_in_w"].dtype
-    out = forward_uni(P, cfg, batch["images"], batch["drives"], batch["action"], batch["ep_start"])
+    out = forward_uni(P, cfg, batch.get("input_images", batch["images"]), batch.get("input_drives", batch["drives"]),
+                      batch["action"], batch["ep_start"])
     S, T = batch["images"].shape[:2]
     nt, V, K = uni_dims(cfg)
-    v, used = out["values"], out["used"]
+    v, used = uni_values(cfg, batch["images"], batch["drives"], batch["action"])
     tgt = np.zeros((S, T, nt, V))
     tgt[:, :, :nt - 1] = v[:, :, 1:]                                               # the next token in the step
     tgt[:, :, nt - 1, :2] = np.asarray(batch["next_drives"], np.float64)           # the move: the next drives

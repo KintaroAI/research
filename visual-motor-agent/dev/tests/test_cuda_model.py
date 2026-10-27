@@ -325,3 +325,80 @@ def test_uni_token_ce_matches_reference(model):
         m.uni_token_ce(len(ids) + 1)
     m.close()
     agent.close()
+
+
+def _ref_flat_grads(agent, batch):
+    """The PyTorch reference's universal loss and its gradient in the agent's flat layout."""
+    from reference import torch_reference as ref
+    c = agent.config
+    P = ref.params_from_flat(agent.params(), agent.param_layout(), c)
+    loss, _ = ref.uni_loss(P, c, batch)
+    loss.backward()
+    g = np.zeros(agent.num_params)
+    for name, off, size in agent.param_layout():
+        if P[name].grad is not None:
+            g[off:off + size] = P[name].grad.numpy().ravel()
+    return loss.item(), g
+
+
+@pytest.mark.parametrize("model", ["small_universal", "small_universal_gray", "small_universal_inbins"])
+def test_uni_inputs_match_reference(model):
+    """Self-forcing (task 00039): with other token inputs (frames and bodies) the GPU's loss and gradients equal the
+    reference's, whose targets stay the batch's; without them the batch's own inputs are used (and the next batch
+    clears them)."""
+    pytest.importorskip("torch")
+    from test_patch_tokens import store_rollout
+    if not cuda_lib.has("vmc_set_uni_inputs"):
+        pytest.skip("libvmcuda.so without vmc_set_uni_inputs")
+    agent = agent_lib.Agent(MODELS[model], seed=4)
+    c = agent.config
+    N, T = 4, 2 * c["ctx"]
+    ro, data = store_rollout(agent, T=T, N=N, seed=2, p_done=0.0)
+    ids = [0, 2, 3, 5, 6]
+    b = cuda_batch(agent, data, ids, N)
+    z = np.zeros((T, N))
+    batch = seq_batch(data, ids, c["ctx"], N, z, z, c["img"] // c["pred_img"])
+    rng = np.random.default_rng(7)
+    iimg, idrv = b[0].copy(), b[1].copy()
+    iimg[:, -3:] = rng.integers(0, 256, iimg[:, -3:].shape, dtype=np.uint8)   # the last 3 steps "dreamed"
+    idrv[:, -3:] = rng.random(idrv[:, -3:].shape).astype(np.float32)
+    m = cuda_lib.CudaModel(agent)
+    m.set_batch(*b)
+    st0, g0 = m.loss_and_grads(PC), m.grads().copy()
+    m.set_uni_inputs(iimg, idrv)
+    st1, g1 = m.loss_and_grads(PC), m.grads().copy()
+    want_l, want_g = _ref_flat_grads(agent, dict(batch, input_images=iimg, input_drives=idrv))
+    assert abs(st1["loss"] - want_l) < 1e-4 * max(1.0, abs(want_l))
+    compare(agent, want_g, g1, 1e-4)
+    l0, _ = _ref_flat_grads(agent, batch)
+    assert abs(st0["loss"] - l0) < 1e-4 * max(1.0, abs(l0))
+    assert np.linalg.norm(g1 - g0) > 0.01 * np.linalg.norm(g0)      # the inputs mattered
+    m.set_batch(*b)                                                  # a new batch: its own inputs again
+    st2 = m.loss_and_grads(PC)
+    assert abs(st2["loss"] - st0["loss"]) < 1e-6
+    with pytest.raises(RuntimeError):
+        m.set_uni_inputs(iimg[:2], idrv[:2])
+    m.close()
+    agent.close()
+
+
+def test_uni_inputs_targets_stay_real():
+    """The reference: inputs equal to the batch change nothing; other inputs leave every target as the batch's."""
+    pytest.importorskip("torch")
+    from reference import torch_reference as ref
+    from test_patch_tokens import store_rollout
+    agent = agent_lib.Agent(MODELS["small_universal_gray"], seed=4)
+    c = agent.config
+    N, T = 2, c["ctx"]
+    ro, data = store_rollout(agent, T=T, N=N, seed=3, p_done=0.0)
+    z = np.zeros((T, N))
+    batch = seq_batch(data, [0, 1], c["ctx"], N, z, z, c["img"] // c["pred_img"])
+    P = ref.params_from_flat(agent.params(), agent.param_layout(), c)
+    l0, t0 = ref.uni_loss(P, c, batch)
+    l1, t1 = ref.uni_loss(P, c, dict(batch, input_images=batch["images"].copy(), input_drives=batch["drives"].copy()))
+    assert float(l0) == float(l1)
+    other = dict(batch, input_images=255 - batch["images"], input_drives=1 - batch["drives"])
+    l2, t2 = ref.uni_loss(P, c, other)
+    np.testing.assert_array_equal(t2["tgt"], t0["tgt"])
+    assert float(l2) != float(l0)
+    agent.close()
