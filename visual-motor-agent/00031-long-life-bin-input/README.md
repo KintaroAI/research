@@ -1,8 +1,8 @@
 # vm-00031: A Long Life with Bin-Embedding Input
 
 **Date:** 2026-10-26
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00031`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00031` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00031/`
 **Task plan:** [`../tasks/00037-long-life-bin-input.md`](../tasks/00037-long-life-bin-input.md)
 
