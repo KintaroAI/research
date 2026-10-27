@@ -76,8 +76,8 @@ def run(args, path):
     m = ion["instinct_m"]
     how = ("the instinct off" if not m else "the 1-step instinct" if ion["instinct_h"] == 1
            else "a %d-step lookahead (%s)" % (ion["instinct_h"], ion["instinct_decode"]))
-    meta = dict(touch=cfg.touch, verb="touches" if cfg.touch else "clicks",
-                sub="frozen, %s; the agent's own 64x64 view" % how,
+    meta = dict(touch=cfg.touch, ego=cfg.egocentric, verb="touches" if cfg.touch else "clicks",
+                sub="frozen, %s%s; the agent's own 64x64 view" % (how, ", egocentric" if cfg.egocentric else ""),
                 poison_add=cfg.hazard_click_add)
     return rec, food, poison, meta
 
@@ -93,8 +93,9 @@ def frame(rec, t, title, meta):
     im = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(im)
     im.paste(view(rec[t]["img"]), (VX, VY))
-    trail(d, rec, t, VX, VY, SCALE)
-    rings(d, rec, t, VX, VY, SCALE)
+    ref = rec[t]["cursor"] if meta["ego"] else None
+    trail(d, rec, t, VX, VY, SCALE, ref)
+    rings(d, rec, t, VX, VY, SCALE, ref)
     # the panel
     px = VX + 64 * SCALE + 40
     d.rectangle([px, VY, W - 40, VY + 640], fill=PANEL)
@@ -138,22 +139,28 @@ def legend(meta):
         + (() if meta["touch"] else ((EMPTY, "click on nothing"),)) + ((TRAIL, "cursor path"),)
 
 
-def trail(d, rec, t, x0, y0, sc, n=30, width=2):
+def in_view(p, ref):
+    """A world position in the view: as is, or (egocentric, ref = the current cursor) relative to the cursor drawn at
+    the center, wrapped."""
+    return p if ref is None else np.mod(p - ref + 32.0, 64.0)
+
+
+def trail(d, rec, t, x0, y0, sc, ref=None, n=30, width=2):
     """The cursor's last n positions (wrapping world: break the line where it jumps across an edge)."""
-    pts = [r["cursor"] for r in rec[max(0, t - n):t + 1]]
+    pts = [in_view(r["cursor"], ref) for r in rec[max(0, t - n):t + 1]]
     for p, q in zip(pts, pts[1:]):
         if np.abs(p - q).max() < 20:
             d.line([(x0 + p[0] * sc, y0 + p[1] * sc), (x0 + q[0] * sc, y0 + q[1] * sc)], fill=TRAIL, width=width)
 
 
-def rings(d, rec, t, x0, y0, sc):
+def rings(d, rec, t, x0, y0, sc, ref=None):
     """Each touch or click as a ring at the cursor, fading over 8 steps."""
     for k in range(max(0, t - 8), t + 1):
         r = rec[k]
         if r["kind"]:
             c = dict(food=FOOD, poison=POISON, empty=EMPTY)[r["kind"]]
             rad = 14 + 3 * (t - k)
-            x, y = x0 + r["cursor"][0] * sc, y0 + r["cursor"][1] * sc
+            x, y = x0 + in_view(r["cursor"], ref)[0] * sc, y0 + in_view(r["cursor"], ref)[1] * sc
             d.ellipse([x - rad, y - rad, x + rad, y + rad], outline=c, width=3 if t - k < 4 else 1)
 
 
@@ -166,8 +173,9 @@ def frame_vs(recs, t, titles, metas):
     T = len(recs[0])
     for rec, x0, title, meta in zip(recs, xs, titles, metas):
         im.paste(view(rec[t]["img"]).resize((64 * S2, 64 * S2), Image.NEAREST), (x0, top))
-        trail(d, rec, t, x0, top, S2)
-        rings(d, rec, t, x0, top, S2)
+        ref = rec[t]["cursor"] if meta["ego"] else None
+        trail(d, rec, t, x0, top, S2, ref)
+        rings(d, rec, t, x0, top, S2, ref)
         d.text((x0, 8), title, font=font(20, True), fill=TEXT)
         d.text((x0, 36), meta["sub"].split(";")[0], font=font(15), fill=MUTED)
         r = rec[t]
@@ -240,14 +248,15 @@ def main():
     for i, t in enumerate(range(99, len(rec), 100)):
         v = view(rec[t]["img"]).resize((320, 320), Image.NEAREST)
         dv = ImageDraw.Draw(v)
-        pts = [r["cursor"] for r in rec[t - 99:t + 1]]
+        ref = rec[t]["cursor"] if meta["ego"] else None
+        pts = [in_view(r["cursor"], ref) for r in rec[t - 99:t + 1]]
         for p, q in zip(pts, pts[1:]):
             if np.abs(p - q).max() < 20:
                 dv.line([(p[0] * 5, p[1] * 5), (q[0] * 5, q[1] * 5)], fill=TRAIL, width=1)
         for r in rec[t - 99:t + 1]:
             if r["kind"]:
                 c = dict(food=FOOD, poison=POISON, empty=EMPTY)[r["kind"]]
-                x, y = r["cursor"] * 5
+                x, y = in_view(r["cursor"], ref) * 5
                 dv.ellipse([x - 5, y - 5, x + 5, y + 5], outline=c, width=2)
         x, y = 10 + (i % 5) * 330, 10 + (i // 5) * 360
         sheet.paste(v, (x, y))

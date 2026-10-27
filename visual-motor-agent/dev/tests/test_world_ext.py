@@ -262,6 +262,25 @@ def test_without_touch_contact_does_nothing():
         EnvConfig(touch=True).validate()
 
 
+def test_touch_egocentric_same_events_as_allocentric():
+    """Task 00043: the egocentric view changes only the frame: with the same seed and moves, touches, hunger and cursor
+    are those of the allocentric world, and the cursor is drawn at the center."""
+    cfg = dataclasses.replace(TOUCH, hazard_speed=0.5, target_speed=0.3, distractors=3)
+    allo, ego = CircleWorld(8, cfg, seed=11), CircleWorld(8, dataclasses.replace(cfg, egocentric=True), seed=11)
+    rng = np.random.default_rng(4)
+    white = np.array(cfg.cursor_color, np.uint8)
+    events = 0
+    for _ in range(300):
+        a = random_actions(rng, 8)
+        _, _, _, ia = allo.step(a)
+        obs, _, _, ie = ego.step(a)
+        for k in ("success", "gt_hazard_click", "gt_cursor", "gt_drives"):
+            np.testing.assert_array_equal(ia[k], ie[k])
+        assert (obs["image"][:, 32, 32] == white).all()
+        events += int(ia["success"].sum() + ia["gt_hazard_click"].sum())
+    assert events > 0
+
+
 def test_touch_state_round_trip():
     env = CircleWorld(8, TOUCH, seed=9)
     rng = np.random.default_rng(3)

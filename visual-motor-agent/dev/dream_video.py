@@ -22,6 +22,7 @@ import agent_lib  # noqa: E402
 import cuda_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
 from make_video import font  # noqa: E402
+from forage_video import in_view  # noqa: E402
 from online import DECODE, DEFAULT_ONLINE, EVAL_SEED, _GpuEval, eval_moves, uni_frame  # noqa: E402
 from world import CircleWorld, EnvConfig  # noqa: E402
 
@@ -112,7 +113,7 @@ def run(args):
         rec.append(dict(phase="dream", real=obs["image"][0], pred=img[0, -1].copy(), real_h=float(obs["drives"][0, 0]),
                         pred_h=float(drv[0, -1, 0]), kind=outcome(inf), cursor=inf["gt_cursor"][0].copy(),
                         dkind="click" if real_a[0, 2] > 0.5 and not touch else None, iters=it + 1))
-    return rec
+    return rec, env.config.egocentric
 
 
 def view(a):
@@ -120,7 +121,7 @@ def view(a):
     return Image.fromarray(a.astype(np.uint8)).resize((64 * S, 64 * S), Image.NEAREST)
 
 
-def frame(rec, t, title, R):
+def frame(rec, t, title, R, ego=False):
     im = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(im)
     r = rec[t]
@@ -137,11 +138,12 @@ def frame(rec, t, title, R):
     if dream:
         d.rectangle([RX - 3, VY - 3, RX + 64 * S + 2, VY + 64 * S + 2], outline=DREAM, width=3)
     # clicks (fade over 6 steps): real outcome on the left, the model's own click on the right
+    ref = r["cursor"] if ego else None    # egocentric: positions relative to the cursor drawn at the center
     for k in range(max(0, t - 6), t + 1):
         q = rec[k]
         w = 3 if t - k < 3 else 1
         if q["kind"]:
-            x, y = LX + q["cursor"][0] * S, VY + q["cursor"][1] * S
+            x, y = LX + in_view(q["cursor"], ref)[0] * S, VY + in_view(q["cursor"], ref)[1] * S
             col = dict(food=FOOD, poison=POISON, empty=EMPTY)[q["kind"]]
             d.ellipse([x - 12, y - 12, x + 12, y + 12], outline=col, width=w)
     # hunger: real (yellow) and the model's (blue: predicted in phase 1, dreamed in phase 2)
@@ -175,7 +177,7 @@ def main():
     ap.add_argument("-o", "--out", required=True)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
-    rec = run(args)
+    rec, ego = run(args)
     np.savez_compressed(os.path.join(args.out, "dream_%s.npz" % args.decode),
                         pred=np.stack([r["pred"] for r in rec]), real=np.stack([r["real"] for r in rec]))
     its = [r["iters"] for r in rec if r["phase"] == "dream"]
@@ -187,7 +189,7 @@ def main():
                                       macro_block_size=8)
     gen.send(None)
     for t in range(len(rec)):
-        gen.send(np.asarray(frame(rec, t, title, args.real)).tobytes())
+        gen.send(np.asarray(frame(rec, t, title, args.real, ego)).tobytes())
     gen.close()
     # a sheet: the dream every 20 steps, real above, dreamed below
     ks = list(range(args.real - 1, len(rec), 20))[:11]
