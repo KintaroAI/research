@@ -1,8 +1,8 @@
 # vm-00038: Two Stacked Boxes, Backprop Cut Between Them
 
 **Date:** 2026-10-28
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00038`* (code: `visual-motor-agent/dev/reference/stacked_local.py`)
+**Status:** Complete
+**Source:** `exp/vm-00038` (code: `visual-motor-agent/dev/reference/stacked_local.py`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00038/`
 **Task plan:** [`../tasks/00045-local-learning-stack.md`](../tasks/00045-local-learning-stack.md)
 
