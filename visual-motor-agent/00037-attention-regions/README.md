@@ -1,8 +1,8 @@
 # vm-00037: One Model, Attention Split Into Regions
 
 **Date:** 2026-10-27
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00037`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00037` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00037/`
 **Task plan:** [`../tasks/00044-attention-regions.md`](../tasks/00044-attention-regions.md)
 
