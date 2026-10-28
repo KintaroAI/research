@@ -1,8 +1,8 @@
 # vm-00039: Attention Split as a Checkerboard
 
 **Date:** 2026-10-28
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00039`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00039` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00039/`
 **Task plan:** [`../tasks/00046-checker-attention.md`](../tasks/00046-checker-attention.md)
 
