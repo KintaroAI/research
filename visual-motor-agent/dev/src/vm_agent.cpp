@@ -342,10 +342,12 @@ static void layernorm_bwd(float* dinp, float* dw, float* db, const float* dout, 
 }
 
 // Softmax attention of one query over nk keys/values (rows at kb + j*ks, vb + j*vs); weights -> w[0..nk)
+// al (attention regions, task 00044): key j may be attended to only if al[(s0 + j) % nt]; else its weight is 0
 static void attend_one(const float* q, const float* kb, int ks, const float* vb, int vs, int nk, int hs, float scale,
-                       float* w, float* out) {
+                       float* w, float* out, const unsigned char* al = nullptr, int nt = 1, int s0 = 0) {
     float mx = -FLT_MAX;
     for (int j = 0; j < nk; j++) {
+        if (al && !al[(s0 + j) % nt]) continue;
         const float* k = kb + (size_t)j * ks;
         float s = 0.f;
         for (int i = 0; i < hs; i++) s += q[i] * k[i];
@@ -354,7 +356,10 @@ static void attend_one(const float* q, const float* kb, int ks, const float* vb,
         if (s > mx) mx = s;
     }
     float sum = 0.f;
-    for (int j = 0; j < nk; j++) { float e = expf(w[j] - mx); w[j] = e; sum += e; }
+    for (int j = 0; j < nk; j++) {
+        if (al && !al[(s0 + j) % nt]) { w[j] = 0.f; continue; }
+        float e = expf(w[j] - mx); w[j] = e; sum += e;
+    }
     float inv = 1.0f / sum;
     for (int j = 0; j < nk; j++) w[j] *= inv;
     for (int i = 0; i < hs; i++) out[i] = 0.f;
@@ -364,9 +369,10 @@ static void attend_one(const float* q, const float* kb, int ks, const float* vb,
         for (int i = 0; i < hs; i++) out[i] += a * v[i];
     }
 }
-// qkv [T, 3d] -> out [T, d]; att [nh, Kmax, Kmax] (row t: weights at columns ss[t]..se[t], se = NULL: ..t)
+// qkv [T, 3d] -> out [T, d]; att [nh, Kmax, Kmax] (row t: weights at columns ss[t]..se[t], se = NULL: ..t).
+// allow (attention regions, task 00044; NULL = none): token t attends to t2 only if allow[(t % nt) * nt + t2 % nt]
 static void attention_fwd(float* out, float* att, const float* qkv, const int* ss, const int* se, int T, int Kmax,
-                          int d, int nh) {
+                          int d, int nh, const unsigned char* allow = nullptr, int nt = 1) {
     const int hs = d / nh, d3 = 3 * d;
     const float scale = 1.0f / sqrtf((float)hs);
     for (int t = 0; t < T; t++)
@@ -375,7 +381,7 @@ static void attention_fwd(float* out, float* att, const float* qkv, const int* s
             float* arow = att + ((size_t)h * Kmax + t) * Kmax;
             attend_one(qkv + (size_t)t * d3 + h * hs, qkv + (size_t)lo * d3 + d + h * hs, d3,
                        qkv + (size_t)lo * d3 + 2 * d + h * hs, d3, hi - lo + 1, hs, scale, arow + lo,
-                       out + (size_t)t * d + h * hs);
+                       out + (size_t)t * d + h * hs, allow ? allow + (size_t)(t % nt) * nt : nullptr, nt, lo);
         }
 }
 // dqkv += (must be zeroed by caller); datt: scratch [Kmax]
@@ -700,6 +706,7 @@ struct TEntry { int pid, rows, cols, count; };
 struct Model {
     VMConfig cfg;
     Dims D;
+    std::vector<unsigned char> allow;   // attention regions (task 00044): [ntok * ntok], empty = none
     long off[NUM_P], sz[NUM_P], n_params = 0;
     std::vector<float> params, grads, wt, m, v;
     std::vector<TEntry> tlist;
@@ -912,6 +919,7 @@ static bool config_valid(const VMConfig& c) {
     if (c.universal && (c.patch <= 0 || c.act_token || c.bins < 2 || c.patch * c.patch * (c.gray ? 1 : 3) < 3)) return false;
     if (c.gray < 0 || c.gray > 1 || (c.gray && !c.universal)) return false;
     if (c.in_bins < 0 || c.in_bins > 1 || (c.in_bins && !c.universal)) return false;
+    if (!vm_attn_valid(&c)) return false;
     return true;
 }
 static Model* model_new(const VMConfig& cfg) {
@@ -919,6 +927,10 @@ static Model* model_new(const VMConfig& cfg) {
     Model* M = new Model();
     M->cfg = cfg;
     M->D = make_dims(cfg);
+    if (const int nt = vm_attn_allow(&cfg, nullptr)) {   // attention regions (task 00044)
+        M->allow.resize((size_t)nt * nt);
+        vm_attn_allow(&cfg, M->allow.data());
+    }
     model_layout(M);
     M->params.assign(M->n_params, 0.f);
     M->grads.assign(M->n_params, 0.f);
@@ -1028,7 +1040,7 @@ static void transformer_fwd(const Model* M, Workspace* W, int T, const int* ss, 
         float* proj = W->proj.data();
         layernorm_fwd(ln1, ln1m, ln1r, x, P + M->off[LN1W] + l * d, P + M->off[LN1B] + l * d, T, d);
         linear_fwd(qkv, ln1, WT + M->off[QKVW] + (size_t)l * 3 * d * d, P + M->off[QKVB] + l * 3 * d, T, d, 3 * d);
-        attention_fwd(atty, att, qkv, ss, se, T, K, d, D.nh);
+        attention_fwd(atty, att, qkv, ss, se, T, K, d, D.nh, M->allow.empty() ? nullptr : M->allow.data(), D.ntok);
         linear_fwd(proj, atty, WT + M->off[APW] + (size_t)l * d * d, P + M->off[APB] + l * d, T, d, d);
         for (int i = 0; i < T * d; i++) res1[i] = x[i] + proj[i];
         layernorm_fwd(ln2, ln2m, ln2r, res1, P + M->off[LN2W] + l * d, P + M->off[LN2B] + l * d, T, d);
@@ -2498,6 +2510,10 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[41] = c.bins;
     h[42] = c.gray;
     h[43] = c.in_bins;
+    h[44] = c.attn_split;
+    h[45] = c.attn_overlap;
+    h[46] = c.attn_pred_global;
+    h[47] = c.attn_cols;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2518,6 +2534,10 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.bins = h[41];
     c.gray = h[42];
     c.in_bins = h[43];
+    c.attn_split = h[44];
+    c.attn_overlap = h[45];
+    c.attn_pred_global = h[46];
+    c.attn_cols = h[47];
 }
 
 // =====================================================================================

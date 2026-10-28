@@ -76,9 +76,10 @@ def run(args, path):
     m = ion["instinct_m"]
     how = ("the instinct off" if not m else "the 1-step instinct" if ion["instinct_h"] == 1
            else "a %d-step lookahead (%s)" % (ion["instinct_h"], ion["instinct_decode"]))
+    mc = agent.config
     meta = dict(touch=cfg.touch, ego=cfg.egocentric, verb="touches" if cfg.touch else "clicks",
                 sub="frozen, %s%s; the agent's own 64x64 view" % (how, ", egocentric" if cfg.egocentric else ""),
-                poison_add=cfg.hazard_click_add)
+                poison_add=cfg.hazard_click_add, split=split_lines(mc))
     return rec, food, poison, meta
 
 
@@ -94,6 +95,7 @@ def frame(rec, t, title, meta):
     d = ImageDraw.Draw(im)
     im.paste(view(rec[t]["img"]), (VX, VY))
     ref = rec[t]["cursor"] if meta["ego"] else None
+    draw_split(d, meta, VX, VY, SCALE)
     trail(d, rec, t, VX, VY, SCALE, ref)
     rings(d, rec, t, VX, VY, SCALE, ref)
     # the panel
@@ -139,6 +141,29 @@ def legend(meta):
         + (() if meta["touch"] else ((EMPTY, "click on nothing"),)) + ((TRAIL, "cursor path"),)
 
 
+def split_lines(mc):
+    """Attention regions (task 00044): the overlap bands' edges in view pixels, and whether they are columns."""
+    S, O = mc.get("attn_split", 0), mc.get("attn_overlap", 0)
+    if not mc.get("universal") or S <= 1:
+        return None
+    g, P = mc["img"] // mc["patch"], mc["patch"]
+    band = g // S
+    edges = sorted({e for s in range(1, S) for e in ((s * band - O) * P, (s * band + O) * P)})
+    return edges, bool(mc.get("attn_cols", 0))
+
+
+def draw_split(d, meta, x0, y0, sc):
+    """The overlap band(s) of a split model's attention, dashed, on its view."""
+    if not meta.get("split"):
+        return
+    edges, cols = meta["split"]
+    for e in edges:
+        for k in range(0, 64 * sc, 12):
+            a, b = k, min(k + 6, 64 * sc)
+            seg = [(x0 + e * sc, y0 + a), (x0 + e * sc, y0 + b)] if cols else [(x0 + a, y0 + e * sc), (x0 + b, y0 + e * sc)]
+            d.line(seg, fill=(120, 170, 255), width=2)
+
+
 def in_view(p, ref):
     """A world position in the view: as is, or (egocentric, ref = the current cursor) relative to the cursor drawn at
     the center, wrapped."""
@@ -174,6 +199,7 @@ def frame_vs(recs, t, titles, metas):
     for rec, x0, title, meta in zip(recs, xs, titles, metas):
         im.paste(view(rec[t]["img"]).resize((64 * S2, 64 * S2), Image.NEAREST), (x0, top))
         ref = rec[t]["cursor"] if meta["ego"] else None
+        draw_split(d, meta, x0, top, S2)
         trail(d, rec, t, x0, top, S2, ref)
         rings(d, rec, t, x0, top, S2, ref)
         d.text((x0, 8), title, font=font(20, True), fill=TEXT)
@@ -202,6 +228,12 @@ def frame_vs(recs, t, titles, metas):
         yy = top + 120 + 80 * i
         d.ellipse([mx + 40, yy, mx + 60, yy + 20], outline=c, width=3)
         for j, w in enumerate(s.replace(": ", "\n").replace(" (", "\n(").split("\n")):
+            d.text((mx, yy + 26 + 17 * j), w, font=font(13), fill=MUTED)
+    if any(m.get("split") for m in metas):   # attention regions (task 00044)
+        yy = top + 120 + 80 * len(legend(metas[0]))
+        d.line([(mx + 30, yy + 10), (mx + 36, yy + 10)], fill=(120, 170, 255), width=2)
+        d.line([(mx + 42, yy + 10), (mx + 48, yy + 10)], fill=(120, 170, 255), width=2)
+        for j, w in enumerate(("overlap of the", "attention halves")):
             d.text((mx, yy + 26 + 17 * j), w, font=font(13), fill=MUTED)
     return im
 

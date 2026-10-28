@@ -90,7 +90,8 @@ def score(P, cfg, w, batch=64, glyphs=None):
     kind = np.array([0] * (nt - 2) + [1, 2])                          # what token i predicts
     used = np.concatenate([np.full(nt - 2, V), [3, 2]])             # values used by token i's target
     m = np.arange(V)[None, :] < used[:, None]                        # [nt, V]
-    acc = dict(sum=np.zeros(3), n=np.zeros(3), by_value=np.zeros(V), by_step=np.zeros(T), n_value=0, n_step=0)
+    acc = dict(sum=np.zeros(3), n=np.zeros(3), by_value=np.zeros(V), by_step=np.zeros(T), n_value=0, n_step=0,
+               by_patch=np.zeros(nt - 2), n_patch=0)
     for j in range(0, len(w["img"]), batch):
         b = {f: v[j:j + batch] for f, v in w.items()}
         with torch.no_grad():
@@ -116,9 +117,14 @@ def score(P, cfg, w, batch=64, glyphs=None):
         acc["n_value"] += S * T * pc.shape[2]
         acc["by_step"] += pc.sum((0, 2, 3))
         acc["n_step"] += S * pc.shape[2] * V
+        acc["by_patch"] += pc.sum((0, 1, 3))                           # by the predicted patch (task 00044)
+        acc["n_patch"] += S * T * V
     res = {"ce_" + KINDS[k]: float(acc["sum"][k] / acc["n"][k]) for k in range(3)}
     res.update(ce_patch_by_value=(acc["by_value"] / acc["n_value"]).tolist(),
                ce_patch_by_step=(acc["by_step"] / acc["n_step"]).tolist(), windows=len(w["img"]))
+    g = int(round(np.sqrt(nt - 2)))                                    # the patch grid: by row, top to bottom
+    res["ce_patch_by_row"] = (acc["by_patch"] / acc["n_patch"]).reshape(g, g).mean(1).tolist()
+    res["ce_patch_by_col"] = (acc["by_patch"] / acc["n_patch"]).reshape(g, g).mean(0).tolist()
     if glyphs is not None:
         res["nll_glyph"] = gsum / gn
     return res
@@ -172,6 +178,8 @@ def main():
         print("%s %8s  ce patch %.4f  move %.4f  body %.4f%s  (%d windows)" % (
             os.path.basename(os.path.normpath(args.run)), st, res["ce_patch"], res["ce_move"], res["ce_body"],
             "  glyph nll %.4f" % res["nll_glyph"] if "nll_glyph" in res else "", res["windows"]), flush=True)
+        print("    ce patch by row " + " ".join("%.4f" % x for x in res["ce_patch_by_row"]), flush=True)
+        print("    ce patch by col " + " ".join("%.4f" % x for x in res["ce_patch_by_col"]), flush=True)
 
 
 if __name__ == "__main__":

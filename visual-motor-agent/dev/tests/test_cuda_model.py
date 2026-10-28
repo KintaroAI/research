@@ -64,7 +64,14 @@ MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
           "universal_gray": dict(BASIC, patch=8, universal=1, bins=32, gray=1),           # task 00024
           "small_universal_gray": dict(SMALL, patch=4, universal=1, bins=6, gray=1),
           "universal_gray_inbins": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1),   # task 00036
-          "small_universal_inbins": dict(SMALL, patch=8, universal=1, bins=8, in_bins=1)}
+          "small_universal_inbins": dict(SMALL, patch=8, universal=1, bins=8, in_bins=1),
+          # task 00044: attention in regions (halves of the patch rows, one row of overlap; the tiny one: short windows)
+          "small_universal_split": dict(SMALL, patch=8, universal=1, bins=8, in_bins=1, attn_split=2, attn_overlap=1),
+          "tiny_universal_split": dict(SMALL, img=16, pred_img=16, ctx=4, patch=8, universal=1, bins=8, attn_split=2),
+          "universal_gray_inbins_split": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1, attn_split=2,
+                                              attn_overlap=1),
+          "universal_gray_inbins_split_pg": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1, attn_split=2,
+                                                 attn_overlap=1, attn_pred_global=1)}
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
           "no_move": dict(PC, move_coef=0.0),
@@ -241,7 +248,8 @@ def test_planner_calls_match_cpp(setup):
 
 
 @pytest.mark.parametrize("model", ["universal_gray", "small_universal", "small_universal_p16", "universal_gray_inbins",
-                                   "small_universal_inbins"])
+                                   "small_universal_inbins", "small_universal_split", "universal_gray_inbins_split",
+                                   "universal_gray_inbins_split_pg"])
 def test_uni_candidates_match_full_pass(model):
     """The instinct's fast path (task 00026): each candidate's predicted next hunger from the move token alone, against
     the full forward pass with that candidate as the window's last move."""

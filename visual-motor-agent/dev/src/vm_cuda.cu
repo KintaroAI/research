@@ -61,6 +61,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3 + D.act; D.pdim = D.patch * D.patch * 3;
         D.uni = c.universal ? 1 : 0;
         if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = D.npch + 2; }
+        if (!vm_attn_valid(&c)) return false;
         D.ch = (D.uni && c.gray) ? 1 : 3;
         D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
         D.ib = D.uni ? c.in_bins : 0; D.VI = D.ib ? D.V * D.nbin : D.V;
@@ -330,16 +331,19 @@ __global__ void k_ln_bwd(float* dinp, float* dw, float* db, const float* dout, c
 }
 // Causal attention within a context block: query b attends to keys lo..b, lo = start[b]. One thread per (b, head);
 // att[(b*nh + h)*K + (j - blk)] holds the weights, blk = the block's first frame.
+// allow (attention regions, task 00044; NULL = none): row b attends to key j only if allow[(b % nt) * nt + j % nt]
 __global__ void k_attn_fwd(const float* qkv, float* att, float* out, const int* start, const int* end, int B, int K,
-                           int d, int nh) {
+                           int d, int nh, const unsigned char* allow, int nt) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= B * nh) return;
     const int b = i / nh, h = i % nh, hs = d / nh, d3 = 3 * d, lo = start[b], hi = end ? end[b] : b, blk = (b / K) * K;
     const float scale = 1.0f / sqrtf((float)hs);
     const float* q = qkv + (long)b * d3 + h * hs;
+    const unsigned char* al = allow ? allow + (b % nt) * nt : nullptr;
     float* w = att + (long)i * K;
     float mx = -1e30f;
     for (int j = lo; j <= hi; j++) {
+        if (al && !al[j % nt]) { w[j - blk] = -INFINITY; continue; }   // weight exp(-inf) = 0
         const float* k = qkv + (long)j * d3 + d + h * hs;
         float s = 0.f;
         for (int c = 0; c < hs; c++) s += q[c] * k[c];
@@ -390,17 +394,20 @@ __global__ void k_attn_bwd(float* dqkv, const float* dout, const float* qkv, con
 // Long blocks (K > ATT_GEMM_K, patch tokens): the scores come from batched GEMMs. One warp per (row b, head):
 // softmax of the scaled scores in place over keys start[b]..end[b] (end = NULL: ..b) of its block, 0 elsewhere.
 #define ATT_GEMM_K 32
-__global__ void k_attn_softmax(float* att, const int* start, const int* end, int B, int K, int nh) {
+__global__ void k_attn_softmax(float* att, const int* start, const int* end, int B, int K, int nh,
+                               const unsigned char* allow, int nt) {
     const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
     if (i >= B * nh) return;
     const int b = i / nh, blk = (b / K) * K, lo = start[b] - blk, hi = (end ? end[b] : b) - blk;
+    const unsigned char* al = allow ? allow + (b % nt) * nt : nullptr;   // attention regions (as k_attn_fwd)
     float* w = att + (long)i * K;
     float mx = -1e30f;
-    for (int c = lane; c < K; c += 32) if (c >= lo && c <= hi) mx = fmaxf(mx, w[c]);
+    for (int c = lane; c < K; c += 32)
+        if (c >= lo && c <= hi && (!al || al[(blk + c) % nt])) mx = fmaxf(mx, w[c]);
     for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
     float sum = 0.f;
     for (int c = lane; c < K; c += 32) {
-        const float e = (c >= lo && c <= hi) ? expf(w[c] - mx) : 0.f;
+        const float e = (c >= lo && c <= hi && (!al || al[(blk + c) % nt])) ? expf(w[c] - mx) : 0.f;
         w[c] = e;
         sum += e;
     }
@@ -1016,6 +1023,8 @@ struct Model {
     // the instinct's candidates (vmc_uni_candidates): their inputs, activations and outputs, one row per candidate
     Buf c_in, c_x, c_ln, c_lnm, c_lnr, c_qkv, c_att, c_res, c_fch, c_fchg, c_lg, c_val;
     int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
+    unsigned char* allow = nullptr;              // attention regions (task 00044): [allow_nt^2] on the device, or NULL
+    int allow_nt = 1;
     int tcap = 0;
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
         dtin, dvf, da3, da2, da1, dY;
@@ -1049,14 +1058,15 @@ static void attention_fwd(Model* M, const float* qkv, float* att, float* y, cons
     const Dims& D = M->D;
     const int d = D.d, nh = D.nh, hs = D.hs, ns = B / K;
     if (K <= ATT_GEMM_K) {
-        k_attn_fwd<<<(B * nh + 127) / 128, 128>>>(qkv, att, y, start, end, B, K, d, nh);
+        k_attn_fwd<<<(B * nh + 127) / 128, 128>>>(qkv, att, y, start, end, B, K, d, nh, M->allow, M->allow_nt);
         return;
     }
     const float scale = 1.0f / sqrtf((float)hs);
     for (int h = 0; h < nh; h++)
         gemm_sb(M, false, true, K, K, hs, scale, qkv + h * hs, 3 * d, (long)K * 3 * d, qkv + d + h * hs, 3 * d,
                 (long)K * 3 * d, 0.f, att + (long)h * K, nh * K, (long)K * nh * K, ns);
-    k_attn_softmax<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(att, start, end, B, K, nh);
+    k_attn_softmax<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(att, start, end, B, K, nh, M->allow,
+                                                                          M->allow_nt);
     for (int h = 0; h < nh; h++)
         gemm_sb(M, false, false, K, hs, K, 1.f, att + (long)h * K, nh * K, (long)K * nh * K, qkv + 2 * d + h * hs,
                 3 * d, (long)K * 3 * d, 0.f, y + h * hs, d, (long)K * d, ns);
@@ -1140,6 +1150,15 @@ void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const 
     if (o != n_params) { fprintf(stderr, "vm_cuda: %ld parameters, expected %ld\n", n_params, o); return nullptr; }
     Model* M = new Model();
     M->cfg = *cfg; M->D = D; M->n_params = n_params;
+    if (const int nt = vm_attn_allow(cfg, nullptr)) {   // attention regions (task 00044)
+        std::vector<unsigned char> al((size_t)nt * nt);
+        vm_attn_allow(cfg, al.data());
+        if (cudaMalloc(&M->allow, al.size()) ||
+            cudaMemcpy(M->allow, al.data(), al.size(), cudaMemcpyHostToDevice)) {
+            fprintf(stderr, "vm_cuda: out of device memory\n"); return nullptr;
+        }
+        M->allow_nt = nt;
+    }
     for (int i = 0; i < NUM_P; i++) { M->off[i] = offsets[i]; M->sz[i] = sizes[i]; }
     const size_t nb = n_params * sizeof(float);
     if (cudaMalloc(&M->P, nb) || cudaMalloc(&M->G, nb) || cudaMalloc(&M->m, nb) || cudaMalloc(&M->v, nb) ||
@@ -1174,6 +1193,7 @@ void vmc_free(void* h) {
         if (b->p) cudaFree(b->p);
     for (int* q : {M->ch_b, M->ch_j, M->ch_par, M->ch_lt, M->ch_hl, M->ch_fr, M->im_idx, M->im_par, M->tstart, M->tend})
         cudaFree(q);
+    if (M->allow) cudaFree(M->allow);
     cublasDestroy(M->cb);
     delete M;
 }

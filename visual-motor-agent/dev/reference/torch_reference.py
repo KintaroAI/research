@@ -67,6 +67,27 @@ def uni_dims(cfg):
     return g * g + 2, cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
 
 
+def attn_allow(cfg):
+    """The attention regions (task 00044; vm_attn_allow in vm_agent.h): allow [nt, nt] bool, a token of slot q may attend
+    to one of slot k; None when attention is not split. Slots per step: the body, the patches row by row, the move. The
+    patch rows are cut into attn_split bands, each reaching attn_overlap rows past its edges; two patches meet if their
+    rows share a band; the body and the move meet every token, and with attn_pred_global also the last patch (it
+    predicts the move). attn_cols: the bands are of the grid's columns instead of its rows."""
+    S, O = cfg.get("attn_split", 0), cfg.get("attn_overlap", 0)
+    if not cfg.get("universal") or S <= 1:
+        return None
+    g = cfg["img"] // cfg["patch"]
+    nt, band = g * g + 2, g // S
+    bands = [(s * band - O, (s + 1) * band - 1 + O) for s in range(S)]
+    allow = np.ones((nt, nt), bool)
+    last = nt - 2 if cfg.get("attn_pred_global", 0) else nt - 1   # slots from here on are global
+    for q in range(1, last):
+        for k in range(1, last):
+            rq, rk = ((q - 1) % g, (k - 1) % g) if cfg.get("attn_cols", 0) else ((q - 1) // g, (k - 1) // g)
+            allow[q, k] = any(lo <= rq <= hi and lo <= rk <= hi for lo, hi in bands)
+    return allow
+
+
 def uni_shapes(cfg):
     d, on = cfg["d_model"], uni_on(cfg)
     if not on:
@@ -444,6 +465,9 @@ def forward_uni(P, cfg, images, drives, actions, ep_start):
     first = np.repeat(ss, nt, axis=1) * nt                                         # first token each token sees
     idx = np.arange(T * nt)
     mask = (idx[None, None, :] <= idx[None, :, None]) & (idx[None, None, :] >= first[:, :, None])
+    allow = attn_allow(cfg)
+    if allow is not None:   # attention regions (task 00044): by the slots of query and key
+        mask = mask & allow[idx[:, None] % nt, idx[None, :] % nt][None]
     hz = transformer(P, cfg, h, torch.tensor(mask)[:, None])
     logits = F.linear(hz, P["uni_out_w"], P["uni_out_b"]).reshape(S, T * nt, V, K)
     return dict(h=hz, logits=logits, values=v, used=used, step=step)

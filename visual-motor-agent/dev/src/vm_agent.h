@@ -51,7 +51,49 @@ typedef struct {
     int in_bins;        // universal: 1 = bin-embedding input (task 00036): each used value split two-hot over the bins,
                         //     W_in d x (V * bins), a learned embedding per value slot and bin; 0 = W_in d x V on the
                         //     centred values
+    int attn_split;     // universal: S > 1 = attention in regions (task 00044): the patch grid's rows cut into S bands,
+                        //     each reaching attn_overlap rows past its edges; body and move tokens in every region; a
+                        //     token attends to another only if their regions meet. 0 or 1 = off
+    int attn_overlap;   // universal with attn_split: rows of patches each band reaches beyond its edges
+    int attn_pred_global;   // universal with attn_split: 1 = the token that predicts a global token (the last patch,
+                            //     which predicts the move) is in every region too
+    int attn_cols;      // universal with attn_split: 1 = the bands are of the patch grid's columns instead of its rows
 } VMConfig;
+
+// The attention regions (task 00044): allow[q * nt + k] = 1 if a token of slot q may attend to one of slot k (slots per
+// step: 0 the body, 1..g*g the patches row by row, nt - 1 the move). The body and the move are in every region, and with
+// attn_pred_global also the last patch (it predicts the move). Returns nt, or 0 when attention is not split (allow
+// untouched; allow may be NULL to ask only for nt).
+static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
+    if (!c->universal || c->attn_split <= 1 || c->patch <= 0) return 0;
+    const int g = c->img / c->patch, nt = g * g + 2, band = g / c->attn_split, o = c->attn_overlap;
+    if (!allow) return nt;
+    for (int q = 0; q < nt; q++)
+        for (int k = 0; k < nt; k++) {
+            int ok = 1;
+            const int last = c->attn_pred_global ? nt - 2 : nt - 1;   // slots from here on are global
+            if (q > 0 && q < last && k > 0 && k < last) {   // two regional patches: their rows must share a band
+                const int rq = c->attn_cols ? (q - 1) % g : (q - 1) / g;   // row (or column) of each
+                const int rk = c->attn_cols ? (k - 1) % g : (k - 1) / g;
+                ok = 0;
+                for (int s = 0; s < c->attn_split && !ok; s++) {
+                    const int lo = s * band - o, hi = (s + 1) * band - 1 + o;
+                    ok = rq >= lo && rq <= hi && rk >= lo && rk <= hi;
+                }
+            }
+            allow[q * nt + k] = (unsigned char)ok;
+        }
+    return nt;
+}
+// attn_split / attn_overlap valid for this config
+static inline int vm_attn_valid(const VMConfig* c) {
+    if (c->attn_split < 0 || c->attn_overlap < 0) return 0;
+    if (c->attn_pred_global < 0 || c->attn_pred_global > 1 || c->attn_cols < 0 || c->attn_cols > 1) return 0;
+    if (c->attn_split <= 1) return c->attn_overlap == 0 && c->attn_pred_global == 0 && c->attn_cols == 0;
+    if (!c->universal || c->patch <= 0) return 0;
+    const int g = c->img / c->patch;
+    return g % c->attn_split == 0 && c->attn_overlap < g / c->attn_split;
+}
 
 typedef struct {
     float gamma, lam;           // discount, GAE lambda

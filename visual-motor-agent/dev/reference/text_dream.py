@@ -48,6 +48,8 @@ class Uni:
         self.m[0, :2] = 1
         self.m[1:self.nt - 1] = 1
         self.m[self.nt - 1, :3] = 1
+        al = ref.attn_allow(c)                            # attention regions (task 00044), by slot; None = none
+        self.allow = None if al is None else torch.tensor(al, device=device)
         self.device = device
 
     def logits(self, v):
@@ -62,7 +64,11 @@ class Uni:
         x = (hot * self.m[..., None]).reshape(S, T * nt, V * K)
         h = F.linear(x, P["uni_in_w"], P["uni_in_b"]).reshape(S, T, nt, -1) + P["uni_slot"][None, None]
         h = (h + P["wpe"][:T][None, :, None]).reshape(S, T * nt, -1)
-        mask = torch.ones(T * nt, T * nt, dtype=torch.bool, device=self.device).tril()[None, None]
+        mask = torch.ones(T * nt, T * nt, dtype=torch.bool, device=self.device).tril()
+        if self.allow is not None:
+            slot = torch.arange(T * nt, device=self.device) % nt
+            mask = mask & self.allow[slot[:, None], slot[None, :]]
+        mask = mask[None, None]
         return F.linear(ref.transformer(P, self.cfg, h, mask), P["uni_out_w"], P["uni_out_b"]).reshape(S, T * nt, V, K)
 
 
