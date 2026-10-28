@@ -58,11 +58,14 @@ typedef struct {
     int attn_pred_global;   // universal with attn_split: 1 = the token that predicts a global token (the last patch,
                             //     which predicts the move) is in every region too
     int attn_cols;      // universal with attn_split: 1 = the bands are of the patch grid's columns instead of its rows
+    int attn_checker;   // universal with attn_split: 1 = checkerboard regions (task 00046): patch (row r, column c) in
+                        //     region (r + c) % attn_split, no bands (attn_overlap and attn_cols 0)
 } VMConfig;
 
 // The attention regions (task 00044): allow[q * nt + k] = 1 if a token of slot q may attend to one of slot k (slots per
 // step: 0 the body, 1..g*g the patches row by row, nt - 1 the move). The body and the move are in every region, and with
-// attn_pred_global also the last patch (it predicts the move). Returns nt, or 0 when attention is not split (allow
+// attn_pred_global also the last patch (it predicts the move); attn_checker: regions by (row + column) % S instead of
+// bands. Returns nt, or 0 when attention is not split (allow
 // untouched; allow may be NULL to ask only for nt).
 static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
     if (!c->universal || c->attn_split <= 1 || c->patch <= 0) return 0;
@@ -72,7 +75,9 @@ static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
         for (int k = 0; k < nt; k++) {
             int ok = 1;
             const int last = c->attn_pred_global ? nt - 2 : nt - 1;   // slots from here on are global
-            if (q > 0 && q < last && k > 0 && k < last) {   // two regional patches: their rows must share a band
+            if (q > 0 && q < last && k > 0 && k < last && c->attn_checker) {   // checkerboard: the same diagonal class
+                ok = ((q - 1) / g + (q - 1) % g) % c->attn_split == ((k - 1) / g + (k - 1) % g) % c->attn_split;
+            } else if (q > 0 && q < last && k > 0 && k < last) {   // two regional patches: their rows must share a band
                 const int rq = c->attn_cols ? (q - 1) % g : (q - 1) / g;   // row (or column) of each
                 const int rk = c->attn_cols ? (k - 1) % g : (k - 1) / g;
                 ok = 0;
@@ -89,9 +94,12 @@ static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
 static inline int vm_attn_valid(const VMConfig* c) {
     if (c->attn_split < 0 || c->attn_overlap < 0) return 0;
     if (c->attn_pred_global < 0 || c->attn_pred_global > 1 || c->attn_cols < 0 || c->attn_cols > 1) return 0;
-    if (c->attn_split <= 1) return c->attn_overlap == 0 && c->attn_pred_global == 0 && c->attn_cols == 0;
+    if (c->attn_checker < 0 || c->attn_checker > 1) return 0;
+    if (c->attn_split <= 1)
+        return c->attn_overlap == 0 && c->attn_pred_global == 0 && c->attn_cols == 0 && c->attn_checker == 0;
     if (!c->universal || c->patch <= 0) return 0;
     const int g = c->img / c->patch;
+    if (c->attn_checker) return c->attn_overlap == 0 && c->attn_cols == 0 && c->attn_split <= g;
     return g % c->attn_split == 0 && c->attn_overlap < g / c->attn_split;
 }
 

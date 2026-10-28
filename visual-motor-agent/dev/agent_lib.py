@@ -25,7 +25,8 @@ class VMConfig(C.Structure):
                  ("pred_skip", C.c_int), ("inv_hidden", C.c_int), ("dyn_hidden", C.c_int), ("one_frame", C.c_int),
                  ("pi_hidden", C.c_int), ("patch", C.c_int), ("act_token", C.c_int), ("universal", C.c_int),
                  ("bins", C.c_int), ("gray", C.c_int), ("in_bins", C.c_int), ("attn_split", C.c_int),
-                 ("attn_overlap", C.c_int), ("attn_pred_global", C.c_int), ("attn_cols", C.c_int)]
+                 ("attn_overlap", C.c_int), ("attn_pred_global", C.c_int), ("attn_cols", C.c_int),
+                 ("attn_checker", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -56,7 +57,8 @@ class PPOStats(C.Structure):
 DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer=2, n_head=4, d_ff=512, ctx=32,
                      pred_img=32, pc1=16, pc2=32, pred_hidden=256, use_prev_reward=0, logstd_init=-0.5, coord=0, pb=32,
                      pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
-                     act_token=0, universal=0, bins=32, gray=0, in_bins=0, attn_split=0, attn_overlap=0, attn_pred_global=0, attn_cols=0)
+                     act_token=0, universal=0, bins=32, gray=0, in_bins=0, attn_split=0, attn_overlap=0, attn_pred_global=0, attn_cols=0,
+                     attn_checker=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,

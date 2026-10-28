@@ -2514,6 +2514,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[45] = c.attn_overlap;
     h[46] = c.attn_pred_global;
     h[47] = c.attn_cols;
+    h[48] = c.attn_checker;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2538,6 +2539,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.attn_overlap = h[45];
     c.attn_pred_global = h[46];
     c.attn_cols = h[47];
+    c.attn_checker = h[48];
 }
 
 // =====================================================================================

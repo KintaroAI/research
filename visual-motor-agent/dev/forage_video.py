@@ -147,6 +147,8 @@ def split_lines(mc):
     if not mc.get("universal") or S <= 1:
         return None
     g, P = mc["img"] // mc["patch"], mc["patch"]
+    if mc.get("attn_checker", 0):                                    # task 00046: the regions' patches
+        return "checker", P, S
     band = g // S
     edges = sorted({e for s in range(1, S) for e in ((s * band - O) * P, (s * band + O) * P)})
     return edges, bool(mc.get("attn_cols", 0))
@@ -155,6 +157,14 @@ def split_lines(mc):
 def draw_split(d, meta, x0, y0, sc):
     """The overlap band(s) of a split model's attention, dashed, on its view."""
     if not meta.get("split"):
+        return
+    if meta["split"][0] == "checker":                                # region 0's patches: a dot at each centre
+        _, P, S = meta["split"]
+        for r in range(64 // P):
+            for c in range(64 // P):
+                if (r + c) % S == 0:
+                    x, y = x0 + (c + 0.5) * P * sc, y0 + (r + 0.5) * P * sc
+                    d.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(120, 170, 255))
         return
     edges, cols = meta["split"]
     for e in edges:

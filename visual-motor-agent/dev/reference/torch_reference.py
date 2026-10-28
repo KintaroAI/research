@@ -72,7 +72,8 @@ def attn_allow(cfg):
     to one of slot k; None when attention is not split. Slots per step: the body, the patches row by row, the move. The
     patch rows are cut into attn_split bands, each reaching attn_overlap rows past its edges; two patches meet if their
     rows share a band; the body and the move meet every token, and with attn_pred_global also the last patch (it
-    predicts the move). attn_cols: the bands are of the grid's columns instead of its rows."""
+    predicts the move). attn_cols: the bands are of the grid's columns instead of its rows. attn_checker (task 00046):
+    no bands, patch (row r, column c) in region (r + c) % attn_split."""
     S, O = cfg.get("attn_split", 0), cfg.get("attn_overlap", 0)
     if not cfg.get("universal") or S <= 1:
         return None
@@ -83,6 +84,9 @@ def attn_allow(cfg):
     last = nt - 2 if cfg.get("attn_pred_global", 0) else nt - 1   # slots from here on are global
     for q in range(1, last):
         for k in range(1, last):
+            if cfg.get("attn_checker", 0):
+                allow[q, k] = sum(divmod(q - 1, g)) % S == sum(divmod(k - 1, g)) % S
+                continue
             rq, rk = ((q - 1) % g, (k - 1) % g) if cfg.get("attn_cols", 0) else ((q - 1) // g, (k - 1) // g)
             allow[q, k] = any(lo <= rq <= hi and lo <= rk <= hi for lo, hi in bands)
     return allow

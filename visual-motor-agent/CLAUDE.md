@@ -56,6 +56,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `model.attn_split` S bands of the patch grid's rows (`attn_cols=1`: columns), each reaching `attn_overlap` rows
     past its edges; body and move in every region, `attn_pred_global=1` also the last patch (it predicts the move). A
     mask (weights 0), not a compute saving. Prediction survives halves; the move's predictor must see the whole view.
+    `attn_checker=1` (task 00046, vm-00039): regions by (row + column) % S, a checkerboard; no overlap or columns.
   - **The universal model** (task 00023, `../ARCHITECTURE.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
     channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,

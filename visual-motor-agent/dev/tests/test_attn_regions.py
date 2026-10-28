@@ -58,10 +58,31 @@ def test_allow_table():
     np.testing.assert_array_equal(p[0, :, 0, :], want)
 
 
+def test_checker_allow_table():
+    """attn_checker (task 00046): patch (r, c) in region (r + c) % S; two patches meet only in the same region; the
+    body and the move meet every token, with attn_pred_global also the last patch."""
+    cfg = dict(universal=1, img=64, patch=8, attn_split=2, attn_checker=1)
+    a = ref.attn_allow(cfg)
+    assert a[0].all() and a[:, 0].all() and a[65].all() and a[:, 65].all()
+    p = a[1:65, 1:65].reshape(8, 8, 8, 8)                             # [row q, col q, row k, col k]
+    r, c = np.meshgrid(np.arange(8), np.arange(8), indexing="ij")
+    par = (r + c) % 2
+    np.testing.assert_array_equal(p, par[:, :, None, None] == par[None, None])
+    assert p[0, 0, 1, 1] and not p[0, 0, 0, 1] and not p[0, 1, 1, 1] and p[0, 1, 1, 0]
+    assert a[64].sum() == 32 + 2                                    # the last patch (7, 7): its 32 and the globals
+    ag = ref.attn_allow(dict(cfg, attn_pred_global=1))
+    assert ag[64].all() and ag[:, 64].all()
+    np.testing.assert_array_equal(ag[:64, :64], a[:64, :64])
+    a3 = ref.attn_allow(dict(cfg, attn_split=3))[1:65, 1:65].reshape(8, 8, 8, 8)
+    np.testing.assert_array_equal(a3, ((r + c) % 3)[:, :, None, None] == ((r + c) % 3)[None, None])
+
+
 @pytest.mark.parametrize("bad", [dict(attn_split=3), dict(attn_split=2, attn_overlap=2), dict(attn_overlap=1),
                                  dict(attn_split=-1), dict(attn_split=2, attn_overlap=-1), dict(attn_pred_global=1),
                                  dict(attn_split=2, attn_pred_global=2), dict(attn_cols=1),
-                                 dict(attn_split=2, attn_cols=2)])
+                                 dict(attn_split=2, attn_cols=2), dict(attn_checker=1),
+                                 dict(attn_split=2, attn_checker=2), dict(attn_split=2, attn_overlap=1, attn_checker=1),
+                                 dict(attn_split=2, attn_cols=1, attn_checker=1), dict(attn_split=5, attn_checker=1)])
 def test_invalid_configs(bad):
     with pytest.raises(ValueError):
         agent_lib.Agent(dict(UNI, **bad), seed=1)          # a 4x4 grid: halves of 2 rows, overlap < 2
@@ -104,17 +125,30 @@ def test_a_region_does_not_see_the_other_directly():
         assert changed(dict(split, attn_split=0, attn_overlap=0), top, drv)
         # the last patch (it predicts the move) sees the top only with attn_pred_global
         assert not changed(split, top, drv, q=nt - 2) and changed(dict(split, attn_pred_global=1), top, drv, q=nt - 2)
+        # the checkerboard: a patch sees an earlier patch of its own parity (row + column), not of the other
+        ck = dict(UNI, n_layer=1, in_bins=in_bins, attn_split=2, attn_checker=1)
+        same, other = img.copy(), img.copy()
+        same[:, 0, 0:8, 8:16] = 255 - same[:, 0, 0:8, 8:16]             # step 0, patch (0, 1): odd
+        other[:, 0, 0:8, 0:8] = 255 - other[:, 0, 0:8, 0:8]             # step 0, patch (0, 0): even
+        q30 = 1 + 3 * g + 0                                              # patch (3, 0) of the last step: odd
+        assert changed(ck, same, drv, q=q30) and not changed(ck, other, drv, q=q30)
+        assert changed(ck, img, body, q=q30)
+        q33 = 1 + 3 * g + 3                                              # patch (3, 3): even
+        assert changed(ck, other, drv, q=q33) and not changed(ck, same, drv, q=q33)
 
 
 @pytest.fixture(scope="module", params=[(8, 0, 0, 2, 1, 0), (8, 0, 1, 2, 0, 0), (4, 1, 1, 2, 1, 0), (4, 1, 1, 4, 1, 0),
-                                        (8, 0, 1, 2, 1, 1), (4, 1, 1, 4, 1, 1), (4, 1, 1, 2, 1, 2)],
+                                        (8, 0, 1, 2, 1, 1), (4, 1, 1, 4, 1, 1), (4, 1, 1, 2, 1, 2), (8, 0, 1, 2, 0, 4),
+                                        (4, 1, 1, 2, 0, 5), (4, 1, 1, 3, 0, 4)],
                 ids=["p8_S2_O1", "p8_inbins_S2_O0", "p4_gray_inbins_S2_O1", "p4_gray_inbins_S4_O1", "p8_inbins_S2_O1_pg",
-                     "p4_gray_inbins_S4_O1_pg", "p4_gray_inbins_S2_O1_cols"])
+                     "p4_gray_inbins_S4_O1_pg", "p4_gray_inbins_S2_O1_cols", "p8_inbins_checker",
+                     "p4_gray_inbins_checker_pg", "p4_gray_inbins_checker_S3"])
 def split_agent(request):
     agent_lib.set_threads(4)
-    patch, gray, in_bins, S, O, pg = request.param      # pg = 2: columns (attn_cols), not pred_global
+    patch, gray, in_bins, S, O, pg = request.param      # pg bits: 1 pred_global, 2 columns (attn_cols), 4 checker
     return agent_lib.Agent(dict(UNI, patch=patch, gray=gray, in_bins=in_bins, bins=6 if gray else 8, attn_split=S,
-                                attn_overlap=O, attn_pred_global=pg % 2, attn_cols=pg // 2), seed=7)
+                                attn_overlap=O, attn_pred_global=pg % 2, attn_cols=pg // 2 % 2,
+                                attn_checker=pg // 4), seed=7)
 
 
 def test_cpu_loss_and_grads_match_reference(split_agent):
@@ -145,9 +179,14 @@ def test_cpu_loss_and_grads_match_reference(split_agent):
                                       attn_overlap=1),
                                  dict(UNI, in_bins=1, attn_split=2, attn_overlap=1, attn_pred_global=1),
                                  dict(UNI, img=16, pred_img=16, ctx=4, attn_split=2, attn_pred_global=1),
-                                 dict(UNI, in_bins=1, attn_split=2, attn_overlap=1, attn_cols=1)],
+                                 dict(UNI, in_bins=1, attn_split=2, attn_overlap=1, attn_cols=1),
+                                 dict(UNI, in_bins=1, attn_split=2, attn_checker=1),
+                                 dict(UNI, img=16, pred_img=16, ctx=4, attn_split=2, attn_checker=1),
+                                 dict(UNI, img=64, pred_img=32, patch=8, gray=1, in_bins=1, bins=32, attn_split=2,
+                                      attn_checker=1, attn_pred_global=1)],
                          ids=["small_S2_O1", "tiny_short_windows", "gray_inbins_64", "small_pred_global",
-                              "tiny_pred_global", "small_cols"])
+                              "tiny_pred_global", "small_cols", "small_checker", "tiny_checker",
+                              "gray_inbins_64_checker_pg"])
 def test_gpu_loss_and_grads_match_reference(cfg):
     from test_cuda_model import PC, _ref_flat_grads, compare, cuda_batch
     agent = agent_lib.Agent(cfg, seed=4)
@@ -173,5 +212,11 @@ def test_checkpoint_keeps_the_split(tmp_path):
     b = agent_lib.Agent(path=path)
     assert b.config["attn_split"] == 2 and b.config["attn_overlap"] == 1 and b.config["attn_pred_global"] == 1
     assert b.config["attn_cols"] == 1
+    agent.close()
+    b.close()
+    agent = agent_lib.Agent(dict(UNI, attn_split=2, attn_checker=1), seed=2)
+    agent.save(path)
+    b = agent_lib.Agent(path=path)
+    assert b.config["attn_split"] == 2 and b.config["attn_checker"] == 1
     agent.close()
     b.close()
