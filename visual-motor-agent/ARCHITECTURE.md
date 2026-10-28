@@ -186,6 +186,17 @@ every tick:
   Checks: reconstruction error and codes used per token type; hunger resolution (the smallest hunger difference that
   changes the code, against today's 32 bins: 0.03); whether relief and poison jumps and the cursor survive the round
   trip. The bins of today are already a fixed per-value quantizer; the tokenizer's gain is for patches.
+- **An analogue of GPT-2's `wte`: one matrix for input and output** (the owner, 2026-10-27). GPT-2 embeds a token with a
+  row of `wte` and scores the next token with the same rows (logits = h · `wte`ᵀ). With the bin-embedding input
+  (`model.in_bins`, vm-00030) our two maps already have transposed shapes: `W_in` d × (V·K) embeds "value j at bin k",
+  `W_out` (V·K) × d scores "the next token's value j at bin k". Tie them (`W_out = W_inᵀ`, own biases kept; a flag such
+  as `model.tie_io`, the two gradients summed into the one matrix in C++, CUDA and the reference). Gains: every bin's row
+  is trained at every position through the output, also bins rarely seen as input (rare grey levels, rare letters);
+  one meaning per bin, the same for every world; ~28% fewer parameters (262k of 933k). Doubts: 32 bins per value is a
+  small vocabulary next to GPT-2's 50k, so less to gain; a value position j is shared by every token type (pixel j,
+  a drive, a move component) in both maps already, the slot embedding telling them apart. Test: the text world against
+  the classical GPT (prediction, nats per letter) and the egocentric touch world (prediction, foraging), 3 seeds, tied
+  against untied. With a learned tokenizer (above) the tied matrix is the code embedding table, exactly as `wte`.
 - **A faster lookahead:** the imagined steps recompute the whole window for every candidate and pass; the real
   prefix is the same for all of them, so its keys and values could be cached once per tick (as the one-step
   candidates do).
