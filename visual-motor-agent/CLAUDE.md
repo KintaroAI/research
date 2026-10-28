@@ -50,6 +50,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     replaced away from the cursor (`configs/U_touch.json`, smaller food; a random walk touches 4.7 food and 11.8 poison
     per 1k; `forage_chance.py`: blind walks, food : poison at most 0.78; vm-00035). `configs/U_touch_ego.json` adds
     `env.egocentric` (vm-00036): ~2× the food and less poison in every arm.
+  - **Two stacked boxes, backprop cut between them** (task 00045, vm-00038): `reference/stacked_local.py` (PyTorch,
+    text world; arms e2e / frozen / local / dtp / dni, `--tie`, `--cut-norm`), `reference/stacked_summary.py`.
   - **Attention in regions** (task 00044, vm-00037; `vm_attn_allow` in `vm_agent.h`, `torch_reference.attn_allow`):
     `model.attn_split` S bands of the patch grid's rows (`attn_cols=1`: columns), each reaching `attn_overlap` rows
     past its edges; body and move in every region, `attn_pred_global=1` also the last patch (it predicts the move). A
