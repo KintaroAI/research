@@ -179,7 +179,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     rec, ego = run(args)
     np.savez_compressed(os.path.join(args.out, "dream_%s.npz" % args.decode),
-                        pred=np.stack([r["pred"] for r in rec]), real=np.stack([r["real"] for r in rec]))
+                        pred=np.stack([r["pred"] for r in rec]), real=np.stack([r["real"] for r in rec]), n_real=args.real)
     its = [r["iters"] for r in rec if r["phase"] == "dream"]
     print("decode iterations per dreamed step: mean %.1f max %d" % (np.mean(its), max(its)))
     title = (args.title or os.path.basename(args.run.rstrip("/"))) + "  (pixels: %s)" % args.decode

@@ -96,8 +96,9 @@ In `~/data/research/visual-motor-agent/exp_00035/` (not in git):
   TB 15 food, 18 poison**, its hunger often at 1.
 - **`video_TSF4_s3/dream_pair.mp4`, `video_TB_s1/dream_pair.mp4`** (200 real steps, then 200 dreamed with the
   model's own moves, the real world beside it): TB's dream draws the cursor for 2 dreamed steps and never again (no
-  white pixel from step 3 to 200); TSF4's draws one in every dreamed step (9–39 white pixels; the whole real cross
-  has 39), at the wrong place after the first tens of steps. In both, the dreamed food stays where it was after the
+  white pixel from step 3 to 200); TSF4's draws at least part of one in every dreamed step (1–15 white pixels; the
+  real cross has 13; a full cross in 79 of 200; `dream_measures.py`), at the wrong place after the first tens of
+  steps. In both, the dreamed food stays where it was after the
   real one is eaten, the dots fade, and poison drifts on (TSF4's sometimes merging into the food).
 
 What the videos show of the behaviour:

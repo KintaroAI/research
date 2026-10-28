@@ -20,10 +20,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `dynamics_over_training.py` and `compare_dynamics.py`). `plot_runs.py`: learning curves.
     `record_episodes.py`: GIFs, replay JSON and imagination strips. `make_video.py`: MP4s and
     screenshot sheets across checkpoints (needs dense checkpoints via `train.milestones`).
-    For the universal model: `forage_video.py` (a frozen agent foraging, a sheet every 100 steps; `--horizon` /
-    `--decode` override the run's instinct, `--vs RUN2` adds `compare.mp4`: two agents side by side in the same worlds)
-    and `dream_video.py` (forage, then the model dreams on its own predictions; `--decode pair` by default). Both show
-    touches, not clicks, in the touch world.
+    For the universal model: **`dev/ANALYSIS.md`** — how to run lifetimes and the frozen tests, the dream curve,
+    `tables.py` (README tables), `forage_video.py` / `dream_video.py` / `dream_measures.py`, and what repeats.
   - `plan.py`: CEM planner on the latent dynamics (acting without reward). `analyze_imagination.py`:
     imagined vs real rollouts, read out by retrieval. `analyze_planner.py`: where the planner fails.
     `train.py --set train.actor=planner`: the model learns from the planner's own experience.
@@ -140,7 +138,7 @@ Outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name_sS/`, not i
     losses, the planner's `encode`/`imagine`/`decode`, and patch tokens (tasks 00013, 00015): DMI, the planner
     agent L and vm-00010's patch-token agents run there. Windows longer than 32 tokens (patch tokens: `model.patch=8`
     gives 536 per window) use batched cuBLAS attention, any length (task 00018). Not PPO (only `train.py` uses it). GPU lifetimes are not
-    bitwise reproducible against CPU ones. `online.py --eval RUN --eval-device cuda` runs the frozen tests'
+    bitwise reproducible against CPU ones, nor run to run (compare arms over seeds; frozen tests repeat exactly). `online.py --eval RUN --eval-device cuda` runs the frozen tests'
     forward passes on the GPU (about 10 s per checkpoint).
   - **Many lifetimes on one GPU: start the CUDA multi-process service** (`nvidia-cuda-mps-control -d`, with
     `CUDA_MPS_PIPE_DIRECTORY` set the same for the daemon and the runs). Twelve basic-agent lifetimes then run at

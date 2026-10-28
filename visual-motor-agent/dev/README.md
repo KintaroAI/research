@@ -78,6 +78,9 @@ Per-run outputs go to `~/data/research/visual-motor-agent/exp_NNNNN/RRR_name/`:
 
 ## Analysis
 
+The universal model (vm-00019 on): `ANALYSIS.md` (lifetimes, frozen tests, the dream curve, tables, videos). Below:
+the basic agent's tools.
+
 ```bash
 ./venv/bin/python evaluate.py RUN_DIR                    # task metrics on fresh seeds
 ./venv/bin/python analyze_dynamics.py RUN_DIR --ckpt ckpt_00524288.bin
