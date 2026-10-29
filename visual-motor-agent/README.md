@@ -89,6 +89,7 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00042](00042-summary-thumbnails/README.md) | Summary tokens with content (`model.sum_thumb`: each summary's values are its block box-averaged to one patch): EPT, EFT, EF in the egocentric touch world, TPT in text; 3 seeds | In progress | Text: thumbnails change little (1.927 nats per letter against TP's 1.921; generation 2.29 against 2.37 under GPT). Image: analysis running. |
 | [00043](00043-square-poison/) | vm-00042's image arms with square poison (`env.hazard_shape = square`), so that poison differs from food in shape, not only texture | In progress | Lifetimes done; analysis running. |
 | [00044](00044-checker-cells/) | vm-00042's image arms with poison checkered in 2 x 2 cells (`env.hazard_checker_cell = 2`), so that the checker survives a level-1 thumbnail | In progress | Lifetimes done; analysis running. |
+| [00045](00045-slot-positions/) | Position codes at birth placed by the slot layout (task 00052: a patch its cell, a summary its block's centre; before, slot k + 1 got cell k's code): XF, XFT (vm-00042's EF, EFT) and XTP (vm-00041's TP) rerun with the fix; 3 seeds | In progress | Running. |
 
 ## Open Questions
 

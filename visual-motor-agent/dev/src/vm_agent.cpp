@@ -889,11 +889,13 @@ static void model_init_params(Model* M, uint64_t seed) {
         fill_normal(r, P + M->off[UIW], M->sz[UIW], D.ib ? 0.02f : sqrtf(3.0f / D.V));
         fill_normal(r, P + M->off[USL], M->sz[USL], 0.02f);
         fill_normal(r, P + M->off[UOW], M->sz[UOW], 0.02f);                // near-uniform bins at birth
-        // the patch slots (1..npch) add the 2D sine-cosine code of their cell, as pos2d
+        // patch and summary slots add the 2D sine-cosine code of their centre, as pos2d (task 00052: by the slot
+        // table; before, slot k + 1 got cell k's code, which summaries shifted)
         const int q = (int)(d / 4);
-        for (int k = 0; k < D.npch; k++) {
-            const float gx = (float)(k % D.gp), gy = (float)(k / D.gp);
-            float* pe = P + M->off[USL] + (size_t)(k + 1) * d;
+        for (int k = 0; k < D.ntok; k++) {
+            float gx, gy;
+            if (!vm_uni_center(&M->cfg, &M->uslot[k], &gy, &gx)) continue;
+            float* pe = P + M->off[USL] + (size_t)k * d;
             for (int i = 0; i < q; i++) {
                 const float w = powf(10000.f, -(float)i / q);
                 pe[i] += 0.1f * sinf(gx * w); pe[q + i] += 0.1f * cosf(gx * w);

@@ -112,6 +112,17 @@ static inline void vm_uni_block(const VMConfig* c, const VMSlot* s, int* by0, in
     const int b = 1 << s->lev;
     *by0 = s->r * b * ps; *bx0 = s->c * b * ps; *fy = b; *fx = b;
 }
+// The centre of a slot's cells in cell coordinates (task 00052): a patch, its cell; a pyramid summary, its block's
+// centre; a row summary, its band's centre. Returns 0 for the body and the move (no position).
+static inline int vm_uni_center(const VMConfig* c, const VMSlot* s, float* y, float* x) {
+    const int g = c->img / c->patch;
+    if (s->kind == 1) { *y = (float)s->r; *x = (float)s->c; return 1; }
+    if (s->kind != 2) return 0;
+    if (c->uni_sum > 0) { *y = (s->r + 0.5f) * c->uni_sum - 0.5f; *x = 0.5f * (g - 1); return 1; }
+    const int b = 1 << s->lev;
+    *y = (s->r + 0.5f) * b - 0.5f; *x = (s->c + 0.5f) * b - 0.5f;
+    return 1;
+}
 // Tokens per step without a target: the summaries, unless they carry thumbnails (task 00049)
 static inline int vm_uni_untargeted(const VMConfig* c) { return c->sum_thumb ? 0 : vm_uni_nsum(c); }
 // The kind of slot k and its index (as vm_uni_layout; slow: for one-off use)
