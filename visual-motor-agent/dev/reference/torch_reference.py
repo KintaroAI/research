@@ -105,8 +105,10 @@ def attn_allow(cfg):
     predicts the move). attn_cols: the bands are of the grid's columns instead of its rows. attn_checker (task 00046):
     no bands, patch (row r, column c) in region (r + c) % attn_split. attn_win (task 00047; directional, allow[q, k]: q
     attends to k): two patches within attn_win rows and columns; a patch attends to every summary, a summary to the
-    patches of its band and every summary; the body and the move to and from everything."""
-    S, O = cfg.get("attn_split", 0), cfg.get("attn_overlap", 0)
+    patches of its band and every summary; the body and the move to and from everything. attn_split with uni_pyr
+    (task 00055): halves sharing the summaries; every token reads every summary, the body and the move, and a patch
+    only if it shares a band (a summary is in every band its block spans)."""
+    S, O =cfg.get("attn_split", 0), cfg.get("attn_overlap", 0)
     if cfg.get("universal") and cfg.get("attn_win", 0) > 0:   # local attention with summaries (tasks 00047, 00048)
         Wn, R, g = cfg["attn_win"], cfg.get("uni_sum", 0), cfg["img"] // cfg["patch"]
         t = uni_slot_table(cfg)
@@ -127,6 +129,14 @@ def attn_allow(cfg):
                 else:                                           # a summary reads every patch of its block
                     allow[q, k] = rr[k] // 2 ** lev[q] == rr[q] and cc[k] // 2 ** lev[q] == cc[q]
         return allow
+    if cfg.get("universal") and S > 1 and cfg.get("uni_pyr", 0) > 0:   # halves sharing the summaries (task 00055)
+        t = uni_slot_table(cfg)
+        band = cfg["img"] // cfg["patch"] // S
+        pos = t["c"] if cfg.get("attn_cols", 0) else t["r"]
+        size = np.where(t["kind"] == 2, 2 ** t["level"], 1)              # a summary spans its block's bands
+        reg = [set(range(p * b // band, ((p + 1) * b - 1) // band + 1)) if k in (1, 2) else set(range(S))
+               for k, p, b in zip(t["kind"], pos, size)]
+        return np.array([[t["kind"][k] != 1 or bool(reg[q] & reg[k]) for k in range(len(reg))] for q in range(len(reg))])
     if not cfg.get("universal") or S <= 1:
         return None
     g = cfg["img"] // cfg["patch"]

@@ -92,7 +92,7 @@ def test_cost_grows_like_n_log_n():
 
 
 @pytest.mark.parametrize("bad", [dict(uni_pyr=3), dict(uni_pyr=-1), dict(uni_pyr=1, uni_sum=1),
-                                 dict(uni_pyr=1, attn_split=2)])
+                                 dict(uni_pyr=1, attn_split=2, attn_win=1)])   # halves: task 00055
 def test_invalid_configs(bad):
     with pytest.raises(ValueError):
         agent_lib.Agent(dict(UNI, **bad), seed=1)              # a 4x4 grid: at most 2 levels

@@ -59,6 +59,7 @@ typedef struct {
     int attn_pred_global;   // universal with attn_split: 1 = the token that predicts a global token (the last patch,
                             //     which predicts the move) is in every region too
     int attn_cols;      // universal with attn_split: 1 = the bands are of the patch grid's columns instead of its rows
+                        //     (with uni_pyr, task 00055: a patch attends to its band's patches and to every summary)
     int attn_checker;   // universal with attn_split: 1 = checkerboard regions (task 00046): patch (row r, column c) in
                         //     region (r + c) % attn_split, no bands (attn_overlap and attn_cols 0)
     int attn_win;       // universal: W > 0 = local attention (task 00047): two patches attend to each other only within W
@@ -144,7 +145,9 @@ static inline int vm_uni_slot(const VMConfig* c, int k, int* idx) {
 // every summary, a summary to the patches of its band and to every summary; body and move global. With uni_pyr (task
 // 00048): a token reads the summaries of its own or a coarser level whose position is within W of its own, projected to
 // that level; a summary reads every patch of its block and no finer summary. Returns nt, or 0 when attention is not
-// restricted (allow untouched; allow may be NULL to ask only for nt).
+// restricted (allow untouched; allow may be NULL to ask only for nt). attn_split with uni_pyr (task 00055): halves that
+// share the summaries; a token reads every summary, the body and the move, and a patch only of its own regions (a
+// summary is in every region its block spans).
 static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
     if (c->universal && c->patch > 0 && c->attn_win > 0) {
         const int nt = vm_uni_nt(c), W = c->attn_win;
@@ -164,6 +167,26 @@ static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
                 else ok = (b.r >> a.lev) == a.r && (b.c >> a.lev) == a.c;   // a summary reads its block's patches
                 allow[q * nt + k] = (unsigned char)ok;
             }
+        free(sl);
+        return nt;
+    }
+    if (c->universal && c->patch > 0 && c->attn_split > 1 && c->uni_pyr > 0) {   // halves sharing the summaries
+        const int nt = vm_uni_nt(c), g = c->img / c->patch, band = g / c->attn_split;   // (task 00055)
+        if (!allow) return nt;
+        VMSlot* sl = (VMSlot*)malloc(sizeof(VMSlot) * nt);
+        vm_uni_layout(c, sl);
+        unsigned* reg = (unsigned*)malloc(sizeof(unsigned) * nt);   // the regions of each slot, as bits: a patch its band's, a summary every one
+        for (int k = 0; k < nt; k++) {   // its block spans, the body and the move all
+            const VMSlot s = sl[k];
+            const int pos = c->attn_cols ? s.c : s.r, b = s.kind == 2 ? 1 << s.lev : 1;
+            if (s.kind == 0 || s.kind == 3) { reg[k] = ~0u; continue; }
+            reg[k] = 0;
+            for (int j = pos * b / band; j <= ((pos + 1) * b - 1) / band; j++) reg[k] |= 1u << j;
+        }
+        for (int q = 0; q < nt; q++)   // every summary, the body and the move; a patch only of one's own regions
+            for (int k = 0; k < nt; k++)
+                allow[q * nt + k] = (unsigned char)(sl[k].kind != 1 || (reg[q] & reg[k]) != 0);
+        free(reg);
         free(sl);
         return nt;
     }
@@ -197,7 +220,10 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->sum_only < 0 || c->sum_only > 1) return 0;
     if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
     if (c->attn_win > 0 || c->uni_sum > 0 || c->uni_pyr > 0) {   // tasks 00047, 00048: the universal model only
-        if (!c->universal || c->patch <= 0 || c->attn_split > 1) return 0;
+        if (!c->universal || c->patch <= 0) return 0;
+        if (c->attn_split > 1 && (c->attn_win || c->uni_sum || c->attn_overlap || c->attn_checker ||   // task 00055
+                                  c->attn_pred_global || c->attn_split > 32 || (c->img / c->patch) % c->attn_split))
+            return 0;
         if (c->uni_sum > 0 && (c->img / c->patch) % c->uni_sum) return 0;
         if (c->uni_pyr > 0 && (c->uni_sum > 0 || (c->img / c->patch) % (1 << c->uni_pyr))) return 0;
     }
