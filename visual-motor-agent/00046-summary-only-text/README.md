@@ -1,7 +1,7 @@
 # vm-00046: Text at Twice the Scale, Tokens From the Summaries
 
 **Date:** 2026-10-29
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00046` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00046/`
 **Task plan:** [`../tasks/00054-summary-only-tokens.md`](../tasks/00054-summary-only-tokens.md)

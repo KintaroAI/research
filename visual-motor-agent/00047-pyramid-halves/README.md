@@ -1,7 +1,7 @@
 # vm-00047: Two Halves That Share the Summaries
 
 **Date:** 2026-10-29
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00047` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00047/`
 **Task plan:** [`../tasks/00055-pyramid-halves.md`](../tasks/00055-pyramid-halves.md)
