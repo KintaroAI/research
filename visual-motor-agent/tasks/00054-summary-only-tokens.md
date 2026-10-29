@@ -1,7 +1,7 @@
 # Task 00054: Tokens From the Summaries Alone, Text at Twice the Scale (experiment vm-00046)
 
 **Date:** 2026-10-29
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -80,3 +80,15 @@
   summaries (whole lines, the page) help. NB3 is faster than NB3a (24 against 16 ticks/s) because it ran on the 4090
   and NB3a on the 3090. One seed each: the 0.5% differences are within seed noise; the 2.5% likely is not, but needs a
   second seed to be sure.
+- The same measure at 20k, 30k and 40k (the text lifetime overfits after ~30k; one seed each):
+
+  | run | 20k | 30k | 40k | 100k |
+  |---|---|---|---|---|
+  | NB (normal) | 1.740 | **1.721** | 1.731 | 1.975 |
+  | NB2 (2× world, B1 only) | 1.733 | **1.720** | 1.741 | 1.971 |
+  | NB3a (2× world, patches + B1) | 1.747 | **1.725** | 1.744 | 1.967 |
+  | NB3 (2× world, patches + full pyramid) | 1.760 | **1.737** | 1.741 | 1.926 |
+
+  At the best checkpoint NB, NB2 and NB3a are level (1.720–1.725): the scaled world and the patch tokens cost
+  nothing. NB3 learns more slowly (behind at 20k and 30k) and overfits more slowly; its lead at 100k is the slower
+  overfitting, not better prediction.

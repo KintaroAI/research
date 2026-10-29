@@ -1,7 +1,7 @@
 # Task 00055: Two Halves That Share the Summaries (experiment vm-00047)
 
 **Date:** 2026-10-29
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -53,3 +53,24 @@
   the next row's left patches before a summary reads it; it does without the halves), C++ and GPU losses and gradients
   against the reference, invalid configs. Full suite: 1,488 passed, 30 skipped.
 - VS's table: 343 slots per step, 62% of a step's causal pairs allowed; 24 ticks/s on the 4090, as NB3 (a mask).
+- VS at 20k: next-letter CE 1.972 against NB3's 1.760. By letter column (1–4 left, 5–8 right):
+
+  | column | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+  |---|---|---|---|---|---|---|---|---|
+  | NB3 | 2.148 | 1.714 | 1.716 | 1.693 | 1.697 | 1.708 | 1.700 | 1.707 |
+  | VS | 1.982 | 1.744 | 1.750 | 1.712 | 2.091 | 2.521 | 2.104 | 1.869 |
+
+  The left half is close to NB3; the right half loses, most at column 6 and less with every letter after it. A
+  letter is predicted in its top patch row, but the current line's B1 summaries are complete only after its bottom
+  row, so the right half's predictors never see letters 1–4 of their own line: column 6 sees letter 5 only, 7 sees 5
+  and 6, 8 sees 5–7. The left half has its line's start as patches. Column 5 (predicted by the last left patch, which
+  sees letters 1–4) is also worse (2.09); not explained by what it can see.
+- VS over its life (next-letter CE; NB3: 1.760, 1.737, 1.741 at 20k–40k, 1.926 at 100k):
+
+  | ticks | 20k | 30k | 40k | 50k | 60k | 70k | 80k | 90k | 100k |
+  |---|---|---|---|---|---|---|---|---|---|
+  | VS | 1.972 | 1.904 | **1.857** | 1.868 | 1.859 | 1.864 | 1.882 | 1.864 | 1.872 |
+
+  It learns more slowly and then holds a plateau (1.86–1.88 from 40k on) instead of overfitting. By column at 60k:
+  left 1.789, 1.645, 1.697, 1.633 (mean 1.69); right 1.814, 2.418, 2.062, 1.816 (mean 2.03). Column 6 stays at
+  2.40–2.43 from 50k to 90k: the right half's loss is what it cannot see (its line's start), not slower learning.

@@ -66,7 +66,11 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     thumbnail as values (then every token has a target). Task 00052: the 2-D position codes added to `uni_slot` at birth
     follow the slot table (`vm_uni_center`: a patch its cell, a summary its block's centre); before, slot k + 1 got cell
     k's code, which scrambled every summary model of vm-00040–00044 (`tests/test_slot_positions.py`). Any new slot kind
-    or layout must place its code there too. GPU buffers (`Buf`) free themselves: never list them in
+    or layout must place its code there too. Task 00054 (vm-00046): `sum_only=1`, the patches are not tokens (a step is [body, summaries,
+    move]); `configs/T_text_B2.json` is the text world at twice the scale (a B1 thumbnail is one letter). Task 00055
+    (vm-00047): `attn_split` with `uni_pyr`, halves that share the summaries (a patch reads its band's patches and every
+    summary). Compare text runs of different layouts with `letter_ce.py` (next-letter cross-entropy), at their best
+    checkpoint (~30k; text lifetimes overfit after it). GPU buffers (`Buf`) free themselves: never list them in
     `vmc_free` again (that list leaked 14 GB in the test file).
   - **The universal model** (task 00023, `../ARCHITECTURE.md`; as built, with every parameter and buffer: `../ARCHITECTURE_REVIEW.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one

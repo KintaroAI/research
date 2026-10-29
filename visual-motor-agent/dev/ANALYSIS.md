@@ -94,6 +94,17 @@ the dream curve at h = 1, 6, 11, 16. Runs from several experiments can be mixed 
   the first step at which the dream is empty (< 30 object pixels). The dream's moves are sampled from the model's own
   move prediction (no instinct), so it is one sample, not an average.
 
+## 5a. Text: next-letter cross-entropy across layouts (`letter_ce.py`)
+
+```bash
+./venv/bin/python letter_ce.py RUN [RUN ...] --ckpts 20000 30000 40000 100000   # also by letter column and line
+```
+
+The two-hot cross-entropy (nats per letter) at the token that predicts each letter's first appearance, on the same
+800 val windows for every run (vm-00046, vm-00047). Use it to compare text runs whose layouts differ (scaled worlds,
+summary tokens, splits): their training losses are not comparable. Text lifetimes overfit after ~30k ticks, so compare
+at the best checkpoint, not only at 100k. In the normal text world (every patch a letter) it measures what `eval_predict.py`'s patch cross-entropy does.
+
 ## 6. Writing up
 
 The experiment directory holds only README.md and Makefile (the tag keeps the code). The README is the report: goal,
