@@ -68,7 +68,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     k's code, which scrambled every summary model of vm-00040–00044 (`tests/test_slot_positions.py`). Any new slot kind
     or layout must place its code there too. GPU buffers (`Buf`) free themselves: never list them in
     `vmc_free` again (that list leaked 14 GB in the test file).
-  - **The universal model** (task 00023, `../ARCHITECTURE.md`): `model.universal=1` with `model.patch`: one token
+  - **The universal model** (task 00023, `../ARCHITECTURE.md`; as built, with every parameter and buffer: `../ARCHITECTURE_REVIEW.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
     channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,
     the instinct; `lifetime.py`). Its forward is `Agent.forward_uni` / `CudaModel.forward_uni`; `vm_forward` refuses it.
