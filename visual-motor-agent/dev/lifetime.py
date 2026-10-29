@@ -56,6 +56,20 @@ LIFE_STATS = STAT_KEYS + ("act_drive_mse", "act_frame_mse", "uni_ce_body", "uni_
                           "uni_mse_body", "uni_mse_patch", "uni_mse_move")
 
 
+GATE_SHARED = ("ltm_chunks", "ltm_relief_share", "ltm_age_mean", "ltm_age_max", "ltm_label_share")
+
+
+def gate_metrics(gates):
+    """The gates' metrics since the last call (task 00053): counts summed over every body's gate, the shared long-term
+    memory's state once, the surprise threshold and means body 0's. One gate: its own metrics."""
+    ms = [g.metrics() for g in gates]
+    out = dict(ms[0])
+    for k in out:
+        if k not in GATE_SHARED and not k.startswith("surprise_mean_") and k != "surprise_thr":
+            out[k] = sum(m[k] for m in ms)
+    return out
+
+
 def bodies_at(on, tick):
     """Active bodies at tick (counted from 1)."""
     n0, hold, halve = int(on["bodies"]), int(on["bodies_hold"]), int(on["bodies_halve"])
@@ -276,7 +290,7 @@ def main():
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})
-            row.update(gms[0].metrics())
+            row.update(gate_metrics(gms))
             mf.write(json.dumps(row) + "\n")
             mf.flush()
             print("tick %7d  %5.1f tps  bodies %2d  hits %3d (all bodies %5.1f per 1k)  pred %.5f  drive %.5f  "

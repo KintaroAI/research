@@ -254,7 +254,8 @@ class ChunkStore:
 class GatedMemory:
     """online.memory = "gated": a short-term buffer of the recent stream (stm), a long-term memory of whole chunks of
     L consecutive steps, and a gate between them. The stream is cut into chunks (steps 1..L, L+1..2L, ...). The chunk
-    that ended D = max(relief_k, goal_k) - 1 steps ago, so that whether relief follows it is known, is written to
+    that ended D = max(relief_k, goal_k) - 1 steps ago (at least 1 with token surprise, which is noted a tick late), so
+    that whether relief follows it is known, is written to
     long-term memory when (the first that applies):
       warmup    it ends within the first store_warmup steps;
       relief    store_relief and a hit happens in it or in the relief_k - 1 steps after it (same episode);
@@ -269,7 +270,9 @@ class GatedMemory:
     def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
-        self.D = max(on["relief_k"], goal_k, 1) - 1
+        # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
+        # least one step after it ends (task 00053)
+        self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
         self.stm = Replay(on["stm"], img)

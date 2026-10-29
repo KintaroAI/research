@@ -20,6 +20,13 @@
 
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { \
     fprintf(stderr, "vm_cuda: %s at %s:%d\n", cudaGetErrorString(e_), __FILE__, __LINE__); return -1; } } while (0)
+// Unrecoverable failures inside a pass (a device allocation, a cuBLAS call): report and abort (task 00053). Going on
+// launched kernels on NULL buffers (illegal memory access) and could hang the process.
+static void die_(const char* what, size_t n, int code) {
+    fprintf(stderr, "vm_cuda: %s failed (%zu, code %d); aborting\n", what, n, code);
+    fflush(stderr);
+    abort();
+}
 #define CB(x) do { cublasStatus_t s_ = (x); if (s_ != CUBLAS_STATUS_SUCCESS) { \
     fprintf(stderr, "vm_cuda: cublas error %d at %s:%d\n", (int)s_, __FILE__, __LINE__); return -1; } } while (0)
 
@@ -987,10 +994,8 @@ struct Buf {   // device float buffer, grown on demand; freed with its owner (no
         if (need > n) {
             if (p) cudaFree(p);
             n = need;
-            if (cudaMalloc(&p, n * sizeof(float)) != cudaSuccess) {   // the caller's next CUDA call then fails
-                fprintf(stderr, "vm_cuda: out of device memory (a buffer of %zu floats)\n", need);
-                p = nullptr; n = 0;
-            }
+            const cudaError_t e = cudaMalloc(&p, n * sizeof(float));
+            if (e != cudaSuccess) die_("out of device memory: a buffer of floats", need, (int)e);
         }
         return p;
     }
@@ -1055,14 +1060,17 @@ static void gemm(Model* M, bool ta, bool tb, int m, int n, int k, const float* A
                  float beta, float* C, int ldc) {
     // row-major C[m,n] = op(A) op(B) + beta C  <=>  column-major C^T = op(B)^T op(A)^T
     const float one = 1.0f;
-    cublasSgemm(M->cb, tb ? CUBLAS_OP_T : CUBLAS_OP_N, ta ? CUBLAS_OP_T : CUBLAS_OP_N, n, m, k, &one, B, ldb, A, lda,
-                &beta, C, ldc);
+    const cublasStatus_t st = cublasSgemm(M->cb, tb ? CUBLAS_OP_T : CUBLAS_OP_N, ta ? CUBLAS_OP_T : CUBLAS_OP_N, n, m,
+                                          k, &one, B, ldb, A, lda, &beta, C, ldc);
+    if (st != CUBLAS_STATUS_SUCCESS) die_("cublasSgemm (m x n x k)", (size_t)m * n * k, (int)st);
 }
 // gemm over `batch` independent problems, the i-th at A + i sA, B + i sB, C + i sC (row-major, as gemm)
 static void gemm_sb(Model* M, bool ta, bool tb, int m, int n, int k, float alpha, const float* A, int lda, long sA,
                     const float* B, int ldb, long sB, float beta, float* C, int ldc, long sC, int batch) {
-    cublasSgemmStridedBatched(M->cb, tb ? CUBLAS_OP_T : CUBLAS_OP_N, ta ? CUBLAS_OP_T : CUBLAS_OP_N, n, m, k, &alpha,
-                              B, ldb, sB, A, lda, sA, &beta, C, ldc, sC, batch);
+    const cublasStatus_t st = cublasSgemmStridedBatched(M->cb, tb ? CUBLAS_OP_T : CUBLAS_OP_N,
+                                                        ta ? CUBLAS_OP_T : CUBLAS_OP_N, n, m, k, &alpha, B, ldb, sB,
+                                                        A, lda, sA, &beta, C, ldc, sC, batch);
+    if (st != CUBLAS_STATUS_SUCCESS) die_("cublasSgemmStridedBatched (m x n x k)", (size_t)m * n * k, (int)st);
 }
 // Attention of B rows in blocks of K (row b of block s attends to rows start[b]..end[b] of it). Short blocks: one
 // thread per (row, head). Long blocks: per head, scores = Q K^T and Y = P V as GEMMs batched over the blocks, with a
@@ -1127,24 +1135,27 @@ static void linear_bwd(Model* M, const float* dout, const float* inp, const floa
     k_colsum<<<dim3((OC + 31) / 32, (T + COLSUM_ROWS - 1) / COLSUM_ROWS), dim3(32, 8)>>>(dout, T, OC, db);
 }
 
+#define AB_(p, n) do { const size_t n_ = (n); const cudaError_t e_ = cudaMalloc(p, n_); \
+    if (e_ != cudaSuccess) die_("out of device memory: a batch array of bytes", n_, (int)e_); } while (0)
 static void alloc_batch(Model* M, int B) {
     const Dims& D = M->D;
     if (B > M->cap) {
         cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos); cudaFree(M->ivalid);
         cudaFree(M->drv); cudaFree(M->pa); cudaFree(M->pr); cudaFree(M->act); cudaFree(M->ndrv);
         cudaFree(M->iimg); cudaFree(M->idrv);
-        cudaMalloc(&M->iimg, (size_t)B * D.img * D.img * 3); cudaMalloc(&M->idrv, B * 2 * sizeof(float));
-        cudaMalloc(&M->img, (size_t)B * D.img * D.img * 3);
-        cudaMalloc(&M->ns, (size_t)B * D.small_px);
-        cudaMalloc(&M->cs, (size_t)B * D.small_px);
-        cudaMalloc(&M->nfull, (size_t)B * D.img * D.img * 3);
-        cudaMalloc(&M->start, B * sizeof(int)); cudaMalloc(&M->pos, B * sizeof(int)); cudaMalloc(&M->ivalid, B * sizeof(int));
-        cudaMalloc(&M->drv, B * 2 * sizeof(float)); cudaMalloc(&M->pa, B * 3 * sizeof(float));
-        cudaMalloc(&M->pr, B * sizeof(float)); cudaMalloc(&M->act, B * 3 * sizeof(float));
-        cudaMalloc(&M->ndrv, B * 2 * sizeof(float));
+        AB_(&M->iimg, (size_t)B * D.img * D.img * 3); AB_(&M->idrv, B * 2 * sizeof(float));
+        AB_(&M->img, (size_t)B * D.img * D.img * 3);
+        AB_(&M->ns, (size_t)B * D.small_px);
+        AB_(&M->cs, (size_t)B * D.small_px);
+        AB_(&M->nfull, (size_t)B * D.img * D.img * 3);
+        AB_(&M->start, B * sizeof(int)); AB_(&M->pos, B * sizeof(int)); AB_(&M->ivalid, B * sizeof(int));
+        AB_(&M->drv, B * 2 * sizeof(float)); AB_(&M->pa, B * 3 * sizeof(float));
+        AB_(&M->pr, B * sizeof(float)); AB_(&M->act, B * 3 * sizeof(float));
+        AB_(&M->ndrv, B * 2 * sizeof(float));
         M->cap = B;
     }
 }
+#undef AB_
 
 extern "C" {
 

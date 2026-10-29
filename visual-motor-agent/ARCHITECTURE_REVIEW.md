@@ -1,7 +1,7 @@
 # Architecture Review: the Universal Model as Built
 
 **Date:** 2026-10-29
-**Code:** `master` at `ab09c39` (after task 00052). Links are to `dev/` at that commit; line numbers may drift.
+**Code:** `master` at `ab09c39` (after task 00052), corrected after an external audit (task 00053). Links are to `dev/` at that commit; line numbers may drift.
 **Scope:** what the universal model *is* today: the token format, the summary pyramid, the network, the loss, acting,
 learning and memory, every parameter tensor and every buffer the model keeps, with links to the code.
 [`ARCHITECTURE.md`](ARCHITECTURE.md) is the design and its reasons; this file is the implementation. §11 lists what
@@ -112,8 +112,12 @@ by [`vm_attn_allow`](dev/src/vm_agent.h#L146) and copied to the GPU.
 | `attn_win` + `uni_sum` | as above; every patch reads every row summary; a summary reads its band's patches |
 | `attn_win` + `uni_pyr` (00048) | a token reads a summary of its own or a coarser level if its position, projected to that level, is within W of the summary's: at most 3 × 3 summaries per level. A summary reads every patch of its block directly. No summary reads a finer one |
 
-With the pyramid and two layers, any patch reaches any other in two hops: patch → summary (layer 1) → reader
-(layer 2). The cost per window grows as N·log N (5% of full attention's scores at 32 × 32, 44% at 8 × 8; vm-00041).
+**Information flows only forward.** Attention is causal, so a token never sees a later token of its own step,
+in any mode and with any number of layers: patch 0 cannot read patch 63 or B3 of the same step. With the pyramid,
+the window and two layers, a patch reaches every *later* token of its step in two hops: patch → its block's
+summary (layer 1) → the reader, which reads that summary (layer 2). Tokens of the next step read the previous step's
+completed summaries (the global summary B3 at every position). The move's predictor (the last patch, or B3) sees the
+whole frame. Tested in `tests/test_info_flow.py` (task 00053), on the CPU and the GPU. The cost per window grows as N·log N (5% of full attention's scores at 32 × 32, 44% at 8 × 8; vm-00041).
 **On the GPU the table is a mask, not a saving:** windows longer than 32 tokens compute the full Q·Kᵀ with batched
 GEMMs ([`attention_fwd`](dev/src/vm_cuda.cu#L1071)) and set the disallowed scores to −∞ in the softmax.
 
@@ -146,6 +150,10 @@ value is Σ p_k · k/(K − 1).
   pixel is the mean of a 2^ℓ × 2^ℓ square). [`uni_values`](dev/src/vm_agent.cpp#L1317) in C++, `uni_value_` in
   CUDA, [`torch_reference.uni_thumbs`](dev/reference/torch_reference.py#L508). The block ends before the summary, so a
   thumbnail holds only pixels already seen.
+- **Target shares:** per step, 64 of the 66 targets are patches (97%), 1 the move, 1 the next body. Summaries
+  without thumbnails add none, with thumbnails 21 more image targets. Equal weight per token therefore spends almost
+  all of the loss on the frame. How much of the gradient that is once the frame is predicted well has not been
+  measured.
 - **Gradients flow everywhere.** Nothing is detached. One global gradient-norm clip (`max_grad_norm` 0.5), then
   AdamW (lr 3e-4, β 0.9/0.999, no weight decay): [`k_clip`](dev/src/vm_cuda.cu#L682),
   [`k_adamw`](dev/src/vm_cuda.cu#L688), [`vmc_update`](dev/src/vm_cuda.cu#L2345).
@@ -254,7 +262,9 @@ allocation failure prints "out of device memory".
 
 1. **Act** ([`uni_act`](dev/online.py#L539)). Each body's window is its last ≤ 7 real steps plus the current one
    (the current move slot zeroed). One forward pass returns the bins the move's predictor gives for the current move;
-   M = 16 candidates are sampled from them.
+   M = 16 candidates are sampled from them. The three move values are sampled independently: the policy is
+   factorized, P(dx) · P(dy) · P(click), so it cannot express that, say, "left and click" and "right, no click" go
+   together. Only the instinct, which scores whole candidates, can choose correlated moves.
    - **Instinct (`instinct_m` 16):** each candidate becomes the move token, and the move token's prediction of the
      next hunger is read (`uni_candidates`). The lowest wins. The first sample is kept unless the best is more than
      `instinct_tol` (0.005) lower.
@@ -266,7 +276,9 @@ allocation failure prints "out of device memory".
    (`store_relief`), surprise (`store_surprise` q: the chunk's largest token cross-entropy, relative to its slot's
    recent mean, is in the top fraction q; [`note_tokens`](dev/online.py#L306)) or a base draw (`store_base`, 1 =
    keep everything). Once memory is full, a stored chunk replaces the oldest one (`ltm_evict` oldest) or a random one
-   (`reservoir`).
+   (`reservoir`). Token surprise is noted one tick late (after the update that trained on the step), so the gate
+   decides a chunk at least one step after it ends (task 00053; before, `relief_k = 1` decided it with its last step
+   unnoted).
 3. **Learn.** One update on the newest window of every active body plus replayed chunks, `batch` = 8 windows with one
    body. With self-forcing (`sf_windows`, task 00039), some replayed windows get their last 1..`sf_steps` steps'
    inputs from the model's own dream ([`dream_inputs`](dev/online.py#L508)), while their targets stay real. Then the
@@ -315,25 +327,46 @@ configs use one body.
    (`kinds`, [`lifetime.py`](dev/lifetime.py#L135)), so a token that predicts a summary's thumbnail counts as
    "patch". The surprise itself is per slot and unaffected.
 
+5. **The policy is factorized** (§8): the move token's three values have independent distributions. Correlated
+   moves come only from the instinct's choice among whole candidates. Splitting the move into three tokens, each
+   predicted after the one before, would make it autoregressive, as text is, but changes the token format. Not
+   changed; the instinct's override rate (`instinct_override`) says how often the choice departs from the first
+   sample.
+6. **Learning is prediction, not reinforcement** (by design: the project's question). The move token learns to
+   predict the moves made, and the instinct chooses them by predicted hunger, so the policy improves only by imitating
+   the instinct's choices (vm-00036: EB forages 33.5 per 1k without the instinct, 36.6 with it, 44.4 with the 4-step
+   lookahead). The risks: a weak consequence model teaches noise, and picking the lowest of 16 predictions favours
+   candidates whose hunger is underestimated. Still missing: a test of how often the model ranks candidates by their
+   real outcome (each candidate tried on copies of the world, as `analyze_hazards.py click-real` does for clicks).
+
 **Costs and inefficiencies:**
-5. **Masks do not save compute or memory on the GPU.** Every masked mode computes the full Q·Kᵀ and stores the full
+7. **Masks do not save compute or memory on the GPU.** Every masked mode computes the full Q·Kᵀ and stores the full
    weight matrix (`att`). Real N·log N cost needs a block-sparse kernel. The square-sized `att` is also why a 4-step
    frozen test needs ~10 GB (two per GPU at most).
-6. **Long-term memory stores `nimg`** (the frame after each step) for the older models. The universal model never
+8. **Long-term memory stores `nimg`** (the frame after each step) for the older models. The universal model never
    reads it (its targets come from the next stored step), so it doubles host memory: 100k × 64 × 64 × 3 bytes =
    1.2 GB, unused.
-7. **`logstd`** (2 floats) is still allocated, unused.
+9. **`logstd`** (2 floats) is still allocated, unused.
 
 **Limits of the current position scheme:**
-8. **Slot vectors are absolute,** one per slot. A trained model cannot be run on a larger grid, and a new layout
+10. **Slot vectors are absolute,** one per slot. A trained model cannot be run on a larger grid, and a new layout
    needs new slots. Factorized (row + column + level) or computed (2-D RoPE) codes would lift both limits, the same
    for every world.
-9. **The 2-D code at birth was misplaced** in every model with summaries until task 00052 (cell k's code on slot
+11. **The 2-D code at birth was misplaced** in every model with summaries until task 00052 (cell k's code on slot
    k + 1): vm-00040 to vm-00044's summary arms. Fixed and tested; vm-00045 measures what it cost.
 
 **Open about the pyramid:**
-10. **Summaries and the move predictor.** With the pyramid the move is predicted by the global summary B3 (slot
+12. **Summaries and the move predictor.** With the pyramid the move is predicted by the global summary B3 (slot
     nt − 2), not by the last patch. Every summary arm has foraged worse than vm-00036's EB. vm-00045's XB (EB on
     today's code) separates a cost of summaries from a change in the code since vm-00036.
-11. **Square blocks follow image layout, not reading order.** In text they barely beat the plain window (vm-00041).
+13. **Square blocks follow image layout, not reading order.** In text they barely beat the plain window (vm-00041).
     Blocks shaped like the data's order (1 × 2^ℓ, then rows) would be the universal variant.
+
+**Fixed after the audit (task 00053):**
+- **GPU failures abort** (task 00053): a failed device allocation or cuBLAS call prints what failed and aborts. Before,
+  it went on into kernels with NULL buffers (illegal memory access; one analysis hung for 2 hours). `alloc_batch` and
+  the GEMM wrappers were unchecked.
+- **Gate metrics with several bodies** (task 00053): the counts in `metrics.jsonl` are summed over every body's gate
+  (`lifetime.gate_metrics`); before, they were body 0's alone, next to the shared memory's totals.
+- **Gate timing:** with token surprise, a chunk is decided at least one step after it ends, so its last step's
+  surprise is in (`tests/test_gate.py`; only `relief_k = 1` was affected).
