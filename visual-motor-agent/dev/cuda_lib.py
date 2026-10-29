@@ -263,7 +263,7 @@ class CudaModel:
         img = np.ascontiguousarray(images, np.uint8)
         S, T = img.shape[:2]
         c = self.config
-        nt, V, K = (c["img"] // c["patch"]) ** 2 + 2, c["patch"] ** 2 * (1 if c.get("gray") else 3), c["bins"]
+        nt, V, K = agent_lib.uni_layout(c)["nt"], c["patch"] ** 2 * (1 if c.get("gray") else 3), c["bins"]
         drv, act = np.ascontiguousarray(drives, np.float32), np.ascontiguousarray(actions, np.float32)
         es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
         out = {}
@@ -287,7 +287,7 @@ class CudaModel:
         img = np.ascontiguousarray(images, np.uint8)
         S, T = img.shape[:2]
         c = self.config
-        nt, V = (c["img"] // c["patch"]) ** 2 + 2, c["patch"] ** 2 * (1 if c.get("gray") else 3)
+        nt, V = agent_lib.uni_layout(c)["nt"], c["patch"] ** 2 * (1 if c.get("gray") else 3)
         vt, nb = np.empty((S, nt, V), np.float32), np.empty((S, T, 2), np.float32)
         es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
         _check(lib().vmc_forward_uni_step(self.handle, S, T, _p(img, C.c_uint8),
@@ -317,7 +317,7 @@ class CudaModel:
         """The universal model's last update: each token's cross-entropy at the last step of the batch's first S0
         sequences [S0, ntok] (token k's prediction of token k + 1; the move token's of the next body)."""
         c = self.config
-        out = np.empty((S0, (c["img"] // c["patch"]) ** 2 + 2), np.float32)
+        out = np.empty((S0, agent_lib.uni_layout(c)["nt"]), np.float32)
         _check(lib().vmc_uni_token_ce(self.handle, S0, _p(out, C.c_float)), "uni_token_ce")
         return out
 

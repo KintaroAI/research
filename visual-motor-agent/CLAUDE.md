@@ -57,6 +57,10 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     past its edges; body and move in every region, `attn_pred_global=1` also the last patch (it predicts the move). A
     mask (weights 0), not a compute saving. Prediction survives halves; the move's predictor must see the whole view.
     `attn_checker=1` (task 00046, vm-00039): regions by (row + column) % S, a checkerboard; no overlap or columns.
+    Task 00047, vm-00040: `attn_win=W` (patches attend within W rows and columns) and `uni_sum=R` (a summary token after
+    every R rows, no values; the token before it has no target). **The slot layout is no longer [body, patches, move]:**
+    use `agent_lib.uni_layout(cfg)` (patch slots, summary slots, move) in any tool; a patch is predicted by the token
+    before its slot (`layout["patch"] - 1`), the move by slot nt - 2, the next body by the move token.
   - **The universal model** (task 00023, `../ARCHITECTURE.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
     channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,

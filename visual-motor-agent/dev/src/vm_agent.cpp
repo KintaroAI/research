@@ -522,6 +522,7 @@ struct Dims {
     int ih;                               // inverse-dynamics hidden size (0 = no inverse head)
     int dh, rimg, rpx;                    // latent dynamics hidden size (0 = off); decoder frame side / values
     int pih;                              // policy hidden size (0 = linear policy head)
+    int nsum = 0;                         // universal: summary tokens per step (task 00047)
     int patch, gp, npch, ntok, pdim;      // patch tokens: patch side (0 = off), grid side, patches, tokens per step,
                                           // values per patch
     int cell, cpx, KT;                    // predicted cell side / values per patch; tokens per context (K * ntok)
@@ -563,7 +564,8 @@ static Dims make_dims(const VMConfig& c) {
     D.act = (D.patch && c.act_token) ? 1 : 0;
     D.ntok = D.patch ? D.npch + 3 + D.act : 1;
     D.uni = (D.patch && c.universal) ? 1 : 0;   // tokens: body, the patches, the move
-    if (D.uni) D.ntok = D.npch + 2;
+    if (D.uni) D.ntok = vm_uni_nt(&c);          // + the summary tokens (task 00047)
+    D.nsum = D.uni ? vm_uni_nsum(&c) : 0;
     D.cds = c.pred_img / ACT_CG;
     D.cfx = ACT_CG * ACT_CG * 3;
     D.pdim = D.patch * D.patch * 3;
@@ -1284,11 +1286,11 @@ static void seq_fwd_patch(const Model* M, Workspace* W, const SeqView& sv, bool 
 }
 
 // ---- the universal model (universal = 1, task 00023) ----
-// Each step is ntok = npch + 2 tokens: the body (hunger, restlessness), the patches row by row (pixels / 255, (y, x, c)
+// Each step is ntok = npch + 2 (+ nsum) tokens: the body (hunger, restlessness), the patches row by row (pixels / 255, (y, x, c)
 // within the patch), the move made at this step ((dx + 1) / 2, (dy + 1) / 2, click). Every token is a value vector of V
 // numbers in [0, 1] (body 2 used, move 3, patch V), centred to [-0.5, 0.5] at the input, unused entries 0. Fully causal
 // within the context; every token predicts the next token's values: the move token the drives after its step.
-static inline int uni_used(const Dims& D, int k) { return k == 0 ? 2 : (k == D.ntok - 1 ? 3 : D.V); }
+// Summary tokens (task 00047, vm_uni_slot) have no values: the token before one has no target.
 
 // The token values of step t, slot k, into v [V] (raw, in [0, 1]); returns the number used.
 // Bin-embedding input (task 00036): the first u of V values in [0, 1], each split two-hot over K bins (centres
@@ -1304,9 +1306,12 @@ static void uni_twohot(const float* v, int u, int V, int K, float* out) {
     }
 }
 
-static int uni_values(const Dims& D, const SeqView& sv, int t, int k, float* v) {
+static int uni_values(const VMConfig& c, const Dims& D, const SeqView& sv, int t, int k, float* v) {
     const int V = D.V, ps = D.patch, S = D.img;
     for (int i = 0; i < V; i++) v[i] = 0.f;
+    int p;
+    const int kind = vm_uni_slot(&c, k, &p);
+    if (kind == 2) return 0;   // a summary token
     if (k == 0) {
         const float* dr = sv.drives + (size_t)t * sv.drv_st;
         v[0] = dr[0]; v[1] = dr[1];
@@ -1319,7 +1324,7 @@ static int uni_values(const Dims& D, const SeqView& sv, int t, int k, float* v) 
         v[2] = a[2] > 0.5f ? 1.f : 0.f;
         return 3;
     }
-    const int p = k - 1, py = (p / D.gp) * ps, px = (p % D.gp) * ps, ch = D.ch;   // gray: the first channel only
+    const int py = (p / D.gp) * ps, px = (p % D.gp) * ps, ch = D.ch;   // gray: the first channel only
     const uint8_t* img = sv.img + (size_t)t * sv.img_st;
     for (int y = 0; y < ps; y++)
         for (int x = 0; x < ps; x++)
@@ -1339,7 +1344,7 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
             W->tss[i] = W->ss[t] * nt;
             float* in = W->u_in.data() + (size_t)i * D.VI;
             float* val = D.ib ? W->u_row.data() : in;
-            const int u = uni_values(D, sv, t, k, val);
+            const int u = uni_values(M->cfg, D, sv, t, k, val);
             if (k > 0) {   // this token is the target of the one before it (in the same step)
                 memcpy(W->u_tgt.data() + (size_t)(i - 1) * V, val, sizeof(float) * V);
                 W->u_use[i - 1] = u;
@@ -2075,6 +2080,10 @@ static void seq_loss_uni(const Model* M, Workspace* W, const SeqView& sv, float 
     for (int i = 0; i < T * nt; i++) {
         const int k = i % nt, u = W->u_use[i];
         const int kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);   // predicted: the next body, the move, a patch
+        if (u == 0) {   // the next token is a summary (task 00047): no target
+            for (int j = 0; j < d; j++) W->dz[(size_t)i * d + j] = 0.f;
+            continue;
+        }
         const float* z = W->lnf.data() + (size_t)i * d;
         const float* tg = W->u_tgt.data() + (size_t)i * V;
         uni_head_row(M, z, row, prob);
@@ -2306,7 +2315,7 @@ static LossAcc loss_and_grads_seqs(Model* M, Rollout* R, const int* ids, int n_s
             SeqView sv = rollout_view(R, ids[q]);
             if (D.uni) {   // the universal model: one loss over every token, nothing else
                 seq_forward(M, W, sv, false);
-                seq_loss_uni(M, W, sv, inv_B / D.ntok, G, accs[tid]);
+                seq_loss_uni(M, W, sv, inv_B / (D.ntok - D.nsum), G, accs[tid]);   // the mean over targets
                 seq_bwd_uni(M, W, sv, G);
                 continue;
             }
@@ -2515,6 +2524,8 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[46] = c.attn_pred_global;
     h[47] = c.attn_cols;
     h[48] = c.attn_checker;
+    h[49] = c.attn_win;
+    h[50] = c.uni_sum;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2540,6 +2551,8 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.attn_pred_global = h[46];
     c.attn_cols = h[47];
     c.attn_checker = h[48];
+    c.attn_win = h[49];
+    c.uni_sum = h[50];
 }
 
 // =====================================================================================

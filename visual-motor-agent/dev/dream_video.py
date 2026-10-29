@@ -49,6 +49,7 @@ def run(args):
     ev = _GpuEval(agent, gpu)
     c = agent.config
     P = (c["img"] // c["patch"]) ** 2
+    pp = agent_lib.uni_layout(c)["patch"] - 1   # the tokens that predict the patches (task 00047)
     ion = dict(DEFAULT_ONLINE, **info["config"]["online"])
     inst = (ion["instinct_m"], ion["instinct_tol"], ion["instinct_h"], ion["instinct_jacobi"], ion["instinct_decode"])
     env = CircleWorld(1, dataclasses.replace(EnvConfig(**ec), auto_reset=False, bonuses=False, max_steps=10 ** 9),
@@ -75,7 +76,7 @@ def run(args):
                                     len(win) - 1, mode=DECODE[args.decode])
         a = eval_moves(ev, win, rng, inst)
         cur["act"] = a
-        rec.append(dict(phase="real", real=obs["image"][0], pred=uni_frame(c, pred["values_t"][:, :P])[0],
+        rec.append(dict(phase="real", real=obs["image"][0], pred=uni_frame(c, pred["values_t"][:, pp])[0],
                         real_h=float(obs["drives"][0, 0]), pred_h=float(pred["next_body"][0, -2, 0]) if len(win) > 1
                         else float("nan"), **pending))
         obs, _, _, inf = env.step(a)
@@ -103,7 +104,7 @@ def run(args):
         e = np.concatenate([e[:, 1:], np.zeros((1, 1), np.uint8)], 1)
         for it in range(P + 1):
             out = gpu.forward_uni_step(img, drv, act, e, L - 1, mode=DECODE[args.decode])
-            fr = uni_frame(c, out["values_t"][:, :P])
+            fr = uni_frame(c, out["values_t"][:, pp])
             done = np.array_equal(fr[0], img[0, -1])
             img[:, -1] = fr
             if done:

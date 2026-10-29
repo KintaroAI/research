@@ -20,10 +20,11 @@ SMALL_UNI = dict(img=32, c1=4, c2=8, c3=8, feat=16, d_model=16, n_layer=2, n_hea
                  pc1=4, pc2=8, pred_hidden=16, use_prev_reward=1, logstd_init=-0.3, patch=8, universal=1, bins=8)
 
 
-@pytest.fixture(scope="module", params=[0, 1], ids=["rgb", "gray"])
+@pytest.fixture(scope="module", params=[dict(gray=0), dict(gray=1), dict(gray=1, attn_win=1, uni_sum=2)],
+                ids=["rgb", "gray", "gray_hier"])
 def agent(request):
     agent_lib.set_threads(4)
-    return agent_lib.Agent(dict(SMALL_UNI, gray=request.param), seed=3)
+    return agent_lib.Agent(dict(SMALL_UNI, **request.param), seed=3)
 
 
 def windows(cfg, S, T, M, seed):
@@ -60,7 +61,8 @@ def test_one_step_is_the_instincts_reading(agent):
 def sequential(agent, img, drv, act, es, cand, H):
     """Sequential decoding by hand: each imagined step's body, then its patches one by one."""
     c = agent.config
-    T, M, R, nt = img.shape[1], cand.shape[1], agent.config["ctx"] - (H - 1), 18
+    T, M, R = img.shape[1], cand.shape[1], agent.config["ctx"] - (H - 1)
+    pp = agent_lib.uni_layout(c)["patch"] - 1   # the tokens that predict the patches (task 00047)
     out = np.empty((img.shape[0], M))
     for s in range(img.shape[0]):
         for m in range(M):
@@ -78,8 +80,8 @@ def sequential(agent, img, drv, act, es, cand, H):
                                               next_body=True)
                 dv[-1] = np.clip(f()["next_body"][0, -2], 0, 1)
                 pv = online.uni_patches(c, im[-1][None])
-                for p in range(nt - 2):
-                    pv[0, p] = f()["values"][0, -1, p]
+                for p in range(len(pp)):
+                    pv[0, p] = f()["values"][0, -1, pp[p]]
                     im[-1] = online.uni_frame(c, pv)[0]
             e = np.zeros((1, len(im)), np.uint8)
             e[0, 0] = 1

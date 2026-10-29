@@ -44,9 +44,11 @@ class Uni:
         P = ref.params_from_flat(agent.params(), agent.param_layout(), c, dtype=torch.float32)
         self.P = {k: v.detach().to(device) for k, v in P.items()}
         self.nt, self.V, self.K = ref.uni_dims(c)
+        self.ps = torch.tensor(agent_lib.uni_layout(c)["patch"], device=device)   # the letters' slots (task 00047)
+        self.page = len(self.ps)
         self.m = torch.zeros(self.nt, self.V, device=device)
         self.m[0, :2] = 1
-        self.m[1:self.nt - 1] = 1
+        self.m[self.ps] = 1
         self.m[self.nt - 1, :3] = 1
         al = ref.attn_allow(c)                            # attention regions (task 00044), by slot; None = none
         self.allow = None if al is None else torch.tensor(al, device=device)
@@ -91,12 +93,12 @@ def sample_bins(lg, gen):
 
 def uni_generate(uni, codes, lev, G, mode, gen, temp=1.0):
     """codes [S, L*page] real context letters (L pages) -> generated letters [S, G*page]. mode: greedy | sample."""
-    c, nt, V = uni.cfg, uni.nt, uni.V
+    c, nt, V, ps = uni.cfg, uni.nt, uni.V, uni.ps
     S = codes.shape[0]
-    L, page = c["ctx"], nt - 2
+    L, page = c["ctx"], uni.page
     levf = torch.tensor(lev, device=uni.device, dtype=torch.float32) / 255.0
     v = torch.zeros(S, L, nt, V, device=uni.device)
-    v[:, :, 1:nt - 1] = levf[torch.tensor(codes, device=uni.device).reshape(S, L, page)][..., None]
+    v[:, :, ps] = levf[torch.tensor(codes, device=uni.device).reshape(S, L, page)][..., None]
     for t in range(L):   # the context's moves, sampled step by step, as in its lifetime
         mv = sample_bins(uni.logits(v[:, :t + 1])[:, t * nt + nt - 2, :3], gen)
         v[:, t, nt - 1, :2], v[:, t, nt - 1, 2] = mv[:, :2], (mv[:, 2] > 0.5).float()
@@ -110,10 +112,10 @@ def uni_generate(uni, codes, lev, G, mode, gen, temp=1.0):
         v[:, -1, 0, :2] = body.clamp(0, 1)
         T = v.shape[1]
         for p in range(page):
-            lg = uni.logits(v)[:, (T - 1) * nt + p]                        # predicts patch p of the new page
+            lg = uni.logits(v)[:, (T - 1) * nt + ps[p] - 1]                # predicts patch p of the new page
             lp = letter_logp(lg, lev_t)
             k = lp.argmax(-1) if mode == "greedy" else torch.multinomial((lp / temp).softmax(-1), 1, generator=gen)[:, 0]
-            v[:, -1, 1 + p] = levf[k][:, None]
+            v[:, -1, ps[p]] = levf[k][:, None]
             out.append(k)
         mv = sample_bins(uni.logits(v)[:, (T - 1) * nt + nt - 2, :3], gen)
         v[:, -1, nt - 1, :2], v[:, -1, nt - 1, 2] = mv[:, :2], (mv[:, 2] > 0.5).float()
@@ -122,17 +124,17 @@ def uni_generate(uni, codes, lev, G, mode, gen, temp=1.0):
 
 def uni_score(uni, codes, lev, n_score, gen):
     """Teacher-forced nats per letter of the last n_score letters of codes [S, L*page] (L pages), moves sampled."""
-    c, nt, V = uni.cfg, uni.nt, uni.V
+    c, nt, V, ps = uni.cfg, uni.nt, uni.V, uni.ps
     S = codes.shape[0]
-    L, page = c["ctx"], nt - 2
+    L, page = c["ctx"], uni.page
     levf = torch.tensor(lev, device=uni.device, dtype=torch.float32) / 255.0
     ct = torch.tensor(codes, device=uni.device)
     v = torch.zeros(S, L, nt, V, device=uni.device)
-    v[:, :, 1:nt - 1] = levf[ct.reshape(S, L, page)][..., None]
+    v[:, :, ps] = levf[ct.reshape(S, L, page)][..., None]
     for t in range(L):
         mv = sample_bins(uni.logits(v[:, :t + 1])[:, t * nt + nt - 2, :3], gen)
         v[:, t, nt - 1, :2], v[:, t, nt - 1, 2] = mv[:, :2], (mv[:, 2] > 0.5).float()
-    lg = uni.logits(v).reshape(S, L, nt, V, -1)[:, :, :page]               # tokens 0 .. page-1 predict patches
+    lg = uni.logits(v).reshape(S, L, nt, V, -1)[:, :, ps - 1]              # the tokens that predict the patches
     lp = letter_logp(lg, torch.tensor(lev, device=uni.device))             # [S, L, page, n]
     nll = -lp.gather(-1, ct.reshape(S, L, page)[..., None])[..., 0].reshape(S, L * page)
     return nll[:, -n_score:].mean().item()
@@ -179,7 +181,7 @@ def run(args):
     agent = agent_lib.Agent.load(args.uni)
     uni = Uni(agent, args.device)
     c = agent.config
-    L, page = c["ctx"], uni.nt - 2
+    L, page = c["ctx"], uni.page
     world = make_world(1, make_config(dict(cfg["env"], split="val")), seed=0)
     lev = np.asarray(world.levels, np.int64)
     alpha = world.alphabet

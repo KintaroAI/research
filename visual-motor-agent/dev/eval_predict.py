@@ -82,16 +82,20 @@ def score(P, cfg, w, batch=64, glyphs=None):
     patch targets' glyph NLL as well."""
     import torch
     from reference import torch_reference as ref
+    import agent_lib
     nt, V, K = ref.uni_dims(cfg)
+    lay = agent_lib.uni_layout(cfg)
+    pp, npch = lay["patch"] - 1, len(lay["patch"])                   # the tokens that predict the patches, in order
     T = w["img"].shape[1]
     if glyphs is not None:
-        batch = max(1, min(batch, int(2e8 // (T * (nt - 2) * len(glyphs) * V))))
+        batch = max(1, min(batch, int(2e8 // (T * npch * len(glyphs) * V))))
     gsum, gn = 0.0, 0
-    kind = np.array([0] * (nt - 2) + [1, 2])                          # what token i predicts
-    used = np.concatenate([np.full(nt - 2, V), [3, 2]])             # values used by token i's target
+    kind = np.full(nt, -1)                                           # what token i predicts (-1: a summary, task 00047)
+    kind[pp], kind[nt - 2], kind[nt - 1] = 0, 1, 2
+    used = np.where(kind == 0, V, np.where(kind == 1, 3, 2))         # values used by token i's target
     m = np.arange(V)[None, :] < used[:, None]                        # [nt, V]
     acc = dict(sum=np.zeros(3), n=np.zeros(3), by_value=np.zeros(V), by_step=np.zeros(T), n_value=0, n_step=0,
-               by_patch=np.zeros(nt - 2), n_patch=0)
+               by_patch=np.zeros(npch), n_patch=0)
     for j in range(0, len(w["img"]), batch):
         b = {f: v[j:j + batch] for f, v in w.items()}
         with torch.no_grad():
@@ -103,16 +107,16 @@ def score(P, cfg, w, batch=64, glyphs=None):
             tgt[:, :, nt - 1, :2] = b["ndrv"]
             logp = out["logits"].float().log_softmax(-1).reshape(S, T, nt, V, K)
             ce = -(torch.tensor(ref.two_hot(tgt, K), dtype=logp.dtype) * logp).sum(-1).numpy()   # [S, T, nt, V]
-            if glyphs is not None:   # the patch targets (tokens 0 .. nt-3 predict patches 1 .. nt-2)
-                gll = glyph_ll(logp[:, :, :nt - 2], glyphs, K).log_softmax(-1)              # [S, T, np, n]
-                true = ((v[:, :, 1:nt - 1, None, :] - glyphs) ** 2).sum(-1).argmin(-1)     # [S, T, np]
+            if glyphs is not None:   # the patch targets (tokens pp predict the patches, slots pp + 1)
+                gll = glyph_ll(logp[:, :, pp], glyphs, K).log_softmax(-1)                   # [S, T, np, n]
+                true = ((v[:, :, pp + 1, None, :] - glyphs) ** 2).sum(-1).argmin(-1)        # [S, T, np]
                 gsum -= gll.gather(-1, torch.tensor(true)[..., None]).sum().item()
                 gn += true.size
         for k in range(3):
             sel = ce[:, :, kind == k] * m[kind == k]
             acc["sum"][k] += sel.sum()
             acc["n"][k] += S * T * m[kind == k].sum()
-        pc = ce[:, :, kind == 0]                                       # [S, T, npatch, V]
+        pc = ce[:, :, pp]                                              # [S, T, npatch, V], patches in order
         acc["by_value"] += pc.sum((0, 1, 2))
         acc["n_value"] += S * T * pc.shape[2]
         acc["by_step"] += pc.sum((0, 2, 3))
@@ -122,7 +126,7 @@ def score(P, cfg, w, batch=64, glyphs=None):
     res = {"ce_" + KINDS[k]: float(acc["sum"][k] / acc["n"][k]) for k in range(3)}
     res.update(ce_patch_by_value=(acc["by_value"] / acc["n_value"]).tolist(),
                ce_patch_by_step=(acc["by_step"] / acc["n_step"]).tolist(), windows=len(w["img"]))
-    g = int(round(np.sqrt(nt - 2)))                                    # the patch grid: by row, top to bottom
+    g = int(round(np.sqrt(npch)))                                      # the patch grid: by row, top to bottom
     res["ce_patch_by_row"] = (acc["by_patch"] / acc["n_patch"]).reshape(g, g).mean(1).tolist()
     res["ce_patch_by_col"] = (acc["by_patch"] / acc["n_patch"]).reshape(g, g).mean(0).tolist()
     if glyphs is not None:

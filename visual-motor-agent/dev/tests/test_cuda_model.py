@@ -74,7 +74,11 @@ MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
                                                  attn_overlap=1, attn_pred_global=1),
           # task 00046: checkerboard regions
           "universal_gray_inbins_checker": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1, attn_split=2,
-                                                attn_checker=1)}
+                                                attn_checker=1),
+          # task 00047: local attention with summary tokens
+          "universal_gray_inbins_hier": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1, attn_win=1,
+                                             uni_sum=1),
+          "small_universal_hier": dict(SMALL, patch=8, universal=1, bins=8, in_bins=1, attn_win=1, uni_sum=2)}
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
           "no_move": dict(PC, move_coef=0.0),
@@ -252,7 +256,8 @@ def test_planner_calls_match_cpp(setup):
 
 @pytest.mark.parametrize("model", ["universal_gray", "small_universal", "small_universal_p16", "universal_gray_inbins",
                                    "small_universal_inbins", "small_universal_split", "universal_gray_inbins_split",
-                                   "universal_gray_inbins_split_pg", "universal_gray_inbins_checker"])
+                                   "universal_gray_inbins_split_pg", "universal_gray_inbins_checker",
+                                   "universal_gray_inbins_hier", "small_universal_hier"])
 def test_uni_candidates_match_full_pass(model):
     """The instinct's fast path (task 00026): each candidate's predicted next hunger from the move token alone, against
     the full forward pass with that candidate as the window's last move."""

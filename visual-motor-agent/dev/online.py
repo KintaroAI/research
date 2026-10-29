@@ -475,7 +475,7 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
     R = min(T, c["ctx"] - (H - 1))
     if R < 1:
         raise ValueError("instinct_h must be at most ctx")
-    nt = (c["img"] // c["patch"]) ** 2 + 2
+    pp = agent_lib.uni_layout(c)["patch"] - 1   # the tokens that predict the patches (task 00047: summaries between)
     rep = lambda x: np.repeat(x[:, T - R:], M, axis=0)   # noqa: E731
     im, dv = rep(img), rep(drv).astype(np.float32)
     im = np.concatenate([im] + [im[:, -1:]] * (H - 1), 1)       # the imagined frames start as the current one
@@ -501,7 +501,7 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
         for _ in range(J):
             out = run(st)
             dv[:, st] = np.clip(out["next_body"][:, st - 1], 0.0, 1.0)
-            im[:, st] = uni_frame(c, out["values_t"][:, :nt - 2])
+            im[:, st] = uni_frame(c, out["values_t"][:, pp])
     return run(-1)["next_body"][:, -1, 0].reshape(N, M)
 
 
@@ -513,7 +513,8 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
     Returns copies (frames u8, bodies f32) [N, T, ...]."""
     c = model.config
     T = img.shape[1]
-    P = (c["img"] // c["patch"]) ** 2
+    lay = agent_lib.uni_layout(c)
+    pp, mv = lay["patch"] - 1, lay["move"]   # the tokens that predict the patches; the move token (the next body)
     im, dv = img.copy(), np.array(drv, np.float32)
     idx, k = np.asarray(idx, int), np.asarray(k, int)
     if not len(idx):
@@ -526,11 +527,11 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
     for s in range(int(start.min()), T):
         on = s >= start
         o = model.forward_uni_step(wi, wd, wa, we, s - 1, mode=DECODE[decode])   # the move token's next body
-        wd[on, s] = np.clip(o["values_t"][on, P + 1, :2], 0.0, 1.0)
+        wd[on, s] = np.clip(o["values_t"][on, mv, :2], 0.0, 1.0)
         wi[on, s] = wi[on, s - 1]
         for _ in range(J):
             o = model.forward_uni_step(wi, wd, wa, we, s, mode=DECODE[decode])
-            wi[on, s] = uni_frame(c, o["values_t"][on, :P])
+            wi[on, s] = uni_frame(c, o["values_t"][on][:, pp])
     im[idx], dv[idx] = wi, wd
     return im, dv
 

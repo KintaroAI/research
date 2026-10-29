@@ -49,6 +49,7 @@ struct Dims {
     int ib, VI;                 // bin-embedding input (task 00036): on/off; the input map's width (V or V * bins)
     int uni, V, nbin, OV, ch;   // universal model (task 00023): on/off; values per token; bins per value; head
                                 // outputs; channels per patch pixel (1 with gray, else 3)
+    int nsum, us;               // summary tokens per step and rows of patches per summary (task 00047; 0: none)
 };
 static const int ACT_CG = 8;   // act token: side of the coarse next frame it predicts (as vm_agent.cpp)
 
@@ -60,7 +61,8 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         if ((!c.pred_residual && !c.universal) || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.img % D.patch) return false;
         D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3 + D.act; D.pdim = D.patch * D.patch * 3;
         D.uni = c.universal ? 1 : 0;
-        if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = D.npch + 2; }
+        if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = vm_uni_nt(&c); }
+        D.nsum = D.uni ? vm_uni_nsum(&c) : 0; D.us = D.nsum ? c.uni_sum : 0;
         if (!vm_attn_valid(&c)) return false;
         D.ch = (D.uni && c.gray) ? 1 : 3;
         D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
@@ -78,7 +80,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         return true;
     }
     D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1;
-    D.uni = D.V = D.nbin = D.OV = 0; D.ch = 3;
+    D.uni = D.V = D.nbin = D.OV = 0; D.ch = 3; D.nsum = D.us = 0;
     if (c.universal || c.gray) return false;
     if (!c.coord || !c.pred_residual || !c.pred_skip) return false;
     if (c.img % 8 || c.pred_img % 4 || c.img / c.pred_img != 2 || c.d_model % c.n_head || c.pb <= 0) return false;
@@ -1496,36 +1498,55 @@ static int transformer_bwd(Model* M, int B, int K, const int* start, const int* 
 }
 
 // ---- the universal model (task 00023; as seq_fwd_uni / seq_loss_uni / seq_bwd_uni in vm_agent.cpp) ----
-// Token (b, k) of frame b: k = 0 the body, 1..np the patches, nt - 1 the move. Values in [0, 1]; used: 2, V, 3.
-__device__ inline int uni_used_(int k, int nt, int V) { return k == 0 ? 2 : (k == nt - 1 ? 3 : V); }
+// Token (b, k) of frame b: k = 0 the body, then the patches row by row with a summary token after every us rows
+// (task 00047; us = 0: none), nt - 1 the move. Values in [0, 1]; used: 2, V, 0 (a summary), 3. As vm_uni_slot.
+__device__ inline int uni_slot_(int k, int nt, int gp, int us, int* idx) {
+    *idx = 0;
+    if (k == 0) return 0;
+    if (k == nt - 1) return 3;
+    const int q = k - 1;
+    if (us <= 0) { *idx = q; return 1; }
+    const int bp = us * gp, band = q / (bp + 1), off = q % (bp + 1);
+    if (off == bp) { *idx = band; return 2; }
+    *idx = band * bp + off;
+    return 1;
+}
+__device__ inline int uni_used_(int k, int nt, int V, int gp, int us) {
+    int p;
+    const int kind = uni_slot_(k, nt, gp, us, &p);
+    return kind == 0 ? 2 : (kind == 3 ? 3 : (kind == 2 ? 0 : V));
+}
 __device__ inline float uni_value_(const uint8_t* img, const float* drv, const float* act, long b, int k, int j, int nt,
-                                   int V, int S, int ps, int gp, int ch) {
+                                   int V, int S, int ps, int gp, int ch, int us) {
+    int p;
+    const int kind = uni_slot_(k, nt, gp, us, &p);
+    if (kind == 2) return 0.f;
     if (k == 0) return j < 2 ? drv[b * 2 + j] : 0.f;
     if (k == nt - 1) {
         if (j < 2) return 0.5f * (clampf_(act[b * 3 + j], -1.f, 1.f) + 1.f);
         return j == 2 ? (act[b * 3 + 2] > 0.5f ? 1.f : 0.f) : 0.f;
     }
-    const int p = k - 1, c = j % ch, x = (j / ch) % ps, y = j / (ch * ps), py = (p / gp) * ps, px = (p % gp) * ps;
+    const int c = j % ch, x = (j / ch) % ps, y = j / (ch * ps), py = (p / gp) * ps, px = (p % gp) * ps;
     return img[((b * S + py + y) * S + px + x) * 3 + c] / 255.0f;
 }
 // in [B*nt, V]: the centred inputs (unused 0), from iimg / idrv; tgt [B*nt, V]: the next token's values (the move:
 // the next drives), from img / drv. The two differ only with self-forcing (task 00039).
 __global__ void k_uni_tokens(const uint8_t* iimg, const float* idrv, const uint8_t* img, const float* drv,
                              const float* act, const float* ndrv, float* in, float* tgt, int B, int nt, int V, int S,
-                             int ps, int gp, int ch) {
+                             int ps, int gp, int ch, int us) {
     const long n = (long)B * nt * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V, k = (i / V) % nt;
         const long b = i / ((long)V * nt);
-        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch);
-        in[i] = j < uni_used_(k, nt, V) ? v - 0.5f : 0.f;
-        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch);
+        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch, us);
+        in[i] = j < uni_used_(k, nt, V, gp, us) ? v - 0.5f : 0.f;
+        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch, us);
         else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : 0.f;
     }
 }
 // Bin-embedding input (task 00036): hot [rows, V*K] = each used value of in [rows, V] (centred) split two-hot over
 // the K bins, unused values and bins 0. Row r is token r % nt (cand: every row a move token, nt - 1).
-__global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int K, int cand) {
+__global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int K, int cand, int gp, int us) {
     const long n = rows * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V;
@@ -1533,7 +1554,7 @@ __global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int
         const int k = cand ? nt - 1 : (int)(r % nt);
         float* o = hot + i * K;
         for (int b = 0; b < K; b++) o[b] = 0.f;
-        if (j >= uni_used_(k, nt, V)) continue;
+        if (j >= uni_used_(k, nt, V, gp, us)) continue;
         const float p = fminf(fmaxf(in[i] + 0.5f, 0.f), 1.f) * (K - 1);
         const int lo = min((int)floorf(p), K - 2);
         const float w = p - lo;
@@ -1556,13 +1577,19 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
 // cross-entropy of the next token's values, and in place the logits' gradient (p - target) * inv_tok / used (0 for
 // unused values). Accumulators: acc[24 + kind] += token CE, acc[27 + kind] += token squared error of the expected
 // value, acc[30 + kind] += 1, acc[33] += token CE; kind 0 the next body (move tokens), 1 a patch, 2 the move (the last
-// patch). Launch with UNI_LOSS_THREADS threads (a multiple of 32).
+// patch). A token whose next token is a summary (task 00047) has no target: gradient 0, not counted. Launch with
+// UNI_LOSS_THREADS threads (a multiple of 32).
 #define UNI_LOSS_THREADS 256
 __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc,
-                           float* tok_ce) {
+                           float* tok_ce, int gp, int us) {
     __shared__ double sh[2][UNI_LOSS_THREADS / 32];
     const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
-    const int u = k == nt - 1 ? 2 : uni_used_(k + 1, nt, V), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
+    const int u = k == nt - 1 ? 2 : uni_used_(k + 1, nt, V, gp, us), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
+    if (u == 0) {   // no target
+        for (long i = threadIdx.x; i < (long)V * K; i += blockDim.x) lg[(long)r * V * K + i] = 0.f;
+        if (threadIdx.x == 0) tok_ce[r] = 0.f;
+        return;
+    }
     double ce = 0, se = 0;   // lane 0 of each warp
     for (int v = w; v < V; v += nw) {
         float* l = lg + ((long)r * V + v) * K;
@@ -1818,11 +1845,11 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     float* xin = M->xin.get((size_t)rows * d);
     k_uni_tokens<<<GRID((long)rows * V)>>>(M->has_in ? M->iimg : M->img, M->has_in ? M->idrv : M->drv, M->img, M->drv,
                                          M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img, D.patch, D.gp,
-                                         D.ch);
+                                         D.ch, D.us);
     const float* uin = in;   // W_in's input: the centred values, or their two-hot bins
     if (D.ib) {
         float* hot = M->u_hot.get((size_t)rows * D.VI);
-        k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, K, 0);
+        k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, K, 0, D.gp, D.us);
         uin = hot;
     }
     linear(M, xin, uin, P + off[UIW], P + off[UIB], rows, D.VI, d, 0);
@@ -1848,7 +1875,8 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
     CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     for (int i = 0; i < 8; i++) M->coef[i] = 0.f;
-    k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / rows, M->acc, M->u_ce.get(rows));
+    k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / ((float)B * (nt - D.nsum)), M->acc,
+                                           M->u_ce.get(rows), D.gp, D.us);   // the mean over the tokens with a target
     M->ce_S = M->S;
     M->ce_T = T;
     float* dz = M->dz.get((size_t)rows * d);
@@ -2190,7 +2218,7 @@ int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger) {
     const float* cuin = cin;
     if (D.ib) {
         float* hot = M->c_hot.get((size_t)R * D.VI);
-        k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.nbin, 1);
+        k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.nbin, 1, D.gp, D.us);
         cuin = hot;
     }
     linear(M, x, cuin, P + off[UIW], P + off[UIB], R, D.VI, d, 0);
@@ -2333,7 +2361,7 @@ int vmc_stats(void* h, VMCStats* out) {
     out->gn_backbone = (float)sqrt(a[5]); out->gn_policy = (float)sqrt(a[6]); out->gn_pred = (float)sqrt(a[7]);
     out->act_drive_mse = (float)(a[23] / n);
     if (M->D.uni) {   // the universal model: the mean token cross-entropy, and by predicted kind
-        out->loss = (float)(a[33] / ((double)n * M->D.ntok));
+        out->loss = (float)(a[33] / ((double)n * (M->D.ntok - M->D.nsum)));
         float* ce[3] = {&out->uni_ce_body, &out->uni_ce_patch, &out->uni_ce_move};
         float* se[3] = {&out->uni_mse_body, &out->uni_mse_patch, &out->uni_mse_move};
         for (int k = 0; k < 3; k++) if (a[30 + k] > 0) { *ce[k] = (float)(a[24 + k] / a[30 + k]); *se[k] = (float)(a[27 + k] / a[30 + k]); }

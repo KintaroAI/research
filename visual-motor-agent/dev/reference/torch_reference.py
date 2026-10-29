@@ -64,7 +64,22 @@ def uni_on(cfg):
 def uni_dims(cfg):
     """(tokens per step, values per token, bins) of the universal model."""
     g = cfg["img"] // cfg["patch"]
-    return g * g + 2, cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
+    R = cfg.get("uni_sum", 0)
+    return g * g + 2 + (g // R if R > 0 else 0), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
+
+
+def uni_slots(cfg):
+    """The slots of a step (task 00047): kind [nt] (0 the body, 1 a patch, 2 a summary, 3 the move) and index [nt] (the
+    patch, row-major, or the summary). The patches go row by row, with a summary token after every uni_sum rows."""
+    g, R = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0)
+    kind, index = [0], [0]
+    for r in range(g):
+        kind += [1] * g
+        index += list(range(r * g, (r + 1) * g))
+        if R > 0 and (r + 1) % R == 0:
+            kind.append(2)
+            index.append(r // R)
+    return np.array(kind + [3]), np.array(index + [0])
 
 
 def attn_allow(cfg):
@@ -73,8 +88,22 @@ def attn_allow(cfg):
     patch rows are cut into attn_split bands, each reaching attn_overlap rows past its edges; two patches meet if their
     rows share a band; the body and the move meet every token, and with attn_pred_global also the last patch (it
     predicts the move). attn_cols: the bands are of the grid's columns instead of its rows. attn_checker (task 00046):
-    no bands, patch (row r, column c) in region (r + c) % attn_split."""
+    no bands, patch (row r, column c) in region (r + c) % attn_split. attn_win (task 00047; directional, allow[q, k]: q
+    attends to k): two patches within attn_win rows and columns; a patch attends to every summary, a summary to the
+    patches of its band and every summary; the body and the move to and from everything."""
     S, O = cfg.get("attn_split", 0), cfg.get("attn_overlap", 0)
+    if cfg.get("universal") and cfg.get("attn_win", 0) > 0:   # local attention with summaries (task 00047)
+        Wn, R, g = cfg["attn_win"], cfg.get("uni_sum", 0), cfg["img"] // cfg["patch"]
+        kind, index = uni_slots(cfg)
+        nt = len(kind)
+        allow = np.ones((nt, nt), bool)
+        for q in range(nt):
+            for k in range(nt):
+                if kind[q] == 1 and kind[k] == 1:
+                    allow[q, k] = abs(index[q] // g - index[k] // g) <= Wn and abs(index[q] % g - index[k] % g) <= Wn
+                elif kind[q] == 2 and kind[k] == 1:             # a summary reads the patches of its band
+                    allow[q, k] = index[k] // g // R == index[q]
+        return allow
     if not cfg.get("universal") or S <= 1:
         return None
     g = cfg["img"] // cfg["patch"]
@@ -438,7 +467,8 @@ def uni_values(cfg, images, drives, actions):
     x = np.asarray(images, np.float64).reshape(S, T, g, ps, g, ps, 3) / 255.0
     if cfg.get("gray", 0):   # one channel per pixel: the first
         x = x[..., :1]
-    v[:, :, 1:nt - 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)
+    kind, _ = uni_slots(cfg)
+    v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)
     v[:, :, 0, :2] = np.asarray(drives, np.float64)
     a = np.asarray(actions, np.float64)
     v[:, :, nt - 1, 0] = (np.clip(a[..., 0], -1, 1) + 1) / 2
@@ -446,6 +476,7 @@ def uni_values(cfg, images, drives, actions):
     v[:, :, nt - 1, 2] = (a[..., 2] > 0.5).astype(np.float64)
     used = np.full(nt, V)
     used[0], used[nt - 1] = 2, 3
+    used[kind == 2] = 0                                                            # summary tokens: no values
     return v, used
 
 
@@ -506,8 +537,9 @@ def uni_loss(P, cfg, batch):
     m = (np.arange(V)[None, :] < tu[:, None]).astype(np.float64)                   # [nt, V]
     logp = out["logits"].log_softmax(-1).reshape(S, T, nt, V, K)
     ce = -(torch.tensor(two_hot(tgt, K), dtype=dt) * logp).sum(-1)                # [S, T, nt, V]
-    per_tok = (ce * torch.tensor(m, dtype=dt)).sum(-1) / torch.tensor(tu, dtype=dt)
-    return per_tok.mean(), dict(per_token=per_tok, logp=logp, tgt=tgt, used=tu)
+    per_tok = (ce * torch.tensor(m, dtype=dt)).sum(-1) / torch.tensor(np.maximum(tu, 1), dtype=dt)
+    has = tu > 0                                                                   # a summary next: no target
+    return per_tok[:, :, has].mean(), dict(per_token=per_tok, logp=logp, tgt=tgt, used=tu)
 
 
 def ppo_loss(P, cfg, pc, batch):

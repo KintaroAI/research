@@ -26,7 +26,7 @@ class VMConfig(C.Structure):
                  ("pi_hidden", C.c_int), ("patch", C.c_int), ("act_token", C.c_int), ("universal", C.c_int),
                  ("bins", C.c_int), ("gray", C.c_int), ("in_bins", C.c_int), ("attn_split", C.c_int),
                  ("attn_overlap", C.c_int), ("attn_pred_global", C.c_int), ("attn_cols", C.c_int),
-                 ("attn_checker", C.c_int)]
+                 ("attn_checker", C.c_int), ("attn_win", C.c_int), ("uni_sum", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -58,7 +58,7 @@ DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer
                      pred_img=32, pc1=16, pc2=32, pred_hidden=256, use_prev_reward=0, logstd_init=-0.5, coord=0, pb=32,
                      pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
                      act_token=0, universal=0, bins=32, gray=0, in_bins=0, attn_split=0, attn_overlap=0, attn_pred_global=0, attn_cols=0,
-                     attn_checker=0)
+                     attn_checker=0, attn_win=0, uni_sum=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
@@ -67,6 +67,19 @@ DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.0
                    epochs=4, minibatches=4, use_ppo=1, norm_adv=1, clip_vloss=0, dyn_horizon=0, dyn_h_horizon=0,
                    move_coef=0.0, pi_detach=0, pi_own_clip=0, drive_changed_weight=0.0,
                    drive_change_eps=0.01, act_coef=0.0)
+
+
+def uni_layout(cfg):
+    """The universal model's slots per step (task 00047; vm_uni_slot in vm_agent.h): dict(nt, kind [nt] (0 the body,
+    1 a patch, 2 a summary, 3 the move), patch [np] (the slot of each patch, row-major), summary [nsum] (their slots),
+    move (nt - 1)). The patches go row by row, with a summary token after every uni_sum rows."""
+    g, R = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0)
+    kind = [0]
+    for r in range(g):
+        kind += [1] * g + ([2] if R > 0 and (r + 1) % R == 0 else [])
+    kind = np.array(kind + [3])
+    return dict(nt=len(kind), kind=kind, patch=np.flatnonzero(kind == 1), summary=np.flatnonzero(kind == 2),
+                move=len(kind) - 1)
 
 
 def _struct(cls, values):
@@ -351,7 +364,7 @@ class Agent:
         img = _arr(images, np.uint8)
         S, T = img.shape[:2]
         c = self.config
-        nt, V, K = (c["img"] // c["patch"]) ** 2 + 2, c["patch"] ** 2 * (1 if c.get("gray") else 3), c["bins"]
+        nt, V, K = uni_layout(c)["nt"], c["patch"] ** 2 * (1 if c.get("gray") else 3), c["bins"]
         out = {}
         if values:
             out["values"] = np.empty((S, T, nt, V), np.float32)

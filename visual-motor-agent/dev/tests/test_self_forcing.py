@@ -20,9 +20,10 @@ if not cuda_lib.available() or not cuda_lib.has("vmc_forward_uni_step"):
     pytest.skip("libvmcuda.so with vmc_forward_uni_step not available", allow_module_level=True)
 
 
-@pytest.fixture(scope="module", params=[0, 1], ids=["linear", "in_bins"])
+@pytest.fixture(scope="module", params=[dict(in_bins=0), dict(in_bins=1), dict(in_bins=1, attn_win=1, uni_sum=2)],
+                ids=["linear", "in_bins", "in_bins_hier"])
 def model(request):
-    agent = agent_lib.Agent(dict(SMALL_UNI, gray=1, in_bins=request.param), seed=5)
+    agent = agent_lib.Agent(dict(SMALL_UNI, gray=1, **request.param), seed=5)
     m = cuda_lib.CudaModel(agent)
     yield m
     m.close()
@@ -52,6 +53,8 @@ def test_full_jacobi_is_sequential_decoding(model):
     token's pair-decoded prediction."""
     c = model.config
     P = (c["img"] // c["patch"]) ** 2
+    lay = agent_lib.uni_layout(c)
+    pp, mv = lay["patch"] - 1, lay["move"]                         # the patches' predictors, the move token
     T = c["ctx"]
     img, drv, act, es, _ = windows(c, 2, T, 1, 3)
     im, dv = online.dream_inputs(model, img, drv, act, es, [0, 1], [3, 1], J=P + 1)
@@ -60,12 +63,12 @@ def test_full_jacobi_is_sequential_decoding(model):
         wa, we = act[i:i + 1], es[i:i + 1]
         for s in range(T - k, T):
             o = model.forward_uni_step(wi, wd, wa, we, s - 1, mode=2)
-            wd[0, s] = np.clip(o["values_t"][0, P + 1, :2], 0, 1)
+            wd[0, s] = np.clip(o["values_t"][0, mv, :2], 0, 1)
             wi[0, s] = wi[0, s - 1]
             for p in range(P):                                     # patch p given the decoded patches before it
                 o = model.forward_uni_step(wi, wd, wa, we, s, mode=2)
                 pv = online.uni_patches(c, wi[:, s])
-                pv[0, p] = o["values_t"][0, p]
+                pv[0, p] = o["values_t"][0, pp[p]]
                 wi[:, s] = online.uni_frame(c, pv)
         np.testing.assert_array_equal(im[i], wi[0])
         np.testing.assert_allclose(dv[i], wd[0], atol=1e-6)

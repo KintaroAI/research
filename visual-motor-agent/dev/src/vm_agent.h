@@ -6,6 +6,7 @@
 // (see agent_lib.py). All arrays are C-contiguous; images are uint8 HWC.
 #pragma once
 #include <stdint.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,14 +61,61 @@ typedef struct {
     int attn_cols;      // universal with attn_split: 1 = the bands are of the patch grid's columns instead of its rows
     int attn_checker;   // universal with attn_split: 1 = checkerboard regions (task 00046): patch (row r, column c) in
                         //     region (r + c) % attn_split, no bands (attn_overlap and attn_cols 0)
+    int attn_win;       // universal: W > 0 = local attention (task 00047): two patches attend to each other only within W
+                        //     rows and W columns; with uni_sum, a patch also reads every summary and a summary its band
+    int uni_sum;        // universal: R > 0 = a summary token after every R rows of patches (task 00047): no values, so
+                        //     the token before it has no target; 0 = none
 } VMConfig;
+
+// The universal model's slots per step (task 00047): 0 the body; then the patches row by row, with a summary token after
+// every uni_sum rows; nt - 1 the move. vm_uni_nt: tokens per step. vm_uni_slot: the kind of slot k (0 body, 1 patch,
+// 2 summary, 3 move) and its index (the patch p, row-major, or the summary j). vm_uni_patch_slot: the slot of patch p.
+static inline int vm_uni_nsum(const VMConfig* c) {
+    if (!c->universal || c->patch <= 0 || c->uni_sum <= 0) return 0;
+    return (c->img / c->patch) / c->uni_sum;
+}
+static inline int vm_uni_nt(const VMConfig* c) {
+    const int g = c->img / c->patch;
+    return g * g + 2 + vm_uni_nsum(c);
+}
+static inline int vm_uni_slot(const VMConfig* c, int k, int* idx) {
+    const int g = c->img / c->patch, nt = vm_uni_nt(c);
+    *idx = 0;
+    if (k == 0) return 0;
+    if (k == nt - 1) return 3;
+    const int q = k - 1;
+    if (c->uni_sum <= 0) { *idx = q; return 1; }
+    const int bp = c->uni_sum * g, bs = bp + 1, band = q / bs, off = q % bs;   // patches per band; slots per band
+    if (off == bp) { *idx = band; return 2; }
+    *idx = band * bp + off;
+    return 1;
+}
+static inline int vm_uni_patch_slot(const VMConfig* c, int p) {
+    const int g = c->img / c->patch;
+    return 1 + p + (c->uni_sum > 0 ? p / (c->uni_sum * g) : 0);
+}
 
 // The attention regions (task 00044): allow[q * nt + k] = 1 if a token of slot q may attend to one of slot k (slots per
 // step: 0 the body, 1..g*g the patches row by row, nt - 1 the move). The body and the move are in every region, and with
 // attn_pred_global also the last patch (it predicts the move); attn_checker: regions by (row + column) % S instead of
-// bands. Returns nt, or 0 when attention is not split (allow
-// untouched; allow may be NULL to ask only for nt).
+// bands. attn_win (task 00047, the table directional): two patches meet within W rows and columns; a patch attends to
+// every summary, a summary to the patches of its band and to every summary; body and move global. Returns nt, or 0 when
+// attention is not restricted (allow untouched; allow may be NULL to ask only for nt).
 static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
+    if (c->universal && c->patch > 0 && c->attn_win > 0) {
+        const int g = c->img / c->patch, nt = vm_uni_nt(c), W = c->attn_win;
+        if (!allow) return nt;
+        for (int q = 0; q < nt; q++)
+            for (int k = 0; k < nt; k++) {
+                int iq, ik;
+                const int kq = vm_uni_slot(c, q, &iq), kk = vm_uni_slot(c, k, &ik);
+                int ok = 1;
+                if (kq == 1 && kk == 1) ok = abs(iq / g - ik / g) <= W && abs(iq % g - ik % g) <= W;
+                else if (kq == 2 && kk == 1) ok = ik / g / c->uni_sum == iq;   // a summary reads its own band
+                allow[q * nt + k] = (unsigned char)ok;
+            }
+        return nt;
+    }
     if (!c->universal || c->attn_split <= 1 || c->patch <= 0) return 0;
     const int g = c->img / c->patch, nt = g * g + 2, band = g / c->attn_split, o = c->attn_overlap;
     if (!allow) return nt;
@@ -90,9 +138,13 @@ static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
         }
     return nt;
 }
-// attn_split / attn_overlap valid for this config
+// attn_split / attn_overlap / attn_win / uni_sum valid for this config
 static inline int vm_attn_valid(const VMConfig* c) {
-    if (c->attn_split < 0 || c->attn_overlap < 0) return 0;
+    if (c->attn_split < 0 || c->attn_overlap < 0 || c->attn_win < 0 || c->uni_sum < 0) return 0;
+    if (c->attn_win > 0 || c->uni_sum > 0) {   // task 00047: the universal model, not with attn_split
+        if (!c->universal || c->patch <= 0 || c->attn_split > 1) return 0;
+        if (c->uni_sum > 0 && (c->img / c->patch) % c->uni_sum) return 0;
+    }
     if (c->attn_pred_global < 0 || c->attn_pred_global > 1 || c->attn_cols < 0 || c->attn_cols > 1) return 0;
     if (c->attn_checker < 0 || c->attn_checker > 1) return 0;
     if (c->attn_split <= 1)

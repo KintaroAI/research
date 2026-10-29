@@ -315,7 +315,7 @@ def click_real(run, st, n=64, steps=1000, device="cpu", instinct=None, seed=None
                       seed=EVAL_SEED if seed is None else seed)
     rng = np.random.default_rng(0)
     c = a.config
-    L, nt = c["ctx"], (c["img"] // c["patch"]) ** 2 + 2
+    L, pp = c["ctx"], agent_lib.uni_layout(c)["patch"] - 1   # the tokens that predict the patches (task 00047)
     hists = sorted({k for k in (1, 2, 4, L) if k <= L})
     hist, events, prev_pv = [], [], None   # the window's earlier steps, their clicks (1 food, 2 poison), patches
     obs, es = env.observe(), np.ones(n, np.uint8)
@@ -350,7 +350,7 @@ def click_real(run, st, n=64, steps=1000, device="cpu", instinct=None, seed=None
             h, vals = branch_hunger(m, sk("img"), sk("drv"), sk("act"), esk, cand, values=True)
             rec["pred_%d" % k].append(h[:, 1] - h[:, 0])
             rec["act_err_%d" % k].append(np.abs(h[np.arange(n), clk.astype(int)] - h_a))
-            err = ((vals[:, -1, :nt - 2] - pv) ** 2).mean(-1)                       # [n, patches]
+            err = ((vals[:, -1, pp] - pv) ** 2).mean(-1)                            # [n, patches]
             rec["patch_%d" % k].append(err.mean(1))
             rec["changed_%d" % k].append(np.full(n, np.nan) if changed is None else
                                          np.where(changed.any(1), (err * changed).sum(1) / np.maximum(changed.sum(1), 1),

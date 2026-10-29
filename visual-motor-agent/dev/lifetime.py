@@ -131,8 +131,9 @@ def main():
     umodel = (gpu or agent) if uni else None   # the universal model's forward (and, on the GPU, its fast candidates)
     if tok_sur and not cuda_lib.has("vmc_uni_token_ce"):
         raise ValueError("surprise gating needs a libvmcuda.so with vmc_uni_token_ce (task 00028): rebuild it")
-    nt = (agent.config["img"] // agent.config["patch"]) ** 2 + 2 if uni else 0
-    kinds = np.array([0] * (nt - 2) + [1, 2]) if uni else None   # what each token predicts: patch, move, body
+    nt = agent_lib.uni_layout(agent.config)["nt"] if uni else 0
+    kinds = np.array([0] * (nt - 2) + [1, 2]) if uni else None   # what each token predicts: patch (or a summary,
+    # task 00047: no target, cross-entropy 0), move, body
     ce_n = prev_N = 0   # bodies whose newest window the last update trained on (their surprise is read next tick)
     rollouts = {}
 

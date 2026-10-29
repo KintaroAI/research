@@ -57,6 +57,8 @@ def dream(gpu, img, drv, act, H, decode):
     it, [N, ctx + H, 3]) -> dreamed frames [N, H, ...] and bodies [N, H, 2]."""
     c = gpu.config
     P = (c["img"] // c["patch"]) ** 2
+    lay = agent_lib.uni_layout(c)
+    pp, mv = lay["patch"] - 1, lay["move"]   # the tokens that predict the patches; the move token (task 00047)
     N, L = img.shape[:2]
     wi, wd = img.copy(), drv.copy()
     wa = np.ascontiguousarray(act[:, :L])
@@ -65,13 +67,13 @@ def dream(gpu, img, drv, act, H, decode):
     frames, bodies = [], []
     for h in range(H):
         o = gpu.forward_uni_step(wi, wd, wa, we, L - 1, mode=mode)          # the next body, from the last move token
-        body = np.clip(o["values_t"][:, P + 1, :2], 0.0, 1.0)
+        body = np.clip(o["values_t"][:, mv, :2], 0.0, 1.0)
         wi = np.concatenate([wi[:, 1:], wi[:, -1:]], 1)
         wd = np.concatenate([wd[:, 1:], body[:, None]], 1)
         wa = np.ascontiguousarray(np.concatenate([wa[:, 1:], act[:, L + h:L + h + 1]], 1))
         for _ in range(P + 1):                                              # until the frame stops changing
             o = gpu.forward_uni_step(wi, wd, wa, we, L - 1, mode=mode)
-            fr = uni_frame(c, o["values_t"][:, :P])
+            fr = uni_frame(c, o["values_t"][:, pp])
             done = np.array_equal(fr, wi[:, -1])
             wi[:, -1] = fr
             if done:
