@@ -1,8 +1,8 @@
 # vm-00040: Local Attention With Summary Tokens
 
 **Date:** 2026-10-28
-**Status:** Complete (pending tag)
-**Source:** *tagged on completion as `exp/vm-00040`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete
+**Source:** `exp/vm-00040` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00040/`
 **Task plan:** [`../tasks/00047-hierarchical-attention.md`](../tasks/00047-hierarchical-attention.md)
 
