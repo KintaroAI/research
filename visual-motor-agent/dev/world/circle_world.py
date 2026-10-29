@@ -147,6 +147,10 @@ class EnvConfig:
     hazard_click_add: float = 0.0       # > 0: a click inside a hazard adds this to hunger (after any relief, clipped;
                                         # vm-00018: poison that rarely parks hunger at the cap). 0: off
     hazard_color: RGB = (50, 90, 230)
+    hazard_checker_cell: int = 1        # side in pixels of the checker's cells (vm-00044: 2, so that a 2x2 box average
+                                        # keeps a 1x1 checker; cells aligned to the view grid)
+    hazard_shape: str = "circle"        # "square": a hazard is an axis-aligned square of the same area as its circle
+                                        # (half-side r * sqrt(pi) / 2), drawn and touched as such (vm-00043)
     hazard_pattern: str = "solid"       # "checker": hazard pixels only where (row + column) is even (view coordinates),
                                         # so a hazard differs from the circle by texture, not only colour (task 00024)
     gray: bool = False                  # the frame's RGB replaced by its luma (299 R + 587 G + 114 B) / 1000 in all
@@ -209,6 +213,10 @@ class EnvConfig:
             raise ValueError("hazard_click_add must be >= 0")
         if self.hazard_pattern not in ("solid", "checker"):
             raise ValueError("hazard_pattern must be 'solid' or 'checker'")
+        if int(self.hazard_checker_cell) != self.hazard_checker_cell or self.hazard_checker_cell < 1:
+            raise ValueError("hazard_checker_cell must be an integer >= 1")
+        if self.hazard_shape not in ("circle", "square"):
+            raise ValueError("hazard_shape must be 'circle' or 'square'")
         if int(self.hazards) != self.hazards or self.hazards < 0:
             raise ValueError(f"hazards must be an integer >= 0, got {self.hazards!r}")
         if self.egocentric and not self.wrap:
@@ -397,16 +405,17 @@ def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarra
     image = bank[count, size - start].reshape(n, size, size, 3)
     if hazards is not None and hazards[0].shape[1] > 0:
         _paint_circles(image, hazards[0], hazards[1], _rgb(config.hazard_color), _rgb(config.bg_color),
-                       checker=config.hazard_pattern == "checker")
+                       checker=config.hazard_pattern == "checker", square=config.hazard_shape == "square",
+                       cell=config.hazard_checker_cell)
     if dots is not None and dots[0].shape[1] > 0:
         _draw_dots(image, dots[0], dots[1], int(config.dot_size), _rgb(config.bg_color))
     _draw_cursor(image, cursor, _rgb(config.cursor_outline), _rgb(config.cursor_color))
     return _to_gray(image, config)
 
 
-def _checker(size: int) -> np.ndarray:
-    """(S, S) bool: True where (row + column) is even."""
-    i = np.arange(size)
+def _checker(size: int, cell: int = 1) -> np.ndarray:
+    """(S, S) bool: True where (row // cell + column // cell) is even (cell 1: a pixel checker)."""
+    i = np.arange(size) // int(cell)
     return (i[:, None] + i[None, :]) % 2 == 0
 
 
@@ -440,18 +449,18 @@ def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, 
     image[:] = bg
     c = np.arange(size, dtype=np.float64) + 0.5
 
-    def mask(centers, radii):            # centers (n, K, 2) in world coordinates, radii (n, K) -> (n, S, S)
+    def mask(centers, radii, square=False):   # centers (n, K, 2) in world coordinates, radii (n, K) -> (n, S, S)
         v = np.mod(centers + shift[:, None], S)
         dx = wrap_delta(c[None, None, None, :], v[..., 0, None, None], S)
         dy = wrap_delta(c[None, None, :, None], v[..., 1, None, None], S)
-        return (dx * dx + dy * dy <= (radii * radii)[..., None, None]).any(1)
+        return _inside(dx, dy, radii[..., None, None], square).any(1)
 
     tmask = mask(target[:, None], radius[:, None]) & alive[:, None, None]
     image[tmask] = np.array(_rgb(config.target_color), np.uint8)
     if hazards is not None and hazards[0].shape[1] > 0:
-        hmask = mask(hazards[0], hazards[1]) & ~tmask
+        hmask = mask(hazards[0], hazards[1], config.hazard_shape == "square") & ~tmask
         if config.hazard_pattern == "checker":
-            hmask &= _checker(size)[None]
+            hmask &= _checker(size, config.hazard_checker_cell)[None]
         image[hmask] = np.array(_rgb(config.hazard_color), np.uint8)
     if dots is not None and dots[0].shape[1] > 0:
         _draw_dots(image, np.mod(dots[0] + shift[:, None], S), dots[1], int(config.dot_size), _rgb(config.bg_color))
@@ -459,18 +468,29 @@ def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, 
     return image
 
 
+SQUARE_HALF = 0.5 * np.sqrt(np.pi)   # a square hazard's half-side per unit radius: the circle's area
+
+
+def _inside(dx, dy, r, square: bool):
+    """Within a hazard of radius r at offset (dx, dy): the disc, or (square) the square of the same area."""
+    if square:
+        h = r * SQUARE_HALF
+        return (np.abs(dx) <= h) & (np.abs(dy) <= h)
+    return dx * dx + dy * dy <= r * r
+
+
 def _paint_circles(image: np.ndarray, centers: np.ndarray, radii: np.ndarray, color: RGB, bg: RGB,
-                   checker: bool = False) -> None:
+                   checker: bool = False, square: bool = False, cell: int = 1) -> None:
     """Paint circles (centers (N,H,2), radii (N,H)) in color on the background pixels of image (N,S,S,3), in place
     (checker: only on pixels where row + column is even)."""
     size = image.shape[1]
     c = np.arange(size, dtype=np.float64) + 0.5
     dx = c[None, None, None, :] - centers[..., 0, None, None]                 # (N,H,1,S)
     dy = c[None, None, :, None] - centers[..., 1, None, None]                 # (N,H,S,1)
-    inside = (dx * dx + dy * dy <= (radii * radii)[..., None, None]).any(1)   # (N,S,S)
+    inside = _inside(dx, dy, radii[..., None, None], square).any(1)          # (N,S,S)
     on_bg = np.all(image == np.array(bg, np.uint8), axis=-1)
     if checker:
-        inside &= _checker(size)[None]
+        inside &= _checker(size, cell)[None]
     image[inside & on_bg] = np.array(color, np.uint8)
 
 
@@ -807,7 +827,7 @@ class CircleWorld:
             hdy = new[:, None, 1] - self.hz_pos[..., 1]
             if cfg.wrap:
                 hdx, hdy = wrap_delta(hdx, 0.0, float(cfg.size)), wrap_delta(hdy, 0.0, float(cfg.size))
-            hz_hit = hdx * hdx + hdy * hdy <= self.hz_rad * self.hz_rad      # (N, H)
+            hz_hit = _inside(hdx, hdy, self.hz_rad, cfg.hazard_shape == "square")   # (N, H)
             in_hazard = hz_hit.any(1)
         else:
             in_hazard = np.zeros(n, dtype=bool)

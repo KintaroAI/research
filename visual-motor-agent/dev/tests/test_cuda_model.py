@@ -78,7 +78,13 @@ MODELS = {"basic": dict(BASIC), "basic_hidden_head": dict(BASIC, pi_hidden=128),
           # task 00047: local attention with summary tokens
           "universal_gray_inbins_hier": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1, attn_win=1,
                                              uni_sum=1),
-          "small_universal_hier": dict(SMALL, patch=8, universal=1, bins=8, in_bins=1, attn_win=1, uni_sum=2)}
+          "small_universal_hier": dict(SMALL, patch=8, universal=1, bins=8, in_bins=1, attn_win=1, uni_sum=2),
+          # task 00048: a pyramid of summary tokens
+          "universal_gray_inbins_pyr": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1, attn_win=1,
+                                            uni_pyr=3),
+          # task 00049: summaries with thumbnails
+          "universal_gray_inbins_thumb": dict(BASIC, patch=8, universal=1, bins=32, gray=1, in_bins=1, attn_win=1,
+                                              uni_pyr=3, sum_thumb=1)}
 LOSSES = {"detached": dict(PC), "move_into_features": dict(PC, pi_detach=0),
           "scaled_prediction": dict(PC, pred_backbone_scale=0.3, drive_coef=0.5, move_coef=1.5),
           "no_move": dict(PC, move_coef=0.0),
@@ -257,7 +263,8 @@ def test_planner_calls_match_cpp(setup):
 @pytest.mark.parametrize("model", ["universal_gray", "small_universal", "small_universal_p16", "universal_gray_inbins",
                                    "small_universal_inbins", "small_universal_split", "universal_gray_inbins_split",
                                    "universal_gray_inbins_split_pg", "universal_gray_inbins_checker",
-                                   "universal_gray_inbins_hier", "small_universal_hier"])
+                                   "universal_gray_inbins_hier", "small_universal_hier", "universal_gray_inbins_pyr",
+                                   "universal_gray_inbins_thumb"])
 def test_uni_candidates_match_full_pass(model):
     """The instinct's fast path (task 00026): each candidate's predicted next hunger from the move token alone, against
     the full forward pass with that candidate as the window's last move."""
@@ -418,3 +425,32 @@ def test_uni_inputs_targets_stay_real():
     np.testing.assert_array_equal(t2["tgt"], t0["tgt"])
     assert float(l2) != float(l0)
     agent.close()
+
+
+def test_closing_a_model_frees_its_device_memory():
+    """Every buffer a model allocates is freed when it is closed: the universal model's update, forward passes, step
+    values and candidates, five models in a row, leave the device's free memory where the first left it. (Buffers
+    missing from vmc_free's list leaked 14 GB over this file before they were made to free themselves.)"""
+    if not cuda_lib.has("vmc_device_free"):
+        pytest.skip("libvmcuda.so without vmc_device_free")
+    from test_lookahead import windows
+    from test_patch_tokens import store_rollout
+
+    def use_one():
+        agent = agent_lib.Agent(MODELS["universal_gray_inbins_thumb"], seed=1)
+        m = cuda_lib.CudaModel(agent)
+        c = agent.config
+        img, drv, act, es, cand = windows(c, 6, c["ctx"], 5, 1)
+        m.forward_uni(img, drv, act, es, next_body=True)
+        m.uni_candidates(cand)
+        m.forward_uni_step(img, drv, act, es, c["ctx"] - 1, mode=2)
+        ro, data = store_rollout(agent, T=2 * c["ctx"], N=4, seed=2, p_done=0.1)
+        m.set_batch(*cuda_batch(agent, data, [0, 2, 3, 5], 4))
+        m.loss_and_grads(PC)
+        m.close()
+        agent.close()
+    use_one()
+    free0 = cuda_lib.device_free()
+    for _ in range(4):
+        use_one()
+    assert free0 - cuda_lib.device_free() < 32 * 2 ** 20, (free0, cuda_lib.device_free())

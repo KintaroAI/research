@@ -1,0 +1,60 @@
+{
+  "name": "U_touch_ego_c2",
+  "description": "Task 00051: U_touch_ego.json with the poison checker in 2x2-pixel cells (env.hazard_checker_cell = 2), aligned to the view grid, so that a 2x2 box average (a level-1 summary thumbnail) keeps a 1x1 checker.",
+  "env": {
+    "bonuses": false,
+    "drives": true,
+    "hunger_cost": 0.0,
+    "respawn": true,
+    "end_on_success": false,
+    "max_steps": 1000000000,
+    "wrap": true,
+    "hazards": 2,
+    "hazard_cost": 0.0,
+    "hazard_click_add": 0.5,
+    "hazard_pattern": "checker",
+    "hazard_checker_cell": 2,
+    "gray": true,
+    "h_rate": 0.001,
+    "distractors": 8,
+    "touch": true,
+    "radius_min": 8.0,
+    "radius_max": 11.0,
+    "egocentric": true
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "patch": 8,
+    "universal": 1,
+    "bins": 32,
+    "gray": 1,
+    "ctx": 8,
+    "in_bins": 1
+  },
+  "online": {
+    "actor": "self",
+    "steps": 60000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_eps": 0.0,
+    "goal": 0,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "instinct_m": 16,
+    "instinct_tol": 0.005,
+    "device": "cuda",
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4
+  }
+}

@@ -63,23 +63,37 @@ def uni_on(cfg):
 
 def uni_dims(cfg):
     """(tokens per step, values per token, bins) of the universal model."""
-    g = cfg["img"] // cfg["patch"]
-    R = cfg.get("uni_sum", 0)
-    return g * g + 2 + (g // R if R > 0 else 0), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
+    return len(uni_slot_table(cfg)["kind"]), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
+
+
+def uni_slot_table(cfg):
+    """The slots of a step (tasks 00047, 00048): arrays [nt] kind (0 the body, 1 a patch, 2 a summary, 3 the move),
+    index (the patch, row-major, or the summary), level (patches 0) and r, c (the position on its level's grid; uni_sum's
+    summaries: band, 0). The patches go row by row; each summary right after the last patch of its block (uni_sum: a band
+    of rows; uni_pyr: a 2^l x 2^l block at level l = 1..uni_pyr, finer levels first)."""
+    g, R, L = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0), cfg.get("uni_pyr", 0)
+    rows = [(0, 0, 0, 0, 0)]
+    ns = 0
+    for r in range(g):
+        for c in range(g):
+            rows.append((1, r * g + c, 0, r, c))
+            if R > 0 and c == g - 1 and (r + 1) % R == 0:
+                rows.append((2, ns, 1, r // R, 0))
+                ns += 1
+            for lv in range(1, L + 1):
+                b = 2 ** lv
+                if (r + 1) % b == 0 and (c + 1) % b == 0:
+                    rows.append((2, ns, lv, r // b, c // b))
+                    ns += 1
+    rows.append((3, 0, 0, 0, 0))
+    t = np.array(rows)
+    return dict(kind=t[:, 0], index=t[:, 1], level=t[:, 2], r=t[:, 3], c=t[:, 4])
 
 
 def uni_slots(cfg):
-    """The slots of a step (task 00047): kind [nt] (0 the body, 1 a patch, 2 a summary, 3 the move) and index [nt] (the
-    patch, row-major, or the summary). The patches go row by row, with a summary token after every uni_sum rows."""
-    g, R = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0)
-    kind, index = [0], [0]
-    for r in range(g):
-        kind += [1] * g
-        index += list(range(r * g, (r + 1) * g))
-        if R > 0 and (r + 1) % R == 0:
-            kind.append(2)
-            index.append(r // R)
-    return np.array(kind + [3]), np.array(index + [0])
+    """(kind [nt], index [nt]) of uni_slot_table."""
+    t = uni_slot_table(cfg)
+    return t["kind"], t["index"]
 
 
 def attn_allow(cfg):
@@ -92,17 +106,25 @@ def attn_allow(cfg):
     attends to k): two patches within attn_win rows and columns; a patch attends to every summary, a summary to the
     patches of its band and every summary; the body and the move to and from everything."""
     S, O = cfg.get("attn_split", 0), cfg.get("attn_overlap", 0)
-    if cfg.get("universal") and cfg.get("attn_win", 0) > 0:   # local attention with summaries (task 00047)
+    if cfg.get("universal") and cfg.get("attn_win", 0) > 0:   # local attention with summaries (tasks 00047, 00048)
         Wn, R, g = cfg["attn_win"], cfg.get("uni_sum", 0), cfg["img"] // cfg["patch"]
-        kind, index = uni_slots(cfg)
+        t = uni_slot_table(cfg)
+        kind, index, lev, rr, cc = t["kind"], t["index"], t["level"], t["r"], t["c"]
         nt = len(kind)
         allow = np.ones((nt, nt), bool)
         for q in range(nt):
             for k in range(nt):
+                if kind[q] in (0, 3) or kind[k] in (0, 3):
+                    continue                                    # body and move: to and from everything
                 if kind[q] == 1 and kind[k] == 1:
                     allow[q, k] = abs(index[q] // g - index[k] // g) <= Wn and abs(index[q] % g - index[k] % g) <= Wn
-                elif kind[q] == 2 and kind[k] == 1:             # a summary reads the patches of its band
-                    allow[q, k] = index[k] // g // R == index[q]
+                elif R > 0:                                     # row summaries: a summary reads its band's patches
+                    allow[q, k] = not (kind[q] == 2 and kind[k] == 1) or index[k] // g // R == index[q]
+                elif kind[k] == 2:                              # the pyramid: same or coarser level, within Wn there
+                    d = lev[k] - lev[q]
+                    allow[q, k] = d >= 0 and abs(rr[q] // 2 ** d - rr[k]) <= Wn and abs(cc[q] // 2 ** d - cc[k]) <= Wn
+                else:                                           # a summary reads every patch of its block
+                    allow[q, k] = rr[k] // 2 ** lev[q] == rr[q] and cc[k] // 2 ** lev[q] == cc[q]
         return allow
     if not cfg.get("universal") or S <= 1:
         return None
@@ -477,7 +499,33 @@ def uni_values(cfg, images, drives, actions):
     used = np.full(nt, V)
     used[0], used[nt - 1] = 2, 3
     used[kind == 2] = 0                                                            # summary tokens: no values
+    if cfg.get("sum_thumb", 0):   # task 00049: a summary's block, box-averaged to one patch (a thumbnail)
+        v[:, :, kind == 2] = uni_thumbs(cfg, images)
+        used[kind == 2] = V
     return v, used
+
+
+def uni_thumbs(cfg, images):
+    """Each summary's thumbnail [S, T, nsum, V] (task 00049): the pixels of its block (uni_sum: R * patch rows by the
+    full width; uni_pyr: a 2^l * patch square) averaged over boxes to one patch, values (y, x, c) / 255."""
+    S, T = images.shape[:2]
+    ps, g = cfg["patch"], cfg["img"] // cfg["patch"]
+    x = np.asarray(images, np.float64) / 255.0
+    if cfg.get("gray", 0):
+        x = x[..., :1]
+    ch = x.shape[-1]
+    t = uni_slot_table(cfg)
+    out = []
+    for k in np.flatnonzero(t["kind"] == 2):
+        if cfg.get("uni_sum", 0):
+            R = cfg["uni_sum"]
+            y0, x0, fy, fx = t["r"][k] * R * ps, 0, R, g
+        else:
+            b = 2 ** t["level"][k]
+            y0, x0, fy, fx = t["r"][k] * b * ps, t["c"][k] * b * ps, b, b
+        blk = x[:, :, y0:y0 + fy * ps, x0:x0 + fx * ps]
+        out.append(blk.reshape(S, T, ps, fy, ps, fx, ch).mean((3, 5)).reshape(S, T, ps * ps * ch))
+    return np.stack(out, 2)
 
 
 def forward_uni(P, cfg, images, drives, actions, ep_start):

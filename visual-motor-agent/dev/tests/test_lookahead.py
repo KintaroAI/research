@@ -20,8 +20,9 @@ SMALL_UNI = dict(img=32, c1=4, c2=8, c3=8, feat=16, d_model=16, n_layer=2, n_hea
                  pc1=4, pc2=8, pred_hidden=16, use_prev_reward=1, logstd_init=-0.3, patch=8, universal=1, bins=8)
 
 
-@pytest.fixture(scope="module", params=[dict(gray=0), dict(gray=1), dict(gray=1, attn_win=1, uni_sum=2)],
-                ids=["rgb", "gray", "gray_hier"])
+@pytest.fixture(scope="module", params=[dict(gray=0), dict(gray=1), dict(gray=1, attn_win=1, uni_sum=2),
+                                        dict(gray=1, attn_win=1, uni_pyr=2), dict(gray=1, attn_win=1, uni_pyr=2, sum_thumb=1)],
+                ids=["rgb", "gray", "gray_hier", "gray_pyr", "gray_thumb"])
 def agent(request):
     agent_lib.set_threads(4)
     return agent_lib.Agent(dict(SMALL_UNI, **request.param), seed=3)

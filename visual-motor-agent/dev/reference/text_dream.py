@@ -49,10 +49,40 @@ class Uni:
         self.m = torch.zeros(self.nt, self.V, device=device)
         self.m[0, :2] = 1
         self.m[self.ps] = 1
+        lay = agent_lib.uni_layout(c)
+        self.ss = torch.tensor(lay["summary"], device=device)                    # the summaries' slots
+        if c.get("sum_thumb"):                                                   # task 00049: they carry thumbnails
+            self.m[self.ss] = 1
         self.m[self.nt - 1, :3] = 1
         al = ref.attn_allow(c)                            # attention regions (task 00044), by slot; None = none
         self.allow = None if al is None else torch.tensor(al, device=device)
         self.device = device
+
+    def fill_thumbs(self, v, t=None):
+        """Task 00049: the summaries' values of v [S, T, nt, V] (all steps, or step t) from its patches' values, as
+        torch_reference.uni_thumbs: the page rebuilt from the patches (gray), each summary's block box-averaged to one
+        patch. A no-op without thumbnails."""
+        if not self.cfg.get("sum_thumb"):
+            return
+        c, ps_, g = self.cfg, self.cfg["patch"], self.cfg["img"] // self.cfg["patch"]
+        sel = slice(None) if t is None else slice(t, t + 1 if t != -1 else None)
+        pv = v[:, sel][:, :, self.ps]                                            # [S, T', g*g, ps*ps]
+        S, T = pv.shape[:2]
+        img = pv.reshape(S, T, g, g, ps_, ps_).permute(0, 1, 2, 4, 3, 5).reshape(S, T, g * ps_, g * ps_)
+        tab = ref.uni_slot_table(c)
+        out = []
+        for k in self.ss.tolist():
+            if c.get("uni_sum", 0):
+                R = c["uni_sum"]
+                y0, x0, fy, fx = int(tab["r"][k]) * R * ps_, 0, R, g
+            else:
+                b = 2 ** int(tab["level"][k])
+                y0, x0, fy, fx = int(tab["r"][k]) * b * ps_, int(tab["c"][k]) * b * ps_, b, b
+            blk = img[:, :, y0:y0 + fy * ps_, x0:x0 + fx * ps_]
+            out.append(blk.reshape(S, T, ps_, fy, ps_, fx).mean((3, 5)).reshape(S, T, ps_ * ps_))
+        vv = v[:, sel]
+        vv[:, :, self.ss] = torch.stack(out, 2)
+        v[:, sel] = vv
 
     def logits(self, v):
         S, T, nt, V = v.shape
@@ -99,6 +129,7 @@ def uni_generate(uni, codes, lev, G, mode, gen, temp=1.0):
     levf = torch.tensor(lev, device=uni.device, dtype=torch.float32) / 255.0
     v = torch.zeros(S, L, nt, V, device=uni.device)
     v[:, :, ps] = levf[torch.tensor(codes, device=uni.device).reshape(S, L, page)][..., None]
+    uni.fill_thumbs(v)
     for t in range(L):   # the context's moves, sampled step by step, as in its lifetime
         mv = sample_bins(uni.logits(v[:, :t + 1])[:, t * nt + nt - 2, :3], gen)
         v[:, t, nt - 1, :2], v[:, t, nt - 1, 2] = mv[:, :2], (mv[:, 2] > 0.5).float()
@@ -116,6 +147,7 @@ def uni_generate(uni, codes, lev, G, mode, gen, temp=1.0):
             lp = letter_logp(lg, lev_t)
             k = lp.argmax(-1) if mode == "greedy" else torch.multinomial((lp / temp).softmax(-1), 1, generator=gen)[:, 0]
             v[:, -1, ps[p]] = levf[k][:, None]
+            uni.fill_thumbs(v, -1)
             out.append(k)
         mv = sample_bins(uni.logits(v)[:, (T - 1) * nt + nt - 2, :3], gen)
         v[:, -1, nt - 1, :2], v[:, -1, nt - 1, 2] = mv[:, :2], (mv[:, 2] > 0.5).float()
@@ -131,6 +163,7 @@ def uni_score(uni, codes, lev, n_score, gen):
     ct = torch.tensor(codes, device=uni.device)
     v = torch.zeros(S, L, nt, V, device=uni.device)
     v[:, :, ps] = levf[ct.reshape(S, L, page)][..., None]
+    uni.fill_thumbs(v)
     for t in range(L):
         mv = sample_bins(uni.logits(v[:, :t + 1])[:, t * nt + nt - 2, :3], gen)
         v[:, t, nt - 1, :2], v[:, t, nt - 1, 2] = mv[:, :2], (mv[:, 2] > 0.5).float()

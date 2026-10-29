@@ -61,6 +61,10 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     every R rows, no values; the token before it has no target). **The slot layout is no longer [body, patches, move]:**
     use `agent_lib.uni_layout(cfg)` (patch slots, summary slots, move) in any tool; a patch is predicted by the token
     before its slot (`layout["patch"] - 1`), the move by slot nt - 2, the next body by the move token.
+    Task 00048, vm-00041: `uni_pyr=L`, a pyramid of summaries (one per 2^l x 2^l block, l = 1..L); the layout is a table
+    built once (`vm_uni_layout`, a device array in CUDA). Task 00049: `sum_thumb=1`, summaries carry their block's
+    thumbnail as values (then every token has a target). GPU buffers (`Buf`) free themselves: never list them in
+    `vmc_free` again (that list leaked 14 GB in the test file).
   - **The universal model** (task 00023, `../ARCHITECTURE.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
     channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,

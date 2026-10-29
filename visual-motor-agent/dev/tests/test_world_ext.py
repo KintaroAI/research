@@ -293,3 +293,66 @@ def test_touch_state_round_trip():
     second = [env.step(a)[0]["image"] for a in acts]
     for x, y in zip(first, second):
         np.testing.assert_array_equal(x, y)
+
+
+@pytest.mark.parametrize("wrap", [False, True])
+def test_square_hazards_are_drawn_and_touched_as_squares(wrap):
+    """env.hazard_shape = square (vm-00043): an axis-aligned square of the circle's area (half-side r * sqrt(pi) / 2),
+    drawn (and checkered) and touched as such; the circle world is unchanged without it."""
+    base = dataclasses.replace(TORUS if wrap else RICH, target_speed=0.0, hazard_speed=0.0, h_rate=0.0,
+                               hazard_cost=0.05, egocentric=False, hazards=1)
+    r = 8.0
+    h = r * np.sqrt(np.pi) / 2                                                 # 7.09
+    state = dict(hunger=np.full(1, 0.3), target=np.array([[50.0, 50.0]]), radius=np.array([4.0]),
+                 hz_pos=np.array([[[24.0, 24.0]]]), hz_rad=np.array([[r]]))
+    col = np.array(base.hazard_color, np.uint8)
+    for shape in ("circle", "square"):
+        cfg = dataclasses.replace(base, hazard_shape=shape)
+        env = CircleWorld(1, cfg, seed=0)
+        env.set_state(dict(state, cursor=np.array([[24.0 + 6.5, 24.0 + 6.5]])))   # a corner: in the square only
+        _, _, _, info = env.step(np.zeros((1, 3)))
+        assert bool(info["gt_in_hazard"][0]) == (shape == "square")
+        env.set_state(dict(state, cursor=np.array([[24.0 + 7.6, 24.0]])))         # on the axis, beyond h, within r
+        _, _, _, info = env.step(np.zeros((1, 3)))
+        assert bool(info["gt_in_hazard"][0]) == (shape == "circle")
+        env.set_state(dict(state, cursor=np.array([[50.0, 10.0]])))
+        img = env.observe()["image"][0]
+        blue = (img == col).all(-1)
+        c = np.arange(64) + 0.5
+        dx, dy = c[None, :] - 24.0, c[:, None] - 24.0
+        region = (np.abs(dx) <= h) & (np.abs(dy) <= h) if shape == "square" else dx * dx + dy * dy <= r * r
+        if cfg.hazard_pattern == "checker":
+            region &= (np.add.outer(np.arange(64), np.arange(64)) % 2 == 0)
+        np.testing.assert_array_equal(blue, region)
+    assert abs(4 * h * h - np.pi * r * r) < 1e-9                              # the same area
+
+
+def test_square_hazard_config():
+    with pytest.raises(ValueError):
+        CircleWorld(1, dataclasses.replace(RICH, hazard_shape="triangle"), seed=0)
+    assert EnvConfig().hazard_shape == "circle"
+
+
+def test_checker_cells_of_two_pixels():
+    """env.hazard_checker_cell = 2 (vm-00044): the poison's checker in 2x2-pixel cells, aligned to the view grid, so a
+    2x2 box average (a level-1 summary thumbnail) keeps a 1x1 checker; cell 1 is the pixel checker as before."""
+    cfg = dataclasses.replace(TORUS, target_speed=0.0, hazard_speed=0.0, hazards=1, hazard_pattern="checker",
+                              egocentric=False)
+    st = dict(target=np.array([[50.0, 50.0]]), radius=np.array([4.0]), hz_pos=np.array([[[24.0, 24.0]]]),
+              hz_rad=np.array([[10.0]]), cursor=np.array([[50.0, 10.0]]))
+    col = np.array(cfg.hazard_color, np.uint8)
+    i = np.arange(64)
+    c = i + 0.5
+    disc = (c[None, :] - 24.0) ** 2 + (c[:, None] - 24.0) ** 2 <= 100.0
+    for cell in (1, 2):
+        env = CircleWorld(1, dataclasses.replace(cfg, hazard_checker_cell=cell), seed=0)
+        env.set_state(st)
+        blue = (env.observe()["image"][0] == col).all(-1)
+        np.testing.assert_array_equal(blue, disc & ((i[:, None] // cell + i[None, :] // cell) % 2 == 0))
+    # inside the disc, the 2x2 box averages of the 2-pixel checker alternate fully lit / dark, as a 1x1 checker
+    box = blue.reshape(32, 2, 32, 2).mean((1, 3))
+    inner = disc.reshape(32, 2, 32, 2).all((1, 3))
+    j = np.arange(32)
+    np.testing.assert_array_equal(box[inner], ((j[:, None] + j[None, :]) % 2 == 0)[inner].astype(float))
+    with pytest.raises(ValueError):
+        CircleWorld(1, dataclasses.replace(cfg, hazard_checker_cell=0), seed=0)

@@ -35,6 +35,7 @@ enum ParamId {
     UIW, UIB, USL, UOW, UOB, NUM_P                    // the universal model (universal = 1)
 };
 #define ACC_N 34   // loss accumulators (see the kernels that fill them; 24..33: the universal model)
+#define UNI_SLOT 6  // ints per slot in the universal model's device slot table (kind, index, block y, x, fy, fx)
 static const float LS_MIN = -5.0f, LS_MAX = 1.0f, LOG_2PI = 1.8378770664093453f;
 static const int KK = 16;   // 4x4 kernels, stride 2, padding 1
 
@@ -49,7 +50,7 @@ struct Dims {
     int ib, VI;                 // bin-embedding input (task 00036): on/off; the input map's width (V or V * bins)
     int uni, V, nbin, OV, ch;   // universal model (task 00023): on/off; values per token; bins per value; head
                                 // outputs; channels per patch pixel (1 with gray, else 3)
-    int nsum, us;               // summary tokens per step and rows of patches per summary (task 00047; 0: none)
+    int nsum, nnot;             // summary tokens per step (tasks 00047, 00048; 0: none); tokens without a target
 };
 static const int ACT_CG = 8;   // act token: side of the coarse next frame it predicts (as vm_agent.cpp)
 
@@ -62,7 +63,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3 + D.act; D.pdim = D.patch * D.patch * 3;
         D.uni = c.universal ? 1 : 0;
         if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = vm_uni_nt(&c); }
-        D.nsum = D.uni ? vm_uni_nsum(&c) : 0; D.us = D.nsum ? c.uni_sum : 0;
+        D.nsum = D.uni ? vm_uni_nsum(&c) : 0; D.nnot = D.uni ? vm_uni_untargeted(&c) : 0;
         if (!vm_attn_valid(&c)) return false;
         D.ch = (D.uni && c.gray) ? 1 : 3;
         D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
@@ -80,7 +81,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         return true;
     }
     D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1;
-    D.uni = D.V = D.nbin = D.OV = 0; D.ch = 3; D.nsum = D.us = 0;
+    D.uni = D.V = D.nbin = D.OV = 0; D.ch = 3; D.nsum = D.nnot = 0;
     if (c.universal || c.gray) return false;
     if (!c.coord || !c.pred_residual || !c.pred_skip) return false;
     if (c.img % 8 || c.pred_img % 4 || c.img / c.pred_img != 2 || c.d_model % c.n_head || c.pb <= 0) return false;
@@ -976,10 +977,21 @@ __global__ void k_to_hwc(const float* cm, float* hwc, int B, int P) {
 // ---------------------------------------------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------------------------------------------
-struct Buf {   // device float buffer, grown on demand
+struct Buf {   // device float buffer, grown on demand; freed with its owner (not copyable)
     float* p = nullptr; size_t n = 0;
+    Buf() = default;
+    Buf(const Buf&) = delete;
+    Buf& operator=(const Buf&) = delete;
+    ~Buf() { if (p) cudaFree(p); }
     float* get(size_t need) {
-        if (need > n) { if (p) cudaFree(p); n = need; if (cudaMalloc(&p, n * sizeof(float)) != cudaSuccess) { p = nullptr; n = 0; } }
+        if (need > n) {
+            if (p) cudaFree(p);
+            n = need;
+            if (cudaMalloc(&p, n * sizeof(float)) != cudaSuccess) {   // the caller's next CUDA call then fails
+                fprintf(stderr, "vm_cuda: out of device memory (a buffer of %zu floats)\n", need);
+                p = nullptr; n = 0;
+            }
+        }
         return p;
     }
 };
@@ -1026,6 +1038,7 @@ struct Model {
     Buf c_in, c_x, c_ln, c_lnm, c_lnr, c_qkv, c_att, c_res, c_fch, c_fchg, c_lg, c_val;
     int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
     unsigned char* allow = nullptr;              // attention regions (task 00044): [allow_nt^2] on the device, or NULL
+    int* uslot = nullptr;                        // the universal model's slots [UNI_SLOT * ntok] on the device
     int allow_nt = 1;
     int tcap = 0;
     Buf dpout, dpdrv, dpi, dcols, dx2, dx1, dph2, dub, dskip3, dph1, dpin, dz, dpih, dres, dln, datty, dqkv, dfch, dfchg,
@@ -1161,6 +1174,20 @@ void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const 
         }
         M->allow_nt = nt;
     }
+    if (D.uni) {   // the slot layout (tasks 00047, 00048)
+        std::vector<VMSlot> sl(D.ntok);
+        vm_uni_layout(cfg, sl.data());
+        std::vector<int> ki(UNI_SLOT * D.ntok, 0);
+        for (int k = 0; k < D.ntok; k++) {
+            int* e = ki.data() + UNI_SLOT * k;
+            e[0] = sl[k].kind; e[1] = sl[k].idx;
+            if (sl[k].kind == 2 && cfg->sum_thumb) vm_uni_block(cfg, &sl[k], e + 2, e + 3, e + 4, e + 5);
+        }
+        if (cudaMalloc(&M->uslot, ki.size() * sizeof(int)) ||
+            cudaMemcpy(M->uslot, ki.data(), ki.size() * sizeof(int), cudaMemcpyHostToDevice)) {
+            fprintf(stderr, "vm_cuda: out of device memory\n"); return nullptr;
+        }
+    }
     for (int i = 0; i < NUM_P; i++) { M->off[i] = offsets[i]; M->sz[i] = sizes[i]; }
     const size_t nb = n_params * sizeof(float);
     if (cudaMalloc(&M->P, nb) || cudaMalloc(&M->G, nb) || cudaMalloc(&M->m, nb) || cudaMalloc(&M->v, nb) ||
@@ -1174,6 +1201,11 @@ void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const 
     return M;
 }
 
+long vmc_device_free(void) {
+    size_t fr = 0, tot = 0;
+    return cudaMemGetInfo(&fr, &tot) == cudaSuccess ? (long)fr : -1;
+}
+
 void vmc_free(void* h) {
     Model* M = (Model*)h;
     if (!M) return;
@@ -1181,21 +1213,11 @@ void vmc_free(void* h) {
     cudaFree(M->iimg); cudaFree(M->idrv);
     cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos); cudaFree(M->ivalid);
     cudaFree(M->drv); cudaFree(M->pa); cudaFree(M->pr); cudaFree(M->act); cudaFree(M->ndrv);
-    for (Buf* b : {&M->x0, &M->cols1, &M->cols2, &M->cols3, &M->Y, &M->a1, &M->a2, &M->a3, &M->vf, &M->tin, &M->xin,
-                   &M->ln1, &M->ln1m, &M->ln1r, &M->qkv, &M->att, &M->atty, &M->res1, &M->ln2, &M->ln2m, &M->ln2r,
-                   &M->fch, &M->fchg, &M->res2, &M->lnf, &M->lnfm, &M->lnfr, &M->pih, &M->pi, &M->pin, &M->ph1,
-                   &M->ph2, &M->ub, &M->pdrv, &M->d1in, &M->dc1, &M->d2in, &M->dc2, &M->pout, &M->dpout, &M->dpdrv,
-                   &M->dpi, &M->dcols, &M->dx2, &M->dx1, &M->dph2, &M->dub, &M->dskip3, &M->dph1, &M->dpin, &M->dz,
-                   &M->dpih, &M->dres, &M->dln, &M->datty, &M->dqkv, &M->dfch, &M->dfchg, &M->dtin, &M->dvf, &M->da3,
-                   &M->da2, &M->da1, &M->dY, &M->iv_in, &M->iv_h, &M->iv_out, &M->div_out, &M->div_h, &M->div_in,
-                   &M->fout, &M->fhwc, &M->y_uT, &M->y_uH, &M->y_hT, &M->y_hH, &M->y_h, &M->y_s, &M->y_hX, &M->y_x,
-                   &M->y_hX0, &M->y_x0, &M->g_s, &M->g_h, &M->g_hT, &M->g_hH, &M->g_uT, &M->g_uH, &M->g_hX, &M->g_x,
-                   &M->g_hX0, &M->g_x0, &M->im_s, &M->im_s2, &M->im_h, &M->im_uT, &M->im_uH, &M->im_hT, &M->im_hH,
-                   &M->im_x, &M->im_hX, &M->im_act, &M->tpx, &M->pemb, &M->dpemb, &M->zm, &M->dzm, &M->pdel, &M->dpdel})
-        if (b->p) cudaFree(b->p);
+    // every Buf member frees itself in delete M (they used to be listed here, and new ones were missed)
     for (int* q : {M->ch_b, M->ch_j, M->ch_par, M->ch_lt, M->ch_hl, M->ch_fr, M->im_idx, M->im_par, M->tstart, M->tend})
         cudaFree(q);
     if (M->allow) cudaFree(M->allow);
+    if (M->uslot) cudaFree(M->uslot);
     cublasDestroy(M->cb);
     delete M;
 }
@@ -1498,29 +1520,26 @@ static int transformer_bwd(Model* M, int B, int K, const int* start, const int* 
 }
 
 // ---- the universal model (task 00023; as seq_fwd_uni / seq_loss_uni / seq_bwd_uni in vm_agent.cpp) ----
-// Token (b, k) of frame b: k = 0 the body, then the patches row by row with a summary token after every us rows
-// (task 00047; us = 0: none), nt - 1 the move. Values in [0, 1]; used: 2, V, 0 (a summary), 3. As vm_uni_slot.
-__device__ inline int uni_slot_(int k, int nt, int gp, int us, int* idx) {
-    *idx = 0;
-    if (k == 0) return 0;
-    if (k == nt - 1) return 3;
-    const int q = k - 1;
-    if (us <= 0) { *idx = q; return 1; }
-    const int bp = us * gp, band = q / (bp + 1), off = q % (bp + 1);
-    if (off == bp) { *idx = band; return 2; }
-    *idx = band * bp + off;
-    return 1;
-}
-__device__ inline int uni_used_(int k, int nt, int V, int gp, int us) {
-    int p;
-    const int kind = uni_slot_(k, nt, gp, us, &p);
-    return kind == 0 ? 2 : (kind == 3 ? 3 : (kind == 2 ? 0 : V));
+// Token (b, k) of frame b: its slot k from sl [UNI_SLOT * nt] (vm_uni_layout, tasks 00047-00049): kind (0 the body,
+// 1 a patch, 2 a summary, 3 the move), index, and a summary's block (origin y, x and pooling fy, fx; fy = 0: no
+// thumbnail). Values in [0, 1]; used: 2, V, V or 0 (a summary), 3.
+__device__ inline int uni_used_(int k, int V, const int* sl) {
+    const int kind = sl[UNI_SLOT * k];
+    return kind == 0 ? 2 : (kind == 3 ? 3 : (kind == 2 ? (sl[UNI_SLOT * k + 4] ? V : 0) : V));
 }
 __device__ inline float uni_value_(const uint8_t* img, const float* drv, const float* act, long b, int k, int j, int nt,
-                                   int V, int S, int ps, int gp, int ch, int us) {
-    int p;
-    const int kind = uni_slot_(k, nt, gp, us, &p);
-    if (kind == 2) return 0.f;
+                                   int V, int S, int ps, int gp, int ch, const int* sl) {
+    const int* e = sl + UNI_SLOT * k;
+    const int kind = e[0], p = e[1];
+    if (kind == 2) {   // a summary: its block box-averaged to one patch (task 00049), or no values
+        const int fy = e[4], fx = e[5];
+        if (!fy) return 0.f;
+        const int c = j % ch, x = (j / ch) % ps, y = j / (ch * ps), y0 = e[2] + y * fy, x0 = e[3] + x * fx;
+        float a = 0.f;
+        for (int i = 0; i < fy; i++)
+            for (int q = 0; q < fx; q++) a += img[((b * S + y0 + i) * S + x0 + q) * 3 + c];
+        return a / (255.0f * fy * fx);
+    }
     if (k == 0) return j < 2 ? drv[b * 2 + j] : 0.f;
     if (k == nt - 1) {
         if (j < 2) return 0.5f * (clampf_(act[b * 3 + j], -1.f, 1.f) + 1.f);
@@ -1533,20 +1552,20 @@ __device__ inline float uni_value_(const uint8_t* img, const float* drv, const f
 // the next drives), from img / drv. The two differ only with self-forcing (task 00039).
 __global__ void k_uni_tokens(const uint8_t* iimg, const float* idrv, const uint8_t* img, const float* drv,
                              const float* act, const float* ndrv, float* in, float* tgt, int B, int nt, int V, int S,
-                             int ps, int gp, int ch, int us) {
+                             int ps, int gp, int ch, const int* sl) {
     const long n = (long)B * nt * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V, k = (i / V) % nt;
         const long b = i / ((long)V * nt);
-        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch, us);
-        in[i] = j < uni_used_(k, nt, V, gp, us) ? v - 0.5f : 0.f;
-        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch, us);
+        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch, sl);
+        in[i] = j < uni_used_(k, V, sl) ? v - 0.5f : 0.f;
+        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch, sl);
         else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : 0.f;
     }
 }
 // Bin-embedding input (task 00036): hot [rows, V*K] = each used value of in [rows, V] (centred) split two-hot over
 // the K bins, unused values and bins 0. Row r is token r % nt (cand: every row a move token, nt - 1).
-__global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int K, int cand, int gp, int us) {
+__global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int K, int cand, const int* sl) {
     const long n = rows * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V;
@@ -1554,7 +1573,7 @@ __global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int
         const int k = cand ? nt - 1 : (int)(r % nt);
         float* o = hot + i * K;
         for (int b = 0; b < K; b++) o[b] = 0.f;
-        if (j >= uni_used_(k, nt, V, gp, us)) continue;
+        if (j >= uni_used_(k, V, sl)) continue;
         const float p = fminf(fmaxf(in[i] + 0.5f, 0.f), 1.f) * (K - 1);
         const int lo = min((int)floorf(p), K - 2);
         const float w = p - lo;
@@ -1581,10 +1600,10 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
 // UNI_LOSS_THREADS threads (a multiple of 32).
 #define UNI_LOSS_THREADS 256
 __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc,
-                           float* tok_ce, int gp, int us) {
+                           float* tok_ce, const int* sl) {
     __shared__ double sh[2][UNI_LOSS_THREADS / 32];
     const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
-    const int u = k == nt - 1 ? 2 : uni_used_(k + 1, nt, V, gp, us), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
+    const int u = k == nt - 1 ? 2 : uni_used_(k + 1, V, sl), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
     if (u == 0) {   // no target
         for (long i = threadIdx.x; i < (long)V * K; i += blockDim.x) lg[(long)r * V * K + i] = 0.f;
         if (threadIdx.x == 0) tok_ce[r] = 0.f;
@@ -1845,11 +1864,11 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     float* xin = M->xin.get((size_t)rows * d);
     k_uni_tokens<<<GRID((long)rows * V)>>>(M->has_in ? M->iimg : M->img, M->has_in ? M->idrv : M->drv, M->img, M->drv,
                                          M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img, D.patch, D.gp,
-                                         D.ch, D.us);
+                                         D.ch, M->uslot);
     const float* uin = in;   // W_in's input: the centred values, or their two-hot bins
     if (D.ib) {
         float* hot = M->u_hot.get((size_t)rows * D.VI);
-        k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, K, 0, D.gp, D.us);
+        k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, K, 0, M->uslot);
         uin = hot;
     }
     linear(M, xin, uin, P + off[UIW], P + off[UIB], rows, D.VI, d, 0);
@@ -1875,8 +1894,8 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     CK(cudaMemsetAsync(G, 0, M->n_params * sizeof(float)));
     CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     for (int i = 0; i < 8; i++) M->coef[i] = 0.f;
-    k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / ((float)B * (nt - D.nsum)), M->acc,
-                                           M->u_ce.get(rows), D.gp, D.us);   // the mean over the tokens with a target
+    k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / ((float)B * (nt - D.nnot)), M->acc,
+                                           M->u_ce.get(rows), M->uslot);   // the mean over the tokens with a target
     M->ce_S = M->S;
     M->ce_T = T;
     float* dz = M->dz.get((size_t)rows * d);
@@ -2218,7 +2237,7 @@ int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger) {
     const float* cuin = cin;
     if (D.ib) {
         float* hot = M->c_hot.get((size_t)R * D.VI);
-        k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.nbin, 1, D.gp, D.us);
+        k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.nbin, 1, M->uslot);
         cuin = hot;
     }
     linear(M, x, cuin, P + off[UIW], P + off[UIB], R, D.VI, d, 0);
@@ -2361,7 +2380,7 @@ int vmc_stats(void* h, VMCStats* out) {
     out->gn_backbone = (float)sqrt(a[5]); out->gn_policy = (float)sqrt(a[6]); out->gn_pred = (float)sqrt(a[7]);
     out->act_drive_mse = (float)(a[23] / n);
     if (M->D.uni) {   // the universal model: the mean token cross-entropy, and by predicted kind
-        out->loss = (float)(a[33] / ((double)n * (M->D.ntok - M->D.nsum)));
+        out->loss = (float)(a[33] / ((double)n * (M->D.ntok - M->D.nnot)));
         float* ce[3] = {&out->uni_ce_body, &out->uni_ce_patch, &out->uni_ce_move};
         float* se[3] = {&out->uni_mse_body, &out->uni_mse_patch, &out->uni_mse_move};
         for (int k = 0; k < 3; k++) if (a[30 + k] > 0) { *ce[k] = (float)(a[24 + k] / a[30 + k]); *se[k] = (float)(a[27 + k] / a[30 + k]); }

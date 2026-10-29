@@ -21,7 +21,9 @@ if not cuda_lib.available() or not cuda_lib.has("vmc_forward_uni_step"):
 import eval_dream  # noqa: E402
 
 
-@pytest.mark.parametrize("extra", [dict(), dict(uni_sum=2), dict(uni_sum=1, attn_win=1)], ids=["plain", "R2", "W1_R1"])
+@pytest.mark.parametrize("extra", [dict(), dict(uni_sum=2), dict(uni_sum=1, attn_win=1), dict(uni_pyr=2, attn_win=1),
+                                   dict(uni_pyr=2, attn_win=1, sum_thumb=1)],
+                         ids=["plain", "R2", "W1_R1", "W1_pyr2", "W1_pyr2_thumb"])
 def test_dream_step_is_sequential_decoding(extra):
     agent = agent_lib.Agent(dict(SMALL_UNI, gray=1, in_bins=1, **extra), seed=5)
     m = cuda_lib.CudaModel(agent)

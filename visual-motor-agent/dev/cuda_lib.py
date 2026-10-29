@@ -45,6 +45,7 @@ def lib():
         sig = {
             "vmc_create": (vp, [C.POINTER(VMConfig), fp, C.c_long, lp, lp, i32]),
             "vmc_free": (None, [vp]),
+            "vmc_device_free": (C.c_long, []),
             "vmc_set_batch": (i32, [vp, i32, u8p, fp, fp, fp, u8p, fp, u8p, fp, i32]),
             "vmc_set_uni_inputs": (i32, [vp, i32, u8p, fp]),
             "vmc_loss_and_grads": (i32, [vp, C.POINTER(PPOConfig)]),
@@ -107,6 +108,11 @@ class Rollout:
     def batch(self):
         return [None if a is None else np.ascontiguousarray(a.swapaxes(0, 1))
                 for a in (self.img, self.drv, self.pa, self.pr, self.es, self.act, self.nimg, self.ndrv)]
+
+
+def device_free():
+    """The current device's free memory in bytes (vmc_device_free), or -1."""
+    return int(lib().vmc_device_free())
 
 
 def has(name):

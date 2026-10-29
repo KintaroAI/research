@@ -522,7 +522,7 @@ struct Dims {
     int ih;                               // inverse-dynamics hidden size (0 = no inverse head)
     int dh, rimg, rpx;                    // latent dynamics hidden size (0 = off); decoder frame side / values
     int pih;                              // policy hidden size (0 = linear policy head)
-    int nsum = 0;                         // universal: summary tokens per step (task 00047)
+    int nsum = 0, nnot = 0;               // universal: summary tokens per step (task 00047), tokens without a target
     int patch, gp, npch, ntok, pdim;      // patch tokens: patch side (0 = off), grid side, patches, tokens per step,
                                           // values per patch
     int cell, cpx, KT;                    // predicted cell side / values per patch; tokens per context (K * ntok)
@@ -566,6 +566,7 @@ static Dims make_dims(const VMConfig& c) {
     D.uni = (D.patch && c.universal) ? 1 : 0;   // tokens: body, the patches, the move
     if (D.uni) D.ntok = vm_uni_nt(&c);          // + the summary tokens (task 00047)
     D.nsum = D.uni ? vm_uni_nsum(&c) : 0;
+    D.nnot = D.uni ? vm_uni_untargeted(&c) : 0;
     D.cds = c.pred_img / ACT_CG;
     D.cfx = ACT_CG * ACT_CG * 3;
     D.pdim = D.patch * D.patch * 3;
@@ -709,6 +710,7 @@ struct Model {
     VMConfig cfg;
     Dims D;
     std::vector<unsigned char> allow;   // attention regions (task 00044): [ntok * ntok], empty = none
+    std::vector<VMSlot> uslot;          // the universal model's slot layout (tasks 00047, 00048): [ntok]
     long off[NUM_P], sz[NUM_P], n_params = 0;
     std::vector<float> params, grads, wt, m, v;
     std::vector<TEntry> tlist;
@@ -932,6 +934,10 @@ static Model* model_new(const VMConfig& cfg) {
     if (const int nt = vm_attn_allow(&cfg, nullptr)) {   // attention regions (task 00044)
         M->allow.resize((size_t)nt * nt);
         vm_attn_allow(&cfg, M->allow.data());
+    }
+    if (M->D.uni) {
+        M->uslot.resize(M->D.ntok);
+        vm_uni_layout(&cfg, M->uslot.data());
     }
     model_layout(M);
     M->params.assign(M->n_params, 0.f);
@@ -1306,12 +1312,29 @@ static void uni_twohot(const float* v, int u, int V, int K, float* out) {
     }
 }
 
-static int uni_values(const VMConfig& c, const Dims& D, const SeqView& sv, int t, int k, float* v) {
+static int uni_values(const Model* M, const SeqView& sv, int t, int k, float* v) {
+    const Dims& D = M->D;
     const int V = D.V, ps = D.patch, S = D.img;
     for (int i = 0; i < V; i++) v[i] = 0.f;
-    int p;
-    const int kind = vm_uni_slot(&c, k, &p);
-    if (kind == 2) return 0;   // a summary token
+    const int kind = M->uslot[k].kind, p = M->uslot[k].idx;
+    if (kind == 2) {   // a summary token: no values, or its block box-averaged to one patch (task 00049)
+        if (!M->cfg.sum_thumb) return 0;
+        int by0, bx0, fy, fx;
+        vm_uni_block(&M->cfg, &M->uslot[k], &by0, &bx0, &fy, &fx);
+        const uint8_t* img = sv.img + (size_t)t * sv.img_st;
+        const int ch = D.ch;
+        const float sc = 1.0f / (255.0f * fy * fx);
+        for (int y = 0; y < ps; y++)
+            for (int x = 0; x < ps; x++)
+                for (int c = 0; c < ch; c++) {
+                    float a = 0.f;
+                    for (int i = 0; i < fy; i++)
+                        for (int j = 0; j < fx; j++)
+                            a += img[((size_t)(by0 + y * fy + i) * S + bx0 + x * fx + j) * 3 + c];
+                    v[(y * ps + x) * ch + c] = a * sc;
+                }
+        return V;
+    }
     if (k == 0) {
         const float* dr = sv.drives + (size_t)t * sv.drv_st;
         v[0] = dr[0]; v[1] = dr[1];
@@ -1344,7 +1367,7 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
             W->tss[i] = W->ss[t] * nt;
             float* in = W->u_in.data() + (size_t)i * D.VI;
             float* val = D.ib ? W->u_row.data() : in;
-            const int u = uni_values(M->cfg, D, sv, t, k, val);
+            const int u = uni_values(M, sv, t, k, val);
             if (k > 0) {   // this token is the target of the one before it (in the same step)
                 memcpy(W->u_tgt.data() + (size_t)(i - 1) * V, val, sizeof(float) * V);
                 W->u_use[i - 1] = u;
@@ -2315,7 +2338,7 @@ static LossAcc loss_and_grads_seqs(Model* M, Rollout* R, const int* ids, int n_s
             SeqView sv = rollout_view(R, ids[q]);
             if (D.uni) {   // the universal model: one loss over every token, nothing else
                 seq_forward(M, W, sv, false);
-                seq_loss_uni(M, W, sv, inv_B / (D.ntok - D.nsum), G, accs[tid]);   // the mean over targets
+                seq_loss_uni(M, W, sv, inv_B / (D.ntok - D.nnot), G, accs[tid]);   // the mean over targets
                 seq_bwd_uni(M, W, sv, G);
                 continue;
             }
@@ -2526,6 +2549,8 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[48] = c.attn_checker;
     h[49] = c.attn_win;
     h[50] = c.uni_sum;
+    h[51] = c.uni_pyr;
+    h[52] = c.sum_thumb;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2553,6 +2578,8 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.attn_checker = h[48];
     c.attn_win = h[49];
     c.uni_sum = h[50];
+    c.uni_pyr = h[51];
+    c.sum_thumb = h[52];
 }
 
 // =====================================================================================

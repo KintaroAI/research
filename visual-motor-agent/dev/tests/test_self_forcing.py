@@ -20,8 +20,9 @@ if not cuda_lib.available() or not cuda_lib.has("vmc_forward_uni_step"):
     pytest.skip("libvmcuda.so with vmc_forward_uni_step not available", allow_module_level=True)
 
 
-@pytest.fixture(scope="module", params=[dict(in_bins=0), dict(in_bins=1), dict(in_bins=1, attn_win=1, uni_sum=2)],
-                ids=["linear", "in_bins", "in_bins_hier"])
+@pytest.fixture(scope="module", params=[dict(in_bins=0), dict(in_bins=1), dict(in_bins=1, attn_win=1, uni_sum=2),
+                                        dict(in_bins=1, attn_win=1, uni_pyr=2), dict(in_bins=1, attn_win=1, uni_pyr=2, sum_thumb=1)],
+                ids=["linear", "in_bins", "in_bins_hier", "in_bins_pyr", "in_bins_thumb"])
 def model(request):
     agent = agent_lib.Agent(dict(SMALL_UNI, gray=1, **request.param), seed=5)
     m = cuda_lib.CudaModel(agent)

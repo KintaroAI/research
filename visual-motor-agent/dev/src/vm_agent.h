@@ -65,55 +65,93 @@ typedef struct {
                         //     rows and W columns; with uni_sum, a patch also reads every summary and a summary its band
     int uni_sum;        // universal: R > 0 = a summary token after every R rows of patches (task 00047): no values, so
                         //     the token before it has no target; 0 = none
+    int uni_pyr;        // universal: L > 0 = a pyramid of summary tokens (task 00048): level l = 1..L, one per 2^l x 2^l
+                        //     block of patches, placed right after the block's last patch; 0 = none
+    int sum_thumb;      // universal with summaries: 1 = a summary's values are its block's pixels box-averaged to one
+                        //     patch, a thumbnail (task 00049); every token then has a target; 0 = no values
 } VMConfig;
 
-// The universal model's slots per step (task 00047): 0 the body; then the patches row by row, with a summary token after
-// every uni_sum rows; nt - 1 the move. vm_uni_nt: tokens per step. vm_uni_slot: the kind of slot k (0 body, 1 patch,
-// 2 summary, 3 move) and its index (the patch p, row-major, or the summary j). vm_uni_patch_slot: the slot of patch p.
+// The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
+// token right after the last patch of its block (uni_sum: a band of R rows; uni_pyr: a 2^l x 2^l block at level l, finer
+// levels first); nt - 1 the move. A slot: kind (0 body, 1 patch, 2 summary, 3 move), index (the patch, row-major, or
+// the summary), level (patches 0) and position on its level's grid (row, column; uni_sum's summaries: band, 0).
+typedef struct { int kind, idx, lev, r, c; } VMSlot;
 static inline int vm_uni_nsum(const VMConfig* c) {
-    if (!c->universal || c->patch <= 0 || c->uni_sum <= 0) return 0;
-    return (c->img / c->patch) / c->uni_sum;
+    if (!c->universal || c->patch <= 0) return 0;
+    const int g = c->img / c->patch;
+    int n = c->uni_sum > 0 ? g / c->uni_sum : 0;
+    for (int l = 1; l <= c->uni_pyr; l++) n += (g >> l) * (g >> l);
+    return n;
 }
 static inline int vm_uni_nt(const VMConfig* c) {
     const int g = c->img / c->patch;
     return g * g + 2 + vm_uni_nsum(c);
 }
-static inline int vm_uni_slot(const VMConfig* c, int k, int* idx) {
-    const int g = c->img / c->patch, nt = vm_uni_nt(c);
-    *idx = 0;
-    if (k == 0) return 0;
-    if (k == nt - 1) return 3;
-    const int q = k - 1;
-    if (c->uni_sum <= 0) { *idx = q; return 1; }
-    const int bp = c->uni_sum * g, bs = bp + 1, band = q / bs, off = q % bs;   // patches per band; slots per band
-    if (off == bp) { *idx = band; return 2; }
-    *idx = band * bp + off;
-    return 1;
-}
-static inline int vm_uni_patch_slot(const VMConfig* c, int p) {
+// Fills s [vm_uni_nt] (may be NULL); returns nt.
+static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
     const int g = c->img / c->patch;
-    return 1 + p + (c->uni_sum > 0 ? p / (c->uni_sum * g) : 0);
+    int n = 0, ns = 0;
+#define VM_SLOT_(K, I, L, R, C) do { if (s) { s[n].kind = K; s[n].idx = I; s[n].lev = L; s[n].r = R; s[n].c = C; } n++; } while (0)
+    VM_SLOT_(0, 0, 0, 0, 0);
+    for (int r = 0; r < g; r++)
+        for (int q = 0; q < g; q++) {
+            VM_SLOT_(1, r * g + q, 0, r, q);
+            if (c->uni_sum > 0 && q == g - 1 && (r + 1) % c->uni_sum == 0) VM_SLOT_(2, ns++, 1, r / c->uni_sum, 0);
+            for (int l = 1; l <= c->uni_pyr; l++)
+                if ((r + 1) % (1 << l) == 0 && (q + 1) % (1 << l) == 0) VM_SLOT_(2, ns++, l, r >> l, q >> l);
+        }
+    VM_SLOT_(3, 0, 0, 0, 0);
+#undef VM_SLOT_
+    return n;
+}
+// The pixel block a summary covers (task 00049): origin (by0, bx0) and the pooling factors (fy, fx) that box-average it
+// to one patch: uni_sum, a band of R * patch rows by the full width (R x g); uni_pyr, a 2^l * patch square (2^l x 2^l).
+static inline void vm_uni_block(const VMConfig* c, const VMSlot* s, int* by0, int* bx0, int* fy, int* fx) {
+    const int ps = c->patch, g = c->img / ps;
+    if (c->uni_sum > 0) { *by0 = s->r * c->uni_sum * ps; *bx0 = 0; *fy = c->uni_sum; *fx = g; return; }
+    const int b = 1 << s->lev;
+    *by0 = s->r * b * ps; *bx0 = s->c * b * ps; *fy = b; *fx = b;
+}
+// Tokens per step without a target: the summaries, unless they carry thumbnails (task 00049)
+static inline int vm_uni_untargeted(const VMConfig* c) { return c->sum_thumb ? 0 : vm_uni_nsum(c); }
+// The kind of slot k and its index (as vm_uni_layout; slow: for one-off use)
+static inline int vm_uni_slot(const VMConfig* c, int k, int* idx) {
+    VMSlot* s = (VMSlot*)malloc(sizeof(VMSlot) * vm_uni_nt(c));
+    vm_uni_layout(c, s);
+    const int kind = s[k].kind;
+    *idx = s[k].idx;
+    free(s);
+    return kind;
 }
 
 // The attention regions (task 00044): allow[q * nt + k] = 1 if a token of slot q may attend to one of slot k (slots per
 // step: 0 the body, 1..g*g the patches row by row, nt - 1 the move). The body and the move are in every region, and with
 // attn_pred_global also the last patch (it predicts the move); attn_checker: regions by (row + column) % S instead of
 // bands. attn_win (task 00047, the table directional): two patches meet within W rows and columns; a patch attends to
-// every summary, a summary to the patches of its band and to every summary; body and move global. Returns nt, or 0 when
-// attention is not restricted (allow untouched; allow may be NULL to ask only for nt).
+// every summary, a summary to the patches of its band and to every summary; body and move global. With uni_pyr (task
+// 00048): a token reads the summaries of its own or a coarser level whose position is within W of its own, projected to
+// that level; a summary reads every patch of its block and no finer summary. Returns nt, or 0 when attention is not
+// restricted (allow untouched; allow may be NULL to ask only for nt).
 static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
     if (c->universal && c->patch > 0 && c->attn_win > 0) {
-        const int g = c->img / c->patch, nt = vm_uni_nt(c), W = c->attn_win;
+        const int nt = vm_uni_nt(c), W = c->attn_win;
         if (!allow) return nt;
+        VMSlot* sl = (VMSlot*)malloc(sizeof(VMSlot) * nt);
+        vm_uni_layout(c, sl);
         for (int q = 0; q < nt; q++)
             for (int k = 0; k < nt; k++) {
-                int iq, ik;
-                const int kq = vm_uni_slot(c, q, &iq), kk = vm_uni_slot(c, k, &ik);
+                const VMSlot a = sl[q], b = sl[k];
                 int ok = 1;
-                if (kq == 1 && kk == 1) ok = abs(iq / g - ik / g) <= W && abs(iq % g - ik % g) <= W;
-                else if (kq == 2 && kk == 1) ok = ik / g / c->uni_sum == iq;   // a summary reads its own band
+                if (a.kind == 0 || a.kind == 3 || b.kind == 0 || b.kind == 3) ok = 1;   // body and move: global
+                else if (a.kind == 1 && b.kind == 1) ok = abs(a.r - b.r) <= W && abs(a.c - b.c) <= W;
+                else if (c->uni_sum > 0) ok = !(a.kind == 2 && b.kind == 1) || b.r / c->uni_sum == a.idx;   // rows
+                else if (b.kind == 2)   // the pyramid: a summary of the reader's level or coarser, within W there
+                    ok = a.lev <= b.lev && abs((a.r >> (b.lev - a.lev)) - b.r) <= W &&
+                         abs((a.c >> (b.lev - a.lev)) - b.c) <= W;
+                else ok = (b.r >> a.lev) == a.r && (b.c >> a.lev) == a.c;   // a summary reads its block's patches
                 allow[q * nt + k] = (unsigned char)ok;
             }
+        free(sl);
         return nt;
     }
     if (!c->universal || c->attn_split <= 1 || c->patch <= 0) return 0;
@@ -141,9 +179,12 @@ static inline int vm_attn_allow(const VMConfig* c, unsigned char* allow) {
 // attn_split / attn_overlap / attn_win / uni_sum valid for this config
 static inline int vm_attn_valid(const VMConfig* c) {
     if (c->attn_split < 0 || c->attn_overlap < 0 || c->attn_win < 0 || c->uni_sum < 0) return 0;
-    if (c->attn_win > 0 || c->uni_sum > 0) {   // task 00047: the universal model, not with attn_split
+    if (c->uni_pyr < 0 || c->sum_thumb < 0 || c->sum_thumb > 1) return 0;
+    if (c->sum_thumb && vm_uni_nsum(c) == 0) return 0;   // thumbnails need summaries
+    if (c->attn_win > 0 || c->uni_sum > 0 || c->uni_pyr > 0) {   // tasks 00047, 00048: the universal model only
         if (!c->universal || c->patch <= 0 || c->attn_split > 1) return 0;
         if (c->uni_sum > 0 && (c->img / c->patch) % c->uni_sum) return 0;
+        if (c->uni_pyr > 0 && (c->uni_sum > 0 || (c->img / c->patch) % (1 << c->uni_pyr))) return 0;
     }
     if (c->attn_pred_global < 0 || c->attn_pred_global > 1 || c->attn_cols < 0 || c->attn_cols > 1) return 0;
     if (c->attn_checker < 0 || c->attn_checker > 1) return 0;

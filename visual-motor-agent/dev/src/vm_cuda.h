@@ -31,6 +31,8 @@ typedef struct {
 void* vmc_create(const VMConfig* cfg, const float* params, long n_params, const long* offsets, const long* sizes,
                  int n_tensors);
 void vmc_free(void* h);
+// The current device's free memory in bytes (cudaMemGetInfo), or -1 (for tests: models must free all they allocate)
+long vmc_device_free(void);
 // One batch of S sequences of ctx steps, [S, ctx, ...] C-contiguous host arrays (images u8 HWC, next_small u8 HWC
 // at pred_img, or the full-size next frames if next_full: then downsampled on the device). prev_reward is the
 // command slot. Copied to the device.
