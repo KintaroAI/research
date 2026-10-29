@@ -10,7 +10,8 @@
 #
 # Usage:
 #   make runs     — image on the 4090: XF (uni_pyr 3, full attention), XFT (the same with sum_thumb 1); text on the
-#                   3090: XTP (attn_win 1, uni_pyr 3); 100k ticks, seeds 1-3, all nine at once
+#                   3090: XTP (attn_win 1, uni_pyr 3) and XB (no summaries: vm-00036's EB on this code, the control);
+#                   100k ticks, seeds 1-3
 #   make analysis — image: frozen forage tests, dream curve, held-out prediction; text: val nats per letter every 10k
 #   make dream    — text generation, seed 1 of XTP at its best checkpoint (BEST_XTP), T = 0.8
 #   make tables   — the image tables (tables.py), with EB, EF and EFT
@@ -45,11 +46,13 @@ runs:
 	  $(G)=1 $(LI) --seed $$s --set name=XF -o $(OUT)/00$${s}_XF_s$$s > $(OUT)/00$${s}_XF_s$$s.log 2>&1 & \
 	  $(G)=1 $(LI) --set model.sum_thumb=1 --seed $$s --set name=XFT -o $(OUT)/00$$((s+3))_XFT_s$$s > $(OUT)/00$$((s+3))_XFT_s$$s.log 2>&1 & \
 	  $(G)=0 $(LT) --set model.attn_win=1 --seed $$s --set name=XTP -o $(OUT)/00$$((s+6))_XTP_s$$s > $(OUT)/00$$((s+6))_XTP_s$$s.log 2>&1 & \
+	  $(G)=0 $(PY) lifetime.py --config configs/U_touch_ego.json --set online.steps=100000 --set online.save_every=25000 \
+	    --seed $$s --set name=XB -o $(OUT)/01$${s}_XB_s$$s > $(OUT)/01$${s}_XB_s$$s.log 2>&1 & \
 	done; wait
 
 analysis:
 	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY; \
-	  (for r in $(OUT)/00?_XF_s?; do export $(G)=1; $(EV); done) & \
+	  (for r in $(OUT)/00?_XF_s? $(OUT)/01?_XB_s?; do export $(G)=1; $(EV); done) & \
 	  (for r in $(OUT)/00?_XFT_s?; do export $(G)=0; $(EV); done) & \
 	  wait; \
 	  for r in $(OUT)/00?_XTP_s?; do $(G)=0 $(PY) eval_predict.py $$r --ckpts $(CK) $(VAL) --tag lines; done
@@ -58,5 +61,5 @@ dream:
 	cd $(DEV) && $(G)=1 $(D) --uni $(OUT)/007_XTP_s1/ckpt_$(BEST_XTP).bin -o $(OUT)/text_dream_XTP_t0.8.json
 
 tables:
-	cd $(DEV) && $(PY) tables.py $(DATA)/exp_00036/00?_EB_s? $(DATA)/exp_00042/00?_EF_s? $(OUT)/00?_XF_s? \
+	cd $(DEV) && $(PY) tables.py $(DATA)/exp_00036/00?_EB_s? $(OUT)/01?_XB_s? $(DATA)/exp_00042/00?_EF_s? $(OUT)/00?_XF_s? \
 	  $(DATA)/exp_00042/00?_EFT_s? $(OUT)/00?_XFT_s? --step 100000

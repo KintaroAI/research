@@ -57,6 +57,10 @@
   - **XF:** `configs/U_touch_ego.json`, `uni_pyr = 3`, full attention (against vm-00042's EF and vm-00036's EB).
   - **XFT:** the same with `sum_thumb = 1` (against EFT).
   - **XTP:** `configs/T_text_B.json`, `attn_win = 1`, `uni_pyr = 3` (against vm-00041's TP, 1.921 nats per letter).
+  - **XB:** `configs/U_touch_ego.json` without summaries: vm-00036's EB on the current code. Added on 2026-10-29: the
+    controls of vm-00043 and vm-00044 (SB, CB, the same model in slightly changed worlds) forage at about half of EB's
+    rate in life, as much as the summary arms lose. Every summary arm since vm-00040 was compared with EB, run on
+    vm-00036's code, so a change in the code since then would look like a cost of summaries.
 - **Measures** as in vm-00042.
 - **Question:** does food come back toward EB's (36.6 / 8.8 with the 1-step instinct, 44.4 / 4.1 with the 4-step
   pair lookahead) once the positions are right? If it does, vm-00040–00044's summary arms must be re-read.
