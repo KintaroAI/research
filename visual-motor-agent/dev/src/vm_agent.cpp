@@ -2553,6 +2553,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[50] = c.uni_sum;
     h[51] = c.uni_pyr;
     h[52] = c.sum_thumb;
+    h[53] = c.sum_only;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2582,6 +2583,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.uni_sum = h[50];
     c.uni_pyr = h[51];
     c.sum_thumb = h[52];
+    c.sum_only = h[53];
 }
 
 // =====================================================================================

@@ -76,7 +76,8 @@ def uni_slot_table(cfg):
     ns = 0
     for r in range(g):
         for c in range(g):
-            rows.append((1, r * g + c, 0, r, c))
+            if not cfg.get("sum_only", 0):   # task 00054: the patches only make the thumbnails
+                rows.append((1, r * g + c, 0, r, c))
             if R > 0 and c == g - 1 and (r + 1) % R == 0:
                 rows.append((2, ns, 1, r // R, 0))
                 ns += 1
@@ -490,7 +491,8 @@ def uni_values(cfg, images, drives, actions):
     if cfg.get("gray", 0):   # one channel per pixel: the first
         x = x[..., :1]
     kind, _ = uni_slots(cfg)
-    v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)
+    if (kind == 1).any():   # sum_only (task 00054): no patch tokens
+        v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)
     v[:, :, 0, :2] = np.asarray(drives, np.float64)
     a = np.asarray(actions, np.float64)
     v[:, :, nt - 1, 0] = (np.clip(a[..., 0], -1, 1) + 1) / 2

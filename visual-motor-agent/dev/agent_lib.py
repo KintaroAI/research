@@ -27,7 +27,7 @@ class VMConfig(C.Structure):
                  ("bins", C.c_int), ("gray", C.c_int), ("in_bins", C.c_int), ("attn_split", C.c_int),
                  ("attn_overlap", C.c_int), ("attn_pred_global", C.c_int), ("attn_cols", C.c_int),
                  ("attn_checker", C.c_int), ("attn_win", C.c_int), ("uni_sum", C.c_int),
-                 ("uni_pyr", C.c_int), ("sum_thumb", C.c_int)]
+                 ("uni_pyr", C.c_int), ("sum_thumb", C.c_int), ("sum_only", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -60,7 +60,7 @@ DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer
                      pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
                      act_token=0, universal=0, bins=32, gray=0, in_bins=0, attn_split=0, attn_overlap=0, attn_pred_global=0, attn_cols=0,
                      attn_checker=0, attn_win=0, uni_sum=0,
-                     uni_pyr=0, sum_thumb=0)
+                     uni_pyr=0, sum_thumb=0, sum_only=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
@@ -80,7 +80,7 @@ def uni_layout(cfg):
     kind = [0]
     for r in range(g):
         for c in range(g):
-            kind.append(1)
+            kind += [] if cfg.get("sum_only", 0) else [1]   # task 00054: no patch tokens
             kind += [2] if R > 0 and c == g - 1 and (r + 1) % R == 0 else []
             kind += [2 for lv in range(1, L + 1) if (r + 1) % (1 << lv) == 0 and (c + 1) % (1 << lv) == 0]
     kind = np.array(kind + [3])

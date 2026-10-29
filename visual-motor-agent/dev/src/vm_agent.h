@@ -69,6 +69,8 @@ typedef struct {
                         //     block of patches, placed right after the block's last patch; 0 = none
     int sum_thumb;      // universal with summaries: 1 = a summary's values are its block's pixels box-averaged to one
                         //     patch, a thumbnail (task 00049); every token then has a target; 0 = no values
+    int sum_only;       // universal with uni_pyr and sum_thumb: 1 = the patches are not tokens (task 00054): a step is
+                        //     [body, the summaries in the pyramid's order, move]; the patches only make the thumbnails
 } VMConfig;
 
 // The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
@@ -85,7 +87,7 @@ static inline int vm_uni_nsum(const VMConfig* c) {
 }
 static inline int vm_uni_nt(const VMConfig* c) {
     const int g = c->img / c->patch;
-    return g * g + 2 + vm_uni_nsum(c);
+    return (c->sum_only ? 0 : g * g) + 2 + vm_uni_nsum(c);
 }
 // Fills s [vm_uni_nt] (may be NULL); returns nt.
 static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
@@ -95,7 +97,7 @@ static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
     VM_SLOT_(0, 0, 0, 0, 0);
     for (int r = 0; r < g; r++)
         for (int q = 0; q < g; q++) {
-            VM_SLOT_(1, r * g + q, 0, r, q);
+            if (!c->sum_only) VM_SLOT_(1, r * g + q, 0, r, q);   // sum_only (task 00054): no patch tokens
             if (c->uni_sum > 0 && q == g - 1 && (r + 1) % c->uni_sum == 0) VM_SLOT_(2, ns++, 1, r / c->uni_sum, 0);
             for (int l = 1; l <= c->uni_pyr; l++)
                 if ((r + 1) % (1 << l) == 0 && (q + 1) % (1 << l) == 0) VM_SLOT_(2, ns++, l, r >> l, q >> l);
@@ -192,6 +194,8 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->attn_split < 0 || c->attn_overlap < 0 || c->attn_win < 0 || c->uni_sum < 0) return 0;
     if (c->uni_pyr < 0 || c->sum_thumb < 0 || c->sum_thumb > 1) return 0;
     if (c->sum_thumb && vm_uni_nsum(c) == 0) return 0;   // thumbnails need summaries
+    if (c->sum_only < 0 || c->sum_only > 1) return 0;
+    if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
     if (c->attn_win > 0 || c->uni_sum > 0 || c->uni_pyr > 0) {   // tasks 00047, 00048: the universal model only
         if (!c->universal || c->patch <= 0 || c->attn_split > 1) return 0;
         if (c->uni_sum > 0 && (c->img / c->patch) % c->uni_sum) return 0;

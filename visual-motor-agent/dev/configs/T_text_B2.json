@@ -1,0 +1,50 @@
+{
+  "name": "T_text_B2",
+  "description": "Task 00054: T_text_B drawn at twice the scale (32x32 pages, every letter a 4x4 block of its grey, the same 64 letters per page in the same order) with patch 2 (a 16x16 grid); the tokens are the level-1 summaries' thumbnails alone (uni_pyr 1, sum_thumb 1, sum_only 1): each B1 is one letter, box-averaged to 2x2, exactly T_text_B's token. A step is [body, 64 B1 row by row, move], as T_text_B's [body, 64 letters, move].",
+  "env": {
+    "kind": "text",
+    "size": 32,
+    "cell": 4,
+    "block": 1
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "universal": 1,
+    "gray": 1,
+    "bins": 256,
+    "ctx": 8,
+    "patch": 2,
+    "img": 32,
+    "pred_img": 16,
+    "in_bins": 1,
+    "uni_pyr": 1,
+    "sum_thumb": 1,
+    "sum_only": 1
+  },
+  "online": {
+    "actor": "self",
+    "steps": 100000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_eps": 0.0,
+    "goal": 0,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "instinct_m": 0,
+    "instinct_tol": 0.005,
+    "device": "cuda",
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4
+  }
+}
