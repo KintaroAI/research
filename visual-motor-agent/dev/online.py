@@ -85,7 +85,10 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00039 (lifetime.py, the universal model on the GPU): self-forcing: sf_windows replayed
                       # windows per update (0: off) get their last 1..sf_steps steps' inputs (frame, body) from the
                       # model's own predictions (sf_jacobi Jacobi iterations per frame, pair decoding); targets stay real
-                      sf_windows=0, sf_steps=3, sf_jacobi=2)
+                      sf_windows=0, sf_steps=3, sf_jacobi=2,
+                      # task 00059 (lifetime.py, the universal model with model.band_n = S): 1 = all S pieces in one
+                      # lifetime, one world and one body; each piece its own weights; the body makes their mean move
+                      pieces=0)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 

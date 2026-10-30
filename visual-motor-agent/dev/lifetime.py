@@ -22,6 +22,12 @@ Command (online.goal=1): online.goal_mode = "relief" (vm-00006: its hunger if a 
 0) or "delta" (the change of hunger over the next goal_k steps: relief positive, hazards and time negative). When
 acting, the command is the current hunger: "relieve all of it".
 
+Pieces (online.pieces = 1 with model.band_n = S >= 2, task 00059): S separate transformers, band_k = 0..S-1, live
+one lifetime on one world and one body. Each acts as the universal model does (its own move prediction and instinct);
+the body makes the mean of their moves, and every piece's move token holds the move made. They share the experience
+(one memory) and each takes its own gradient step on the same rows; piece k starts from seed + 7919 k. Checkpoints
+ckpt_NNNNNNNN_pK.bin per piece.
+
 Exploration: eps falls linearly from online.explore_eps to online.explore_eps_end over online.explore_decay ticks
 (explore_eps_end unset: constant).
 
@@ -70,6 +76,33 @@ def gate_metrics(gates):
     return out
 
 
+def ckpt_name(tick, k, S):
+    """ckpt_NNNNNNNN.bin (ckpt_final.bin); with pieces (task 00059) piece k's: ckpt_NNNNNNNN_pK.bin."""
+    base = "ckpt_final" if tick == "final" else "ckpt_%08d" % tick
+    return base + ("_p%d" % k if S > 1 else "") + ".bin"
+
+
+def piece_seed(seed, k):
+    """Piece k's initial weights (task 00059): its own seed, so the pieces do not start the same."""
+    return seed + 7919 * k
+
+
+def mean_move(moves):
+    """The body's move from the pieces' moves [N, 3] (task 00059): dx, dy their mean, the click a majority. One piece:
+    its move unchanged."""
+    if len(moves) == 1:
+        return moves[0]
+    m = np.mean(moves, 0)
+    m[:, 2] = (m[:, 2] > 0.5).astype(np.float32)
+    return m.astype(np.float32)
+
+
+def cosine(u, v):
+    """Row-wise cosine of [N, 2] vectors (0 where either is zero)."""
+    d = np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1)
+    return np.where(d > 0, (u * v).sum(1) / np.maximum(d, 1e-12), 0.0)
+
+
 def bodies_at(on, tick):
     """Active bodies at tick (counted from 1)."""
     n0, hold, halve = int(on["bodies"]), int(on["bodies_hold"]), int(on["bodies_halve"])
@@ -107,7 +140,14 @@ def main():
     N0 = max(1, int(on["bodies"]))
     env_cfg = make_config(cfg["env"], auto_reset=True)   # CircleWorld, or TextWorld with env.kind = text
     env = make_world(N0, env_cfg, seed=args.seed)
-    agent = agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)
+    S = int(cfg["model"].get("band_n", 0)) if on["pieces"] else 1   # task 00059: the pieces of one body
+    if on["pieces"] and (S < 2 or args.init or not cfg["model"].get("universal")):
+        raise ValueError("online.pieces needs the universal model with model.band_n >= 2 (and no --init)")
+    if S > 1:
+        agents = [agent_lib.Agent(dict(cfg["model"], band_k=k), seed=piece_seed(args.seed, k)) for k in range(S)]
+    else:
+        agents = [agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)]
+    agent = agents[0]
     pib = {name: (o, n) for name, o, n in agent.param_layout()}["pi_b"]
     if on["click_bias"] is not None and not args.init and pib[1]:   # initial click-logit bias, e.g. -2.197 = p 0.1
         agent.params()[pib[0] + 2] = on["click_bias"]                 # (no policy head, e.g. the universal model: none)
@@ -117,6 +157,8 @@ def main():
     if on["sf_windows"] and not (uni and on["device"] == "cuda"):
         raise ValueError("self-forcing (online.sf_windows) needs the universal model on the GPU (online.device=cuda)")
     tok_sur = bool(on["store_surprise"])
+    if S > 1 and (on["sf_windows"] or tok_sur):
+        raise ValueError("online.pieces runs without self-forcing and surprise gating")
     if tok_sur and not (uni and on["device"] == "cuda"):
         raise ValueError("lifetime.py measures surprise for the universal model on the GPU only (online.device=cuda)")
     if uni and goal_k:
@@ -135,14 +177,16 @@ def main():
     gms += [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur)
             for b in range(1, N0)]
     store = gms[0].store
-    gpu, fwd = None, agent.forward
+    gpu, fwd, gpus = None, agent.forward, [None] * S
     if on["device"] == "cuda":
         import cuda_lib
-        gpu = cuda_lib.CudaModel(agent)
+        gpus = [cuda_lib.CudaModel(a) for a in agents]
+        gpu = gpus[0]
         fwd = gpu.forward
     elif on["device"] != "cpu":
         raise ValueError("online.device must be 'cpu' or 'cuda'")
     umodel = (gpu or agent) if uni else None   # the universal model's forward (and, on the GPU, its fast candidates)
+    umodels = [g or a for g, a in zip(gpus, agents)] if uni else None
     if tok_sur and not cuda_lib.has("vmc_uni_token_ce"):
         raise ValueError("surprise gating needs a libvmcuda.so with vmc_uni_token_ce (task 00028): rebuild it")
     nt = agent_lib.uni_layout(agent.config)["nt"] if uni else 0
@@ -161,15 +205,21 @@ def main():
                 rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"], next_frames=nf)
         return rollouts[n]
 
+    def piece_rollout(k, n):   # pieces on the CPU (task 00059): piece k's own C++ rollout
+        if (k, n) not in rollouts:
+            rollouts[(k, n)] = agents[k].new_rollout(L, n)
+        return rollouts[(k, n)]
+
     info = dict(command=" ".join(sys.argv), git=git_hash(), config=cfg, seed=args.seed, out_dir=out_dir,
-                model_config=agent.config, num_params=agent.num_params, threads=agent_lib.get_threads(),
+                model_config=agent.config, num_params=agent.num_params, threads=agent_lib.get_threads(), pieces=S,
                 env_config=dataclasses.asdict(env_cfg), ppo=ppo, start_time=time.strftime("%Y-%m-%d %H:%M:%S"),
                 script="lifetime.py")
     with open(os.path.join(out_dir, "info.json"), "w") as f:
         json.dump(info, f, indent=2)
     print("out: %s\nparams: %d  threads: %d  batch: bodies + %d replayed x %d steps  replay: %d  bodies: %d" % (
         out_dir, agent.num_params, agent_lib.get_threads(), B - 1, L, on["replay"], N0), flush=True)
-    agent.save(os.path.join(out_dir, "ckpt_%08d.bin" % 0), with_optimizer=False)
+    for k, a in enumerate(agents):
+        a.save(os.path.join(out_dir, ckpt_name(0, k, S)), with_optimizer=False)
 
     mf = open(os.path.join(out_dir, "metrics.jsonl"), "w")
     obs = env.observe()
@@ -179,7 +229,8 @@ def main():
 
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
-                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time())
+                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(),
+                    prop=np.zeros((S, 2)), agree=np.zeros(S), stats_k=[[] for _ in range(S)])
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -193,12 +244,17 @@ def main():
                             zip(gms[:N], idx, cs)]) for f, cs in
                   (("img", obs["image"][:N, None]), ("drv", obs["drives"][:N, None]), ("pa", prev_a[:N, None]),
                    ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
-        if uni:   # the universal model: its own move prediction, and the instinct
-            a, over, gain = uni_act(umodel, win_in[0], win_in[1], win_in[5].astype(np.float32),
-                                    win_in[4].astype(np.uint8), agent.config["bins"], rng, on["instinct_m"],
-                                    on["instinct_tol"], on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"])
-            win["override"] += over * N
-            win["gain"] += gain * N
+        if uni:   # the universal model: its own move prediction, and the instinct; pieces: each its own, the mean made
+            props = [uni_act(um, win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
+                             agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
+                             on["instinct_jacobi"], on["instinct_decode"]) for um in umodels]
+            a = mean_move([p[0] for p in props])
+            win["override"] += np.mean([p[1] for p in props]) * N
+            win["gain"] += np.mean([p[2] for p in props]) * N
+            if S > 1:
+                for k, p in enumerate(props):
+                    win["prop"][k] += np.abs(p[0][:, :2]).sum(0)
+                    win["agree"][k] += cosine(p[0][:, :2], a[:, :2]).sum()
         else:
             out = fwd(win_in[0], win_in[1], win_in[2], win_in[3].astype(np.float32), win_in[4].astype(np.uint8))
             a = sample_moves(agent, out, rng)
@@ -256,7 +312,22 @@ def main():
             ro = rollout(len(rows["img"]))
             fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
-            if gpu:
+            if S > 1:   # every piece its own gradient step on the same rows (task 00059)
+                stats = []
+                for k, (g, ag) in enumerate(zip(gpus, agents)):
+                    if g:   # a GPU rollout holds only the data: one for all pieces
+                        stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0))
+                    else:   # a C++ rollout belongs to its agent
+                        rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
+                        if k:
+                            fill_rollout(rk, rows, L)
+                        stats.append(ag.update(rk, zeros, ppo))
+                if stats[0] is not None:
+                    win["stats"].append({key: float(np.mean([s_[key] for s_ in stats])) for key in stats[0]
+                                         if isinstance(stats[0][key], (int, float))})
+                    for k, s_ in enumerate(stats):
+                        win["stats_k"][k].append(s_)
+            elif gpu:
                 inputs = None
                 if on["sf_windows"]:   # self-forcing (task 00039): replayed windows only, none with an episode start
                     ok = np.flatnonzero(~rows["es"][:, 1:].any(1))
@@ -270,12 +341,13 @@ def main():
                                         inputs=inputs)
             else:
                 st = agent.update(ro, zeros, ppo)
-            if st is not None:
+            if S == 1 and st is not None:
                 win["stats"].append(st)
         if tick % on["save_every"] == 0:
-            if gpu:
-                gpu.sync_to(agent)
-            agent.save(os.path.join(out_dir, "ckpt_%08d.bin" % tick), with_optimizer=False)
+            for k, (g, ag) in enumerate(zip(gpus, agents)):
+                if g:
+                    g.sync_to(ag)
+                ag.save(os.path.join(out_dir, ckpt_name(tick, k, S)), with_optimizer=False)
         if tick % on["log_every"] == 0:
             eps, le, bs = win["eps"], on["log_every"], max(1, win["body_steps"])
             row = dict(step=tick, time=time.time() - t0, sps=le / max(1e-9, time.time() - win["t"]), bodies=N,
@@ -290,6 +362,14 @@ def main():
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})
+            if S > 1:   # per piece: its prediction, its proposals' size and their agreement with the move made
+                for k in range(S):
+                    if win["stats_k"][k]:
+                        row.update({"%s_p%d" % (key, k): float(np.mean([s_[key] for s_ in win["stats_k"][k]]))
+                                    for key in ("uni_ce_body", "uni_ce_patch", "uni_ce_move")
+                                    if key in win["stats_k"][k][0]})
+                    row["prop_dx_p%d" % k], row["prop_dy_p%d" % k] = (win["prop"][k] / bs).tolist()
+                    row["agree_p%d" % k] = float(win["agree"][k] / bs)
             row.update(gate_metrics(gms))
             mf.write(json.dumps(row) + "\n")
             mf.flush()
@@ -300,9 +380,10 @@ def main():
                       row.get("act_drive_mse", float("nan")), row.get("act_frame_mse", float("nan")),
                       row["hazard_frac"]), flush=True)
             win = new_window()
-    if gpu:
-        gpu.sync_to(agent)
-    agent.save(os.path.join(out_dir, "ckpt_final.bin"), with_optimizer=gpu is None)
+    for k, (g, ag) in enumerate(zip(gpus, agents)):
+        if g:
+            g.sync_to(ag)
+        ag.save(os.path.join(out_dir, ckpt_name("final", k, S)), with_optimizer=g is None)
     mf.close()
 
 
