@@ -2557,6 +2557,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[54] = c.band_n;
     h[55] = c.band_k;
     h[56] = c.band_cols;
+    h[57] = c.band_win;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2590,6 +2591,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.band_n = h[54];
     c.band_k = h[55];
     c.band_cols = h[56];
+    c.band_win = h[57];
 }
 
 // =====================================================================================

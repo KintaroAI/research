@@ -66,15 +66,39 @@ def uni_dims(cfg):
     return len(uni_slot_table(cfg)["kind"]), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
 
 
+def uni_band_piece(cfg):
+    """This model's piece with band_n >= 2 (vm_band_piece): (first row, last row, first column, last column) of its
+    patches. band_cols 0: a band of rows; 1: of columns; 2: square blocks (task 00058), band_n = s * s, piece k at
+    block row k // s, column k % s."""
+    g, n, k = cfg["img"] // cfg["patch"], cfg["band_n"], cfg.get("band_k", 0)
+    mode = cfg.get("band_cols", 0)
+    if mode == 2:
+        s = int(round(n ** 0.5))
+        br, bc, h = k // s, k % s, g // s
+        return br * h, (br + 1) * h - 1, bc * h, (bc + 1) * h - 1
+    h = g // n
+    return (0, g - 1, k * h, (k + 1) * h - 1) if mode == 1 else (k * h, (k + 1) * h - 1, 0, g - 1)
+
+
 def uni_has_patch(cfg, r, c):
-    """Patch (r, c) is a token (vm_uni_has_patch): not with sum_only (task 00054); with band_n (task 00057), only in
-    band band_k of the rows (band_cols: of the columns)."""
+    """Patch (r, c) is a token (vm_uni_has_patch): not with sum_only (task 00054); with band_n (tasks 00057, 00058),
+    only in this model's piece."""
     if cfg.get("sum_only", 0):
         return False
-    n = cfg.get("band_n", 0)
-    if n < 2:
+    if cfg.get("band_n", 0) < 2:
         return True
-    return (c if cfg.get("band_cols", 0) else r) // (cfg["img"] // cfg["patch"] // n) == cfg.get("band_k", 0)
+    r0, r1, c0, c1 = uni_band_piece(cfg)
+    return r0 <= r <= r1 and c0 <= c <= c1
+
+
+def uni_has_sum(cfg, lv, r, c):
+    """The level-lv summary at (r, c) of its level's grid is a token (vm_uni_has_sum): with band_win (task 00058), only
+    if within band_win cells of the piece's rows and columns at that level."""
+    w = cfg.get("band_win", 0)
+    if cfg.get("band_n", 0) < 2 or w <= 0:
+        return True
+    r0, r1, c0, c1 = uni_band_piece(cfg)
+    return (r0 >> lv) - w <= r <= (r1 >> lv) + w and (c0 >> lv) - w <= c <= (c1 >> lv) + w
 
 
 def uni_slot_table(cfg):
@@ -94,7 +118,7 @@ def uni_slot_table(cfg):
                 ns += 1
             for lv in range(1, L + 1):
                 b = 2 ** lv
-                if (r + 1) % b == 0 and (c + 1) % b == 0:
+                if (r + 1) % b == 0 and (c + 1) % b == 0 and uni_has_sum(cfg, lv, r // b, c // b):   # task 00058
                     rows.append((2, ns, lv, r // b, c // b))
                     ns += 1
     rows.append((3, 0, 0, 0, 0))

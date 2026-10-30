@@ -28,7 +28,7 @@ class VMConfig(C.Structure):
                  ("attn_overlap", C.c_int), ("attn_pred_global", C.c_int), ("attn_cols", C.c_int),
                  ("attn_checker", C.c_int), ("attn_win", C.c_int), ("uni_sum", C.c_int),
                  ("uni_pyr", C.c_int), ("sum_thumb", C.c_int), ("sum_only", C.c_int),
-                 ("band_n", C.c_int), ("band_k", C.c_int), ("band_cols", C.c_int)]
+                 ("band_n", C.c_int), ("band_k", C.c_int), ("band_cols", C.c_int), ("band_win", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -61,7 +61,7 @@ DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer
                      pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
                      act_token=0, universal=0, bins=32, gray=0, in_bins=0, attn_split=0, attn_overlap=0, attn_pred_global=0, attn_cols=0,
                      attn_checker=0, attn_win=0, uni_sum=0,
-                     uni_pyr=0, sum_thumb=0, sum_only=0, band_n=0, band_k=0, band_cols=0)
+                     uni_pyr=0, sum_thumb=0, sum_only=0, band_n=0, band_k=0, band_cols=0, band_win=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
@@ -72,15 +72,38 @@ DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.0
                    drive_change_eps=0.01, act_coef=0.0)
 
 
+def band_piece(cfg):
+    """This model's piece with band_n >= 2 (vm_band_piece): its first and last patch row and column. A band of rows
+    (band_cols 0), of columns (1), or a square block (2, task 00058: band_n = s^2, piece k at block k // s, k % s)."""
+    g, n, k, mode = cfg["img"] // cfg["patch"], cfg["band_n"], cfg.get("band_k", 0), cfg.get("band_cols", 0)
+    if mode == 2:
+        s = int(round(np.sqrt(n)))
+        h = g // s
+        return k // s * h, k // s * h + h - 1, k % s * h, k % s * h + h - 1
+    if mode == 1:
+        return 0, g - 1, k * (g // n), k * (g // n) + g // n - 1
+    return k * (g // n), k * (g // n) + g // n - 1, 0, g - 1
+
+
 def has_patch(cfg, r, c):
-    """Patch (r, c) is a token (vm_uni_has_patch): not with sum_only (task 00054); with band_n (task 00057), only if it
-    is in band band_k (of the rows, or with band_cols of the columns)."""
+    """Patch (r, c) is a token (vm_uni_has_patch): not with sum_only (task 00054); with band_n (tasks 00057, 00058),
+    only if it is in this model's piece."""
     if cfg.get("sum_only", 0):
         return False
-    n = cfg.get("band_n", 0)
-    if n < 2:
+    if cfg.get("band_n", 0) < 2:
         return True
-    return (c if cfg.get("band_cols", 0) else r) // (cfg["img"] // cfg["patch"] // n) == cfg.get("band_k", 0)
+    r0, r1, c0, c1 = band_piece(cfg)
+    return r0 <= r <= r1 and c0 <= c <= c1
+
+
+def has_sum(cfg, lv, r, c):
+    """The summary of level lv at (r, c) is a token (vm_uni_has_sum): with band_win (task 00058), only within band_win
+    cells of this model's piece at that level."""
+    w = cfg.get("band_win", 0)
+    if cfg.get("band_n", 0) < 2 or w <= 0:
+        return True
+    r0, r1, c0, c1 = band_piece(cfg)
+    return (r0 >> lv) - w <= r <= (r1 >> lv) + w and (c0 >> lv) - w <= c <= (c1 >> lv) + w
 
 
 def uni_layout(cfg):
@@ -94,7 +117,8 @@ def uni_layout(cfg):
         for c in range(g):
             kind += [1] if has_patch(cfg, r, c) else []   # not with sum_only (task 00054); band_n: one band
             kind += [2] if R > 0 and c == g - 1 and (r + 1) % R == 0 else []
-            kind += [2 for lv in range(1, L + 1) if (r + 1) % (1 << lv) == 0 and (c + 1) % (1 << lv) == 0]
+            kind += [2 for lv in range(1, L + 1) if (r + 1) % (1 << lv) == 0 and (c + 1) % (1 << lv) == 0 and
+                     has_sum(cfg, lv, r >> lv, c >> lv)]   # band_win: only those near the piece (task 00058)
     kind = np.array(kind + [3])
     return dict(nt=len(kind), kind=kind, patch=np.flatnonzero(kind == 1), summary=np.flatnonzero(kind == 2),
                 move=len(kind) - 1)

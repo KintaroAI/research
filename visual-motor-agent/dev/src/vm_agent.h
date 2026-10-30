@@ -76,7 +76,11 @@ typedef struct {
                         //     (task 00057): its patch tokens are only those of band band_k; every summary, the body and
                         //     the move stay, in their places; full attention over them. 0 = off
     int band_k;         // with band_n: this model's band, 0..S-1
-    int band_cols;      // with band_n: 1 = the bands are of the patch grid's columns instead of its rows
+    int band_cols;      // with band_n: 1 = the bands are of the patch grid's columns instead of its rows; 2 = square
+                        //     blocks (task 00058): band_n = s^2 pieces of g/s x g/s patches, piece k at block row k / s,
+                        //     column k % s
+    int band_win;       // with band_n: w >= 1 = only the summaries within w cells of this model's piece at their level
+                        //     (task 00058: sharp near, coarse far; O(log N) summaries per piece); 0 = every summary
 } VMConfig;
 
 // The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
@@ -91,15 +95,42 @@ static inline int vm_uni_nsum(const VMConfig* c) {
     for (int l = 1; l <= c->uni_pyr; l++) n += (g >> l) * (g >> l);
     return n;
 }
-// Patch (r, q) is a token: not with sum_only; with band_n, only in this model's band (task 00057)
+// The side of band_cols = 2's square blocks in pieces (task 00058): s with s * s = band_n, or 0
+static inline int vm_band_side(const VMConfig* c) {
+    int s = 1;
+    while (s * s < c->band_n) s++;
+    return s * s == c->band_n ? s : 0;
+}
+// This model's piece (with band_n >= 2), its first and last patch row and column: a band of rows (band_cols 0), of
+// columns (1), or a square block (2, task 00058)
+static inline void vm_band_piece(const VMConfig* c, int* r0, int* r1, int* c0, int* c1) {
+    const int g = c->img / c->patch;
+    *r0 = 0; *r1 = g - 1; *c0 = 0; *c1 = g - 1;
+    if (c->band_cols == 2) {
+        const int s = vm_band_side(c) ? vm_band_side(c) : 1, h = g / s;   // (not a square: invalid, see vm_attn_valid)
+        *r0 = c->band_k / s * h; *r1 = *r0 + h - 1; *c0 = c->band_k % s * h; *c1 = *c0 + h - 1;
+    } else if (c->band_cols == 1) {
+        *c0 = c->band_k * (g / c->band_n); *c1 = *c0 + g / c->band_n - 1;
+    } else {
+        *r0 = c->band_k * (g / c->band_n); *r1 = *r0 + g / c->band_n - 1;
+    }
+}
+// Patch (r, q) is a token: not with sum_only; with band_n, only in this model's piece (tasks 00057, 00058)
 static inline int vm_uni_has_patch(const VMConfig* c, int r, int q) {
     if (c->sum_only) return 0;
     if (c->band_n < 2) return 1;
-    return (c->band_cols ? q : r) / (c->img / c->patch / c->band_n) == c->band_k;
+    int r0, r1, c0, c1;
+    vm_band_piece(c, &r0, &r1, &c0, &c1);
+    return r >= r0 && r <= r1 && q >= c0 && q <= c1;
 }
-static inline int vm_uni_nt(const VMConfig* c) {
-    const int g = c->img / c->patch;
-    return (c->sum_only ? 0 : c->band_n >= 2 ? g * g / c->band_n : g * g) + 2 + vm_uni_nsum(c);
+// The summary of level l at (r, q) on its level's grid is a token: with band_win, only within band_win cells of this
+// model's piece at that level (task 00058)
+static inline int vm_uni_has_sum(const VMConfig* c, int l, int r, int q) {
+    if (c->band_n < 2 || c->band_win <= 0) return 1;
+    int r0, r1, c0, c1;
+    vm_band_piece(c, &r0, &r1, &c0, &c1);
+    const int w = c->band_win;
+    return r >= (r0 >> l) - w && r <= (r1 >> l) + w && q >= (c0 >> l) - w && q <= (c1 >> l) + w;
 }
 // Fills s [vm_uni_nt] (may be NULL); returns nt.
 static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
@@ -111,13 +142,15 @@ static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
         for (int q = 0; q < g; q++) {
             if (vm_uni_has_patch(c, r, q)) VM_SLOT_(1, r * g + q, 0, r, q);   // not with sum_only (task 00054); band_n: one band
             if (c->uni_sum > 0 && q == g - 1 && (r + 1) % c->uni_sum == 0) VM_SLOT_(2, ns++, 1, r / c->uni_sum, 0);
-            for (int l = 1; l <= c->uni_pyr; l++)
-                if ((r + 1) % (1 << l) == 0 && (q + 1) % (1 << l) == 0) VM_SLOT_(2, ns++, l, r >> l, q >> l);
+            for (int l = 1; l <= c->uni_pyr; l++)   // band_win: only those near the piece (task 00058)
+                if ((r + 1) % (1 << l) == 0 && (q + 1) % (1 << l) == 0 && vm_uni_has_sum(c, l, r >> l, q >> l))
+                    VM_SLOT_(2, ns++, l, r >> l, q >> l);
         }
     VM_SLOT_(3, 0, 0, 0, 0);
 #undef VM_SLOT_
     return n;
 }
+static inline int vm_uni_nt(const VMConfig* c) { return vm_uni_layout(c, NULL); }
 // The pixel block a summary covers (task 00049): origin (by0, bx0) and the pooling factors (fy, fx) that box-average it
 // to one patch: uni_sum, a band of R * patch rows by the full width (R x g); uni_pyr, a 2^l * patch square (2^l x 2^l).
 static inline void vm_uni_block(const VMConfig* c, const VMSlot* s, int* by0, int* bx0, int* fy, int* fx) {
@@ -230,11 +263,13 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->sum_thumb && vm_uni_nsum(c) == 0) return 0;   // thumbnails need summaries
     if (c->sum_only < 0 || c->sum_only > 1) return 0;
     if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
-    if (c->band_n < 0 || c->band_n == 1 || c->band_cols < 0 || c->band_cols > 1) return 0;
-    if (c->band_n == 0 && (c->band_k || c->band_cols)) return 0;
+    if (c->band_n < 0 || c->band_n == 1 || c->band_cols < 0 || c->band_cols > 2 || c->band_win < 0) return 0;
+    if (c->band_n == 0 && (c->band_k || c->band_cols || c->band_win)) return 0;
     if (c->band_n >= 2 && (!c->universal || c->patch <= 0 || !c->uni_pyr || !c->sum_thumb || c->sum_only ||   // task 00057
                            c->attn_split > 1 || c->attn_win || c->uni_sum || c->band_k < 0 || c->band_k >= c->band_n ||
-                           (c->img / c->patch) % c->band_n))
+                           (c->band_cols < 2 && (c->img / c->patch) % c->band_n)))
+        return 0;
+    if (c->band_n >= 2 && c->band_cols == 2 && (!vm_band_side(c) || (c->img / c->patch) % vm_band_side(c)))   // 00058
         return 0;
     if (c->attn_win > 0 || c->uni_sum > 0 || c->uni_pyr > 0) {   // tasks 00047, 00048: the universal model only
         if (!c->universal || c->patch <= 0) return 0;
