@@ -66,6 +66,17 @@ def uni_dims(cfg):
     return len(uni_slot_table(cfg)["kind"]), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
 
 
+def uni_has_patch(cfg, r, c):
+    """Patch (r, c) is a token (vm_uni_has_patch): not with sum_only (task 00054); with band_n (task 00057), only in
+    band band_k of the rows (band_cols: of the columns)."""
+    if cfg.get("sum_only", 0):
+        return False
+    n = cfg.get("band_n", 0)
+    if n < 2:
+        return True
+    return (c if cfg.get("band_cols", 0) else r) // (cfg["img"] // cfg["patch"] // n) == cfg.get("band_k", 0)
+
+
 def uni_slot_table(cfg):
     """The slots of a step (tasks 00047, 00048): arrays [nt] kind (0 the body, 1 a patch, 2 a summary, 3 the move),
     index (the patch, row-major, or the summary), level (patches 0) and r, c (the position on its level's grid; uni_sum's
@@ -76,7 +87,7 @@ def uni_slot_table(cfg):
     ns = 0
     for r in range(g):
         for c in range(g):
-            if not cfg.get("sum_only", 0):   # task 00054: the patches only make the thumbnails
+            if uni_has_patch(cfg, r, c):   # not with sum_only (task 00054); band_n: one band (task 00057)
                 rows.append((1, r * g + c, 0, r, c))
             if R > 0 and c == g - 1 and (r + 1) % R == 0:
                 rows.append((2, ns, 1, r // R, 0))
@@ -500,9 +511,9 @@ def uni_values(cfg, images, drives, actions):
     x = np.asarray(images, np.float64).reshape(S, T, g, ps, g, ps, 3) / 255.0
     if cfg.get("gray", 0):   # one channel per pixel: the first
         x = x[..., :1]
-    kind, _ = uni_slots(cfg)
-    if (kind == 1).any():   # sum_only (task 00054): no patch tokens
-        v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)
+    kind, index = uni_slots(cfg)
+    if (kind == 1).any():   # sum_only (task 00054): no patch tokens; band_n (task 00057): one band's, by index
+        v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)[:, :, index[kind == 1]]
     v[:, :, 0, :2] = np.asarray(drives, np.float64)
     a = np.asarray(actions, np.float64)
     v[:, :, nt - 1, 0] = (np.clip(a[..., 0], -1, 1) + 1) / 2

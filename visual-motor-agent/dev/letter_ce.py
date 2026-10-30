@@ -7,9 +7,12 @@ GPU; the scoring is the PyTorch reference's forward (float32; on the CPU, or wit
 on the GPU, run with ~/venvs/vm-gpu/bin/python).
 
 A run of the revealing text world (env.reveal, task 00056) is scored at the one new letter of each step (with tile,
-every reader's step s adds letter s % page; checked against the frames).
+every reader's step s adds letter s % page; checked against the frames). A band model (model.band_n, task 00057) scores
+the letters whose top-left patch is one of its tokens; --bands takes the runs as the bands of one model and scores
+every letter by its own band's run.
 
     ./venv/bin/python letter_ce.py RUN [RUN ...] --ckpts 20000 30000 40000 100000
+    ~/venvs/vm-gpu/bin/python letter_ce.py --bands LEFT RIGHT --ckpts 30000 --device cuda
 """
 import argparse
 import json
@@ -49,7 +52,7 @@ def logits_on(P, cfg, img, drv, act, device):
 
 
 def score(run, ckpt, steps=1600, seed=0, batch=4, device="cpu"):
-    """(CE per value, letters scored, CE per letter position [n, n]) of run's checkpoint at tick ckpt."""
+    """(summed CE per value [n * n], letters scored [n * n]) per letter position of run's checkpoint at tick ckpt."""
     info = json.load(open(os.path.join(run, "info.json")))
     env = dict(info["config"]["env"], split="val", tile=True)
     reveal = bool(env.get("reveal", False))
@@ -70,9 +73,11 @@ def score(run, ckpt, steps=1600, seed=0, batch=4, device="cpu"):
     n, lp = env["size"] // env["cell"], env["cell"] // cfg["patch"]   # letters per side, patches per letter side
     if (t["kind"] == 1).any():
         tgt = np.flatnonzero((t["kind"] == 1) & (t["r"] % lp == 0) & (t["c"] % lp == 0))
+        lid = (t["r"][tgt] // lp) * n + t["c"][tgt] // lp                    # the letter of each target
     else:
         tgt = np.flatnonzero((t["kind"] == 2) & (t["level"] == 1))
-    assert len(tgt) == n * n, len(tgt)
+        lid = t["r"][tgt] * n + t["c"][tgt]
+    assert len(tgt) == n * n or cfg.get("band_n", 0) >= 2, len(tgt)   # a band model: its band's letters
     nt, V, K = ref.uni_dims(cfg)
     P = ref.params_from_flat(agent.params(), agent.param_layout(), cfg, dtype=torch.float32)
     P = {key: val.detach().to(device) for key, val in P.items()}
@@ -90,16 +95,23 @@ def score(run, ckpt, steps=1600, seed=0, batch=4, device="cpu"):
         two = torch.tensor(ref.two_hot(vals[:, :, tgt], K), dtype=logp.dtype, device=logp.device)
         ce = (-(two * logp).sum(-1).mean(-1)).cpu().numpy()                                    # [S, T, n*n] per value
         if reveal:   # only the new letter of each step
-            sel = np.zeros(ce.shape, bool)
-            sel[np.arange(S)[:, None], np.arange(T)[None], new[j:j + batch]] = True
+            sel = lid[None, None, :] == new[j:j + batch, :, None]
             ce, c_ = ce * sel, sel.sum((0, 1))
         else:
-            c_ = S * T
-        tot += ce.sum((0, 1))
-        cnt += c_
+            c_ = np.full(len(tgt), S * T)
+        np.add.at(tot, lid, ce.sum((0, 1)))
+        np.add.at(cnt, lid, c_)
     agent.close()
+    return tot, cnt
+
+
+def report(name, ckpt, tot, cnt):
+    n = int(round(np.sqrt(len(tot))))
     pos = (tot / np.maximum(cnt, 1)).reshape(n, n)
-    return tot.sum() / cnt.sum(), int(cnt.sum()), pos
+    print("%-14s %6dk next-letter CE per value %.4f  (%d val letters)" % (name, ckpt // 1000, tot.sum() / cnt.sum(),
+                                                                           cnt.sum()))
+    print("  by letter column:", " ".join("%.3f" % v for v in pos.mean(0)))
+    print("  by line:         ", " ".join("%.3f" % v for v in pos.mean(1)), flush=True)
 
 
 def main():
@@ -109,14 +121,19 @@ def main():
     ap.add_argument("--steps", type=int, default=1600)
     ap.add_argument("--threads", type=int, default=32)
     ap.add_argument("--device", default="cpu", help="cpu, or cuda (with ~/venvs/vm-gpu/bin/python)")
+    ap.add_argument("--bands", action="store_true", help="the runs are the bands of one model (task 00057)")
     a = ap.parse_args()
     torch.set_num_threads(a.threads)
+    if a.bands:
+        for k in a.ckpts:
+            parts = [score(r, k, a.steps, device=a.device) for r in a.runs]
+            cnt = np.stack([c for _, c in parts])
+            assert ((cnt > 0).sum(0) == 1).all(), "every letter in exactly one band"
+            report("+".join(os.path.basename(r) for r in a.runs), k, sum(t for t, _ in parts), cnt.sum(0))
+        return
     for r in a.runs:
         for k in a.ckpts:
-            ce, nl, pos = score(r, k, a.steps, device=a.device)
-            print("%-14s %6dk next-letter CE per value %.4f  (%d val letters)" % (os.path.basename(r), k // 1000, ce, nl))
-            print("  by letter column:", " ".join("%.3f" % v for v in pos.mean(0)))
-            print("  by line:         ", " ".join("%.3f" % v for v in pos.mean(1)), flush=True)
+            report(os.path.basename(r), k, *score(r, k, a.steps, device=a.device))
 
 
 if __name__ == "__main__":

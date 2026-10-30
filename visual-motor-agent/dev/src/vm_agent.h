@@ -72,6 +72,11 @@ typedef struct {
                         //     patch, a thumbnail (task 00049); every token then has a target; 0 = no values
     int sum_only;       // universal with uni_pyr and sum_thumb: 1 = the patches are not tokens (task 00054): a step is
                         //     [body, the summaries in the pyramid's order, move]; the patches only make the thumbnails
+    int band_n;         // universal with uni_pyr and sum_thumb: S >= 2 = this model is one of S separate transformers
+                        //     (task 00057): its patch tokens are only those of band band_k; every summary, the body and
+                        //     the move stay, in their places; full attention over them. 0 = off
+    int band_k;         // with band_n: this model's band, 0..S-1
+    int band_cols;      // with band_n: 1 = the bands are of the patch grid's columns instead of its rows
 } VMConfig;
 
 // The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
@@ -86,9 +91,15 @@ static inline int vm_uni_nsum(const VMConfig* c) {
     for (int l = 1; l <= c->uni_pyr; l++) n += (g >> l) * (g >> l);
     return n;
 }
+// Patch (r, q) is a token: not with sum_only; with band_n, only in this model's band (task 00057)
+static inline int vm_uni_has_patch(const VMConfig* c, int r, int q) {
+    if (c->sum_only) return 0;
+    if (c->band_n < 2) return 1;
+    return (c->band_cols ? q : r) / (c->img / c->patch / c->band_n) == c->band_k;
+}
 static inline int vm_uni_nt(const VMConfig* c) {
     const int g = c->img / c->patch;
-    return (c->sum_only ? 0 : g * g) + 2 + vm_uni_nsum(c);
+    return (c->sum_only ? 0 : c->band_n >= 2 ? g * g / c->band_n : g * g) + 2 + vm_uni_nsum(c);
 }
 // Fills s [vm_uni_nt] (may be NULL); returns nt.
 static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
@@ -98,7 +109,7 @@ static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
     VM_SLOT_(0, 0, 0, 0, 0);
     for (int r = 0; r < g; r++)
         for (int q = 0; q < g; q++) {
-            if (!c->sum_only) VM_SLOT_(1, r * g + q, 0, r, q);   // sum_only (task 00054): no patch tokens
+            if (vm_uni_has_patch(c, r, q)) VM_SLOT_(1, r * g + q, 0, r, q);   // not with sum_only (task 00054); band_n: one band
             if (c->uni_sum > 0 && q == g - 1 && (r + 1) % c->uni_sum == 0) VM_SLOT_(2, ns++, 1, r / c->uni_sum, 0);
             for (int l = 1; l <= c->uni_pyr; l++)
                 if ((r + 1) % (1 << l) == 0 && (q + 1) % (1 << l) == 0) VM_SLOT_(2, ns++, l, r >> l, q >> l);
@@ -219,6 +230,12 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->sum_thumb && vm_uni_nsum(c) == 0) return 0;   // thumbnails need summaries
     if (c->sum_only < 0 || c->sum_only > 1) return 0;
     if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
+    if (c->band_n < 0 || c->band_n == 1 || c->band_cols < 0 || c->band_cols > 1) return 0;
+    if (c->band_n == 0 && (c->band_k || c->band_cols)) return 0;
+    if (c->band_n >= 2 && (!c->universal || c->patch <= 0 || !c->uni_pyr || !c->sum_thumb || c->sum_only ||   // task 00057
+                           c->attn_split > 1 || c->attn_win || c->uni_sum || c->band_k < 0 || c->band_k >= c->band_n ||
+                           (c->img / c->patch) % c->band_n))
+        return 0;
     if (c->attn_win > 0 || c->uni_sum > 0 || c->uni_pyr > 0) {   // tasks 00047, 00048: the universal model only
         if (!c->universal || c->patch <= 0) return 0;
         if (c->attn_split > 1 && (c->attn_win || c->uni_sum || c->attn_overlap || c->attn_checker ||   // task 00055

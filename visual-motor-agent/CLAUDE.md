@@ -69,7 +69,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     or layout must place its code there too. Task 00054 (vm-00046): `sum_only=1`, the patches are not tokens (a step is [body, summaries,
     move]); `configs/T_text_B2.json` is the text world at twice the scale (a B1 thumbnail is one letter). Task 00055
     (vm-00047): `attn_split` with `uni_pyr`, halves that share the summaries (a patch reads its band's patches and every
-    summary). Compare text runs of different layouts with `letter_ce.py` (next-letter cross-entropy), at their best
+    summary). Task 00057 (vm-00049): `band_n` / `band_k` / `band_cols`, a model that is one of S separate transformers (only its band's patches, every summary; each band its own lifetime on the same text; `letter_ce.py --bands` scores a pair). Compare text runs of different layouts with `letter_ce.py` (next-letter cross-entropy), at their best
     checkpoint (~30k; text lifetimes overfit after it). GPU buffers (`Buf`) free themselves: never list them in
     `vmc_free` again (that list leaked 14 GB in the test file).
   - **The universal model** (task 00023, `../ARCHITECTURE.md`; as built, with every parameter and buffer: `../ARCHITECTURE_REVIEW.md`): `model.universal=1` with `model.patch`: one token
