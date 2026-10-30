@@ -1,7 +1,7 @@
 # vm-00049: Two Separate Transformers That See Every Summary
 
 **Date:** 2026-10-30
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00049` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00049/`
 **Task plan:** [`../tasks/00057-separate-halves.md`](../tasks/00057-separate-halves.md)
