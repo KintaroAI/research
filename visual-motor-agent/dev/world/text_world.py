@@ -9,6 +9,9 @@ consecutive letters (blocks in raster order, letters within a block row by row; 
 line). Each step shows the next page; each body reads from its own seeded offset and wraps around at the end of its
 split (train: the first train_frac of the corpus, val: the rest), or with tile from evenly spaced pages (scoring: N
 readers for pages / N steps read every whole page of the split once). Moves are ignored and the drives stay 0.
+With reveal (task 00056), a page fills one letter per step instead: a frame shows the page's first k letters in
+reading order and the rest empty; each step adds the next letter, and after a full page the next page starts with
+its first. Empty is its own grey level (0; the letters at 1..255) or, with onehot, all zeros.
 """
 
 import dataclasses
@@ -32,6 +35,7 @@ class TextConfig:
     block: int = 1                # letters per side of a block of consecutive letters
     tile: bool = False            # readers start evenly spaced, whole pages apart (together they read the split once)
     encoding: str = "level"       # the glyphs: level | onehot
+    reveal: bool = False          # task 00056: one letter per step, the page filling up (then the next page)
     # read by the agent loops, as in EnvConfig: drives are observed (always 0 here), no hunger, no episodes
     drives: bool = True
     h_rate: float = 0.0
@@ -83,7 +87,8 @@ class TextWorld:
         n = len(self.alphabet)
         if n < 2 or n > 256:
             raise ValueError("the corpus needs 2 to 256 distinct characters, has %d" % n)
-        self.levels = np.round(np.arange(n) * 255.0 / (n - 1)).astype(np.uint8)
+        k0, den = (1, n) if c.reveal else (0, n - 1)                   # with reveal, level 0 is the empty cell
+        self.levels = np.round((np.arange(n) + k0) * 255.0 / den).astype(np.uint8)
         if c.encoding == "level":
             self.glyphs = np.repeat(self.levels[:, None, None], c.cell, 1).repeat(c.cell, 2)   # [n, cell, cell]
         else:
@@ -92,6 +97,8 @@ class TextWorld:
             self.glyphs = np.zeros((n, c.cell * c.cell), np.uint8)
             self.glyphs[np.arange(n), np.arange(n)] = 255
             self.glyphs = self.glyphs.reshape(n, c.cell, c.cell)
+        self.empty = n                                                  # the code of an empty cell (reveal)
+        self.cells = np.concatenate([self.glyphs, np.zeros((1, c.cell, c.cell), np.uint8)])   # glyphs + empty
         lut = np.zeros(0x110000 if any(ord(ch) > 255 for ch in self.alphabet) else 256, np.int64)
         for k, ch in enumerate(self.alphabet):
             lut[ord(ch)] = k
@@ -112,27 +119,32 @@ class TextWorld:
             self.pos = (np.arange(self.num_envs) * pages // self.num_envs * c.page).astype(np.int64)
         else:
             self.pos = np.random.default_rng(seed).integers(0, len(self.codes), self.num_envs).astype(np.int64)
+        self.shown = np.full(self.num_envs, c.page if not c.reveal else 1, np.int64)   # letters of the page on screen
 
     # ------------------------------------------------------------------ text <-> frames
     def page_codes(self, pos: np.ndarray) -> np.ndarray:
         """The letter codes of the pages starting at pos (N,): (N, page), wrapping around the split."""
         return self.codes[(np.asarray(pos)[:, None] + np.arange(self.config.page)[None]) % len(self.codes)]
 
-    def render(self, codes: np.ndarray) -> np.ndarray:
-        """Pages of letter codes (N, page) -> frames (N, size, size, 3) uint8."""
+    def render(self, codes: np.ndarray, shown: Optional[np.ndarray] = None) -> np.ndarray:
+        """Pages of letter codes (N, page) -> frames (N, size, size, 3) uint8; with shown (N,), only each page's first
+        shown letters, the rest empty."""
         c, G = self.config, self.config.side
+        if shown is not None:
+            codes = np.where(np.arange(c.page)[None] < np.asarray(shown)[:, None], codes, self.empty)
         grid = np.zeros((len(codes), G * G), np.int64)
         grid[:, self.grid_index] = codes
-        img = self.glyphs[grid.reshape(-1, G, G)].transpose(0, 1, 3, 2, 4).reshape(-1, c.size, c.size)
+        img = self.cells[grid.reshape(-1, G, G)].transpose(0, 1, 3, 2, 4).reshape(-1, c.size, c.size)
         return np.repeat(img[..., None], 3, axis=-1)
 
     def decode_levels(self, values: np.ndarray) -> np.ndarray:
-        """Grey levels (any shape, 0..255) -> the nearest letter's code."""
-        return np.abs(np.asarray(values, np.float64)[..., None] - self.levels.astype(np.float64)).argmin(-1)
+        """Grey levels (any shape, 0..255) -> the nearest letter's code (with reveal, level 0 is empty: code n)."""
+        lev = np.append(self.levels, 0) if self.config.reveal else self.levels
+        return np.abs(np.asarray(values, np.float64)[..., None] - lev.astype(np.float64)).argmin(-1)
 
     def decode_glyphs(self, cells: np.ndarray) -> np.ndarray:
-        """Cells (..., cell, cell) of grey values -> the nearest glyph's letter code."""
-        g = self.glyphs.reshape(len(self.glyphs), -1).astype(np.float64)
+        """Cells (..., cell, cell) of grey values -> the nearest glyph's letter code (with reveal, empty: code n)."""
+        g = (self.cells if self.config.reveal else self.glyphs).reshape(-1, self.config.cell ** 2).astype(np.float64)
         x = np.asarray(cells, np.float64).reshape(cells.shape[:-2] + (1, -1))
         return ((x - g) ** 2).sum(-1).argmin(-1)
 
@@ -143,12 +155,12 @@ class TextWorld:
         return self.decode_glyphs(cells.reshape(len(images), G * G, c.cell, c.cell)[:, self.grid_index])
 
     def read(self, images: np.ndarray) -> list:
-        """Frames (N, size, size, 3) -> the pages' text (N strings)."""
-        return ["".join(self.alphabet[k] for k in row) for row in self.letters(images)]
+        """Frames (N, size, size, 3) -> the pages' text (N strings; empty cells left out)."""
+        return ["".join(self.alphabet[k] for k in row if k < self.empty) for row in self.letters(images)]
 
     # ------------------------------------------------------------------ CircleWorld's interface
     def observe(self) -> Dict[str, np.ndarray]:
-        return {"image": self.render(self.page_codes(self.pos)),
+        return {"image": self.render(self.page_codes(self.pos), self.shown if self.config.reveal else None),
                 "drives": np.zeros((self.num_envs, 2), np.float32)}
 
     def reset(self, env_ids=None) -> Dict[str, np.ndarray]:
@@ -157,17 +169,27 @@ class TextWorld:
     def step(self, actions: np.ndarray):
         if np.shape(actions) != (self.num_envs, 3):
             raise ValueError(f"expected actions of shape ({self.num_envs}, 3), got {np.shape(actions)}")
-        self.pos = (self.pos + self.config.page) % len(self.codes)
+        c = self.config
+        if c.reveal:   # the next letter; after a full page, the next page's first
+            self.shown += 1
+            full = self.shown > c.page
+            self.pos = np.where(full, (self.pos + c.page) % len(self.codes), self.pos)
+            self.shown[full] = 1
+        else:
+            self.pos = (self.pos + c.page) % len(self.codes)
         obs = self.observe()
         n, f = self.num_envs, np.zeros(self.num_envs, bool)
         nan = np.full(n, np.nan)
         info = dict(terminal_image=obs["image"], terminal_drives=obs["drives"], success=f, timeout=f.copy(),
                     click=np.asarray(actions)[:, 2] > 0.5, ep_length=nan, ep_return=nan.copy(),
-                    ep_success=nan.copy(), ep_clicks=nan.copy(), gt_pos=self.pos.copy())
+                    ep_success=nan.copy(), ep_clicks=nan.copy(), gt_pos=self.pos.copy(),
+                    gt_shown=self.shown.copy())
         return obs, np.zeros(n, np.float32), f.copy(), info
 
     def get_state(self) -> Dict[str, Any]:
-        return {"pos": self.pos.copy()}
+        return {"pos": self.pos.copy(), "shown": self.shown.copy()}
 
     def set_state(self, state: Dict[str, Any]) -> None:
         self.pos = np.asarray(state["pos"], np.int64).copy()
+        if "shown" in state:
+            self.shown = np.asarray(state["shown"], np.int64).copy()

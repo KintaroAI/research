@@ -213,3 +213,52 @@ def test_glyph_scoring_is_the_normalized_factorized_probability(corpus):
     odds = p1[..., :len(g)] / (1 - p1[..., :len(g)])                                # one-vs-all: odds normalized
     alt = -np.log(np.take_along_axis(odds, true[..., None], -1)[..., 0] / odds.sum(-1)).mean()
     assert abs(res["nll_glyph"] - alt) < 1e-6
+
+
+# ---------------------------------------------------------------- reveal: one letter per step (task 00056)
+@pytest.mark.parametrize("kw", [dict(size=16, cell=2, block=1), dict(size=32, cell=4, block=1),
+                                dict(size=16, cell=1, block=4)], ids=["normal", "scaled", "blocks"])
+def test_reveal_fills_the_page_one_letter_per_step(corpus, kw):
+    w = world(corpus, n=3, reveal=True, **kw)
+    P, n = w.config.page, len(w.alphabet)
+    assert w.levels.min() > 0 and w.levels[-1] == 255 and len(set(w.levels.tolist())) == n   # empty is level 0
+    start = w.pos.copy()
+    train = TEXT[:int(len(TEXT) * 0.9)]
+    img = w.observe()["image"]
+    for s in range(2 * P + 3):
+        k = s % P + 1                                                     # letters on screen
+        page = start + (s // P) * P
+        want = ["".join(train[(page[b] + i) % len(train)] for i in range(k)) for b in range(3)]
+        assert w.read(img) == want, s
+        codes = w.letters(img)                                            # [3, P] in reading order
+        assert (codes[:, k:] == w.empty).all() and (codes[:, :k] < n).all()
+        grid = img[..., 0].reshape(3, -1)
+        assert (np.sort(grid, 1)[:, :grid.shape[1] - k * kw["cell"] ** 2] == 0).all()   # the rest is level 0
+        obs, _, _, inf = w.step(np.zeros((3, 3), np.float32))
+        assert (inf["gt_shown"] == (s + 1) % P + 1).all()
+        img = obs["image"]
+
+
+def test_reveal_tiles_state_and_default(corpus):
+    t = world(corpus, n=4, split="val", tile=True, reveal=True)
+    P = t.config.page
+    assert (t.pos % P == 0).all() and (t.shown == 1).all()
+    for _ in range(5):
+        t.step(np.zeros((4, 3), np.float32))
+    s = t.get_state()
+    a = t.step(np.zeros((4, 3), np.float32))[0]["image"]
+    t.set_state(s)
+    assert (t.step(np.zeros((4, 3), np.float32))[0]["image"] == a).all() and (t.shown == 7).all()
+    d = world(corpus)                                                     # the default: whole pages, letter 0 at 0
+    assert d.levels[0] == 0 and (d.shown == d.config.page).all()
+    assert (d.decode_levels(np.zeros(3)) == 0).all()
+    r = world(corpus, reveal=True)
+    assert (r.decode_levels(np.zeros(3)) == r.empty).all()
+    assert (r.decode_levels(r.levels) == np.arange(len(r.alphabet))).all()
+
+
+def test_reveal_onehot_empty_is_zeros(corpus):
+    w = world(corpus, n=2, size=64, cell=8, block=1, encoding="onehot", reveal=True)
+    img = w.observe()["image"]
+    assert w.read(img) == [TEXT[w.pos[b]] for b in range(2)]             # one letter (pos is in the train split)
+    assert (img[:, :, 8:] == 0).all() and (img[:, 8:] == 0).all()        # only the first cell drawn
