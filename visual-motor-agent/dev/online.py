@@ -87,8 +87,10 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # model's own predictions (sf_jacobi Jacobi iterations per frame, pair decoding); targets stay real
                       sf_windows=0, sf_steps=3, sf_jacobi=2,
                       # task 00059 (lifetime.py, the universal model with model.band_n = S): 1 = all S pieces in one
-                      # lifetime, one world and one body; each piece its own weights; the body makes their mean move
-                      pieces=0)
+                      # lifetime, one world and one body; each piece its own weights; the body's move from theirs by
+                      # piece_rule: mean, max (per axis the proposal of the largest magnitude) or gain (the move of the
+                      # piece whose instinct predicts the lowest next hunger)
+                      pieces=0, piece_rule="mean")
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -542,7 +544,7 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
     return im, dv
 
 
-def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean"):
+def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
@@ -550,7 +552,8 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     with uni_candidates, the candidates reuse the policy pass instead of a full pass each). horizon > 1: each candidate
     held for that many steps and scored by the predicted hunger after the last (uni_lookahead). Returns the moves [N, 3]
     (dx, dy in [-1, 1], click 0 / 1), the share of bodies where the instinct overrode the first sample, and the mean
-    predicted gain."""
+    predicted gain; per_body (task 00059): also each body's predicted next hunger after its move [N] (with the
+    instinct; without it NaN)."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
@@ -569,7 +572,7 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
             h.append(model.uni_candidates(cc))
     cand = np.concatenate(cand)
     if m <= 1:
-        return cand[:, 0], 0.0, 0.0
+        return (cand[:, 0], 0.0, 0.0) + ((np.full(N, np.nan),) if per_body else ())
     if horizon > 1:
         h = uni_lookahead(model, img, drv, act, es, cand, horizon, jacobi, decode)
     elif fast:
@@ -586,7 +589,8 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     best = np.argmin(h, 1)
     pick = np.where(h[:, 0] - h[np.arange(N), best] <= tol, 0, best)
     gain = h[:, 0] - h[np.arange(N), pick]
-    return cand[np.arange(N), pick], float((pick != 0).mean()), float(gain.mean())
+    out = cand[np.arange(N), pick], float((pick != 0).mean()), float(gain.mean())
+    return out + ((h[np.arange(N), pick],) if per_body else ())
 
 
 def sample_moves(agent, out, rng):

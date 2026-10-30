@@ -23,6 +23,14 @@
   scoring candidates by its own predicted next hunger). The body executes the **mean** of the pieces' moves (dx, dy;
   the click a majority, unused in the touch world). Every piece's move token then holds the move made, so each learns
   what the body did, not only what it proposed.
+- **The body's move, `online.piece_rule`** (added at ~17k ticks of the first runs, when the mean was seen to cancel
+  hesitant proposals and to make every piece's instinct plan with a move the body does not make):
+  - `mean`: the mean of the proposals (the first runs).
+  - `max`: per axis, the proposal of the largest magnitude (ties, frequent with binned moves, at random: the first
+    version gave ties to piece 0 and was restarted at 1k ticks). The winner's instinct planned with the move made.
+  - `gain`: the whole move of the piece whose instinct predicts the lowest next hunger after it (needs the instinct):
+    action selection, not averaging.
+  - Logged per piece: the share of ticks it made each axis (`won_x_pK`, `won_y_pK`).
 - **Logged:** the usual foraging and prediction metrics (prediction stats averaged over the pieces, and per piece
   `uni_ce_*`); per piece the mean proposed |dx|, |dy| and the agreement with the move made (cosine of proposal and
   mean), to see whether a division of labour appears.
@@ -42,6 +50,8 @@
 
 - The egocentric touch world with checker poison in 2 × 2 cells (`configs/U_touch_ego_c2.json`), 64 × 64, patch 8
   (8 × 8 grid), `uni_pyr = 3`, `sum_thumb = 1` (vm-00045's XFT), seeds 1–3, 60k ticks.
+- **QM, QG** (`make runs2`): quadrants with `piece_rule` max and gain, seeds 1–3, 60k ticks. QW was stopped at 6k
+  ticks to make room (it followed Q seed for seed: the window cost nothing visible).
 - **F:** one model (no split): the control. **H:** two pieces, vertical halves (`band_n = 2`, `band_cols = 1`).
   **Q:** four quadrants (`band_n = 4`, `band_cols = 2`, 4 × 4 patches each). **QW:** quadrants with `band_win = 1`.
 - **Measure:** food and poison per 1k ticks over the lifetime (last 20k); prediction CE (patch, body, move); per piece

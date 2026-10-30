@@ -17,7 +17,7 @@ sys.path.insert(0, DEV)
 
 import agent_lib  # noqa: E402
 import cuda_lib  # noqa: E402
-from lifetime import cosine, mean_move, piece_seed  # noqa: E402
+from lifetime import body_move, cosine, piece_seed  # noqa: E402
 
 HAVE_GPU = cuda_lib.available()
 TINY = ["--set", "env.size=32", "--set", "model.img=32", "--set", "model.d_model=16", "--set", "model.d_ff=32",
@@ -27,14 +27,37 @@ TINY = ["--set", "env.size=32", "--set", "model.img=32", "--set", "model.d_model
         "--set", "env.radius_min=4", "--set", "env.radius_max=6"]
 
 
-def test_mean_move():
-    a = np.array([[1.0, -1.0, 1.0], [0.5, 0.0, 0.0]], np.float32)
-    b = np.array([[-1.0, -1.0, 1.0], [0.5, 1.0, 1.0]], np.float32)
-    c = np.array([[0.0, 0.5, 0.0], [0.5, 0.5, 1.0]], np.float32)
-    m = mean_move([a, b, c])
-    np.testing.assert_allclose(m[:, :2], [[0.0, -0.5], [0.5, 0.5]], atol=1e-7)
-    assert m[:, 2].tolist() == [1.0, 1.0]                                    # the click: a majority
-    assert mean_move([a]) is a
+A = np.array([[1.0, -1.0, 1.0], [0.5, 0.0, 0.0]], np.float32)
+B = np.array([[-1.0, -1.0, 1.0], [0.5, 1.0, 1.0]], np.float32)
+C = np.array([[0.0, 0.5, 0.0], [-0.75, 0.5, 1.0]], np.float32)
+
+
+def test_body_move_mean():
+    m, won = body_move([A, B, C])
+    np.testing.assert_allclose(m[:, :2], [[0.0, -0.5], [0.0833333, 0.5]], atol=1e-6)
+    assert m[:, 2].tolist() == [1.0, 1.0] and (won == -1).all()               # the click: a majority
+    assert body_move([A])[0] is A
+
+
+def test_body_move_max_per_axis():
+    rng = np.random.default_rng(0)
+    seen = set()
+    for _ in range(50):
+        m, won = body_move([A, B, C], "max", rng=rng)
+        assert abs(m[0, 0]) == 1.0 and m[0, 1] == -1.0 and m[1, :2].tolist() == [-0.75, 1.0]
+        assert won[1].tolist() == [2, 1] and won[0, 0] in (0, 1) and won[0, 1] in (0, 1)
+        np.testing.assert_allclose(m[0, 0], [A, B][won[0, 0]][0, 0])
+        seen.add(tuple(won[0]))
+    assert len(seen) == 4                                                     # ties: at random
+
+
+def test_body_move_gain():
+    h = np.array([[0.5, 0.2], [0.4, 0.3], [0.6, 0.1]])                       # [S, N] predicted next hunger
+    m, won = body_move([A, B, C], "gain", h)
+    np.testing.assert_allclose(m, [[-1.0, -1.0, 1.0], [-0.75, 0.5, 1.0]])   # B's whole move, then C's
+    assert won.tolist() == [[1, 1], [2, 2]]
+    with pytest.raises(ValueError):
+        body_move([A, B, C], "gain", np.full((3, 2), np.nan))
     np.testing.assert_allclose(cosine(np.array([[1.0, 0.0], [0.0, 0.0]]), np.array([[2.0, 0.0], [1.0, 1.0]])),
                                [1.0, 0.0])
 
@@ -49,12 +72,13 @@ def run(tmp_path, dev, extra):
 
 
 @pytest.mark.parametrize("dev", ["cpu", "cuda"])
-@pytest.mark.parametrize("S,cols", [(2, 1), (4, 2)], ids=["halves", "quadrants"])
-def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols):
+@pytest.mark.parametrize("S,cols,rule", [(2, 1, "mean"), (4, 2, "mean"), (4, 2, "max"), (2, 1, "gain")],
+                         ids=["halves", "quadrants", "max", "gain"])
+def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols, rule):
     if dev == "cuda" and not HAVE_GPU:
         pytest.skip("needs libvmcuda.so and a GPU")
     out = run(tmp_path, dev, ["--set", "model.band_n=%d" % S, "--set", "model.band_cols=%d" % cols,
-                              "--set", "online.pieces=1"])
+                              "--set", "online.pieces=1", "--set", "online.piece_rule=" + rule])
     assert json.load(open(os.path.join(out, "info.json")))["pieces"] == S
     p0 = []
     for k in range(S):
@@ -68,12 +92,16 @@ def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols):
     assert not np.array_equal(p0[0][:1000], p0[1][:1000])                    # not the same start
     rows = [json.loads(line) for line in open(os.path.join(out, "metrics.jsonl"))]
     assert all("agree_p%d" % k in rows[-1] and "prop_dx_p%d" % k in rows[-1] for k in range(S))
+    won = np.array([[r["won_x_p%d" % k] for k in range(S)] for r in rows])  # each axis made by one piece, or none
+    np.testing.assert_allclose(won.sum(1), 0.0 if rule == "mean" else 1.0, atol=1e-9)
     if dev == "cuda":
         assert all("uni_ce_patch_p%d" % k in rows[-1] for k in range(S))
 
 
-@pytest.mark.parametrize("extra", [[], ["--set", "model.universal=0"], ["--set", "online.sf_windows=2"]],
-                         ids=["no_band_n", "not_universal", "self_forcing"])
+@pytest.mark.parametrize("extra", [[], ["--set", "model.universal=0"], ["--set", "online.sf_windows=2"],
+                                   ["--set", "online.piece_rule=sum"],
+                                   ["--set", "online.piece_rule=gain", "--set", "online.instinct_m=0"]],
+                         ids=["no_band_n", "not_universal", "self_forcing", "rule", "gain_without_instinct"])
 def test_invalid_pieces(tmp_path, extra):
     base = ["--set", "online.pieces=1"] + (["--set", "model.band_n=2", "--set", "model.band_cols=1"] if extra else [])
     cmd = [sys.executable, "lifetime.py", "--config", "configs/U_touch_ego_c2.json", "-o", str(tmp_path / "x")] + \

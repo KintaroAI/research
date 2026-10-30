@@ -24,7 +24,9 @@ acting, the command is the current hunger: "relieve all of it".
 
 Pieces (online.pieces = 1 with model.band_n = S >= 2, task 00059): S separate transformers, band_k = 0..S-1, live
 one lifetime on one world and one body. Each acts as the universal model does (its own move prediction and instinct);
-the body makes the mean of their moves, and every piece's move token holds the move made. They share the experience
+the body's move comes from theirs by online.piece_rule: mean; max (per axis, the proposal of the largest magnitude);
+gain (the whole move of the piece whose instinct predicts the lowest next hunger after it). Every piece's move token
+holds the move made. They share the experience
 (one memory) and each takes its own gradient step on the same rows; piece k starts from seed + 7919 k. Checkpoints
 ckpt_NNNNNNNN_pK.bin per piece.
 
@@ -87,14 +89,31 @@ def piece_seed(seed, k):
     return seed + 7919 * k
 
 
-def mean_move(moves):
-    """The body's move from the pieces' moves [N, 3] (task 00059): dx, dy their mean, the click a majority. One piece:
-    its move unchanged."""
-    if len(moves) == 1:
-        return moves[0]
-    m = np.mean(moves, 0)
-    m[:, 2] = (m[:, 2] > 0.5).astype(np.float32)
-    return m.astype(np.float32)
+def body_move(moves, rule="mean", hunger=None, rng=None):
+    """The body's move [N, 3] from the pieces' moves (S of [N, 3]) and which piece made each axis [N, 2] (task 00059).
+    mean: dx, dy their mean, the click a majority (winners -1: everyone); max: per axis the proposal of the largest
+    magnitude (ties, frequent with binned moves, broken at random by rng), the click a majority; gain: the whole move of the piece with the lowest predicted
+    next hunger (hunger [S, N]). One piece: its move unchanged."""
+    S, N = len(moves), len(moves[0])
+    if S == 1:
+        return moves[0], np.zeros((N, 2), int)
+    mv = np.stack(moves)                                                      # [S, N, 3]
+    click = (mv[:, :, 2].mean(0) > 0.5).astype(np.float32)
+    if rule == "mean":
+        m, won = mv.mean(0), np.full((N, 2), -1)
+    elif rule == "max":
+        mag = np.abs(mv[:, :, :2]) + 1e-6 * (rng or np.random.default_rng()).random(mv[:, :, :2].shape)
+        won = mag.argmax(0)                                                   # [N, 2]
+        m = np.concatenate([np.take_along_axis(mv[:, :, :2], won[None], 0)[0], click[:, None]], 1)
+    elif rule == "gain":
+        if hunger is None or np.isnan(hunger).any():
+            raise ValueError("piece_rule gain needs the instinct (online.instinct_m > 1)")
+        w = np.asarray(hunger).argmin(0)                                      # [N]
+        m, won = mv[w, np.arange(N)].copy(), np.stack([w, w], 1)
+    else:
+        raise ValueError("online.piece_rule must be mean, max or gain")
+    m[:, 2] = click
+    return m.astype(np.float32), won
 
 
 def cosine(u, v):
@@ -143,6 +162,8 @@ def main():
     S = int(cfg["model"].get("band_n", 0)) if on["pieces"] else 1   # task 00059: the pieces of one body
     if on["pieces"] and (S < 2 or args.init or not cfg["model"].get("universal")):
         raise ValueError("online.pieces needs the universal model with model.band_n >= 2 (and no --init)")
+    if on["piece_rule"] not in ("mean", "max", "gain") or (on["piece_rule"] == "gain" and on["instinct_m"] <= 1):
+        raise ValueError("online.piece_rule: mean, max, or gain (with the instinct, online.instinct_m > 1)")
     if S > 1:
         agents = [agent_lib.Agent(dict(cfg["model"], band_k=k), seed=piece_seed(args.seed, k)) for k in range(S)]
     else:
@@ -230,7 +251,7 @@ def main():
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(),
-                    prop=np.zeros((S, 2)), agree=np.zeros(S), stats_k=[[] for _ in range(S)])
+                    prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)])
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -247,14 +268,15 @@ def main():
         if uni:   # the universal model: its own move prediction, and the instinct; pieces: each its own, the mean made
             props = [uni_act(um, win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
-                             on["instinct_jacobi"], on["instinct_decode"]) for um in umodels]
-            a = mean_move([p[0] for p in props])
+                             on["instinct_jacobi"], on["instinct_decode"], per_body=True) for um in umodels]
+            a, won = body_move([p[0] for p in props], on["piece_rule"], np.stack([p[3] for p in props]), rng)
             win["override"] += np.mean([p[1] for p in props]) * N
             win["gain"] += np.mean([p[2] for p in props]) * N
             if S > 1:
                 for k, p in enumerate(props):
                     win["prop"][k] += np.abs(p[0][:, :2]).sum(0)
                     win["agree"][k] += cosine(p[0][:, :2], a[:, :2]).sum()
+                    win["won"][k] += (won == k).sum(0)
         else:
             out = fwd(win_in[0], win_in[1], win_in[2], win_in[3].astype(np.float32), win_in[4].astype(np.uint8))
             a = sample_moves(agent, out, rng)
@@ -370,6 +392,7 @@ def main():
                                     if key in win["stats_k"][k][0]})
                     row["prop_dx_p%d" % k], row["prop_dy_p%d" % k] = (win["prop"][k] / bs).tolist()
                     row["agree_p%d" % k] = float(win["agree"][k] / bs)
+                    row["won_x_p%d" % k], row["won_y_p%d" % k] = (win["won"][k] / bs).tolist()   # max, gain
             row.update(gate_metrics(gms))
             mf.write(json.dumps(row) + "\n")
             mf.flush()
