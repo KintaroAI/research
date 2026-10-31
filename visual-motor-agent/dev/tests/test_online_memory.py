@@ -306,3 +306,14 @@ def test_gated_run_smoke(tmp_path, config, extra):
         assert np.isfinite(r["surprise_mean_move"]) and r["ltm_label_share"] is not None
     else:
         assert r["surprise_mean_move"] is None and np.isfinite(r["dyn_h1_mse"])
+
+
+def test_a_universal_gray_memory_keeps_one_channel_and_no_next_frames():
+    """Task 00062: 4 KB a step instead of 24, and the frames come back the same."""
+    r = online.Replay(16, 8, ch=1, next_frames=False)
+    assert r.img.shape == (16, 8, 8, 1) and r.nimg is None and "nimg" not in r.fields
+    rng = np.random.default_rng(0)
+    frame = np.repeat(rng.integers(0, 256, (8, 8, 1), dtype=np.uint8), 3, -1)
+    r.add(img=frame, nimg=frame, drv=np.zeros(2), ndrv=np.zeros(2), pa=np.zeros(3), pr=0, es=0, act=np.zeros(3), rew=0,
+          done=0, hit=0, cmd=0)
+    np.testing.assert_array_equal(r.frames(np.array([0]))[0], frame)

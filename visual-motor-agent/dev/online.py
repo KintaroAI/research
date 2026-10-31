@@ -99,12 +99,17 @@ EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
 class Replay:
-    """Ring buffer of single-world transitions; sequences of L consecutive steps never cross the write head."""
+    """Ring buffer of single-world transitions; sequences of L consecutive steps never cross the write head. ch = 1:
+    only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
+    universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img):
+    def __init__(self, cap, img, ch=3, next_frames=True):
         self.cap, self.n, self.w = cap, 0, 0
-        self.img = np.zeros((cap, img, img, 3), np.uint8)
-        self.nimg = np.zeros((cap, img, img, 3), np.uint8)      # the frame after the step (terminal frame if done)
+        self.ch = ch
+        self.img = np.zeros((cap, img, img, ch), np.uint8)
+        # the frame after the step (terminal frame if done)
+        self.nimg = np.zeros((cap, img, img, 3), np.uint8) if next_frames else None
+        self.fields = FIELDS if next_frames else tuple(f for f in FIELDS if f != "nimg")
         self.drv = np.zeros((cap, 2), np.float32)
         self.ndrv = np.zeros((cap, 2), np.float32)
         self.pa = np.zeros((cap, 3), np.float32)
@@ -119,9 +124,16 @@ class Replay:
     def add(self, **kw):
         i = self.w
         for k, v in kw.items():
-            getattr(self, k)[i] = v
+            if k == "img":
+                self.img[i] = v[..., :self.ch]
+            elif k != "nimg" or self.nimg is not None:
+                getattr(self, k)[i] = v
         self.w = (self.w + 1) % self.cap
         self.n = min(self.n + 1, self.cap)
+
+    def frames(self, idx):
+        """The frames at idx, three channels."""
+        return as_frames(self.img[idx])
 
     def oldest(self):
         return (self.w - self.n) % self.cap
@@ -158,6 +170,11 @@ class Replay:
 
 
 FIELDS = ("img", "nimg", "drv", "ndrv", "pa", "pr", "es", "act", "rew", "done", "hit", "cmd")
+
+
+def as_frames(x):
+    """Frames [..., H, W, ch] as three channels, without a copy if they are."""
+    return x if x.shape[-1] == 3 else np.repeat(x, 3, axis=-1)
 SURPRISE_PARTS = ("frame", "drives", "move")
 TOKEN_KINDS = ("patch", "move", "body")   # what a universal model's token predicts (GatedMemory.note_tokens)
 REASONS = ("dropped", "warmup", "relief", "surprise", "base")
@@ -243,7 +260,7 @@ class ChunkStore:
         self.evict = on.get("ltm_evict", "oldest")
         self.cap = on["replay"] // L
         self.ltm = {k: np.zeros((self.cap, L) + getattr(fields_like, k).shape[1:], getattr(fields_like, k).dtype)
-                    for k in FIELDS}
+                    for k in fields_like.fields}
         self.ltm["lbl"] = np.zeros((self.cap, L), np.float32)     # hindsight labels (goal), fixed at writing
         self.reason = np.zeros(self.cap, np.uint8)
         self.relief = np.zeros(self.cap, bool)                     # leads to relief, whatever the reason it was stored
@@ -276,7 +293,7 @@ class GatedMemory:
     slot's mean over the last surprise_window steps.
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
-    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False):
+    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
@@ -284,7 +301,7 @@ class GatedMemory:
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
-        self.stm = Replay(on["stm"], img)
+        self.stm = Replay(on["stm"], img, ch, next_frames)
         self.store = store or ChunkStore(on, L, self.stm)          # long-term memory (shared between bodies or not)
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part
@@ -368,7 +385,7 @@ class GatedMemory:
         if w is None:
             self.counts["evicted_new"] += 1
             return
-        for k in FIELDS:
+        for k in s.fields:
             st.ltm[k][w] = getattr(s, k)[idx]
         if self.goal_k:
             st.ltm["lbl"][w] = goal_labels(s, ext, self.goal_k, self.goal_mode)[:L]
@@ -380,7 +397,8 @@ class GatedMemory:
     def _from_stm(self, starts, lag):
         s, L = self.stm, self.L
         idx = (starts[:, None] + np.arange(L)[None]) % s.cap
-        r = {k: getattr(s, k)[idx] for k in FIELDS}
+        r = {k: getattr(s, k)[idx] for k in s.fields}
+        r["img"] = as_frames(r["img"])
         if self.goal_k:
             ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
             r["pr"] = np.stack([goal_labels(s, e, self.goal_k, self.goal_mode)[:L] for e in ext])
@@ -394,7 +412,8 @@ class GatedMemory:
         """n chunks drawn uniformly from long-term memory, [n, L, ...]."""
         st = self.store
         ci = rng.integers(0, st.n, n)
-        old = {k: st.ltm[k][ci] for k in FIELDS}
+        old = {k: st.ltm[k][ci] for k in self.stm.fields}
+        old["img"] = as_frames(old["img"])
         if self.goal_k:
             old["pr"] = st.ltm["lbl"][ci]
         return old
@@ -406,7 +425,7 @@ class GatedMemory:
         if not self.store.n:
             return self._from_stm(s.starts(self.L, B, rng, lag), lag)
         new, old = self.newest(lag), self.replayed(B - 1, rng)
-        return {k: np.concatenate([new[k], old[k]]) for k in FIELDS}
+        return {k: np.concatenate([new[k], old[k]]) for k in self.stm.fields}
 
     def metrics(self):
         """Gate counts since the last call, and the state of long-term memory."""
@@ -432,10 +451,12 @@ class GatedMemory:
 
 
 def fill_rollout(ro, r, L):
-    """Write training sequences r[field] [N, L, ...] into a rollout [T=L, N]."""
+    """Write training sequences r[field] [N, L, ...] into a rollout [T=L, N]. Without next frames (the universal model
+    does not read them) the rollout gets zeros."""
+    none = np.zeros_like(r["img"][:, 0]) if "nimg" not in r else None
     for t in range(L):
         ro.store(t, r["img"][:, t], r["drv"][:, t], r["pa"][:, t], r["pr"][:, t], r["es"][:, t], r["act"][:, t])
-        ro.outcome(t, r["rew"][:, t], r["done"][:, t], r["nimg"][:, t], r["ndrv"][:, t])
+        ro.outcome(t, r["rew"][:, t], r["done"][:, t], none if none is not None else r["nimg"][:, t], r["ndrv"][:, t])
 
 
 UNI_CHUNK = 256   # windows per forward pass when acting

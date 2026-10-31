@@ -55,7 +55,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import (FIELDS, STAT_KEYS, GatedMemory, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
+from online import (STAT_KEYS, GatedMemory, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
                     uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
@@ -239,8 +239,10 @@ def main():
     L, B = agent.config["ctx"], on["batch"]
     lag = goal_k - 1 if goal_k else 0         # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
-    gms = [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, tokens=tok_sur)]
-    gms += [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur)
+    # the universal model reads no next frames, and with model.gray one channel (task 00062)
+    kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni)
+    gms = [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, tokens=tok_sur, **kept)]
+    gms += [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
             for b in range(1, N0)]
     store = gms[0].store
     gpu, fwd, gpus = None, agent.forward, [None] * S
@@ -315,8 +317,8 @@ def main():
             win_in = [obs["image"][:N, None], obs["drives"][:N, None], None, None, ep_start[:N, None],
                       np.zeros((N, 1, 3), np.float32)]
         else:
-            win_in = [np.stack([np.concatenate([getattr(gm.stm, f)[ix], cur]) for gm, ix, cur in
-                                zip(gms[:N], idx, cs)]) for f, cs in
+            win_in = [np.stack([np.concatenate([gm.stm.frames(ix) if f == "img" else getattr(gm.stm, f)[ix], cur])
+                                for gm, ix, cur in zip(gms[:N], idx, cs)]) for f, cs in
                       (("img", obs["image"][:N, None]), ("drv", obs["drives"][:N, None]), ("pa", prev_a[:N, None]),
                        ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
         win["t_window"] += time.time() - t_
@@ -399,7 +401,7 @@ def main():
                     parts.append(gms[0].replayed(B - 1, rng))
                 else:
                     parts.append(gms[0]._from_stm(gms[0].stm.starts(L, B, rng, lag)[1:], lag))
-                rows = {f: np.concatenate([p[f] for p in parts]) for f in FIELDS}
+                rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].stm.fields}
             ro = rollout(len(rows["img"]))
             fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
