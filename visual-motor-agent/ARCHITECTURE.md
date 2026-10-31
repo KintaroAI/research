@@ -220,6 +220,37 @@ every tick:
     measure the split first), so it matters little while learning every tick. It matters for acting alone, as in the
     estimate of ~1,000 ticks/s, or if acting and learning separate. Order: input cache when speed matters; the ring
     when acting is separated from learning, or for longer memory.
+- **How many pieces decide one move** (the owner, 2026-10-30). Randomness as such does not matter while the model
+  learns; what matters is how the decisions of 4 or more pieces are addressed. Picking one still feels loose: many
+  outcomes can hold the same potential hunger, and choosing among them is close to random. To think through later.
+  - **What is known** (vm-00051, tasks 00059, 00060; frozen numbers are on QG's weights):
+    - The rule teaches: every piece learns to predict the move made, so a rule must be judged by whole lifetimes.
+      A random winner on QG's frozen weights keeps 38.3 food; a lifetime with a random winner makes 13.4.
+    - The feedback: the mean shrinks proposals (8.8 food), the largest per axis saturates them (27.5 food, 21.9
+      poison), a whole proposal made unchanged keeps their size.
+    - Ties: the pieces' predicted hungers differ by more than 0.005 on only ~26% of ticks. On the other ~74%, gain chooses
+      by noise.
+    - The winner's curse: the lowest of the pieces' own predictions favours the piece that misses a danger. The mover
+      foresaw ~1% of its 339 poison touches; another piece did in 60%.
+    - Cost: scoring every move by every piece is S² one-token steps per tick, which does not stay cheap at many pieces.
+  - **Algorithms to try:**
+    | algorithm | how it chooses | answers | open risk |
+    |---|---|---|---|
+    | gain | the lowest own predicted hunger | what works so far (42.8 food, 4.8 poison) | ties; the winner's curse |
+    | council | every piece scores every move, the lowest mean | the curse (frozen: 36.8 food, 1.7 poison) | S² scores; lifetime in vm-00052 |
+    | veto | the lowest worst score | the curse, more strictly (33.4, 1.4) | timid; one pessimist blocks |
+    | pessimism | the lowest mean + λ · spread of the scores | disagreement as a warning | λ; a middle of council and veto |
+    | rank vote (Borda) | each piece ranks the moves, the ranks add | scores of different scale; a piece's bias | discards how much better a move is |
+    | confidence on ties | gain, the sharpest move prediction on a tie | ties (frozen: 43.5, 5.8) | a habit spreads between pieces |
+    | staying on ties | gain, the last winner on a tie | commitment | frozen: nothing (paths no smoother) |
+    | mean of the tied | average only the proposals within a tie | ties, without arbitrary choice | cancels opposite proposals, shrinks them |
+    | soft selection | a mean weighted by softmin(predicted hunger) | spans mean and gain by a temperature | shrinking returns at a high one |
+    | direction vote | proposals vote in direction bins; the fullest bin decides, its mean is made | ties, opposite proposals | the bin size; loses precise moves |
+    | population code | each piece has preferred directions; a move is their activity-weighted sum (as motor cortex) | a fixed split without fixed roles | the shrinking of any mean |
+    | negotiation | pieces take turns: each sees earlier proposals (move tokens) before proposing | coordination itself | order; more passes per tick |
+    | arbiter | a small model at the pyramid's top reads the pieces' proposals and picks or mixes | a learned rule | what trains it, with no reward |
+  - **Checks for any of them:** food and poison over a whole lifetime against QG, three seeds; proposal size stable; the
+    share of ticks decided by noise; scores per tick against S, since the point of the pieces is to cut compute.
 - **Other instincts** (restlessness) through the same one-step lookahead on other body values.
 - **Letters as glyphs** (the owner's idea, 2026-10-26): the text world draws each letter as an 8 × 8 bitmap of its
   shape (a font), one patch per letter, instead of a brightness: reading text as vision. The model must then learn the

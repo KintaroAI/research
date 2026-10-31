@@ -545,7 +545,8 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
     return im, dv
 
 
-def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False):
+def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False,
+            first="sample"):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
@@ -555,7 +556,8 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     (dx, dy in [-1, 1], click 0 / 1), the share of bodies where the instinct overrode the first sample, and the mean
     predicted gain; per_body (task 00059): also each body's predicted next hunger after its move [N] (with the
     instinct; without it NaN) and the sharpness of its move prediction [N]: minus the entropy over the bins, dx plus
-    dy."""
+    dy. first = mode: the first candidate is the most likely bin of each value instead of a sample, so with nothing at
+    stake the move is the most likely one."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
@@ -569,6 +571,8 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
         if per_body:
             sharp.append((probs[:, :2] * np.log(np.maximum(probs[:, :2], 1e-12))).sum((1, 2)))
         idx = np.minimum((np.cumsum(probs, -1)[:, None] < rng.random((n, M, 3, 1))).sum(-1), bins - 1)   # [n, M, 3]
+        if first == "mode":
+            idx[:, 0] = probs.argmax(-1)
         c = idx / (bins - 1)
         cc = np.stack([2 * c[..., 0] - 1, 2 * c[..., 1] - 1, (c[..., 2] > 0.5).astype(np.float64)], -1).astype(np.float32)
         cand.append(cc)

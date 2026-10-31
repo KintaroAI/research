@@ -123,17 +123,26 @@ def body_move(moves, rule="mean", hunger=None, rng=None):
 CLOSE = 0.005   # gain_sharp: predicted hungers this close are a tie (as online.instinct_tol)
 
 
-def pieces_move(models, props, rule, rng):
+def pieces_move(models, props, rule, rng, prev=None):
     """The body's move and who made it from the pieces' props (uni_act's, per_body), right after them: council and veto
     (task 00060) have every piece score every piece's move ([scorer, N, mover], only the move token computed; the GPU's
     uni_candidates) and make the one with the lowest mean or lowest worst predicted next hunger. sharp: the piece with
     the sharpest move prediction makes its move; gain_sharp: the sharpest among those within CLOSE of the lowest
-    predicted hunger, so gain decides when something is at stake. Else body_move."""
+    predicted hunger, so gain decides when something is at stake; gain_stay: as gain, but on a tie the piece that made
+    the last move (prev [N]) makes this one. Else body_move."""
     moves = [p[0] for p in props]
     hunger = np.stack([p[3] for p in props])
+    N = len(moves[0])
+    if rule == "gain_stay":
+        best = hunger.argmin(0)
+        if prev is not None:
+            stay = hunger[prev, np.arange(N)] <= hunger.min(0) + CLOSE
+            best = np.where(stay, prev, best)
+        m, _ = body_move(moves, "mean")
+        m[:, :2] = np.stack(moves, 1)[np.arange(N), best, :2]
+        return m, np.stack([best, best], 1)
     if rule not in ("council", "veto", "sharp", "gain_sharp"):
         return body_move(moves, rule, hunger, rng)
-    N = len(moves[0])
     cand = np.stack(moves, 1)
     if rule in ("sharp", "gain_sharp"):
         sharp = np.stack([p[4] for p in props])                               # [S, N]
@@ -284,7 +293,8 @@ def main():
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(),
-                    prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)])
+                    prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
+                    smooth=0.0)
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -321,6 +331,9 @@ def main():
         if bab.any():   # keeps trying: own moves alone drift to never clicking
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
             a = np.where(bab[:, None], nb, a).astype(np.float32)
+        if tick > 1:   # scoring only: how straight the path is
+            win["smooth"] += float(cosine(a[:, :2].astype(np.float64), last_a[:N, :2].astype(np.float64)).sum())
+        last_a = a.copy()
         # 2. the worlds step; each body remembers its transition
         full = np.zeros((N0, 3), np.float32)
         full[:N] = a
@@ -413,7 +426,7 @@ def main():
                        all_hits_per_1k=1000.0 * win["all_hits"] / bs, all_hazard_frac=win["all_hazard"] / bs,
                        babbled=win["babbled"] / bs, eps=eps_at(on, tick), poison=win["poison"],
                        all_poison_per_1k=1000.0 * win["all_poison"] / bs, instinct_override=win["override"] / bs,
-                       instinct_gain=win["gain"] / bs, sf_dreamed=win["sf"])
+                       instinct_gain=win["gain"] / bs, sf_dreamed=win["sf"], smooth=win["smooth"] / bs)
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

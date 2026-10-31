@@ -164,6 +164,8 @@ class EnvConfig:
                                         # hazard_click_add and that hazard is replaced by a new one away from the cursor
     no_overlap: bool = False            # (task 00060, needs wrap and round hazards) no two circles overlap: a new one is
                                         # placed clear of the others; moving ones bounce off each other and off food
+    turn_cost: float = 0.0              # (task 00061) hunger per step += turn_cost * |move - previous move|^2 / 8: a full
+                                        # reversal on both axes costs turn_cost; a steady move is free
 
     def __post_init__(self) -> None:
         # Colors loaded from JSON arrive as lists; store tuples (hashable, comparable).
@@ -182,7 +184,7 @@ class EnvConfig:
                   "move_bonus", "move_budget_px", "click_bonus", "click_budget",
                   "h_init_min", "h_init_max", "h_rate", "h_relief", "hunger_cost",
                   "b_init_min", "b_init_max", "b_rate", "b_relief", "dot_brightness_min",
-                  "dot_brightness_max", "dot_speed_min", "dot_speed_max", "target_speed",
+                  "dot_brightness_max", "dot_speed_min", "dot_speed_max", "target_speed", "turn_cost",
                   "hazard_radius_min", "hazard_radius_max", "hazard_speed", "hazard_cost", "hazard_click",
                   "hazard_click_add")
         for name in floats:
@@ -225,6 +227,8 @@ class EnvConfig:
             raise ValueError("egocentric needs wrap")
         if self.touch and not self.respawn:
             raise ValueError("touch needs respawn")
+        if self.turn_cost < 0:
+            raise ValueError("turn_cost must be >= 0")
         if self.no_overlap and not (self.wrap and self.hazard_shape == "circle"):
             raise ValueError("no_overlap needs wrap and round hazards")
         if self.hazards and not 0 < self.hazard_radius_min <= self.hazard_radius_max <= self.size / 2:
@@ -620,6 +624,7 @@ class CircleWorld:
         self.hz_vel = np.zeros((self.num_envs, h, 2))
         self.hz_rad = np.zeros((self.num_envs, h))
         self.ep_hits = np.zeros(self.num_envs, np.int64)
+        self.last_move = np.zeros((self.num_envs, 2))
         self._reset_envs(np.arange(self.num_envs))
 
     # ------------------------------------------------------------------ resets
@@ -698,6 +703,7 @@ class CircleWorld:
                 self.dot_vel[i] = np.stack((np.cos(ang), np.sin(ang)), axis=1) * speed[:, None]
                 self.dot_val[i] = cfg.dot_brightness_min + (cfg.dot_brightness_max - cfg.dot_brightness_min) * u[:, 4]
         self.ep_hits[idx] = 0
+        self.last_move[idx] = 0.0
         if cfg.target_speed > 0:
             for i in idx:
                 ang = 2.0 * np.pi * self._spawn_rngs[i].random()
@@ -923,7 +929,10 @@ class CircleWorld:
         self.empty_clicks += empty
         self.clicks += click
         self.path_length += disp
-        self.hunger = np.clip(self.hunger + cfg.h_rate - cfg.h_relief * success + cfg.hazard_cost * in_hazard, 0.0, 1.0)
+        turn = cfg.turn_cost * ((move - self.last_move) ** 2).sum(1) / 8.0
+        self.last_move = move.copy()
+        self.hunger = np.clip(self.hunger + cfg.h_rate - cfg.h_relief * success + cfg.hazard_cost * in_hazard + turn,
+                              0.0, 1.0)
         poison = (click | cfg.touch) & in_hazard if (cfg.hazard_click >= 0 or cfg.hazard_click_add > 0) else None
         if poison is not None and cfg.hazard_click >= 0:   # a click inside a hazard: hunger is set (it wins over relief)
             self.hunger = np.where(poison, cfg.hazard_click, self.hunger)
@@ -1045,7 +1054,7 @@ class CircleWorld:
             state["dot_rng_state"] = np.array([_encode_rng(g) for g in self._dot_rngs], dtype=np.uint64)
         for name, on in (("target_vel", self.config.target_speed > 0), ("hz_pos", self.config.hazards),
                          ("hz_vel", self.config.hazards), ("hz_rad", self.config.hazards),
-                         ("ep_hits", self.config.respawn)):
+                         ("ep_hits", self.config.respawn), ("last_move", self.config.turn_cost > 0)):
             if on:
                 state[name] = getattr(self, name).copy()
         if self._spawn_rngs:
@@ -1086,7 +1095,7 @@ class CircleWorld:
                                     np.asarray(value, dtype=np.uint64)):
                     gen.bit_generator.state = _decode_rng(row)
                 continue
-            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits"):
+            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits", "last_move"):
                 arr = np.array(value, dtype=getattr(self, key).dtype)
                 if arr.shape != getattr(self, key).shape:
                     raise ValueError(f"state[{key!r}] must have shape {getattr(self, key).shape}")

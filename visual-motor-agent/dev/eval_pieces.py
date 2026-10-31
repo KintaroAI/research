@@ -65,7 +65,7 @@ def report_touches(t, S):
     print("  share of ticks    " + " ".join("%4.2f" % ((a == i).mean()) for i in range(5)))
 
 
-def run(path, ticks, bodies, rule, seed, touch=False):
+def run(path, ticks, bodies, rule, seed, touch=False, first="sample"):
     info = json.load(open(os.path.join(path, "info.json")))
     on = dict(DEFAULT_ONLINE, **info["config"]["online"])
     S = int(info.get("pieces", 1))
@@ -90,7 +90,7 @@ def run(path, ticks, bodies, rule, seed, touch=False):
         win = hist + [cur]
         st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
         props = [uni_act(m, st("img"), st("drv"), st("act"), st("es"), bins, rng, on["instinct_m"], on["instinct_tol"],
-                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True)
+                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first=first)
                  for m in models]
         hunger = np.stack([p[3] for p in props])              # [S, N]
         split += (hunger.max(0) - hunger.min(0) > 0.005).sum()
@@ -98,7 +98,7 @@ def run(path, ticks, bodies, rule, seed, touch=False):
         if cross:   # right after each piece's pass: its score of every piece's move, [scorer, N, mover]
             hc = np.stack([m.uni_candidates(cand) for m in models])
             np.testing.assert_allclose(hc[np.arange(S), :, np.arange(S)].T, hunger.T, atol=1e-4)   # its own score again
-        a, w = pieces_move(models, props, use, rng)
+        a, w = pieces_move(models, props, use, rng, prev=w[:, 0] if t else None)
         if t:
             smooth.append(cosine(a[:, :2].astype(np.float64), last[:, :2].astype(np.float64)).mean())
         last = a
@@ -134,8 +134,8 @@ def run(path, ticks, bodies, rule, seed, touch=False):
         since[inf["success"]] = 0
         es = done.astype(np.uint8)
     n = ticks * bodies / 1000.0
-    print("%-14s %-6s food %5.1f poison %4.1f share %.2f  move size %.3f  smooth %.3f  gain differs %.2f  cos to food "
-          "%.3f (within %d px %.3f)" % (os.path.basename(path), use, food / n, poison / n, food / max(food + poison, 1),
+    print("%-14s %-6s %-6s food %5.1f poison %4.1f share %.2f  move size %.3f  smooth %.3f  gain differs %.2f  cos to food "
+          "%.3f (within %d px %.3f)" % (os.path.basename(path), use, first, food / n, poison / n, food / max(food + poison, 1),
                                         np.mean(size), np.mean(smooth), split / (ticks * bodies), np.mean(cos_all), near,
                                         np.mean(cos_near)), flush=True)
     if S > 1 and use != "mean":
@@ -152,12 +152,13 @@ def main():
     ap.add_argument("runs", nargs="+")
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
-    ap.add_argument("--rule", default="gain", help="pieces: mean, max, gain, random, council, veto, sharp or gain_sharp")
+    ap.add_argument("--rule", default="gain", help="pieces: mean, max, gain, gain_stay, random, council, veto, sharp or gain_sharp")
+    ap.add_argument("--first", default="sample", help="sample, or mode: the first candidate is the most likely move")
     ap.add_argument("--touch", action="store_true", help="take every poison touch apart")
     ap.add_argument("--seed", type=int, default=1234)
     a = ap.parse_args()
     for r in a.runs:
-        run(r, a.ticks, a.bodies, a.rule, a.seed, a.touch)
+        run(r, a.ticks, a.bodies, a.rule, a.seed, a.touch, a.first)
 
 
 if __name__ == "__main__":
