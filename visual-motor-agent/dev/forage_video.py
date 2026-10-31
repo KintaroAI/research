@@ -268,9 +268,9 @@ def frame_vs(recs, t, titles, metas):
     return im
 
 
-def write_mp4(path, frames):
+def write_mp4(path, frames, size=(W, H), bitrate="4M"):
     import imageio_ffmpeg
-    gen = imageio_ffmpeg.write_frames(path, (W, H), fps=FPS, codec="libx264", quality=None, bitrate="4M",
+    gen = imageio_ffmpeg.write_frames(path, size, fps=FPS, codec="libx264", quality=None, bitrate=bitrate,
                                       macro_block_size=8)
     gen.send(None)
     for im in frames:
