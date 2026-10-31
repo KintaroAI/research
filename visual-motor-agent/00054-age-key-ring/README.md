@@ -1,7 +1,7 @@
 # vm-00054: The Age Key and a Key and Value Ring
 
 **Date:** 2026-10-31
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00054` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00054/`
 **Task plan:** [`../tasks/00062-age-key-ring.md`](../tasks/00062-age-key-ring.md)
