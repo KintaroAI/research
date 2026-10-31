@@ -1,7 +1,7 @@
 # Task 00062: The Age Key and a Key and Value Ring (experiment vm-00054)
 
 **Date:** 2026-10-31
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -44,9 +44,9 @@
 
 ## Experiment vm-00054
 
-- The best models so far with the age key and the ring: **QGA** (QG: quadrants, gain, age key, ring), seeds 1-3, 60k
-  ticks; arms chosen from vm-00052 and vm-00053's results. The control for the age key alone: **QGB** (age key, no ring).
-- **Measure:** foraging against QG; ticks per second; the frozen test with and without the ring.
+- The best models so far, in the no-overlap world, seeds 1-3, 60k ticks: **QNB** (QN, gain, with the age key), **QNA** (with
+  the ring too), **QCA** (QCN, council, with both); seed 1, 40k ticks: text quarters with the age key.
+- **Measure:** foraging against QN and QCN; ticks per second; the frozen test with and without the ring.
 
 ## After: speed
 
@@ -72,3 +72,9 @@ Profile of QN (four pieces) alone on the 3090 (`online.profile`, `VM_PROF` build
 - What did not: a sparse `W_in` backward (5.7 ms: the dense GEMM takes 0.09); a sparse `W_in` forward in training
   (slower than the GEMM; kept for acting only).
 - The ring saves ~2 ms of a ~21 ms tick while learning; it is an acting-only gain, as expected.
+
+## Results
+
+Write-up: [`../00054-age-key-ring/README.md`](../00054-age-key-ring/README.md). Over the last 20k ticks: QN 43.5 food, 3.5
+poison; QNB 33.9, 4.8; QNA 40.5, 4.0; QCN 34.9, 2.1; QCA 29.1, 1.2. Frozen on QNA's weights: 41.1 and 3.8 on the ring, 42.4 and
+3.3 without it. Text quarters with the age key 1.681 at 40k, against 1.703. QN alone 50.4 to 57.7 ticks/s.
