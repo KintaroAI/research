@@ -1,7 +1,7 @@
 # vm-00045: Position Codes by the Slot Layout
 
 **Date:** 2026-10-29
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00045` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00045/`
 **Task plan:** [`../tasks/00052-slot-position-codes.md`](../tasks/00052-slot-position-codes.md)

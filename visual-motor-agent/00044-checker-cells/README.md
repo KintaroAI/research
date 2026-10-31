@@ -1,7 +1,7 @@
 # vm-00044: Poison With a 2 × 2 Checker, the Summary Experiment Repeated
 
 **Date:** 2026-10-28
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00044` (the code as run, before task 00052's fix; `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00044/`
 **Task plan:** [`../tasks/00051-checker-cells.md`](../tasks/00051-checker-cells.md)

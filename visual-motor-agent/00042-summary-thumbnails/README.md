@@ -1,7 +1,7 @@
 # vm-00042: Summary Tokens With Content: Thumbnails of Their Block
 
 **Date:** 2026-10-28
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00042` (the code as run, before task 00052's fix; `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00042/`
 **Task plan:** [`../tasks/00049-summary-thumbnails.md`](../tasks/00049-summary-thumbnails.md)

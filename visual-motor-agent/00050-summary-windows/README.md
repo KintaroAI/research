@@ -1,7 +1,7 @@
 # vm-00050: Separate Transformers That See Only Nearby Summaries
 
 **Date:** 2026-10-30
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00050` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00050/`
 **Task plan:** [`../tasks/00058-summary-windows.md`](../tasks/00058-summary-windows.md)
