@@ -1,7 +1,7 @@
 # vm-00053: Turning Costs Hunger
 
 **Date:** 2026-10-31
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00053` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00053/`
 **Task plan:** [`../tasks/00061-turn-cost.md`](../tasks/00061-turn-cost.md)

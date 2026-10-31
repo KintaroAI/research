@@ -1,7 +1,7 @@
 # vm-00052: Circles That Never Overlap, and a Council of Pieces
 
 **Date:** 2026-10-31
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00052` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00052/`
 **Task plan:** [`../tasks/00060-no-overlap-council.md`](../tasks/00060-no-overlap-council.md)
