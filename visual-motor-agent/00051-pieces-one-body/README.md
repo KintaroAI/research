@@ -1,7 +1,7 @@
 # vm-00051: Separate Transformers That Share One Body
 
 **Date:** 2026-10-30
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00051` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00051/`
 **Task plan:** [`../tasks/00059-pieces-one-body.md`](../tasks/00059-pieces-one-body.md)
