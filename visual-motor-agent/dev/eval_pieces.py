@@ -3,7 +3,8 @@ act for --ticks ticks in --bodies copies of its world, without learning. Prints 
 of the moves made; how well a move points at the nearest food (cosine, ego view: the cursor at the centre); with
 pieces, each piece's share of the wins by the quadrant the food is in, and with --rule random the same pieces with
 the winner drawn at random, so that the selection's own part shows; how smooth the path is (the cosine of successive
-moves), and on what share of ticks the pieces' predicted hungers differ by more than 0.005. --rule council and veto score every piece's move
+moves), and on what share of ticks the pieces' predicted hungers differ by more than 0.005. --ring acts on the key and
+value ring (task 00062). --rule council and veto score every piece's move
 with every piece and make the one with the lowest mean (council) or lowest worst (veto) predicted next hunger. --touch
 takes every poison touch apart: the hunger before it, the ticks since the last food against all ticks, food on the same
 tick, whether the piece that made the move foresaw the rise, whether another piece did, and whether another piece's
@@ -65,7 +66,7 @@ def report_touches(t, S):
     print("  share of ticks    " + " ".join("%4.2f" % ((a == i).mean()) for i in range(5)))
 
 
-def run(path, ticks, bodies, rule, seed, touch=False, first="sample"):
+def run(path, ticks, bodies, rule, seed, touch=False, first="sample", ring=False):
     info = json.load(open(os.path.join(path, "info.json")))
     on = dict(DEFAULT_ONLINE, **info["config"]["online"])
     S = int(info.get("pieces", 1))
@@ -75,6 +76,9 @@ def run(path, ticks, bodies, rule, seed, touch=False, first="sample"):
     env = make_world(bodies, make_config(info["config"]["env"], auto_reset=True), seed=seed)
     rng = np.random.default_rng(seed)
     use = rule if S > 1 else "mean"
+    if ring:
+        for m in models:
+            m.uni_ring_reset(bodies)
     obs = env.observe()
     hist, es = [], np.ones(bodies, np.uint8)
     food = poison = 0
@@ -87,10 +91,10 @@ def run(path, ticks, bodies, rule, seed, touch=False, first="sample"):
     cross = touch
     for t in range(ticks):
         cur = dict(img=obs["image"], drv=obs["drives"], act=np.zeros((bodies, 3), np.float32), es=es)
-        win = hist + [cur]
+        win = ([] if ring else hist) + [cur]
         st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
         props = [uni_act(m, st("img"), st("drv"), st("act"), st("es"), bins, rng, on["instinct_m"], on["instinct_tol"],
-                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first=first)
+                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first=first, ring=ring)
                  for m in models]
         hunger = np.stack([p[3] for p in props])              # [S, N]
         split += (hunger.max(0) - hunger.min(0) > 0.005).sum()
@@ -102,6 +106,9 @@ def run(path, ticks, bodies, rule, seed, touch=False, first="sample"):
         if t:
             smooth.append(cosine(a[:, :2].astype(np.float64), last[:, :2].astype(np.float64)).mean())
         last = a
+        if ring:
+            for m in models:
+                m.uni_ring_move(a)
         h_before = obs["drives"][:, 0].copy()
         missed = np.stack([touches_poison(env, cand[:, k]) for k in range(S)], 1) if touch else None
         d = relative(env, env.target)
@@ -155,10 +162,11 @@ def main():
     ap.add_argument("--rule", default="gain", help="pieces: mean, max, gain, gain_stay, random, council, veto, sharp or gain_sharp")
     ap.add_argument("--first", default="sample", help="sample, or mode: the first candidate is the most likely move")
     ap.add_argument("--touch", action="store_true", help="take every poison touch apart")
+    ap.add_argument("--ring", action="store_true", help="act on the key and value ring (model.age_key)")
     ap.add_argument("--seed", type=int, default=1234)
     a = ap.parse_args()
     for r in a.runs:
-        run(r, a.ticks, a.bodies, a.rule, a.seed, a.touch, a.first)
+        run(r, a.ticks, a.bodies, a.rule, a.seed, a.touch, a.first, a.ring)
 
 
 if __name__ == "__main__":

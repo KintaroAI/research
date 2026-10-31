@@ -220,6 +220,9 @@ def main():
     if on["sf_windows"] and not (uni and on["device"] == "cuda"):
         raise ValueError("self-forcing (online.sf_windows) needs the universal model on the GPU (online.device=cuda)")
     tok_sur = bool(on["store_surprise"])
+    if on["ring"] and not (uni and agent.config["age_key"] and on["device"] == "cuda" and on["instinct_h"] == 1 and
+                           (N0 == 1 or not on["bodies_halve"])):
+        raise ValueError("online.ring needs model.age_key on the GPU, online.instinct_h=1 and a fixed number of bodies")
     if S > 1 and (on["sf_windows"] or tok_sur):
         raise ValueError("online.pieces runs without self-forcing and surprise gating")
     if tok_sur and not (uni and on["device"] == "cuda"):
@@ -250,6 +253,9 @@ def main():
         raise ValueError("online.device must be 'cpu' or 'cuda'")
     umodel = (gpu or agent) if uni else None   # the universal model's forward (and, on the GPU, its fast candidates)
     umodels = [g or a for g, a in zip(gpus, agents)] if uni else None
+    if on["ring"]:
+        for g in gpus:
+            g.uni_ring_reset(N0)
     if tok_sur and not cuda_lib.has("vmc_uni_token_ce"):
         raise ValueError("surprise gating needs a libvmcuda.so with vmc_uni_token_ce (task 00028): rebuild it")
     nt = agent_lib.uni_layout(agent.config)["nt"] if uni else 0
@@ -294,7 +300,7 @@ def main():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(),
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
-                    smooth=0.0)
+                    smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0)
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -304,14 +310,22 @@ def main():
         # 1. act: each body's move, predicted from its own last L real states (this one included)
         k = min(gms[0].stm.n, L - 1)
         idx = [gm.stm.last(k) for gm in gms[:N]]
-        win_in = [np.stack([np.concatenate([getattr(gm.stm, f)[ix], cur]) for gm, ix, cur in
-                            zip(gms[:N], idx, cs)]) for f, cs in
-                  (("img", obs["image"][:N, None]), ("drv", obs["drives"][:N, None]), ("pa", prev_a[:N, None]),
-                   ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
+        t_ = time.time()
+        if on["ring"]:   # task 00062: only the new step
+            win_in = [obs["image"][:N, None], obs["drives"][:N, None], None, None, ep_start[:N, None],
+                      np.zeros((N, 1, 3), np.float32)]
+        else:
+            win_in = [np.stack([np.concatenate([getattr(gm.stm, f)[ix], cur]) for gm, ix, cur in
+                                zip(gms[:N], idx, cs)]) for f, cs in
+                      (("img", obs["image"][:N, None]), ("drv", obs["drives"][:N, None]), ("pa", prev_a[:N, None]),
+                       ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
+        win["t_window"] += time.time() - t_
+        t_ = time.time()
         if uni:   # the universal model: its own move prediction, and the instinct; pieces: each its own, the mean made
             props = [uni_act(um, win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
-                             on["instinct_jacobi"], on["instinct_decode"], per_body=True) for um in umodels]
+                             on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
+                     for um in umodels]
             a, won = pieces_move(umodels, props, on["piece_rule"], rng)
             win["override"] += np.mean([p[1] for p in props]) * N
             win["gain"] += np.mean([p[2] for p in props]) * N
@@ -331,6 +345,11 @@ def main():
         if bab.any():   # keeps trying: own moves alone drift to never clicking
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
             a = np.where(bab[:, None], nb, a).astype(np.float32)
+        if on["ring"]:
+            for g in gpus:
+                g.uni_ring_move(a)
+        win["t_act"] += time.time() - t_
+        t_ = time.time()
         if tick > 1:   # scoring only: how straight the path is
             win["smooth"] += float(cosine(a[:, :2].astype(np.float64), last_a[:N, :2].astype(np.float64)).sum())
         last_a = a.copy()
@@ -339,6 +358,8 @@ def main():
         full[:N] = a
         img, drv = obs["image"][:N].copy(), obs["drives"][:N].copy()
         obs, rew, done, inf = env.step(full)
+        win["t_world"] += time.time() - t_
+        t_ = time.time()
         for b in range(N):
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
                            pa=prev_a[b], pr=prev_r[b], es=ep_start[b], act=a[b], rew=rew[b], done=done[b],
@@ -366,6 +387,8 @@ def main():
             gms[b].decide(tick)
         # 3. learn from the newest window of every active body plus replayed ones
         ce_n, prev_N = 0, N
+        win["t_memory"] += time.time() - t_
+        t_ = time.time()
         if gms[0].stm.n >= L + lag:
             ce_n = N
             if N == 1:
@@ -380,6 +403,8 @@ def main():
             ro = rollout(len(rows["img"]))
             fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
+            win["t_batch"] += time.time() - t_
+            t_ = time.time()
             if S > 1:   # every piece its own gradient step on the same rows (task 00059)
                 stats = []
                 for k, (g, ag) in enumerate(zip(gpus, agents)):
@@ -411,6 +436,10 @@ def main():
                 st = agent.update(ro, zeros, ppo)
             if S == 1 and st is not None:
                 win["stats"].append(st)
+            if on["profile"] and gpu:   # wait for the updates, so that their time is theirs
+                for g in gpus:
+                    g.sync()
+            win["t_update"] += time.time() - t_
         if tick % on["save_every"] == 0:
             for k, (g, ag) in enumerate(zip(gpus, agents)):
                 if g:
@@ -426,7 +455,8 @@ def main():
                        all_hits_per_1k=1000.0 * win["all_hits"] / bs, all_hazard_frac=win["all_hazard"] / bs,
                        babbled=win["babbled"] / bs, eps=eps_at(on, tick), poison=win["poison"],
                        all_poison_per_1k=1000.0 * win["all_poison"] / bs, instinct_override=win["override"] / bs,
-                       instinct_gain=win["gain"] / bs, sf_dreamed=win["sf"], smooth=win["smooth"] / bs)
+                       instinct_gain=win["gain"] / bs, sf_dreamed=win["sf"], smooth=win["smooth"] / bs,
+                       **{k: 1000.0 * win[k] / le for k in win if k.startswith("t_") and k != "t"})
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

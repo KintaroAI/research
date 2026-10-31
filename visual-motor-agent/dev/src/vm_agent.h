@@ -81,6 +81,9 @@ typedef struct {
                         //     column k % s
     int band_win;       // with band_n: w >= 1 = only the summaries within w cells of this model's piece at their level
                         //     (task 00058: sharp near, coarse far; O(log N) summaries per piece); 0 = every summary
+    int age_key;        // universal: 1 = position by age (task 00062): wpe is not added to the tokens; its rows are keys
+                        //     read at attention, score = q . (k + wpe[age]) / sqrt(hs), age = reader's step - key's step,
+                        //     split among the heads as K, so a token's K and V do not depend on the window
 } VMConfig;
 
 // The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
@@ -263,6 +266,7 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->sum_thumb && vm_uni_nsum(c) == 0) return 0;   // thumbnails need summaries
     if (c->sum_only < 0 || c->sum_only > 1) return 0;
     if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
+    if (c->age_key < 0 || c->age_key > 1 || (c->age_key && !c->universal)) return 0;
     if (c->band_n < 0 || c->band_n == 1 || c->band_cols < 0 || c->band_cols > 2 || c->band_win < 0) return 0;
     if (c->band_n == 0 && (c->band_k || c->band_cols || c->band_win)) return 0;
     if (c->band_n >= 2 && (!c->universal || c->patch <= 0 || !c->uni_pyr || !c->sum_thumb || c->sum_only ||   // task 00057

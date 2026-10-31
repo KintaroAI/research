@@ -41,13 +41,15 @@ def logits_on(P, cfg, img, drv, act, device):
     m = torch.tensor(np.arange(V)[None, :] < used[:, None], dtype=torch.float32, device=device)   # [nt, V]
     x = torch.tensor(ref.two_hot(v, K), dtype=torch.float32, device=device) * m[..., None]
     h = F.linear(x.reshape(S, T * nt, V * K), P["uni_in_w"], P["uni_in_b"]).reshape(S, T, nt, -1) + P["uni_slot"]
-    h = (h + P["wpe"][:T][None, :, None]).reshape(S, T * nt, -1)
+    if not cfg.get("age_key", 0):
+        h = h + P["wpe"][:T][None, :, None]
+    h = h.reshape(S, T * nt, -1)
     mask = torch.ones(T * nt, T * nt, dtype=torch.bool, device=device).tril()
     allow = ref.attn_allow(cfg)
     if allow is not None:
         sl = torch.arange(T * nt, device=device) % nt
         mask = mask & torch.tensor(allow, device=device)[sl[:, None], sl[None, :]]
-    hz = ref.transformer(P, cfg, h, mask[None, None])
+    hz = ref.transformer(P, cfg, h, mask[None, None], ref.uni_ages(cfg, T, nt))
     return F.linear(hz, P["uni_out_w"], P["uni_out_b"]).reshape(S, T * nt, V, K), v
 
 

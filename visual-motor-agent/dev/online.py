@@ -91,7 +91,10 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # piece_rule: mean, max (per axis the proposal of the largest magnitude) or gain (the move of the
                       # piece whose instinct predicts the lowest next hunger), random (the move of a random piece),
                       # council or veto (every piece scores every move: the lowest mean, or lowest worst)
-                      pieces=0, piece_rule="mean")
+                      pieces=0, piece_rule="mean",
+                      # task 00062 (lifetime.py, model.age_key on the GPU): act on a key and value ring, computing only
+                      # each new step's tokens; profile: split the tick's time in the metrics (waits for the GPU)
+                      ring=0, profile=0)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -546,7 +549,7 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
 
 
 def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False,
-            first="sample"):
+            first="sample", ring=False):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
@@ -557,7 +560,8 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     predicted gain; per_body (task 00059): also each body's predicted next hunger after its move [N] (with the
     instinct; without it NaN) and the sharpness of its move prediction [N]: minus the entropy over the bins, dx plus
     dy. first = mode: the first candidate is the most likely bin of each value instead of a sample, so with nothing at
-    stake the move is the most likely one."""
+    stake the move is the most likely one. ring (task 00062): only the last step of img, drv, es is read, on top of the
+    model's key and value ring; the caller writes the move made back with uni_ring_move."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
@@ -566,7 +570,10 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     cand, h, sharp = [], [], []
     for i in range(0, N, UNI_CHUNK):   # at most UNI_CHUNK windows per forward pass (bounded memory)
         sl = slice(i, i + UNI_CHUNK)
-        probs = model.forward_uni(img[sl], drv[sl], a0[sl], es[sl], values=False, move_probs=True)["move_probs"][:, -1]
+        if ring:
+            probs = model.uni_ring_step(img[:, -1], drv[:, -1], es[:, -1])
+        else:
+            probs = model.forward_uni(img[sl], drv[sl], a0[sl], es[sl], values=False, move_probs=True)["move_probs"][:, -1]
         n = probs.shape[0]
         if per_body:
             sharp.append((probs[:, :2] * np.log(np.maximum(probs[:, :2], 1e-12))).sum((1, 2)))

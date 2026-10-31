@@ -343,8 +343,10 @@ static void layernorm_bwd(float* dinp, float* dw, float* db, const float* dout, 
 
 // Softmax attention of one query over nk keys/values (rows at kb + j*ks, vb + j*vs); weights -> w[0..nk)
 // al (attention regions, task 00044): key j may be attended to only if al[(s0 + j) % nt]; else its weight is 0
+// ab (the age key, task 00062): the score of key j gains ab[st - (s0 + j) / nt], that key's age
 static void attend_one(const float* q, const float* kb, int ks, const float* vb, int vs, int nk, int hs, float scale,
-                       float* w, float* out, const unsigned char* al = nullptr, int nt = 1, int s0 = 0) {
+                       float* w, float* out, const unsigned char* al = nullptr, int nt = 1, int s0 = 0,
+                       const float* ab = nullptr, int st = 0) {
     float mx = -FLT_MAX;
     for (int j = 0; j < nk; j++) {
         if (al && !al[(s0 + j) % nt]) continue;
@@ -352,6 +354,7 @@ static void attend_one(const float* q, const float* kb, int ks, const float* vb,
         float s = 0.f;
         for (int i = 0; i < hs; i++) s += q[i] * k[i];
         s *= scale;
+        if (ab) s += ab[st - (s0 + j) / nt];
         w[j] = s;
         if (s > mx) mx = s;
     }
@@ -371,22 +374,33 @@ static void attend_one(const float* q, const float* kb, int ks, const float* vb,
 }
 // qkv [T, 3d] -> out [T, d]; att [nh, Kmax, Kmax] (row t: weights at columns ss[t]..se[t], se = NULL: ..t).
 // allow (attention regions, task 00044; NULL = none): token t attends to t2 only if allow[(t % nt) * nt + t2 % nt]
+// E (the age key, task 00062; NULL = none): rows [age, d], a head's key its slice as K's; token t's step is t / nt
 static void attention_fwd(float* out, float* att, const float* qkv, const int* ss, const int* se, int T, int Kmax,
-                          int d, int nh, const unsigned char* allow = nullptr, int nt = 1) {
+                          int d, int nh, const unsigned char* allow = nullptr, int nt = 1, const float* E = nullptr) {
     const int hs = d / nh, d3 = 3 * d;
     const float scale = 1.0f / sqrtf((float)hs);
+    std::vector<float> ab(E ? T / nt + 1 : 0);
     for (int t = 0; t < T; t++)
         for (int h = 0; h < nh; h++) {
             int lo = ss[t], hi = se ? se[t] : t;
             float* arow = att + ((size_t)h * Kmax + t) * Kmax;
-            attend_one(qkv + (size_t)t * d3 + h * hs, qkv + (size_t)lo * d3 + d + h * hs, d3,
-                       qkv + (size_t)lo * d3 + 2 * d + h * hs, d3, hi - lo + 1, hs, scale, arow + lo,
-                       out + (size_t)t * d + h * hs, allow ? allow + (size_t)(t % nt) * nt : nullptr, nt, lo);
+            const float* q = qkv + (size_t)t * d3 + h * hs;
+            if (E)
+                for (int a = 0; a <= t / nt; a++) {
+                    const float* e = E + (size_t)a * d + h * hs;
+                    float s = 0.f;
+                    for (int i = 0; i < hs; i++) s += q[i] * e[i];
+                    ab[a] = s * scale;
+                }
+            attend_one(q, qkv + (size_t)lo * d3 + d + h * hs, d3, qkv + (size_t)lo * d3 + 2 * d + h * hs, d3,
+                       hi - lo + 1, hs, scale, arow + lo, out + (size_t)t * d + h * hs,
+                       allow ? allow + (size_t)(t % nt) * nt : nullptr, nt, lo, E ? ab.data() : nullptr, t / nt);
         }
 }
 // dqkv += (must be zeroed by caller); datt: scratch [Kmax]
 static void attention_bwd(float* dqkv, const float* dout, const float* qkv, const float* att, const int* ss,
-                          const int* se, int T, int Kmax, int d, int nh, float* datt) {
+                          const int* se, int T, int Kmax, int d, int nh, float* datt, int nt = 1,
+                          const float* E = nullptr, float* gE = nullptr) {
     const int hs = d / nh, d3 = 3 * d;
     const float scale = 1.0f / sqrtf((float)hs);
     for (int t = 0; t < T; t++)
@@ -411,6 +425,10 @@ static void attention_bwd(float* dqkv, const float* dout, const float* qkv, cons
                 const float* k = qkv + (size_t)t2 * d3 + d + h * hs;
                 float* dk = dqkv + (size_t)t2 * d3 + d + h * hs;
                 for (int i = 0; i < hs; i++) { dq[i] += dp * k[i]; dk[i] += dp * q[i]; }
+                if (E) {   // the age key
+                    const size_t a = (size_t)(t / nt - t2 / nt) * d + h * hs;
+                    for (int i = 0; i < hs; i++) { dq[i] += dp * E[a + i]; gE[a + i] += dp * q[i]; }
+                }
             }
         }
 }
@@ -1050,7 +1068,8 @@ static void transformer_fwd(const Model* M, Workspace* W, int T, const int* ss, 
         float* proj = W->proj.data();
         layernorm_fwd(ln1, ln1m, ln1r, x, P + M->off[LN1W] + l * d, P + M->off[LN1B] + l * d, T, d);
         linear_fwd(qkv, ln1, WT + M->off[QKVW] + (size_t)l * 3 * d * d, P + M->off[QKVB] + l * 3 * d, T, d, 3 * d);
-        attention_fwd(atty, att, qkv, ss, se, T, K, d, D.nh, M->allow.empty() ? nullptr : M->allow.data(), D.ntok);
+        attention_fwd(atty, att, qkv, ss, se, T, K, d, D.nh, M->allow.empty() ? nullptr : M->allow.data(), D.ntok,
+                      M->cfg.age_key ? P + M->off[WPE] : nullptr);
         linear_fwd(proj, atty, WT + M->off[APW] + (size_t)l * d * d, P + M->off[APB] + l * d, T, d, d);
         for (int i = 0; i < T * d; i++) res1[i] = x[i] + proj[i];
         layernorm_fwd(ln2, ln2m, ln2r, res1, P + M->off[LN2W] + l * d, P + M->off[LN2B] + l * d, T, d);
@@ -1384,12 +1403,13 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
             }
         }
     linear_fwd(W->xin.data(), W->u_in.data(), M->wt.data() + M->off[UIW], P + M->off[UIB], T * nt, D.VI, d);
+    const int stepe = M->cfg.age_key ? 0 : 1;   // the age key (task 00062): no step embedding in the tokens
     for (int t = 0; t < T; t++) {
         const float* pe = P + M->off[WPE] + (size_t)W->pos[t] * d;
         for (int k = 0; k < nt; k++) {
             float* x = W->xin.data() + ((size_t)t * nt + k) * d;
             const float* sl = P + M->off[USL] + (size_t)k * d;
-            for (int j = 0; j < d; j++) x[j] += sl[j] + pe[j];
+            for (int j = 0; j < d; j++) x[j] += sl[j] + stepe * pe[j];
         }
     }
     transformer_fwd(M, W, T * nt, W->tss.data(), nullptr);
@@ -1851,7 +1871,8 @@ static void transformer_bwd(const Model* M, Workspace* W, int T, const int* ss, 
         linear_bwd(dres, atty, P + M->off[APW] + (size_t)l * d * d, T, d, d, W->datty.data(), false,
                    G + M->off[APW] + (size_t)l * d * d, G + M->off[APB] + l * d, scr);
         memset(W->dqkv.data(), 0, sizeof(float) * T * 3 * d);
-        attention_bwd(W->dqkv.data(), W->datty.data(), qkv, att, ss, se, T, K, d, D.nh, W->arow.data());
+        attention_bwd(W->dqkv.data(), W->datty.data(), qkv, att, ss, se, T, K, d, D.nh, W->arow.data(), D.ntok,
+                      M->cfg.age_key ? P + M->off[WPE] : nullptr, G + M->off[WPE]);
         linear_bwd(W->dqkv.data(), ln1, P + M->off[QKVW] + (size_t)l * 3 * d * d, T, d, 3 * d, W->dln.data(), false,
                    G + M->off[QKVW] + (size_t)l * 3 * d * d, G + M->off[QKVB] + l * 3 * d, scr);
         layernorm_bwd(dres, G + M->off[LN1W] + l * d, G + M->off[LN1B] + l * d, W->dln.data(), xl,
@@ -2152,10 +2173,11 @@ static void seq_bwd_uni(const Model* M, Workspace* W, const SeqView& sv, float* 
                G + M->off[UIB], W->scr.data());
     for (int t = 0; t < T; t++) {
         float* gpe = G + M->off[WPE] + (size_t)W->pos[t] * d;
+        const float stepe = M->cfg.age_key ? 0.f : 1.f;   // the age key: no step embedding in the tokens
         for (int k = 0; k < nt; k++) {
             const float* dr = dres + ((size_t)t * nt + k) * d;
             float* gs = G + M->off[USL] + (size_t)k * d;
-            for (int j = 0; j < d; j++) { gpe[j] += dr[j]; gs[j] += dr[j]; }
+            for (int j = 0; j < d; j++) { gpe[j] += stepe * dr[j]; gs[j] += dr[j]; }
         }
     }
 }
@@ -2558,6 +2580,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[55] = c.band_k;
     h[56] = c.band_cols;
     h[57] = c.band_win;
+    h[58] = c.age_key;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2592,6 +2615,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.band_k = h[55];
     c.band_cols = h[56];
     c.band_win = h[57];
+    c.age_key = h[58];
 }
 
 // =====================================================================================

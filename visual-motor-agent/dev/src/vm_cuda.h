@@ -59,6 +59,11 @@ int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* d
 // window, cand [S, Mc, 3], each candidate's predicted next hunger [S, Mc], as if it were the move of the window's last
 // step. Computes only the move token, against the forward pass's cached keys and values.
 int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger);
+// The ring (task 00062, model.age_key): keys and values kept across ticks. reset for N bodies; step: one new step for all
+// bodies, move_probs [N, 3, bins]; the candidates then read the ring; move: the move made [N, 3] goes in.
+int vmc_uni_ring_reset(void* h, int N);
+int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const uint8_t* ep_start, float* move_probs);
+int vmc_uni_ring_move(void* h, const float* moves);
 // As vmc_forward_uni, but returning only step t's values, values_t [S, ntok, V] (mode = 0: the expected values; 1: the
 // most probable bin's centre; 2: the most probable bin and its more probable neighbour, weighted: task 00038), and the expected next bodies [S, T, 2] (the instinct's lookahead, task 00029).
 int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,

@@ -351,8 +351,9 @@ def policy(P, cfg, z):
     return F.linear(z, P["pi_w"], P["pi_b"])
 
 
-def transformer(P, cfg, h, mask):
-    """The Transformer layers and final LayerNorm on token inputs h [S,N,d]; mask [S,1,N,N] (query, key)."""
+def transformer(P, cfg, h, mask, age=None):
+    """The Transformer layers and final LayerNorm on token inputs h [S,N,d]; mask [S,1,N,N] (query, key). age [N, N]
+    (task 00062, the age key): a key's age for each reader, its score gaining q . wpe[age] / sqrt(hs)."""
     S, N = h.shape[:2]
     d, L, nh = cfg["d_model"], cfg["n_layer"], cfg["n_head"]
     hs = d // nh
@@ -363,8 +364,13 @@ def transformer(P, cfg, h, mask):
         q = q.reshape(S, N, nh, hs).transpose(1, 2)
         k = k.reshape(S, N, nh, hs).transpose(1, 2)
         v = v.reshape(S, N, nh, hs).transpose(1, 2)
-        att = (q @ k.transpose(-1, -2)) / math.sqrt(hs)
-        att = att.masked_fill(~mask, float("-inf")).softmax(dim=-1)
+        att = q @ k.transpose(-1, -2)
+        if age is not None:   # per (reader, age), then read out for each key
+            e = P["wpe"].reshape(-1, nh, hs).transpose(0, 1)                  # [nh, ctx, hs]
+            b = q @ e.transpose(-1, -2)                                       # [S, nh, N, ctx]
+            a = age.to(b.device).clamp(min=0)[None, None].expand(S, nh, N, N)
+            att = att + b.gather(-1, a)
+        att = (att / math.sqrt(hs)).masked_fill(~mask, float("-inf")).softmax(dim=-1)
         y = (att @ v).transpose(1, 2).reshape(S, N, d)
         h = h + F.linear(y, P["attprojw"][l], P["attprojb"][l])
         y = F.layer_norm(h, (d,), P["ln2w"][l], P["ln2b"][l], eps=1e-5)
@@ -590,7 +596,9 @@ def forward_uni(P, cfg, images, drives, actions, ep_start):
     ss = segment_starts(np.asarray(ep_start, bool))
     pos = np.arange(T)[None, :] - ss
     h = F.linear(x, P["uni_in_w"], P["uni_in_b"]).reshape(S, T, nt, -1) + P["uni_slot"][None, None]
-    h = (h + P["wpe"][torch.tensor(pos)][:, :, None]).reshape(S, T * nt, -1)
+    if not cfg.get("age_key", 0):
+        h = h + P["wpe"][torch.tensor(pos)][:, :, None]
+    h = h.reshape(S, T * nt, -1)
     step = np.repeat(np.arange(T), nt)
     first = np.repeat(ss, nt, axis=1) * nt                                         # first token each token sees
     idx = np.arange(T * nt)
@@ -598,9 +606,17 @@ def forward_uni(P, cfg, images, drives, actions, ep_start):
     allow = attn_allow(cfg)
     if allow is not None:   # attention regions (task 00044): by the slots of query and key
         mask = mask & allow[idx[:, None] % nt, idx[None, :] % nt][None]
-    hz = transformer(P, cfg, h, torch.tensor(mask)[:, None])
+    hz = transformer(P, cfg, h, torch.tensor(mask)[:, None], uni_ages(cfg, T, nt))
     logits = F.linear(hz, P["uni_out_w"], P["uni_out_b"]).reshape(S, T * nt, V, K)
     return dict(h=hz, logits=logits, values=v, used=used, step=step)
+
+
+def uni_ages(cfg, T, nt):
+    """The ages [T nt, T nt] of the keys for each reader (task 00062), or None without model.age_key."""
+    if not cfg.get("age_key", 0):
+        return None
+    step = torch.arange(T * nt) // nt
+    return step[:, None] - step[None, :]
 
 
 def two_hot(v, K):

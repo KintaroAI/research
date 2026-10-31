@@ -210,7 +210,14 @@ every tick:
     ~4× cheaper, the rest ~8×. It needs two things:
     1. **Positions that do not move.** The step embedding is a position in the window, added into the token, so every
        old token changes on a shift. Position must become relative, applied inside attention from the two tokens' age
-       difference (RoPE or a relative bias).
+       difference: `age = t_reader − t_token`, 0..7. The slot (which token of a tick) never changes and stays in the
+       token. The options (the owner, 2026-10-30):
+       | method | added when reading | parameters | what it can express |
+       |---|---|---|---|
+       | age bias | `score += b[head, age]` | 8 per head | recent tokens matter more, the same for every reader |
+       | **age key** (task 00062) | `score += q · e[age]` | 8 vectors, the shape of the step embedding | each reader decides how much it cares about age |
+       | age key and value | also `v + f[age]` | 16 vectors | the output also knows how old its source is |
+       | RoPE | q and k rotated by an angle set by the tick | none | age without limit; the rotation must be built into Q and K |
     2. **A decision on acting against training.** Dropping the oldest step changes what later tokens would have
        attended to, so the reuse is not the same computation: a cached token keeps what it saw when it was new, and
        information reaches further back than 8 steps (2 layers: up to ~2 windows). Probably useful, as a longer memory,

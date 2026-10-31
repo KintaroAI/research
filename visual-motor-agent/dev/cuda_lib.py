@@ -58,6 +58,9 @@ def lib():
             "vmc_forward": (i32, [vp, i32, i32, u8p, fp, fp, fp, u8p, fp, fp, fp, fp, fp, fp, fp]),
             "vmc_forward_uni": (i32, [vp, i32, i32, u8p, fp, fp, u8p, fp, fp, fp]),
             "vmc_uni_candidates": (i32, [vp, i32, fp, fp]),
+            "vmc_uni_ring_reset": (i32, [vp, i32]),
+            "vmc_uni_ring_step": (i32, [vp, u8p, fp, u8p, fp]),
+            "vmc_uni_ring_move": (i32, [vp, fp]),
             "vmc_uni_token_ce": (i32, [vp, i32, fp]),
             "vmc_forward_uni_step": (i32, [vp, i32, i32, u8p, fp, fp, u8p, i32, i32, fp, fp]),
             "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
@@ -318,6 +321,26 @@ class CudaModel:
                    "uni_candidates")
             return out
         return run
+
+    def uni_ring_reset(self, N):
+        """The ring (task 00062, model.age_key) for N bodies, empty."""
+        _check(lib().vmc_uni_ring_reset(self.handle, N), "uni_ring_reset")
+
+    def uni_ring_step(self, images, drives, ep_start=None):
+        """One new step [N, ...] of every body: only its tokens are computed. Move probabilities [N, 3, bins], as the
+        last step of forward_uni's move_probs; uni_candidates then reads the ring."""
+        img = np.ascontiguousarray(images, np.uint8)
+        drv = np.ascontiguousarray(drives, np.float32)
+        es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
+        out = np.empty((img.shape[0], 3, self.config["bins"]), np.float32)
+        _check(lib().vmc_uni_ring_step(self.handle, _p(img, C.c_uint8), _p(drv, C.c_float),
+                                       None if es is None else _p(es, C.c_uint8), _p(out, C.c_float)), "uni_ring_step")
+        return out
+
+    def uni_ring_move(self, moves):
+        """The move made [N, 3] goes into the ring, after uni_ring_step."""
+        m = np.ascontiguousarray(moves, np.float32)
+        _check(lib().vmc_uni_ring_move(self.handle, _p(m, C.c_float)), "uni_ring_move")
 
     def uni_token_ce(self, S0):
         """The universal model's last update: each token's cross-entropy at the last step of the batch's first S0

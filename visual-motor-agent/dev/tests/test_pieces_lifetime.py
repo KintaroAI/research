@@ -135,11 +135,23 @@ def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols, rule):
         assert all("uni_ce_patch_p%d" % k in rows[-1] for k in range(S))
 
 
+@pytest.mark.skipif(not HAVE_GPU, reason="needs libvmcuda.so and a GPU")
+@pytest.mark.parametrize("S,cols", [(4, 2), (0, 0)], ids=["quadrants", "one_model"])
+def test_a_lifetime_on_the_ring(tmp_path, S, cols):
+    extra = ["--set", "model.band_n=%d" % S, "--set", "model.band_cols=%d" % cols, "--set", "online.pieces=1",
+             "--set", "online.piece_rule=gain"] if S else []
+    out = run(tmp_path, "cuda", extra + ["--set", "model.age_key=1", "--set", "online.ring=1", "--set", "online.profile=1"])
+    a = agent_lib.Agent.load(os.path.join(out, "ckpt_final_p0.bin" if S else "ckpt_final.bin"))
+    assert a.config["age_key"] == 1
+    rows = [json.loads(line) for line in open(os.path.join(out, "metrics.jsonl"))]
+    assert rows[-1]["t_act"] > 0 and rows[-1]["t_update"] > 0
+
+
 @pytest.mark.parametrize("extra", [[], ["--set", "model.universal=0"], ["--set", "online.sf_windows=2"],
-                                   ["--set", "online.piece_rule=sum"],
+                                   ["--set", "online.piece_rule=sum"], ["--set", "online.ring=1"],
                                    ["--set", "online.piece_rule=council", "--set", "online.device=cpu"],
                                    ["--set", "online.piece_rule=gain", "--set", "online.instinct_m=0"]],
-                         ids=["no_band_n", "not_universal", "self_forcing", "rule", "council_on_cpu",
+                         ids=["no_band_n", "not_universal", "self_forcing", "rule", "ring_without_age_key", "council_on_cpu",
                               "gain_without_instinct"])
 def test_invalid_pieces(tmp_path, extra):
     base = ["--set", "online.pieces=1"] + (["--set", "model.band_n=2", "--set", "model.band_cols=1"] if extra else [])
