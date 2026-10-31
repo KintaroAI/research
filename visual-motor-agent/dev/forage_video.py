@@ -4,7 +4,9 @@ Usage (from visual-motor-agent/dev):
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 ./venv/bin/python forage_video.py RUN --step 500000 -o OUT_DIR
 
 --horizon / --decode override the run's own instinct (instinct_h, instinct_decode). --vs RUN2 also runs a second
-agent in the same worlds (same seeds) and writes compare.mp4: the two views side by side.
+agent in the same worlds (same seeds) and writes compare.mp4: the two views side by side. A run of pieces
+(online.pieces, task 00059) plays all its pieces with its own online.piece_rule; the frame outlines the piece that made
+the move.
 """
 import argparse
 import dataclasses
@@ -20,7 +22,8 @@ import agent_lib  # noqa: E402
 import cuda_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
 from make_video import font  # noqa: E402
-from online import DEFAULT_ONLINE, EVAL_SEED, _GpuEval, eval_moves  # noqa: E402
+from lifetime import ckpt_name, pieces_move  # noqa: E402
+from online import DEFAULT_ONLINE, EVAL_SEED, _GpuEval, eval_moves, uni_act  # noqa: E402
 from world import CircleWorld, EnvConfig  # noqa: E402
 
 W, H, FPS = 1280, 720, 15
@@ -37,8 +40,11 @@ def run(args, path):
     for k in ("bg_color", "target_color", "cursor_color", "cursor_outline", "hazard_color"):
         if k in ec:
             ec[k] = tuple(ec[k])
-    agent = agent_lib.Agent.load(os.path.join(path, "ckpt_%08d.bin" % args.step))
-    ev = _GpuEval(agent, cuda_lib.CudaModel(agent))
+    S = int(info.get("pieces", 1))
+    agents = [agent_lib.Agent.load(os.path.join(path, ckpt_name(args.step, k, S))) for k in range(S)]
+    agent = agents[0]
+    models = [cuda_lib.CudaModel(a) for a in agents]
+    ev = _GpuEval(agent, models[0])
     ion = dict(DEFAULT_ONLINE, **info["config"]["online"])
     if args.horizon:
         ion["instinct_h"] = args.horizon
@@ -60,7 +66,15 @@ def run(args, path):
         cur = dict(img=obs["image"], drv=obs["drives"], pa=prev_a,
                    cmd=(obs["drives"][:, 0] if goal else np.zeros(n)).astype(np.float32), es=es,
                    act=np.zeros((n, 3), np.float32))
-        a = eval_moves(ev, hist + [cur], rng, inst)
+        won = -1
+        if S > 1:   # task 00059: every piece's move, the body's by the run's rule
+            st = lambda k: np.stack([w[k] for w in hist + [cur]], 1)   # noqa: E731
+            props = [uni_act(m_, st("img"), st("drv"), st("act").astype(np.float32), st("es"), agent.config["bins"], rng,
+                             *inst, per_body=True) for m_ in models]
+            a, w_ = pieces_move(models, props, ion["piece_rule"], rng)
+            won = int(w_[0, 0])
+        else:
+            a = eval_moves(ev, hist + [cur], rng, inst)
         cur["act"] = a
         obs, _, _, inf = env.step(a)
         hz = inf.get("gt_hazard_click", np.zeros(n, bool))
@@ -69,7 +83,7 @@ def run(args, path):
         kind = ("food" if inf["success"][0] else "poison" if hz[0]
                 else "empty" if inf["click"][0] and not cfg.touch else None)
         rec.append(dict(img=obs["image"][0].copy(), cursor=inf["gt_cursor"][0].copy(), kind=kind, hunger=float(inf["gt_drives"][0, 0]),
-                        food=int(food[0]), poison=int(poison[0])))
+                        food=int(food[0]), poison=int(poison[0]), won=won))
         hist = (hist + [cur])[-(L - 1):] if L > 1 else []
         prev_a = executed_action(a)
         es = np.zeros(n, np.uint8)
@@ -79,6 +93,7 @@ def run(args, path):
     mc = agent.config
     meta = dict(touch=cfg.touch, ego=cfg.egocentric, verb="touches" if cfg.touch else "clicks",
                 sub="frozen, %s%s; the agent's own 64x64 view" % (how, ", egocentric" if cfg.egocentric else ""),
+                piece_side=int(round(S ** 0.5)) if S > 1 and mc["band_cols"] == 2 else 0,
                 poison_add=cfg.hazard_click_add, split=split_lines(mc))
     return rec, food, poison, meta
 
@@ -98,6 +113,11 @@ def frame(rec, t, title, meta):
     draw_split(d, meta, VX, VY, SCALE)
     trail(d, rec, t, VX, VY, SCALE, ref)
     rings(d, rec, t, VX, VY, SCALE, ref)
+    if meta.get("piece_side") and rec[t]["won"] >= 0:   # the piece that made this move
+        s, k = meta["piece_side"], rec[t]["won"]
+        side = 64 * SCALE // s
+        x, y = VX + (k % s) * side, VY + (k // s) * side
+        d.rectangle([x + 2, y + 2, x + side - 3, y + side - 3], outline=TRAIL, width=3)
     # the panel
     px = VX + 64 * SCALE + 40
     d.rectangle([px, VY, W - 40, VY + 640], fill=PANEL)

@@ -162,6 +162,8 @@ class EnvConfig:
     touch: bool = False                 # (task 00042) food and poison act on contact, no click needed: the cursor
                                         # inside the circle is a success; inside a hazard it applies hazard_click /
                                         # hazard_click_add and that hazard is replaced by a new one away from the cursor
+    no_overlap: bool = False            # (task 00060, needs wrap and round hazards) no two circles overlap: a new one is
+                                        # placed clear of the others; moving ones bounce off each other and off food
 
     def __post_init__(self) -> None:
         # Colors loaded from JSON arrive as lists; store tuples (hashable, comparable).
@@ -223,6 +225,8 @@ class EnvConfig:
             raise ValueError("egocentric needs wrap")
         if self.touch and not self.respawn:
             raise ValueError("touch needs respawn")
+        if self.no_overlap and not (self.wrap and self.hazard_shape == "circle"):
+            raise ValueError("no_overlap needs wrap and round hazards")
         if self.hazards and not 0 < self.hazard_radius_min <= self.hazard_radius_max <= self.size / 2:
             raise ValueError("need 0 < hazard_radius_min <= hazard_radius_max <= size/2")
         for name in _COLOR_FIELDS:
@@ -707,6 +711,74 @@ class CircleWorld:
                 self.hz_pos[i] = np.stack((r + (size - 2 * r) * u[:, 1], r + (size - 2 * r) * u[:, 2]), axis=1)
                 ang = 2.0 * np.pi * u[:, 3]
                 self.hz_vel[i] = cfg.hazard_speed * np.stack((np.cos(ang), np.sin(ang)), axis=1)
+                if cfg.no_overlap:   # one at a time, clear of the food and of the ones before it
+                    for k in range(h):
+                        for _ in range(1000):
+                            if self._clear(i, *self.hz_pos[i, k], r[k], hazards=k):
+                                break
+                            self.hz_pos[i, k] = r[k] + (size - 2 * r[k]) * self._hz_rngs[i].random(2)
+
+    def _clear(self, i: int, x: float, y: float, r: float, hazards: Optional[int] = None, food: bool = True) -> bool:
+        """no_overlap: the circle (x, y, r) of env i clears the food (if food) and the first hazards hazards (None:
+        every hazard). Without no_overlap always True."""
+        cfg = self.config
+        if not cfg.no_overlap:
+            return True
+        size = float(cfg.size)
+        if food and self.target_alive[i]:
+            dx, dy = wrap_delta(x, self.target[i, 0], size), wrap_delta(y, self.target[i, 1], size)
+            if dx * dx + dy * dy <= (r + self.radius[i]) ** 2:
+                return False
+        ids = range(int(cfg.hazards) if hazards is None else hazards) if isinstance(hazards, (int, type(None))) else hazards
+        for k in ids:
+            dx, dy = wrap_delta(x, self.hz_pos[i, k, 0], size), wrap_delta(y, self.hz_pos[i, k, 1], size)
+            if dx * dx + dy * dy <= (r + self.hz_rad[i, k]) ** 2:
+                return False
+        return True
+
+    def _resolve_overlaps(self) -> None:
+        """no_overlap, after the circles moved: overlapping circles are pushed apart along their centres. Two moving
+        ones (equal masses) swap their velocities' normal parts; a moving one reflects off still food."""
+        cfg = self.config
+        size, h = float(cfg.size), int(cfg.hazards)
+        moves_food = cfg.target_speed > 0
+        for i in range(self.num_envs):
+            pos = np.concatenate((self.hz_pos[i], self.target[i][None]))
+            vel = np.concatenate((self.hz_vel[i], (self.target_vel[i] if moves_food else np.zeros(2))[None]))
+            rad = np.append(self.hz_rad[i], self.radius[i])
+            n, hit = h + 1 if self.target_alive[i] else h, False
+            for _ in range(64):   # a push can make a new overlap (a squeeze takes a few rounds)
+                again = False
+                for a in range(n):
+                    for b in range(a + 1, n):
+                        d = np.array((wrap_delta(pos[a, 0], pos[b, 0], size), wrap_delta(pos[a, 1], pos[b, 1], size)))
+                        dist = float(np.hypot(*d))
+                        gap = rad[a] + rad[b] - dist
+                        if gap <= 0.0:
+                            continue
+                        again = hit = True
+                        nrm = d / dist if dist > 0.0 else np.array((1.0, 0.0))
+                        ma, mb = a < h or moves_food, b < h or moves_food
+                        wa = 1.0 if not mb else 0.5 if ma else 0.0
+                        pos[a] += nrm * (gap + 1e-9) * wa
+                        pos[b] -= nrm * (gap + 1e-9) * (1.0 - wa)
+                        vn = float((vel[a] - vel[b]) @ nrm)
+                        if vn < 0.0:
+                            if ma and mb:
+                                vel[a] -= vn * nrm
+                                vel[b] += vn * nrm
+                            elif ma:
+                                vel[a] -= 2.0 * vn * nrm
+                            else:
+                                vel[b] += 2.0 * vn * nrm
+                if not again:
+                    break
+            if hit:
+                self.hz_pos[i] = np.mod(pos[:h], size)
+                self.hz_vel[i] = vel[:h]
+                if moves_food:
+                    self.target[i] = np.mod(pos[h], size)
+                    self.target_vel[i] = vel[h]
 
     def _respawn(self, idx: np.ndarray) -> None:
         """New circles for envs idx (their own spawn generators), resampled until the cursor is outside."""
@@ -723,7 +795,7 @@ class CircleWorld:
                 else:
                     cx, cy = r + (size - 2.0 * r) * u[1], r + (size - 2.0 * r) * u[2]
                     ddx, ddy = self.cursor[i, 0] - cx, self.cursor[i, 1] - cy
-                if ddx * ddx + ddy * ddy > r * r:
+                if ddx * ddx + ddy * ddy > r * r and self._clear(i, cx, cy, r, food=False):
                     break
             self.target[i] = (cx, cy)
             self.radius[i] = r
@@ -747,7 +819,8 @@ class CircleWorld:
                 else:
                     cx, cy = r + (size - 2 * r) * u[1], r + (size - 2 * r) * u[2]
                     ddx, ddy = self.cursor[i, 0] - cx, self.cursor[i, 1] - cy
-                if ddx * ddx + ddy * ddy > r * r:
+                others = [j for j in range(int(cfg.hazards)) if j != k]
+                if ddx * ddx + ddy * ddy > r * r and self._clear(i, cx, cy, r, hazards=others):
                     break
             self.hz_rad[i, k] = r
             self.hz_pos[i, k] = (cx, cy)
@@ -890,6 +963,8 @@ class CircleWorld:
             p = np.where(low, 2.0 * lo_ - p, np.where(high, 2.0 * hi_ - p, p))
             self.hz_vel = np.where(low | high, -self.hz_vel, self.hz_vel)
             self.hz_pos = np.clip(p, lo_, hi_)
+        if cfg.no_overlap:
+            self._resolve_overlaps()
 
         # 5. A hit target disappears, or is replaced at once (respawn); with touch, so is a touched hazard.
         if cfg.respawn:

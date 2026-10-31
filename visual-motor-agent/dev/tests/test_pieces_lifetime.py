@@ -17,7 +17,7 @@ sys.path.insert(0, DEV)
 
 import agent_lib  # noqa: E402
 import cuda_lib  # noqa: E402
-from lifetime import body_move, cosine, piece_seed  # noqa: E402
+from lifetime import body_move, cosine, piece_seed, pieces_move  # noqa: E402
 
 HAVE_GPU = cuda_lib.available()
 TINY = ["--set", "env.size=32", "--set", "model.img=32", "--set", "model.d_model=16", "--set", "model.d_ff=32",
@@ -63,6 +63,30 @@ def test_body_move_random():
     assert seen == {0, 1, 2}
 
 
+class Scorer:
+    """A piece for pieces_move: uni_candidates gives its fixed scores of the moves."""
+
+    def __init__(self, scores):
+        self.scores = np.array(scores, float)
+
+    def uni_candidates(self, cand):
+        assert cand.shape == self.scores.shape + (3,)
+        return self.scores
+
+
+def test_council_and_veto():
+    props = [(A, 0, 0, np.zeros(2)), (B, 0, 0, np.zeros(2)), (C, 0, 0, np.zeros(2))]
+    s = [Scorer([[0.1, 0.9, 0.3], [0.5, 0.2, 0.2]]), Scorer([[0.1, 0.1, 0.3], [0.5, 0.2, 0.2]]),
+         Scorer([[0.7, 0.2, 0.3], [0.5, 0.2, 0.6]])]
+    m, won = pieces_move(s, props, "council", np.random.default_rng(0))     # means [.3, .4, .3] and [.5, .2, .33]
+    assert won[:, 0].tolist() == [0, 1]
+    np.testing.assert_allclose(m[:, :2], [A[0, :2], B[1, :2]])
+    m, won = pieces_move(s, props, "veto", np.random.default_rng(0))        # worst [.7, .9, .3] and [.5, .2, .6]
+    assert won[:, 0].tolist() == [2, 1]
+    np.testing.assert_allclose(m[:, :2], [C[0, :2], B[1, :2]])
+    assert m[:, 2].tolist() == [1.0, 1.0]
+
+
 def test_body_move_gain():
     h = np.array([[0.5, 0.2], [0.4, 0.3], [0.6, 0.1]])                       # [S, N] predicted next hunger
     m, won = body_move([A, B, C], "gain", h)
@@ -84,10 +108,11 @@ def run(tmp_path, dev, extra):
 
 
 @pytest.mark.parametrize("dev", ["cpu", "cuda"])
-@pytest.mark.parametrize("S,cols,rule", [(2, 1, "mean"), (4, 2, "mean"), (4, 2, "max"), (2, 1, "gain"), (4, 2, "random")],
-                         ids=["halves", "quadrants", "max", "gain", "random"])
+@pytest.mark.parametrize("S,cols,rule", [(2, 1, "mean"), (4, 2, "mean"), (4, 2, "max"), (2, 1, "gain"), (4, 2, "random"),
+                                         (4, 2, "council"), (2, 1, "veto")],
+                         ids=["halves", "quadrants", "max", "gain", "random", "council", "veto"])
 def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols, rule):
-    if dev == "cuda" and not HAVE_GPU:
+    if dev == "cuda" and not HAVE_GPU or dev == "cpu" and rule in ("council", "veto"):
         pytest.skip("needs libvmcuda.so and a GPU")
     out = run(tmp_path, dev, ["--set", "model.band_n=%d" % S, "--set", "model.band_cols=%d" % cols,
                               "--set", "online.pieces=1", "--set", "online.piece_rule=" + rule])
@@ -112,8 +137,10 @@ def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols, rule):
 
 @pytest.mark.parametrize("extra", [[], ["--set", "model.universal=0"], ["--set", "online.sf_windows=2"],
                                    ["--set", "online.piece_rule=sum"],
+                                   ["--set", "online.piece_rule=council", "--set", "online.device=cpu"],
                                    ["--set", "online.piece_rule=gain", "--set", "online.instinct_m=0"]],
-                         ids=["no_band_n", "not_universal", "self_forcing", "rule", "gain_without_instinct"])
+                         ids=["no_band_n", "not_universal", "self_forcing", "rule", "council_on_cpu",
+                              "gain_without_instinct"])
 def test_invalid_pieces(tmp_path, extra):
     base = ["--set", "online.pieces=1"] + (["--set", "model.band_n=2", "--set", "model.band_cols=1"] if extra else [])
     cmd = [sys.executable, "lifetime.py", "--config", "configs/U_touch_ego_c2.json", "-o", str(tmp_path / "x")] + \

@@ -89,7 +89,8 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00059 (lifetime.py, the universal model with model.band_n = S): 1 = all S pieces in one
                       # lifetime, one world and one body; each piece its own weights; the body's move from theirs by
                       # piece_rule: mean, max (per axis the proposal of the largest magnitude) or gain (the move of the
-                      # piece whose instinct predicts the lowest next hunger) or random (the move of a random piece)
+                      # piece whose instinct predicts the lowest next hunger), random (the move of a random piece),
+                      # council or veto (every piece scores every move: the lowest mean, or lowest worst)
                       pieces=0, piece_rule="mean")
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
