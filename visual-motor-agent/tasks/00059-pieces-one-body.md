@@ -30,6 +30,7 @@
     version gave ties to piece 0 and was restarted at 1k ticks). The winner's instinct planned with the move made.
   - `gain`: the whole move of the piece whose instinct predicts the lowest next hunger after it (needs the instinct):
     action selection, not averaging.
+  - `random`: the whole move of a piece drawn at random (the control for `gain`: no competition between the pieces).
   - Logged per piece: the share of ticks it made each axis (`won_x_pK`, `won_y_pK`).
 - **Logged:** the usual foraging and prediction metrics (prediction stats averaged over the pieces, and per piece
   `uni_ce_*`); per piece the mean proposed |dx|, |dy| and the agreement with the move made (cosine of proposal and
@@ -52,9 +53,41 @@
   (8 × 8 grid), `uni_pyr = 3`, `sum_thumb = 1` (vm-00045's XFT), seeds 1–3, 60k ticks.
 - **QM, QG** (`make runs2`): quadrants with `piece_rule` max and gain, seeds 1–3, 60k ticks. QW was stopped at 6k
   ticks to make room (it followed Q seed for seed: the window cost nothing visible).
+- **F64** (`make runs3`): one model with `instinct_m = 64`, as many candidates as QG's four pieces together. **QR**
+  (`make runs4`): quadrants with `piece_rule = random`. Both controls for QG, seeds 1–3, 60k ticks.
 - **F:** one model (no split): the control. **H:** two pieces, vertical halves (`band_n = 2`, `band_cols = 1`).
   **Q:** four quadrants (`band_n = 4`, `band_cols = 2`, 4 × 4 patches each). **QW:** quadrants with `band_win = 1`.
 - **Measure:** food and poison per 1k ticks over the lifetime (last 20k); prediction CE (patch, body, move); per piece
   the proposals (do pieces specialize by direction?).
 - Hypotheses: H, Q ≈ F in foraging (each piece sees the whole scene through the thumbnails; moves need coarse
   positions); QW ≈ Q (the scene is local). Division of labour: no prior; the mean rewards agreement.
+
+## Results so far
+
+Mean of three seeds over 40k–60k ticks (food and poison per 1k ticks):
+
+| arm | food | poison | food share |
+|---|---|---|---|
+| F | 19.0 | 10.5 | 0.64 |
+| F64 | 19.6 | 6.1 | 0.76 |
+| H (mean) | 8.0 | 9.6 | 0.45 |
+| Q (mean) | 8.8 | 7.1 | 0.55 |
+| QM (max) | 27.6 | 22.0 | 0.56 |
+| QG (gain) | 42.8 | 4.8 | 0.90 |
+
+Frozen 60k checkpoints (`eval_pieces.py`, 16 bodies, 1,500 ticks, means of three seeds; aim: the cosine of the move
+made and the direction to food within 16 pixels):
+
+| arm | food | poison | move size | aim |
+|---|---|---|---|---|
+| F | 19.9 | 10.2 | 0.53 | 0.28 |
+| F64 | 19.4 | 5.3 | 0.53 | 0.34 |
+| QG, winner by gain | 43.0 | 4.7 | 0.69 | 0.63 |
+| QG, winner at random | 38.3 | 6.3 | 0.69 | 0.53 |
+
+- The rule feeds back into the proposals, each piece sampling from its prediction of the move made: the mean shrinks
+  them (Q 0.11–0.32, H 0.19–0.28), max drives them to the limit (1.00), gain leaves them at 0.63–0.75.
+- More candidates halve the poison and add no food. A piece drawn at random still aims far better than F or F64, so
+  most of QG's lead was built during learning, not by the selection at acting time. The piece whose quadrant holds the
+  food does not win more often than chance (21–26%). QR (a lifetime with a random winner) tests whether the competition
+  during learning is the cause.

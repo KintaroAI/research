@@ -200,6 +200,26 @@ every tick:
 - **A faster lookahead:** the imagined steps recompute the whole window for every candidate and pass; the real
   prefix is the same for all of them, so its keys and values could be cached once per tick (as the one-step
   candidates do).
+- **Reusing the sliding window while acting** (the owner, 2026-10-30). Each tick now shifts the window by one step and
+  recomputes everything: the last 7 raw frames (from the short-term buffer; tokens are never stored) plus the new one,
+  a full pass over 8 steps. 7/8 of the input is the same as on the last tick, but the work is not saved.
+  - **Input cache (cheap, exact, no model change):** a token's input, `W_in · values + slot`, does not depend on
+    history; keep it in a ring per step and add only the step embedding. Skips the thumbnails and `W_in` for 7 steps.
+  - **Key and value ring (a model change):** a new tick's tokens read the old tokens' keys and values, per layer, as
+    `uni_candidates` does within a tick; the new step overwrites the oldest (~1.4 MB for 87 tokens per step). Attention
+    ~4× cheaper, the rest ~8×. It needs two things:
+    1. **Positions that do not move.** The step embedding is a position in the window, added into the token, so every
+       old token changes on a shift. Position must become relative, applied inside attention from the two tokens' age
+       difference (RoPE or a relative bias).
+    2. **A decision on acting against training.** Dropping the oldest step changes what later tokens would have
+       attended to, so the reuse is not the same computation: a cached token keeps what it saw when it was new, and
+       information reaches further back than 8 steps (2 layers: up to ~2 windows). Probably useful, as a longer memory,
+       but a training window computes from scratch, its first tokens with no context. To match them, training needs a
+       warm-up of steps without a loss at the start of each window, at the cost of slower updates.
+  - **Where it pays:** the update (8 windows, forward and backward) likely takes most of a learning tick (not measured:
+    measure the split first), so it matters little while learning every tick. It matters for acting alone, as in the
+    estimate of ~1,000 ticks/s, or if acting and learning separate. Order: input cache when speed matters; the ring
+    when acting is separated from learning, or for longer memory.
 - **Other instincts** (restlessness) through the same one-step lookahead on other body values.
 - **Letters as glyphs** (the owner's idea, 2026-10-26): the text world draws each letter as an 8 × 8 bitmap of its
   shape (a font), one patch per letter, instead of a brightness: reading text as vision. The model must then learn the

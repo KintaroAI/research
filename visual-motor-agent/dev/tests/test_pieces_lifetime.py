@@ -51,6 +51,18 @@ def test_body_move_max_per_axis():
     assert len(seen) == 4                                                     # ties: at random
 
 
+def test_body_move_random():
+    rng = np.random.default_rng(0)
+    seen = set()
+    for _ in range(50):
+        m, won = body_move([A, B, C], "random", rng=rng)
+        assert won[0, 0] == won[0, 1] and won[1, 0] == won[1, 1]
+        for b in range(2):
+            np.testing.assert_allclose(m[b, :2], [A, B, C][won[b, 0]][b, :2])
+        seen.add(won[0, 0])
+    assert seen == {0, 1, 2}
+
+
 def test_body_move_gain():
     h = np.array([[0.5, 0.2], [0.4, 0.3], [0.6, 0.1]])                       # [S, N] predicted next hunger
     m, won = body_move([A, B, C], "gain", h)
@@ -72,8 +84,8 @@ def run(tmp_path, dev, extra):
 
 
 @pytest.mark.parametrize("dev", ["cpu", "cuda"])
-@pytest.mark.parametrize("S,cols,rule", [(2, 1, "mean"), (4, 2, "mean"), (4, 2, "max"), (2, 1, "gain")],
-                         ids=["halves", "quadrants", "max", "gain"])
+@pytest.mark.parametrize("S,cols,rule", [(2, 1, "mean"), (4, 2, "mean"), (4, 2, "max"), (2, 1, "gain"), (4, 2, "random")],
+                         ids=["halves", "quadrants", "max", "gain", "random"])
 def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols, rule):
     if dev == "cuda" and not HAVE_GPU:
         pytest.skip("needs libvmcuda.so and a GPU")

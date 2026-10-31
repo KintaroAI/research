@@ -25,8 +25,8 @@ acting, the command is the current hunger: "relieve all of it".
 Pieces (online.pieces = 1 with model.band_n = S >= 2, task 00059): S separate transformers, band_k = 0..S-1, live
 one lifetime on one world and one body. Each acts as the universal model does (its own move prediction and instinct);
 the body's move comes from theirs by online.piece_rule: mean; max (per axis, the proposal of the largest magnitude);
-gain (the whole move of the piece whose instinct predicts the lowest next hunger after it). Every piece's move token
-holds the move made. They share the experience
+gain (the whole move of the piece whose instinct predicts the lowest next hunger after it); random (the whole move of
+a piece drawn at random). Every piece's move token holds the move made. They share the experience
 (one memory) and each takes its own gradient step on the same rows; piece k starts from seed + 7919 k. Checkpoints
 ckpt_NNNNNNNN_pK.bin per piece.
 
@@ -93,7 +93,7 @@ def body_move(moves, rule="mean", hunger=None, rng=None):
     """The body's move [N, 3] from the pieces' moves (S of [N, 3]) and which piece made each axis [N, 2] (task 00059).
     mean: dx, dy their mean, the click a majority (winners -1: everyone); max: per axis the proposal of the largest
     magnitude (ties, frequent with binned moves, broken at random by rng), the click a majority; gain: the whole move of the piece with the lowest predicted
-    next hunger (hunger [S, N]). One piece: its move unchanged."""
+    next hunger (hunger [S, N]); random: the whole move of a piece drawn by rng. One piece: its move unchanged."""
     S, N = len(moves), len(moves[0])
     if S == 1:
         return moves[0], np.zeros((N, 2), int)
@@ -105,13 +105,16 @@ def body_move(moves, rule="mean", hunger=None, rng=None):
         mag = np.abs(mv[:, :, :2]) + 1e-6 * (rng or np.random.default_rng()).random(mv[:, :, :2].shape)
         won = mag.argmax(0)                                                   # [N, 2]
         m = np.concatenate([np.take_along_axis(mv[:, :, :2], won[None], 0)[0], click[:, None]], 1)
-    elif rule == "gain":
-        if hunger is None or np.isnan(hunger).any():
+    elif rule in ("gain", "random"):
+        if rule == "random":
+            w = rng.integers(S, size=N)
+        elif hunger is None or np.isnan(hunger).any():
             raise ValueError("piece_rule gain needs the instinct (online.instinct_m > 1)")
-        w = np.asarray(hunger).argmin(0)                                      # [N]
+        else:
+            w = np.asarray(hunger).argmin(0)                                  # [N]
         m, won = mv[w, np.arange(N)].copy(), np.stack([w, w], 1)
     else:
-        raise ValueError("online.piece_rule must be mean, max or gain")
+        raise ValueError("online.piece_rule must be mean, max, gain or random")
     m[:, 2] = click
     return m.astype(np.float32), won
 
@@ -162,8 +165,8 @@ def main():
     S = int(cfg["model"].get("band_n", 0)) if on["pieces"] else 1   # task 00059: the pieces of one body
     if on["pieces"] and (S < 2 or args.init or not cfg["model"].get("universal")):
         raise ValueError("online.pieces needs the universal model with model.band_n >= 2 (and no --init)")
-    if on["piece_rule"] not in ("mean", "max", "gain") or (on["piece_rule"] == "gain" and on["instinct_m"] <= 1):
-        raise ValueError("online.piece_rule: mean, max, or gain (with the instinct, online.instinct_m > 1)")
+    if on["piece_rule"] not in ("mean", "max", "gain", "random") or (on["piece_rule"] == "gain" and on["instinct_m"] <= 1):
+        raise ValueError("online.piece_rule: mean, max, random, or gain (with the instinct, online.instinct_m > 1)")
     if S > 1:
         agents = [agent_lib.Agent(dict(cfg["model"], band_k=k), seed=piece_seed(args.seed, k)) for k in range(S)]
     else:
