@@ -1,7 +1,7 @@
 # Task 00058: Separate Transformers That See Only Nearby Summaries (experiment vm-00050)
 
 **Date:** 2026-10-30
-**Status:** In progress (phase 1 done; next: the window in the visual world)
+**Status:** Complete
 
 ## Context
 
@@ -91,3 +91,7 @@ By line at 40k (lines 1–2 quarter 0, 3–4 quarter 1, ...):
   only for its own quarter and the line above (~8–24 letters) where Q keeps the whole page. Text is a 1-D sequence
   wrapped into 2-D: near in reading order is not near in space, so a spatial window cuts its context.
 - Phase 2 (blocks) not started: the window is not cheap in the text world.
+
+## Write-up
+
+[`../00050-summary-windows/README.md`](../00050-summary-windows/README.md). Phase 2 not run.

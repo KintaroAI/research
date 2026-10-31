@@ -1,7 +1,7 @@
 # Task 00050: Square Poison, the Summary Experiment Repeated (experiment vm-00043)
 
 **Date:** 2026-10-28
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -42,3 +42,7 @@
   - Do thumbnails help once they can show the difference?
   - Does the control itself change, with poison easier to tell apart?
 - Started after vm-00042's runs finish, so that both GPUs are free (12 lifetimes).
+
+## Write-up
+
+[`../00043-square-poison/README.md`](../00043-square-poison/README.md). The control fell the most (SB 21.1, 10.9); frozen tests partly run, stopped by task 00052.

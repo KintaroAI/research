@@ -1,7 +1,7 @@
 # Task 00052: Position Codes by the Slot Layout (experiment vm-00045)
 
 **Date:** 2026-10-29
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -66,3 +66,7 @@
   pair lookahead) once the positions are right? If it does, vm-00040–00044's summary arms must be re-read.
 - The analyses stopped for this (vm-00042's and vm-00044's 4-step tests, vm-00043's remaining runs) are re-run after
   or beside the lifetimes, at most two 4-step tests per GPU (~10 GB each).
+
+## Write-up
+
+[`../00045-slot-positions/README.md`](../00045-slot-positions/README.md). The bug was real and not the cause: XF 18.1, 12.2; XFT 12.8, 5.9; XB 28.7, 7.9; text 1.918. Frozen image tests not run: lifetime numbers did not improve.

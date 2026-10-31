@@ -1,8 +1,8 @@
 # vm-00042: Summary Tokens With Content: Thumbnails of Their Block
 
 **Date:** 2026-10-28
-**Status:** In progress (image analysis running)
-**Source:** *to be tagged on completion as `exp/vm-00042`* (code: `visual-motor-agent/dev/`)
+**Status:** Complete (pending tag)
+**Source:** `exp/vm-00042` (the code as run, before task 00052's fix; `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00042/`
 **Task plan:** [`../tasks/00049-summary-thumbnails.md`](../tasks/00049-summary-thumbnails.md)
 
@@ -80,20 +80,42 @@ TPT: COMINIUS:
      Second Citizen:
 ```
 
-### R3–R5. Image (frozen tests, life, prediction, dream)
+### R3. Image: frozen tests at 100k, three-seed means, food / poison per 1k
 
-*Analysis running: two 4-step tests were lost to out-of-memory errors and are being re-run.*
+| arm | policy alone | 1-step instinct | 4-step pair lookahead |
+|---|---|---|---|
+| EB (no summaries, vm-00036) | 33.5 / 19.4 | 36.6 / 8.8 | 44.4 / 4.1 |
+| EF (pyramid, full attention) | 19.9 / 15.8 | 22.1 / 9.7 | 27.2 / 6.6 |
+| **EFT (with thumbnails)** | 19.2 / 12.5 | 20.1 / 6.6 | 24.1 / 4.9 |
+| **EPT (window, thumbnails)** | 22.9 / 16.1 | 25.1 / 9.7 | 30.7 / 8.2 |
+
+### R4. Image: life, the last 20k ticks of 100k, food / poison per 1k
+
+| arm | mean | food by seed |
+|---|---|---|
+| EB | 36.8 / 8.0 | 30.9, 28.8, 50.6 |
+| EF | 21.8 / 8.9 | 25.1, 17.2, 23.0 |
+| EFT | 20.1 / 7.2 | 16.4, 17.0, 27.0 |
+| EPT | 23.3 / 10.4 | 29.8, 20.9, 19.3 |
+
+Prediction held: patch cross-entropy over the same ticks is 0.707–0.716 against EB's 0.717.
 
 ## Analysis
 
-*Pending the image results.* Note (task 00052): these models were born with misplaced position codes (see
-vm-00041's caveat); vm-00045 reruns EF and EFT with the codes fixed.
+- **Thumbnails do not bring the food back.** The suspicion of vm-00040 was a content-free token predicting the move. EFT
+  gives it content and collects no more than EF: 20.1 against 21.8 in life. EFT takes somewhat less poison (food share 0.74
+  against 0.71, 6.6 against 9.7 frozen).
+- **Text does not change either:** TPT 1.927 against TP's 1.921, its generation about the same.
+- **Every arm with summaries is about 40% under EB, while predicting as well.** So the loss is not in prediction.
+- **Caveat, found afterwards (task 00052):** these models were born with misplaced position codes, so summaries started
+  with a scrambled position frame. vm-00045 reran EF and EFT with the codes fixed, and the food did not come back: see there.
+  EB also ran on older code, and its rerun XB there collects less (28.7), so part of the gap is not about summaries.
 
 ## Conclusions
 
-*Pending.*
+1. Giving summaries content cost nothing and brought nothing back here: the suspected cause was not the cause.
+2. Thumbnails are worth keeping for a different reason, found later: they let separate pieces see each other (vm-00049).
 
 ## Next Steps
 
-- vm-00043 (square poison) and vm-00044 (poison with a 2 × 2 checker): worlds where poison stays distinguishable in a
-  coarse view, to test whether thumbnails help once they can show the difference.
+- Done: vm-00043 (square poison), vm-00044 (2 × 2 checker), vm-00045 (the positions fixed).

@@ -1,7 +1,7 @@
 # Task 00049: Summary Tokens With Content: Thumbnails of Their Block (experiment vm-00042)
 
 **Date:** 2026-10-28
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -63,3 +63,7 @@
 - **Text** (`configs/T_text_B.json`), 100k ticks, seeds 1–3:
   - **TPT:** `attn_win = 1`, `uni_pyr = 3`, `sum_thumb = 1`. Against vm-00041's TP.
 - **Measures** as in vm-00041.
+
+## Write-up
+
+[`../00042-summary-thumbnails/README.md`](../00042-summary-thumbnails/README.md). Thumbnails do not bring the food back: EFT 20.1 food, 7.2 poison; EF 21.8, 8.9; EB 36.8, 8.0.

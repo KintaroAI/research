@@ -1,7 +1,7 @@
 # Task 00051: Poison With a 2 × 2 Checker, the Summary Experiment Repeated (experiment vm-00044)
 
 **Date:** 2026-10-28
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -41,3 +41,7 @@
   - Does a texture that survives the level-1 average make thumbnails useful (CFT against CF)?
   - Does a coarser texture change the control (CB against EB)?
 - Started when vm-00043's first runs free the 3090, so that the GPUs are not overloaded.
+
+## Write-up
+
+[`../00044-checker-cells/README.md`](../00044-checker-cells/README.md). Thumbnails did not help (CFT 18.7, 11.9; CF 20.6, 5.0; CB 15.7, 9.3); frozen tests partly run.
