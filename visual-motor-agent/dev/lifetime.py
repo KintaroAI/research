@@ -56,7 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
 from online import (STAT_KEYS, GatedMemory, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
-                    uni_act)
+                    thought_dream, uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
 from world import make_config, make_world  # noqa: E402
@@ -240,7 +240,7 @@ def main():
     lag = goal_k - 1 if goal_k else 0         # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
-    kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni)
+    kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"])
     gms = [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, tokens=tok_sur, **kept)]
     gms += [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
             for b in range(1, N0)]
@@ -273,7 +273,7 @@ def main():
                 rollouts[n] = agent.new_rollout(L, n)
             else:
                 nf = not (uni and cuda_lib.has("vmc_uni_candidates"))
-                rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"], next_frames=nf)
+                rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"], next_frames=nf, img_w=agent.config["img_w"])
         return rollouts[n]
 
     def piece_rollout(k, n):   # pieces on the CPU (task 00059): piece k's own C++ rollout
@@ -293,6 +293,9 @@ def main():
         a.save(os.path.join(out_dir, ckpt_name(0, k, S)), with_optimizer=False)
 
     mf = open(os.path.join(out_dir, "metrics.jsonl"), "w")
+    thinking = hasattr(env, "think")   # task 00064: the thought half's next frame is the right piece's dream, and waves
+    if thinking and env.cfg.mode == "dream" and (S != 2 or not gpu or agent.config["band_cols"] != 1):
+        raise ValueError("a dreaming env.thought needs two pieces, left and right (online.pieces, model.band_cols=1), on the GPU")
     obs = env.observe()
     prev_a = np.zeros((N0, 3), np.float32)
     prev_r = np.zeros(N0, np.float32)
@@ -302,7 +305,7 @@ def main():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(),
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
-                    smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0)
+                    smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0)
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -366,6 +369,18 @@ def main():
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
                            pa=prev_a[b], pr=prev_r[b], es=ep_start[b], act=a[b], rew=rew[b], done=done[b],
                            hit=inf["success"][b], cmd=cmd[b])
+        if thinking:   # the window ending in the new step: the world's new half, the old thought; moves up to now
+            t_think = time.time()
+            ix = [gm.stm.last(min(gm.stm.n, L - 1)) for gm in gms[:N]]
+            st_ = lambda f, new: np.stack([np.concatenate([gm.stm.frames(i) if f == "img" else getattr(gm.stm, f)[i], new[b:b + 1]])   # noqa: E501,E731
+                                           for b, (gm, i) in enumerate(zip(gms[:N], ix))])
+            dream = None
+            if env.cfg.mode == "dream":
+                dream = thought_dream(gpus[-1], st_("img", obs["image"]), st_("drv", obs["drives"]).astype(np.float32),
+                                      st_("act", np.zeros((N, 3), np.float32)), st_("es", done.astype(np.uint8)),
+                                      on["thought_jacobi"], "pair")
+            obs = dict(obs, image=env.think(dream))
+            win["t_think"] += time.time() - t_think
         hz = inf["gt_in_hazard"][:N] if "gt_in_hazard" in inf else np.zeros(N, bool)     # scoring only
         win["step_hits"] += int(inf["success"][0])
         win["hazard"] += int(hz[0])
@@ -472,6 +487,8 @@ def main():
                     row["agree_p%d" % k] = float(win["agree"][k] / bs)
                     row["won_x_p%d" % k], row["won_y_p%d" % k] = (win["won"][k] / bs).tolist()   # max, gain
             row.update(gate_metrics(gms))
+            if thinking:
+                row.update(env.stats())
             mf.write(json.dumps(row) + "\n")
             mf.flush()
             print("tick %7d  %5.1f tps  bodies %2d  hits %3d (all bodies %5.1f per 1k)  pred %.5f  drive %.5f  "

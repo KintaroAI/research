@@ -66,18 +66,27 @@ def uni_dims(cfg):
     return len(uni_slot_table(cfg)["kind"]), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
 
 
+def uni_grid_w(cfg):
+    """The patch grid's width (task 00064); its height is img // patch."""
+    return (cfg.get("img_w", 0) or cfg["img"]) // cfg["patch"]
+
+
 def uni_band_piece(cfg):
     """This model's piece with band_n >= 2 (vm_band_piece): (first row, last row, first column, last column) of its
     patches. band_cols 0: a band of rows; 1: of columns; 2: square blocks (task 00058), band_n = s * s, piece k at
     block row k // s, column k % s."""
     g, n, k = cfg["img"] // cfg["patch"], cfg["band_n"], cfg.get("band_k", 0)
+    gw = uni_grid_w(cfg)
     mode = cfg.get("band_cols", 0)
     if mode == 2:
         s = int(round(n ** 0.5))
         br, bc, h = k // s, k % s, g // s
         return br * h, (br + 1) * h - 1, bc * h, (bc + 1) * h - 1
+    if mode == 1:
+        h = gw // n
+        return 0, g - 1, k * h, (k + 1) * h - 1
     h = g // n
-    return (0, g - 1, k * h, (k + 1) * h - 1) if mode == 1 else (k * h, (k + 1) * h - 1, 0, g - 1)
+    return k * h, (k + 1) * h - 1, 0, gw - 1
 
 
 def uni_has_patch(cfg, r, c):
@@ -107,13 +116,14 @@ def uni_slot_table(cfg):
     summaries: band, 0). The patches go row by row; each summary right after the last patch of its block (uni_sum: a band
     of rows; uni_pyr: a 2^l x 2^l block at level l = 1..uni_pyr, finer levels first)."""
     g, R, L = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0), cfg.get("uni_pyr", 0)
+    gw = uni_grid_w(cfg)
     rows = [(0, 0, 0, 0, 0)]
     ns = 0
     for r in range(g):
-        for c in range(g):
+        for c in range(gw):
             if uni_has_patch(cfg, r, c):   # not with sum_only (task 00054); band_n: one band (task 00057)
-                rows.append((1, r * g + c, 0, r, c))
-            if R > 0 and c == g - 1 and (r + 1) % R == 0:
+                rows.append((1, r * gw + c, 0, r, c))
+            if R > 0 and c == gw - 1 and (r + 1) % R == 0:
                 rows.append((2, ns, 1, r // R, 0))
                 ns += 1
             for lv in range(1, L + 1):
@@ -536,14 +546,14 @@ def uni_values(cfg, images, drives, actions):
     by row ((y, x, c) within a patch, pixels / 255), the move ((dx+1)/2, (dy+1)/2, click)."""
     S, T = images.shape[:2]
     nt, V, _ = uni_dims(cfg)
-    ps, g = cfg["patch"], cfg["img"] // cfg["patch"]
+    ps, g, gw = cfg["patch"], cfg["img"] // cfg["patch"], uni_grid_w(cfg)
     v = np.zeros((S, T, nt, V))
-    x = np.asarray(images, np.float64).reshape(S, T, g, ps, g, ps, 3) / 255.0
+    x = np.asarray(images, np.float64).reshape(S, T, g, ps, gw, ps, 3) / 255.0
     if cfg.get("gray", 0):   # one channel per pixel: the first
         x = x[..., :1]
     kind, index = uni_slots(cfg)
     if (kind == 1).any():   # sum_only (task 00054): no patch tokens; band_n (task 00057): one band's, by index
-        v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * g, V)[:, :, index[kind == 1]]
+        v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * gw, V)[:, :, index[kind == 1]]
     v[:, :, 0, :2] = np.asarray(drives, np.float64)
     a = np.asarray(actions, np.float64)
     v[:, :, nt - 1, 0] = (np.clip(a[..., 0], -1, 1) + 1) / 2

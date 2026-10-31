@@ -28,7 +28,7 @@ class VMConfig(C.Structure):
                  ("attn_overlap", C.c_int), ("attn_pred_global", C.c_int), ("attn_cols", C.c_int),
                  ("attn_checker", C.c_int), ("attn_win", C.c_int), ("uni_sum", C.c_int),
                  ("uni_pyr", C.c_int), ("sum_thumb", C.c_int), ("sum_only", C.c_int),
-                 ("band_n", C.c_int), ("band_k", C.c_int), ("band_cols", C.c_int), ("band_win", C.c_int), ("age_key", C.c_int)]
+                 ("band_n", C.c_int), ("band_k", C.c_int), ("band_cols", C.c_int), ("band_win", C.c_int), ("age_key", C.c_int), ("img_w", C.c_int)]
 
 
 class PPOConfig(C.Structure):
@@ -61,7 +61,7 @@ DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer
                      pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
                      act_token=0, universal=0, bins=32, gray=0, in_bins=0, attn_split=0, attn_overlap=0, attn_pred_global=0, attn_cols=0,
                      attn_checker=0, attn_win=0, uni_sum=0,
-                     uni_pyr=0, sum_thumb=0, sum_only=0, band_n=0, band_k=0, band_cols=0, band_win=0, age_key=0)
+                     uni_pyr=0, sum_thumb=0, sum_only=0, band_n=0, band_k=0, band_cols=0, band_win=0, age_key=0, img_w=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
@@ -72,17 +72,23 @@ DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.0
                    drive_change_eps=0.01, act_coef=0.0)
 
 
+def grid_w(cfg):
+    """The patch grid's width (task 00064: a frame may be wider than high); its height is img // patch."""
+    return (cfg.get("img_w", 0) or cfg["img"]) // cfg["patch"]
+
+
 def band_piece(cfg):
     """This model's piece with band_n >= 2 (vm_band_piece): its first and last patch row and column. A band of rows
     (band_cols 0), of columns (1), or a square block (2, task 00058: band_n = s^2, piece k at block k // s, k % s)."""
     g, n, k, mode = cfg["img"] // cfg["patch"], cfg["band_n"], cfg.get("band_k", 0), cfg.get("band_cols", 0)
+    gw = grid_w(cfg)
     if mode == 2:
         s = int(round(np.sqrt(n)))
         h = g // s
         return k // s * h, k // s * h + h - 1, k % s * h, k % s * h + h - 1
     if mode == 1:
-        return 0, g - 1, k * (g // n), k * (g // n) + g // n - 1
-    return k * (g // n), k * (g // n) + g // n - 1, 0, g - 1
+        return 0, g - 1, k * (gw // n), k * (gw // n) + gw // n - 1
+    return k * (g // n), k * (g // n) + g // n - 1, 0, gw - 1
 
 
 def has_patch(cfg, r, c):
@@ -112,11 +118,12 @@ def uni_layout(cfg):
     move (nt - 1)). The patches go row by row, each summary token right after the last patch of its block (uni_sum: a
     band of rows; uni_pyr: a 2^l x 2^l block at level l, finer levels first, task 00048)."""
     g, R, L = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0), cfg.get("uni_pyr", 0)
+    gw = grid_w(cfg)
     kind = [0]
     for r in range(g):
-        for c in range(g):
+        for c in range(gw):
             kind += [1] if has_patch(cfg, r, c) else []   # not with sum_only (task 00054); band_n: one band
-            kind += [2] if R > 0 and c == g - 1 and (r + 1) % R == 0 else []
+            kind += [2] if R > 0 and c == gw - 1 and (r + 1) % R == 0 else []
             kind += [2 for lv in range(1, L + 1) if (r + 1) % (1 << lv) == 0 and (c + 1) % (1 << lv) == 0 and
                      has_sum(cfg, lv, r >> lv, c >> lv)]   # band_win: only those near the piece (task 00058)
     kind = np.array(kind + [3])

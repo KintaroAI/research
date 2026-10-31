@@ -94,7 +94,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       pieces=0, piece_rule="mean",
                       # task 00062 (lifetime.py, model.age_key on the GPU): act on a key and value ring, computing only
                       # each new step's tokens; profile: split the tick's time in the metrics (waits for the GPU)
-                      ring=0, profile=0)
+                      ring=0, profile=0,
+                      # task 00064 (env.thought): Jacobi iterations of the thought transformer's dream of its next frame
+                      thought_jacobi=2)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -103,12 +105,12 @@ class Replay:
     only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img, ch=3, next_frames=True):
+    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
-        self.img = np.zeros((cap, img, img, ch), np.uint8)
+        self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
         # the frame after the step (terminal frame if done)
-        self.nimg = np.zeros((cap, img, img, 3), np.uint8) if next_frames else None
+        self.nimg = np.zeros((cap, img, img_w or img, 3), np.uint8) if next_frames else None
         self.fields = FIELDS if next_frames else tuple(f for f in FIELDS if f != "nimg")
         self.drv = np.zeros((cap, 2), np.float32)
         self.ndrv = np.zeros((cap, 2), np.float32)
@@ -293,7 +295,7 @@ class GatedMemory:
     slot's mean over the last surprise_window steps.
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
-    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True):
+    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True, img_w=0):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
@@ -301,7 +303,7 @@ class GatedMemory:
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
-        self.stm = Replay(on["stm"], img, ch, next_frames)
+        self.stm = Replay(on["stm"], img, ch, next_frames, img_w)
         self.store = store or ChunkStore(on, L, self.stm)          # long-term memory (shared between bodies or not)
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part
@@ -476,7 +478,7 @@ def uni_frame(cfg, pv):
     """Frames [n, H, W, 3] u8 from patch values [n, patches, V] (uni_patches' inverse; gray: the value in every
     channel)."""
     n, ps = pv.shape[0], cfg["patch"]
-    g, ch = cfg["img"] // ps, 1 if cfg.get("gray") else 3
+    g, ch = int(round((pv.shape[1]) ** 0.5)), 1 if cfg.get("gray") else 3
     x = np.clip(np.rint(np.asarray(pv, np.float64) * 255.0), 0, 255).astype(np.uint8)
     x = x.reshape(n, g, g, ps, ps, ch).transpose(0, 1, 3, 2, 4, 5).reshape(n, g * ps, g * ps, ch)
     return np.repeat(x, 3, -1) if ch == 1 else x
@@ -536,6 +538,22 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
             dv[:, st] = np.clip(out["next_body"][:, st - 1], 0.0, 1.0)
             im[:, st] = uni_frame(c, out["values_t"][:, pp])
     return run(-1)["next_body"][:, -1, 0].reshape(N, M)
+
+
+def thought_dream(model, img, drv, act, es, J=2, decode="pair"):
+    """Task 00064: the right piece's dream of its own half of the last step of windows [N, T, H, W, 3]: that half starts as
+    what the frames hold there, then J Jacobi iterations of the model's predictions of its patches. img's last step holds the
+    world's new half and the old thought. Returns frames [N, H, H, 3] u8."""
+    c = model.config
+    pp = agent_lib.uni_layout(c)["patch"] - 1
+    H, T = c["img"], img.shape[1]
+    im = img.copy()
+    out = None
+    for _ in range(J):
+        o = model.forward_uni_step(im, drv, act, es, T - 1, mode=DECODE[decode])
+        out = uni_frame(dict(c, img_w=0), o["values_t"][:, pp])
+        im[:, -1, :, H:] = out
+    return out
 
 
 def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):

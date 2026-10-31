@@ -89,11 +89,11 @@ class Rollout:
     """The store / outcome interface of agent_lib's rollout ([T, N]: N sequences of T = ctx steps), kept in numpy for
     the GPU update. The next frames are kept full size; the GPU downsamples them as the C++ rollout does."""
 
-    def __init__(self, T, N, img, next_frames=True):
+    def __init__(self, T, N, img, next_frames=True, img_w=0):
         self.T, self.N = T, N
-        self.img = np.zeros((T, N, img, img, 3), np.uint8)
+        self.img = np.zeros((T, N, img, img_w or img, 3), np.uint8)
         # the next frames (next_frames=False: not kept, e.g. for the universal model, whose targets are in the window)
-        self.nimg = np.zeros((T, N, img, img, 3), np.uint8) if next_frames else None
+        self.nimg = np.zeros((T, N, img, img_w or img, 3), np.uint8) if next_frames else None
         self.drv, self.ndrv = np.zeros((T, N, 2), np.float32), np.zeros((T, N, 2), np.float32)
         self.pa, self.act = np.zeros((T, N, 3), np.float32), np.zeros((T, N, 3), np.float32)
         self.pr = np.zeros((T, N), np.float32)

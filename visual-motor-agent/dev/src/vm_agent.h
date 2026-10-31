@@ -84,6 +84,7 @@ typedef struct {
     int age_key;        // universal: 1 = position by age (task 00062): wpe is not added to the tokens; its rows are keys
                         //     read at attention, score = q . (k + wpe[age]) / sqrt(hs), age = reader's step - key's step,
                         //     split among the heads as K, so a token's K and V do not depend on the window
+    int img_w;          // universal: > 0 = frames img high and img_w wide (task 00064); 0 = square
 } VMConfig;
 
 // The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
@@ -91,11 +92,13 @@ typedef struct {
 // levels first); nt - 1 the move. A slot: kind (0 body, 1 patch, 2 summary, 3 move), index (the patch, row-major, or
 // the summary), level (patches 0) and position on its level's grid (row, column; uni_sum's summaries: band, 0).
 typedef struct { int kind, idx, lev, r, c; } VMSlot;
+// The patch grid's width (task 00064: a frame may be wider than high); its height is img / patch
+static inline int vm_grid_w(const VMConfig* c) { return (c->img_w > 0 ? c->img_w : c->img) / c->patch; }
 static inline int vm_uni_nsum(const VMConfig* c) {
     if (!c->universal || c->patch <= 0) return 0;
-    const int g = c->img / c->patch;
+    const int g = c->img / c->patch, gw = vm_grid_w(c);
     int n = c->uni_sum > 0 ? g / c->uni_sum : 0;
-    for (int l = 1; l <= c->uni_pyr; l++) n += (g >> l) * (g >> l);
+    for (int l = 1; l <= c->uni_pyr; l++) n += (g >> l) * (gw >> l);
     return n;
 }
 // The side of band_cols = 2's square blocks in pieces (task 00058): s with s * s = band_n, or 0
@@ -107,13 +110,13 @@ static inline int vm_band_side(const VMConfig* c) {
 // This model's piece (with band_n >= 2), its first and last patch row and column: a band of rows (band_cols 0), of
 // columns (1), or a square block (2, task 00058)
 static inline void vm_band_piece(const VMConfig* c, int* r0, int* r1, int* c0, int* c1) {
-    const int g = c->img / c->patch;
-    *r0 = 0; *r1 = g - 1; *c0 = 0; *c1 = g - 1;
+    const int g = c->img / c->patch, gw = vm_grid_w(c);
+    *r0 = 0; *r1 = g - 1; *c0 = 0; *c1 = gw - 1;
     if (c->band_cols == 2) {
         const int s = vm_band_side(c) ? vm_band_side(c) : 1, h = g / s;   // (not a square: invalid, see vm_attn_valid)
         *r0 = c->band_k / s * h; *r1 = *r0 + h - 1; *c0 = c->band_k % s * h; *c1 = *c0 + h - 1;
     } else if (c->band_cols == 1) {
-        *c0 = c->band_k * (g / c->band_n); *c1 = *c0 + g / c->band_n - 1;
+        *c0 = c->band_k * (gw / c->band_n); *c1 = *c0 + gw / c->band_n - 1;
     } else {
         *r0 = c->band_k * (g / c->band_n); *r1 = *r0 + g / c->band_n - 1;
     }
@@ -137,14 +140,14 @@ static inline int vm_uni_has_sum(const VMConfig* c, int l, int r, int q) {
 }
 // Fills s [vm_uni_nt] (may be NULL); returns nt.
 static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
-    const int g = c->img / c->patch;
+    const int g = c->img / c->patch, gw = vm_grid_w(c);
     int n = 0, ns = 0;
 #define VM_SLOT_(K, I, L, R, C) do { if (s) { s[n].kind = K; s[n].idx = I; s[n].lev = L; s[n].r = R; s[n].c = C; } n++; } while (0)
     VM_SLOT_(0, 0, 0, 0, 0);
     for (int r = 0; r < g; r++)
-        for (int q = 0; q < g; q++) {
-            if (vm_uni_has_patch(c, r, q)) VM_SLOT_(1, r * g + q, 0, r, q);   // not with sum_only (task 00054); band_n: one band
-            if (c->uni_sum > 0 && q == g - 1 && (r + 1) % c->uni_sum == 0) VM_SLOT_(2, ns++, 1, r / c->uni_sum, 0);
+        for (int q = 0; q < gw; q++) {
+            if (vm_uni_has_patch(c, r, q)) VM_SLOT_(1, r * gw + q, 0, r, q);   // not with sum_only (task 00054); band_n: one band
+            if (c->uni_sum > 0 && q == gw - 1 && (r + 1) % c->uni_sum == 0) VM_SLOT_(2, ns++, 1, r / c->uni_sum, 0);
             for (int l = 1; l <= c->uni_pyr; l++)   // band_win: only those near the piece (task 00058)
                 if ((r + 1) % (1 << l) == 0 && (q + 1) % (1 << l) == 0 && vm_uni_has_sum(c, l, r >> l, q >> l))
                     VM_SLOT_(2, ns++, l, r >> l, q >> l);
@@ -267,11 +270,16 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->sum_only < 0 || c->sum_only > 1) return 0;
     if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
     if (c->age_key < 0 || c->age_key > 1 || (c->age_key && !c->universal)) return 0;
+    if (c->img_w < 0) return 0;
+    if (c->img_w > 0 && (!c->universal || c->patch <= 0 || c->img_w % c->patch || c->attn_split > 1 || c->attn_win ||
+                         c->uni_sum || c->band_cols == 2))   // task 00064
+        return 0;
     if (c->band_n < 0 || c->band_n == 1 || c->band_cols < 0 || c->band_cols > 2 || c->band_win < 0) return 0;
     if (c->band_n == 0 && (c->band_k || c->band_cols || c->band_win)) return 0;
     if (c->band_n >= 2 && (!c->universal || c->patch <= 0 || !c->uni_pyr || !c->sum_thumb || c->sum_only ||   // task 00057
                            c->attn_split > 1 || c->attn_win || c->uni_sum || c->band_k < 0 || c->band_k >= c->band_n ||
-                           (c->band_cols < 2 && (c->img / c->patch) % c->band_n)))
+                           (c->band_cols == 0 && (c->img / c->patch) % c->band_n) ||
+                           (c->band_cols == 1 && vm_grid_w(c) % c->band_n)))
         return 0;
     if (c->band_n >= 2 && c->band_cols == 2 && (!vm_band_side(c) || (c->img / c->patch) % vm_band_side(c)))   // 00058
         return 0;
@@ -281,7 +289,9 @@ static inline int vm_attn_valid(const VMConfig* c) {
                                   c->attn_pred_global || c->attn_split > 32 || (c->img / c->patch) % c->attn_split))
             return 0;
         if (c->uni_sum > 0 && (c->img / c->patch) % c->uni_sum) return 0;
-        if (c->uni_pyr > 0 && (c->uni_sum > 0 || (c->img / c->patch) % (1 << c->uni_pyr))) return 0;
+        if (c->uni_pyr > 0 && (c->uni_sum > 0 || (c->img / c->patch) % (1 << c->uni_pyr) ||
+                               vm_grid_w(c) % (1 << c->uni_pyr)))
+            return 0;
     }
     if (c->attn_pred_global < 0 || c->attn_pred_global > 1 || c->attn_cols < 0 || c->attn_cols > 1) return 0;
     if (c->attn_checker < 0 || c->attn_checker > 1) return 0;

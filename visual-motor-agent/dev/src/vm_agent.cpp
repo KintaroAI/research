@@ -533,7 +533,7 @@ static const int ACT_CG = 8;   // act token: side of the coarse next frame it pr
 
 struct Dims {
     int img, c1, c2, c3, h1, h2, h3, enc_flat, feat, d, L, nh, hs, dff, K, in_dim;
-    int pimg, p0, p1, pc1, pc2, ph, pred_flat, pin_dim, img_px, small_px, ds;
+    int pimg, p0, p1, pc1, pc2, ph, pred_flat, pin_dim, img_px, small_px, ds, iw;
     int coord, in_ch, pb, d1_in, d2_in;   // coordinate channels on/off; encoder input / deconv input channels
     int residual;                         // prediction = current frame + decoder output
     int skip, skip_off, skip1_off;        // encoder skips + tiled action; channel offsets in deconv 2 / deconv 1
@@ -559,7 +559,8 @@ static Dims make_dims(const VMConfig& c) {
     D.pimg = c.pred_img; D.p0 = c.pred_img / 4; D.p1 = c.pred_img / 2;
     D.pc1 = c.pc1; D.pc2 = c.pc2; D.ph = c.pred_hidden;
     D.pred_flat = c.pc2 * D.p0 * D.p0; D.pin_dim = c.d_model + 3;
-    D.img_px = c.img * c.img * 3; D.small_px = c.pred_img * c.pred_img * 3;
+    D.iw = c.img_w > 0 ? c.img_w : c.img;   // the frame's width (task 00064)
+    D.img_px = c.img * D.iw * 3; D.small_px = c.pred_img * c.pred_img * 3;
     D.ds = c.img / c.pred_img;
     D.coord = c.coord ? 1 : 0;
     D.in_ch = 3 + 2 * D.coord;
@@ -577,8 +578,8 @@ static Dims make_dims(const VMConfig& c) {
     D.rpx = D.rimg * D.rimg * 3;
     D.pih = c.pi_hidden > 0 ? c.pi_hidden : 0;
     D.patch = c.patch > 0 ? c.patch : 0;
-    D.gp = D.patch ? c.img / D.patch : 0;
-    D.npch = D.gp * D.gp;
+    D.gp = D.patch ? D.iw / D.patch : 0;   // the grid's width
+    D.npch = D.patch ? c.img / D.patch * D.gp : 0;
     D.act = (D.patch && c.act_token) ? 1 : 0;
     D.ntok = D.patch ? D.npch + 3 + D.act : 1;
     D.uni = (D.patch && c.universal) ? 1 : 0;   // tokens: body, the patches, the move
@@ -1335,7 +1336,7 @@ static void uni_twohot(const float* v, int u, int V, int K, float* out) {
 
 static int uni_values(const Model* M, const SeqView& sv, int t, int k, float* v) {
     const Dims& D = M->D;
-    const int V = D.V, ps = D.patch, S = D.img;
+    const int V = D.V, ps = D.patch, S = D.iw;   // a frame's rows are its width
     for (int i = 0; i < V; i++) v[i] = 0.f;
     const int kind = M->uslot[k].kind, p = M->uslot[k].idx;
     if (kind == 2) {   // a summary token: no values, or its block box-averaged to one patch (task 00049)
@@ -2581,6 +2582,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[56] = c.band_cols;
     h[57] = c.band_win;
     h[58] = c.age_key;
+    h[59] = c.img_w;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2616,6 +2618,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.band_cols = h[56];
     c.band_win = h[57];
     c.age_key = h[58];
+    c.img_w = h[59];
 }
 
 // =====================================================================================

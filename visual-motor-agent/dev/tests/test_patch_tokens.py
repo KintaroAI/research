@@ -24,7 +24,7 @@ NT = (PATCH["img"] // PATCH["patch"]) ** 2 + 3
 def store_rollout(agent, T=16, N=3, seed=0, p_done=0.15):
     """Fill a rollout with random experience through store() (patch tokens do not act with the KV cache)."""
     rng = np.random.default_rng(seed)
-    S = agent.config["img"]
+    S, W = agent.config["img"], agent.config.get("img_w", 0) or agent.config["img"]
     ro = agent.new_rollout(T, N)
     keys = ("images", "drives", "prev_action", "prev_reward", "ep_start", "action", "logp", "value", "reward", "done",
             "next_images", "next_drives")
@@ -32,14 +32,14 @@ def store_rollout(agent, T=16, N=3, seed=0, p_done=0.15):
     es = np.ones(N, np.uint8)
     pa = np.zeros((N, 3), np.float32)
     pr = np.zeros(N, np.float32)
-    img = rng.integers(0, 256, (N, S, S, 3), dtype=np.uint8)
+    img = rng.integers(0, 256, (N, S, W, 3), dtype=np.uint8)
     drv = rng.random((N, 2), dtype=np.float32)
     for t in range(T):
         a = np.concatenate([rng.normal(0, 0.7, (N, 2)), rng.random((N, 1)) < 0.3], 1).astype(np.float32)
         ro.store(t, img, drv, pa, pr, es, a)
         reward = (rng.random(N) < 0.2).astype(np.float32)
         done = (rng.random(N) < p_done).astype(np.uint8)
-        nimg = rng.integers(0, 256, (N, S, S, 3), dtype=np.uint8)
+        nimg = rng.integers(0, 256, (N, S, W, 3), dtype=np.uint8)
         ndrv = rng.random((N, 2), dtype=np.float32)
         ro.outcome(t, reward, done, nimg, ndrv)
         zero = np.zeros(N, np.float32)

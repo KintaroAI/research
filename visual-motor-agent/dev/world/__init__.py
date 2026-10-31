@@ -21,8 +21,13 @@ def make_config(env: dict, **overrides):
         from .text_world import TextConfig
         return TextConfig(**dict(d, **overrides)).validate()
     d.pop("kind", None)
+    thought = d.pop("thought", None)
     from .circle_world import EnvConfig
-    return EnvConfig(**dict(d, **overrides))
+    cfg = EnvConfig(**dict(d, **overrides))
+    if thought is not None:   # task 00064: the world's frames with a thought field beside them
+        from .thought_world import ThoughtConfig
+        object.__setattr__(cfg, "thought", ThoughtConfig(**thought))
+    return cfg
 
 
 def make_world(num_envs: int, config, seed: int = 0):
@@ -31,7 +36,11 @@ def make_world(num_envs: int, config, seed: int = 0):
         from .text_world import TextWorld
         return TextWorld(num_envs, config, seed=seed)
     from .circle_world import CircleWorld
-    return CircleWorld(num_envs, config, seed=seed)
+    world = CircleWorld(num_envs, config, seed=seed)
+    if getattr(config, "thought", None) is not None:
+        from .thought_world import ThoughtWorld
+        return ThoughtWorld(num_envs, world, config.thought, seed=seed)
+    return world
 
 
 def __getattr__(name):

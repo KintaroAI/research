@@ -62,6 +62,7 @@ struct Dims {
                                 // outputs; channels per patch pixel (1 with gray, else 3)
     int nsum, nnot;             // summary tokens per step (tasks 00047, 00048; 0: none); tokens without a target
     int age;                    // the age key (task 00062): wpe holds keys read at attention, not a step embedding
+    int iw;                     // the frame's width (task 00064; img its height)
 };
 static const int ACT_CG = 8;   // act token: side of the coarse next frame it predicts (as vm_agent.cpp)
 
@@ -71,7 +72,8 @@ static bool make_dims(const VMConfig& c, Dims& D) {
     if (c.act_token && (!D.patch || c.pred_img % ACT_CG)) return false;
     if (D.patch) {   // patch tokens (vm-00010): residual frames; no inverse or latent dynamics (as vm_agent.cpp)
         if ((!c.pred_residual && !c.universal) || c.inv_hidden > 0 || c.dyn_hidden > 0 || c.img % D.patch) return false;
-        D.gp = c.img / D.patch; D.npch = D.gp * D.gp; D.ntok = D.npch + 3 + D.act; D.pdim = D.patch * D.patch * 3;
+        D.iw = c.img_w > 0 ? c.img_w : c.img;
+        D.gp = D.iw / D.patch; D.npch = c.img / D.patch * D.gp; D.ntok = D.npch + 3 + D.act; D.pdim = D.patch * D.patch * 3;
         D.uni = c.universal ? 1 : 0;
         if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = vm_uni_nt(&c); }
         D.nsum = D.uni ? vm_uni_nsum(&c) : 0; D.nnot = D.uni ? vm_uni_untargeted(&c) : 0;
@@ -81,8 +83,8 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         D.ch = (D.uni && c.gray) ? 1 : 3;
         D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
         D.ib = D.uni ? c.in_bins : 0; D.VI = D.ib ? D.V * D.nbin : D.V;
-        if (c.pred_img % D.gp || c.d_model % c.n_head) return false;
-        D.cell = c.pred_img / D.gp; D.cpx = D.cell * D.cell * 3;
+        if (c.pred_img % (c.img / D.patch) || c.d_model % c.n_head) return false;
+        D.cell = c.pred_img / (c.img / D.patch); D.cpx = D.cell * D.cell * 3;
         D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
         D.h1 = c.img / 2; D.h2 = c.img / 4; D.h3 = c.img / 8; D.enc_flat = c.c3 * D.h3 * D.h3;
         D.feat = c.feat; D.d = c.d_model; D.L = c.n_layer; D.nh = c.n_head; D.hs = c.d_model / c.n_head;
@@ -93,7 +95,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         D.pih = c.pi_hidden > 0 ? c.pi_hidden : 0; D.ih = 0; D.dh = 0; D.rimg = c.pred_img / 2; D.rpx = 0;
         return true;
     }
-    D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1;
+    D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1; D.iw = c.img;
     D.uni = D.V = D.nbin = D.OV = 0; D.ch = 3; D.nsum = D.nnot = 0; D.age = 0;
     if (c.universal || c.gray) return false;
     if (!c.coord || !c.pred_residual || !c.pred_skip) return false;
@@ -1337,11 +1339,11 @@ static void alloc_batch(Model* M, int B) {
         cudaFree(M->img); cudaFree(M->ns); cudaFree(M->cs); cudaFree(M->nfull); cudaFree(M->start); cudaFree(M->pos); cudaFree(M->ivalid);
         cudaFree(M->drv); cudaFree(M->pa); cudaFree(M->pr); cudaFree(M->act); cudaFree(M->ndrv);
         cudaFree(M->iimg); cudaFree(M->idrv);
-        AB_(&M->iimg, (size_t)B * D.img * D.img * 3); AB_(&M->idrv, B * 2 * sizeof(float));
-        AB_(&M->img, (size_t)B * D.img * D.img * 3);
+        AB_(&M->iimg, (size_t)B * D.img * D.iw * 3); AB_(&M->idrv, B * 2 * sizeof(float));
+        AB_(&M->img, (size_t)B * D.img * D.iw * 3);
         AB_(&M->ns, (size_t)B * D.small_px);
         AB_(&M->cs, (size_t)B * D.small_px);
-        AB_(&M->nfull, (size_t)B * D.img * D.img * 3);
+        AB_(&M->nfull, (size_t)B * D.img * D.iw * 3);
         AB_(&M->start, B * sizeof(int)); AB_(&M->pos, B * sizeof(int)); AB_(&M->ivalid, B * sizeof(int));
         AB_(&M->drv, B * 2 * sizeof(float)); AB_(&M->pa, B * 3 * sizeof(float));
         AB_(&M->pr, B * sizeof(float)); AB_(&M->act, B * 3 * sizeof(float));
@@ -1471,7 +1473,7 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
         CK(cudaMemcpy(M->tstart, ts.data(), Bx * sizeof(int), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(M->tend, te.data(), Bx * sizeof(int), cudaMemcpyHostToDevice));
     }
-    CK(cudaMemcpy(M->img, images, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->img, images, (size_t)B * D.img * D.iw * 3, cudaMemcpyHostToDevice));
     if (!same) {
         CK(cudaMemcpy(M->start, start.data(), B * sizeof(int), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(M->pos, pos.data(), B * sizeof(int), cudaMemcpyHostToDevice));
@@ -1499,7 +1501,7 @@ int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, co
     const int B = M->B;
     if (D.uni || !next_small) {   // the universal model's targets come from the window and the next drives
     } else if (next_full) {   // full-size next frames: downsampled here
-        CK(cudaMemcpy(M->nfull, next_small, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(M->nfull, next_small, (size_t)B * D.img * D.iw * 3, cudaMemcpyHostToDevice));
         k_downsample<<<GRID((long)B * D.small_px)>>>(M->nfull, M->ns, B, D.img);
     } else {
         CK(cudaMemcpy(M->ns, next_small, (size_t)B * D.small_px, cudaMemcpyHostToDevice));
@@ -1514,7 +1516,7 @@ int vmc_set_uni_inputs(void* h, int S, const uint8_t* images, const float* drive
     const Dims& D = M->D;
     if (!D.uni || !M->B || S != M->S || !images || !drives) return -1;
     const int B = M->B;
-    CK(cudaMemcpy(M->iimg, images, (size_t)B * D.img * D.img * 3, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->iimg, images, (size_t)B * D.img * D.iw * 3, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->idrv, drives, B * 2 * sizeof(float), cudaMemcpyHostToDevice));
     M->has_in = true;
     return 0;
@@ -1745,7 +1747,7 @@ __device__ inline int uni_used_(int k, int V, const int* sl) {
     return kind == 0 ? 2 : (kind == 3 ? 3 : (kind == 2 ? (sl[UNI_SLOT * k + 4] ? V : 0) : V));
 }
 __device__ inline float uni_value_(const uint8_t* img, const float* drv, const float* act, long b, int k, int j, int nt,
-                                   int V, int S, int ps, int gp, int ch, const int* sl) {
+                                   int V, int S, int ps, int gp, int ch, const int* sl, int W) {
     const int* e = sl + UNI_SLOT * k;
     const int kind = e[0], p = e[1];
     if (kind == 2) {   // a summary: its block box-averaged to one patch (task 00049), or no values
@@ -1754,7 +1756,7 @@ __device__ inline float uni_value_(const uint8_t* img, const float* drv, const f
         const int c = j % ch, x = (j / ch) % ps, y = j / (ch * ps), y0 = e[2] + y * fy, x0 = e[3] + x * fx;
         float a = 0.f;
         for (int i = 0; i < fy; i++)
-            for (int q = 0; q < fx; q++) a += img[((b * S + y0 + i) * S + x0 + q) * 3 + c];
+            for (int q = 0; q < fx; q++) a += img[((b * S + y0 + i) * W + x0 + q) * 3 + c];
         return a / (255.0f * fy * fx);
     }
     if (k == 0) return j < 2 ? drv[b * 2 + j] : 0.f;
@@ -1763,21 +1765,21 @@ __device__ inline float uni_value_(const uint8_t* img, const float* drv, const f
         return j == 2 ? (act[b * 3 + 2] > 0.5f ? 1.f : 0.f) : 0.f;
     }
     const int c = j % ch, x = (j / ch) % ps, y = j / (ch * ps), py = (p / gp) * ps, px = (p % gp) * ps;
-    return img[((b * S + py + y) * S + px + x) * 3 + c] / 255.0f;
+    return img[((b * S + py + y) * W + px + x) * 3 + c] / 255.0f;
 }
 // in [B*nt, V]: the centred inputs (unused 0), from iimg / idrv; tgt [B*nt, V]: the next token's values (the move:
 // the next drives), from img / drv. The two differ only with self-forcing (task 00039).
 __global__ void k_uni_tokens(const uint8_t* iimg, const float* idrv, const uint8_t* img, const float* drv,
                              const float* act, const float* ndrv, float* in, float* tgt, int B, int nt, int V, int S,
-                             int ps, int gp, int ch, const int* sl) {
+                             int ps, int gp, int ch, const int* sl, int W) {
     const long n = (long)B * nt * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V, k = (i / V) % nt;
         const long b = i / ((long)V * nt);
-        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch, sl);
+        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch, sl, W);
         in[i] = j < uni_used_(k, V, sl) ? v - 0.5f : 0.f;
         if (!tgt) continue;
-        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch, sl);
+        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch, sl, W);
         else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : 0.f;
     }
 }
@@ -2109,7 +2111,7 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
 #endif
     k_uni_tokens<<<GRID((long)rows * V)>>>(M->has_in ? M->iimg : M->img, M->has_in ? M->idrv : M->drv, M->img, M->drv,
                                          M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img, D.patch, D.gp,
-                                         D.ch, M->uslot);
+                                         D.ch, M->uslot, D.iw);
     PROF(0);
     const float* uin = in;   // W_in's input: the centred values, or their two-hot bins (only the gradient needs them)
     if (D.ib && train) {
@@ -2586,17 +2588,17 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
         if (ep_start && ep_start[b]) M->r_start[b] = wp;
         lo[b] = std::max(M->r_start[b], ws) - ws;
     }
-    uint8_t* img = (uint8_t*)M->r_img.get(((size_t)N * S * S * 3 + 3) / 4);
+    uint8_t* img = (uint8_t*)M->r_img.get(((size_t)N * S * D.iw * 3 + 3) / 4);
     float* drv = M->r_drv.get((size_t)N * 2);
     float* act = M->r_act.get((size_t)N * 3);
     int* ilo = (int*)M->r_lo.get(N);
-    CK(cudaMemcpy(img, images, (size_t)N * S * S * 3, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(img, images, (size_t)N * S * D.iw * 3, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(drv, drives, (size_t)N * 2 * sizeof(float), cudaMemcpyHostToDevice));
     CK(cudaMemset(act, 0, (size_t)N * 3 * sizeof(float)));
     CK(cudaMemcpy(ilo, lo.data(), N * sizeof(int), cudaMemcpyHostToDevice));
     float* in = M->r_in.get((size_t)R * V);
     k_uni_tokens<<<GRID((long)R * V)>>>(img, drv, img, drv, act, nullptr, in, nullptr, N, nt, V, S, D.patch, D.gp, D.ch,
-                                        M->uslot);
+                                        M->uslot, D.iw);
     float* x = M->r_x.get((size_t)R * d);
     if (D.ib) k_uni_in<<<GRID((long)R * d)>>>(x, in, P + off[UIW], P + off[UIB], (long)R, V, K, d, nt, M->uslot);
     else gemm(M, false, true, R, d, D.VI, in, D.VI, P + off[UIW], D.VI, 0.f, x, d);
@@ -2660,7 +2662,7 @@ int vmc_encode(void* h, int n, const uint8_t* images, float* vf_out) {
     const Dims& D = M->D;
     if (n < 1 || D.patch) return -1;
     alloc_batch(M, n);
-    CK(cudaMemcpy(M->img, images, (size_t)n * D.img * D.img * 3, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(M->img, images, (size_t)n * D.img * D.iw * 3, cudaMemcpyHostToDevice));
     M->B = 0;   // the uploaded batch is gone
     encoder_fwd(M, n);
     CK(cudaMemcpy(vf_out, M->vf.p, (size_t)n * D.feat * sizeof(float), cudaMemcpyDeviceToHost));
