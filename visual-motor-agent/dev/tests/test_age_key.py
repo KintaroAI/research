@@ -102,7 +102,8 @@ def test_cpu_loss_and_grads_match_reference(cfg):
 @pytest.mark.skipif(not HAVE_GPU, reason="needs libvmcuda.so and a GPU")
 @pytest.mark.parametrize("cfg", CFGS, ids=IDS)
 def test_gpu_forward_matches_cpu(cfg):
-    img, drv, act, es = batch(seed=5)
+    img, drv, act, es = batch(seed=5, T=cfg["ctx"])                          # the whole window: every age
+    es[1, 3] = 1
     agent = agent_lib.Agent(cfg, seed=2)
     m = cuda_lib.CudaModel(agent)
     a = agent.forward_uni(img, drv, act, es, values=True, move_probs=True)

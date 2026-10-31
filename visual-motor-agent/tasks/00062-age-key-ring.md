@@ -51,3 +51,24 @@
 ## After: speed
 
 - Profile a tick (acting, world, memory, update) and optimize what dominates.
+
+## Speed
+
+Profile of QN (four pieces) alone on the 3090 (`online.profile`, `VM_PROF` builds), per piece:
+
+| | before | after |
+|---|---|---|
+| full window pass | 0.91 ms | 0.80 ms |
+| ring step | 0.40 ms | 0.32 ms |
+| 16 candidates | 0.33 ms | 0.33 ms |
+| the ring's move | 0.27 ms | 0.27 ms |
+| update, 8 windows | 4.2 ms | **3.45 ms** |
+
+- An update is ~70% of a tick. **Its time goes with the number of GPU calls (~33 µs each), not with FLOPs:** cutting the
+  attention GEMMs at the window's middle saved 25% of the arithmetic and doubled their calls, and took 4.1 ms to 4.7.
+- What worked: one batched GEMM across heads and windows (`gemm_heads`, 48 calls to 12: 4.1 ms to 3.45); the age key
+  folded into the softmax kernels instead of extra GEMMs and kernels; two-hot writes only of the non-zero bins (0.225
+  ms to 0.048).
+- What did not: a sparse `W_in` backward (5.7 ms: the dense GEMM takes 0.09); a sparse `W_in` forward in training
+  (slower than the GEMM; kept for acting only).
+- The ring saves ~2 ms of a ~21 ms tick while learning; it is an acting-only gain, as expected.

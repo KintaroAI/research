@@ -15,6 +15,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <algorithm>
+#include <array>
+#include <deque>
+#include <map>
 #include <vector>
 #include "vm_cuda.h"
 
@@ -73,6 +76,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         if (D.uni) { if (c.act_token || c.bins < 2) return false; D.ntok = vm_uni_nt(&c); }
         D.nsum = D.uni ? vm_uni_nsum(&c) : 0; D.nnot = D.uni ? vm_uni_untargeted(&c) : 0;
         D.age = D.uni ? c.age_key : 0;
+        if (D.age && c.ctx > 32) return false;   // the softmax kernels keep one lane per age
         if (!vm_attn_valid(&c)) return false;
         D.ch = (D.uni && c.gray) ? 1 : 3;
         D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
@@ -406,16 +410,37 @@ __global__ void k_attn_bwd(float* dqkv, const float* dout, const float* qkv, con
 // Long blocks (K > ATT_GEMM_K, patch tokens): the scores come from batched GEMMs. One warp per (row b, head):
 // softmax of the scaled scores in place over keys start[b]..end[b] (end = NULL: ..b) of its block, 0 elsewhere.
 #define ATT_GEMM_K 32
+// The age key (task 00062; E, ctx <= 32): a[age] = q . e[age], scaled, computed here, one lane per age, and added to the
+// scores of that age's keys; a row's step is (b % K) / nt.
 __global__ void k_attn_softmax(float* att, const int* start, const int* end, int B, int K, int nh,
-                               const unsigned char* allow, int nt) {
+                               const unsigned char* allow, int nt, const float* qkv, const float* E, int d, float scale,
+                               int ntok) {
     const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
     if (i >= B * nh) return;
     const int b = i / nh, blk = (b / K) * K, lo = start[b] - blk, hi = (end ? end[b] : b) - blk;
     const unsigned char* al = allow ? allow + (b % nt) * nt : nullptr;   // attention regions (as k_attn_fwd)
     float* w = att + (long)i * K;
+    float a[32];
+    const int st = (b - blk) / ntok;
+    if (E) {
+        const int h = i % nh, hs = d / nh;
+        const float* q = qkv + (long)b * 3 * d + h * hs;
+        for (int g = 0; g <= st; g++) {
+            float v = 0.f;
+            if (lane == g) {
+                const float* e = E + (long)g * d + h * hs;
+                for (int c = 0; c < hs; c++) v += q[c] * e[c];
+                v *= scale;
+            }
+            a[g] = __shfl_sync(0xffffffff, v, g);
+        }
+    }
     float mx = -1e30f;
     for (int c = lane; c < K; c += 32)
-        if (c >= lo && c <= hi && (!al || al[(blk + c) % nt])) mx = fmaxf(mx, w[c]);
+        if (c >= lo && c <= hi && (!al || al[(blk + c) % nt])) {
+            if (E) w[c] += a[st - c / ntok];
+            mx = fmaxf(mx, w[c]);
+        }
     for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
     float sum = 0.f;
     for (int c = lane; c < K; c += 32) {
@@ -427,8 +452,10 @@ __global__ void k_attn_softmax(float* att, const int* start, const int* end, int
     const float inv = 1.0f / sum;
     for (int c = lane; c < K; c += 32) w[c] *= inv;
 }
-// dS = P * (dP - sum_c P dP) * scale, in place in dp ([b, h] rows of K, laid out as att)
-__global__ void k_attn_softmax_bwd(float* dp, const float* att, int B, int K, int nh, float scale) {
+// dS = P * (dP - sum_c P dP) * scale, in place in dp ([b, h] rows of K, laid out as att). The age key (Dg): dS summed by
+// age into Dg [(b nh + h) T + age].
+__global__ void k_attn_softmax_bwd(float* dp, const float* att, int B, int K, int nh, float scale, float* Dg, int nt,
+                                   int T) {
     const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
     if (i >= B * nh) return;
     const float* w = att + (long)i * K;
@@ -437,35 +464,36 @@ __global__ void k_attn_softmax_bwd(float* dp, const float* att, int B, int K, in
     for (int c = lane; c < K; c += 32) s += w[c] * g[c];
     for (int o = 16; o; o >>= 1) s += __shfl_xor_sync(0xffffffff, s, o);
     for (int c = lane; c < K; c += 32) g[c] = w[c] * (g[c] - s) * scale;
-}
-// The age key (task 00062). Row b's step within its block is (b % K) / nt, key c's c / nt, T = K / nt.
-// att [(b nh + h) K + c] += A [(b nh + h) T + age], A = Q E^T scaled, for the keys at or before the row's step
-__global__ void k_attn_age(float* att, const float* A, long n, int K, int nh, int nt, int T) {
-    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
-        const long r = i / K;
-        const int c = (int)(i % K), a = (int)((r / nh) % K) / nt - c / nt;
-        if (a >= 0) att[i] += A[r * T + a];
-    }
-}
-// Backward: Dg [(b nh + h) T + age] = the sum of dp [(b nh + h) K + c] over the keys of that age
-__global__ void k_attn_age_bin(float* Dg, const float* dp, long n, int K, int nh, int nt, int T) {
-    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
-        const long r = i / T;
-        const int a = (int)(i % T), s = (int)((r / nh) % K) / nt - a;
-        float v = 0.f;
-        if (s >= 0)
-            for (int c = s * nt; c < (s + 1) * nt; c++) v += dp[r * K + c];
-        Dg[i] = v;
+    if (!Dg) return;
+    const int st = ((i / nh) % K) / nt;
+    float a[32];
+    for (int t = 0; t < T; t++) a[t] = 0.f;
+    for (int c = lane; c < K; c += 32)
+        if (c / nt <= st) a[st - c / nt] += g[c];
+    for (int t = 0; t < T; t++) {
+        for (int o = 16; o; o >>= 1) a[t] += __shfl_xor_sync(0xffffffff, a[t], o);
+        if (lane == 0) Dg[(long)i * T + t] = a[t];
     }
 }
 // The ring (task 00062): the new step's R rows (body r / nt, token r % nt) against a window of Kw keys: the age scores
 // added, then softmax over keys lo[body] * nt .. cur * nt + token, 0 elsewhere. One warp per (row, head).
-__global__ void k_ring_softmax(float* att, const float* A, const int* lo, int R, int Kw, int nh, int nt, int T, int cur) {
+__global__ void k_ring_softmax(float* att, const float* q3, const float* E, const int* lo, int R, int Kw, int nh, int nt,
+                               int d, int cur, float scale) {
     const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
     if (i >= R * nh) return;
-    const int r = i / nh, c0 = lo[r / nt] * nt, c1 = cur * nt + r % nt;
+    const int r = i / nh, h = i % nh, hs = d / nh, c0 = lo[r / nt] * nt, c1 = cur * nt + r % nt;
     float* w = att + (long)i * Kw;
-    const float* a = A + (long)i * T;
+    float a[32];
+    const float* q = q3 + (long)r * 3 * d + h * hs;
+    for (int g = 0; g <= cur; g++) {   // q . e[age], one lane per age (ctx <= 32)
+        float v = 0.f;
+        if (lane == g) {
+            const float* e = E + (long)g * d + h * hs;
+            for (int c = 0; c < hs; c++) v += q[c] * e[c];
+            v *= scale;
+        }
+        a[g] = __shfl_sync(0xffffffff, v, g);
+    }
     float mx = -1e30f;
     for (int c = lane; c < Kw; c += 32)
         if (c >= c0 && c <= c1) { w[c] += a[cur - c / nt]; mx = fmaxf(mx, w[c]); }
@@ -1082,10 +1110,12 @@ struct Model {
     Buf u_hot, c_hot;                // bin-embedding input: the two-hot inputs of the batch and of the candidates
     Buf u_ce;                        // and each token's cross-entropy in the last update (S x T x ntok, its shape)
     Buf u_mode;                      // vmc_forward_uni_step's most probable values
-    Buf aage, dage;                  // the age key (task 00062): Q E^T per (row, head), and its gradient binned by age
+    Buf dage;                        // the age key (task 00062): the gradient at the scores, summed by age
+    std::map<std::array<long, 9>, const float* const*> hptr;   // gemm_heads' device arrays of pointers, by bases and strides
+    std::deque<Buf> hpool;
     // The ring (task 00062): r_kv [L, N, 2 ctx, nt, 3d], steps of a body in order, written at r_wp (the window: the last
     // ctx steps); r_img, r_drv, r_act the new step's inputs; r_* its activations
-    Buf r_kv, r_img, r_drv, r_act, r_in, r_hot, r_x, r_ln, r_lnm, r_lnr, r_q3, r_att, r_A, r_y, r_fch, r_fchg, r_z, r_lg,
+    Buf r_kv, r_img, r_drv, r_act, r_in, r_x, r_ln, r_lnm, r_lnr, r_q3, r_att, r_y, r_fch, r_fchg, r_z, r_lg,
         r_val, r_lo;
     int r_N = 0, r_wp = -1;
     std::vector<int> r_start;        // each body's first step in the buffer (after an episode start)
@@ -1124,6 +1154,62 @@ static void gemm_sb(Model* M, bool ta, bool tb, int m, int n, int k, float alpha
                                                         A, lda, sA, &beta, C, ldc, sC, batch);
     if (st != CUBLAS_STATUS_SUCCESS) die_("cublasSgemmStridedBatched (m x n x k)", (size_t)m * n * k, (int)st);
 }
+// gemm over the heads and windows in one call (task 00062): an update's time goes with its number of calls, so one call
+// for nh x ns problems instead of nh. The (h, w)-th problem is at A + h sAh + w sAw, likewise B and C. The device arrays
+// of pointers are built once per set of bases and strides.
+static void gemm_heads(Model* M, bool ta, bool tb, int m, int n, int k, float alpha, const float* A, int lda, long sAh,
+                       long sAw, const float* B, int ldb, long sBh, long sBw, float beta, float* C, int ldc, long sCh,
+                       long sCw, int nh, int ns) {
+    const std::array<long, 9> key{(long)A, (long)B, (long)C, sAh, sAw, sBh, sBw, sCh, (long)ns * nh * 1000000L + sCw};
+    auto it = M->hptr.find(key);
+    if (it == M->hptr.end()) {
+        const size_t N = (size_t)nh * ns;
+        std::vector<const float*> p(3 * N);
+        for (int w = 0; w < ns; w++)
+            for (int h = 0; h < nh; h++) {
+                const size_t i = (size_t)w * nh + h;
+                p[i] = A + h * sAh + w * sAw;
+                p[N + i] = B + h * sBh + w * sBw;
+                p[2 * N + i] = C + h * sCh + w * sCw;
+            }
+        M->hpool.emplace_back();
+        float* d = M->hpool.back().get(p.size() * sizeof(void*) / sizeof(float));
+        const cudaError_t e = cudaMemcpy(d, p.data(), p.size() * sizeof(void*), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) die_("the pointers of a batched gemm", p.size(), (int)e);
+        it = M->hptr.emplace(key, (const float* const*)d).first;
+    }
+    const size_t N = (size_t)nh * ns;
+    const float* const* a = it->second;
+    const cublasStatus_t st = cublasSgemmBatched(M->cb, tb ? CUBLAS_OP_T : CUBLAS_OP_N, ta ? CUBLAS_OP_T : CUBLAS_OP_N, n, m,
+                                                 k, &alpha, a + N, ldb, a, lda, &beta, (float* const*)(a + 2 * N), ldc, N);
+    if (st != CUBLAS_STATUS_SUCCESS) die_("cublasSgemmBatched (m x n x k)", (size_t)m * n * k, (int)st);
+}
+// Stage timing of a universal update (task 00062): built with -DVM_PROF, each PROF(i) waits for the GPU and adds the
+// time since the last one to stage i; vmc_prof_print prints the means. Off, it is nothing.
+#ifdef VM_PROF
+#include <chrono>
+static double prof_t[32], prof_last;
+static long prof_n;
+static double prof_now() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+#define PROF(i) do { cudaDeviceSynchronize(); const double t_ = prof_now(); prof_t[i] += t_ - prof_last; prof_last = t_; } while (0)
+#define PROFX(i) PROF(i)
+extern "C" void vmc_prof_print() {
+    static const char* n[] = {"tokens", "twohot", "W_in", "embed", "transformer fwd", "head", "loss", "head bwd",
+                              "transformer bwd", "W_in bwd", "embed bwd", "norm clip", "adamw"};
+    double all = 0;
+    for (int i = 0; i < 13; i++) all += prof_t[i];
+    for (int i = 0; i < 13; i++) printf("%-16s %7.3f ms  %5.1f%%\n", n[i], prof_t[i] / prof_n, 100 * prof_t[i] / all);
+    printf("all              %7.3f ms\n", all / prof_n);
+    static const char* x[] = {"ln1", "qkv", "attn (rest)", "ln2 fc proj", "scores", "age A", "age add", "softmax",
+                              "bwd dP dV", "softmax bwd", "bwd dQ dK", "age bwd", "bwd fc proj", "bwd attn end", "bwd qkv ln"};
+    for (int i = 0; i < 15; i++) printf("  %-14s %7.3f ms\n", x[i], prof_t[16 + i] / prof_n);
+}
+#else
+#define PROF(i)
+#define PROFX(i)
+#endif
 // Attention of B rows in blocks of K (row b of block s attends to rows start[b]..end[b] of it). Short blocks: one
 // thread per (row, head). Long blocks: per head, scores = Q K^T and Y = P V as GEMMs batched over the blocks, with a
 // masked softmax in between; att holds the weights of row b, head h at [(b nh + h) K + key - block start] as in
@@ -1137,23 +1223,14 @@ static void attention_fwd(Model* M, const float* qkv, float* att, float* y, cons
         return;
     }
     const float scale = 1.0f / sqrtf((float)hs);
-    for (int h = 0; h < nh; h++)
-        gemm_sb(M, false, true, K, K, hs, scale, qkv + h * hs, 3 * d, (long)K * 3 * d, qkv + d + h * hs, 3 * d,
-                (long)K * 3 * d, 0.f, att + (long)h * K, nh * K, (long)K * nh * K, ns);
-    if (D.age) {   // task 00062: A = Q E^T per head, one row of ages per (row, head)
-        const int nt = D.ntok, T = K / nt;
-        const float* E = M->P + M->off[WPE];
-        float* A = M->aage.get((size_t)B * nh * T);
-        for (int h = 0; h < nh; h++)
-            gemm_sb(M, false, true, B, T, hs, scale, qkv + h * hs, 3 * d, (long)B * 3 * d, E + h * hs, d, (long)T * d, 0.f,
-                    A + h * T, nh * T, (long)B * nh * T, 1);
-        k_attn_age<<<GRID((long)B * nh * K)>>>(att, A, (long)B * nh * K, K, nh, nt, T);
-    }
-    k_attn_softmax<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(att, start, end, B, K, nh, M->allow,
-                                                                          M->allow_nt);
-    for (int h = 0; h < nh; h++)
-        gemm_sb(M, false, false, K, hs, K, 1.f, att + (long)h * K, nh * K, (long)K * nh * K, qkv + 2 * d + h * hs,
-                3 * d, (long)K * 3 * d, 0.f, y + h * hs, d, (long)K * d, ns);
+    const long sq = (long)K * 3 * d, sa = (long)K * nh * K, sy = (long)K * d;
+    gemm_heads(M, false, true, K, K, hs, scale, qkv, 3 * d, hs, sq, qkv + d, 3 * d, hs, sq, 0.f, att, nh * K, K, sa, nh, ns);
+    PROFX(20);
+    k_attn_softmax<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(att, start, end, B, K, nh, M->allow, M->allow_nt,
+                                                                          qkv, D.age ? M->P + M->off[WPE] : nullptr, d,
+                                                                          scale, D.ntok);
+    PROFX(23);
+    gemm_heads(M, false, false, K, hs, K, 1.f, att, nh * K, K, sa, qkv + 2 * d, 3 * d, hs, sq, 0.f, y, d, hs, sy, nh, ns);
 }
 // Backward of attention_fwd: dqkv (zeroed first) from dy
 static void attention_bwd(Model* M, float* dqkv, const float* dy, const float* qkv, const float* att, const int* start,
@@ -1166,35 +1243,26 @@ static void attention_bwd(Model* M, float* dqkv, const float* dy, const float* q
         return;
     }
     float* dp = M->datt.get((size_t)B * nh * K);
-    const long sq = (long)K * 3 * d, sa = (long)K * nh * K;
-    for (int h = 0; h < nh; h++) {   // dP = dY V^T; dV = P^T dY
-        gemm_sb(M, false, true, K, K, hs, 1.f, dy + h * hs, d, (long)K * d, qkv + 2 * d + h * hs, 3 * d, sq, 0.f,
-                dp + (long)h * K, nh * K, sa, ns);
-        gemm_sb(M, true, false, K, hs, K, 1.f, att + (long)h * K, nh * K, sa, dy + h * hs, d, (long)K * d, 0.f,
-                dqkv + 2 * d + h * hs, 3 * d, sq, ns);
-    }
-    k_attn_softmax_bwd<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(dp, att, B, K, nh,
-                                                                            1.0f / sqrtf((float)hs));
-    for (int h = 0; h < nh; h++) {   // dQ = dS K; dK = dS^T Q
-        gemm_sb(M, false, false, K, hs, K, 1.f, dp + (long)h * K, nh * K, sa, qkv + d + h * hs, 3 * d, sq, 0.f,
-                dqkv + h * hs, 3 * d, sq, ns);
-        gemm_sb(M, true, false, K, hs, K, 1.f, dp + (long)h * K, nh * K, sa, qkv + h * hs, 3 * d, sq, 0.f,
-                dqkv + d + h * hs, 3 * d, sq, ns);
-    }
-    if (D.age) {   // task 00062: dS binned by age: dQ += Dg E; dE += Dg^T Q
-        const int nt = D.ntok, T = K / nt;
+    const long sq = (long)K * 3 * d, sa = (long)K * nh * K, sy = (long)K * d;
+    // dP = dY V^T; dV = P^T dY
+    gemm_heads(M, false, true, K, K, hs, 1.f, dy, d, hs, sy, qkv + 2 * d, 3 * d, hs, sq, 0.f, dp, nh * K, K, sa, nh, ns);
+    gemm_heads(M, true, false, K, hs, K, 1.f, att, nh * K, K, sa, dy, d, hs, sy, 0.f, dqkv + 2 * d, 3 * d, hs, sq, nh, ns);
+    PROFX(24);
+    const int T = K / D.ntok;
+    float* Dg = D.age ? M->dage.get((size_t)B * nh * T) : nullptr;
+    k_attn_softmax_bwd<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(dp, att, B, K, nh, 1.0f / sqrtf((float)hs),
+                                                                            Dg, D.ntok, T);
+    PROFX(25);
+    // dQ = dS K; dK = dS^T Q
+    gemm_heads(M, false, false, K, hs, K, 1.f, dp, nh * K, K, sa, qkv + d, 3 * d, hs, sq, 0.f, dqkv, 3 * d, hs, sq, nh, ns);
+    gemm_heads(M, true, false, K, hs, K, 1.f, dp, nh * K, K, sa, qkv, 3 * d, hs, sq, 0.f, dqkv + d, 3 * d, hs, sq, nh, ns);
+    PROFX(26);
+    if (D.age) {   // task 00062: dQ += Dg E; dE += Dg^T Q, the heads as a batch
         const float* E = M->P + M->off[WPE];
-        float* gE = M->G + M->off[WPE];
-        float* Dg = M->dage.get((size_t)B * nh * T);
-        k_attn_age_bin<<<GRID((long)B * nh * T)>>>(Dg, dp, (long)B * nh * T, K, nh, nt, T);
-        const long sD = (long)B * nh * T;
-        for (int h = 0; h < nh; h++) {
-            gemm_sb(M, false, false, B, hs, T, 1.f, Dg + h * T, nh * T, sD, E + h * hs, d, (long)T * d, 1.f,
-                    dqkv + h * hs, 3 * d, (long)B * 3 * d, 1);
-            gemm_sb(M, true, false, T, hs, B, 1.f, Dg + h * T, nh * T, sD, qkv + h * hs, 3 * d, (long)B * 3 * d, 1.f,
-                    gE + h * hs, d, (long)T * d, 1);
-        }
+        gemm_sb(M, false, false, B, hs, T, 1.f, Dg, nh * T, T, E, d, hs, 1.f, dqkv, 3 * d, hs, nh);
+        gemm_sb(M, true, false, T, hs, B, 1.f, Dg, nh * T, T, qkv, 3 * d, hs, 1.f, M->G + M->off[WPE], d, hs, nh);
     }
+    PROFX(27);
 }
 // out [T, OC] = inp [T, C] W^T (+ b, act); W [OC, C]
 static void linear(Model* M, float* out, const float* inp, const float* W, const float* b, int T, int C, int OC,
@@ -1549,8 +1617,11 @@ static void transformer_fwd(Model* M, int B, int K, const int* start, const int*
     for (int l = 0; l < L; l++) {
         const size_t bd = (size_t)l * B * d;
         k_ln_fwd<<<lnb, 256>>>(ln1 + bd, ln1m + l * B, ln1r + l * B, x, P + off[LN1W] + l * d, P + off[LN1B] + l * d, B, d);
+        PROFX(16);
         linear(M, qkv + bd * 3, ln1 + bd, P + off[QKVW] + (size_t)l * 3 * d * d, P + off[QKVB] + l * 3 * d, B, d, 3 * d, 0);
+        PROFX(17);
         attention_fwd(M, qkv + bd * 3, att + (size_t)l * B * D.nh * K, atty + bd, start, end, B, K);
+        PROFX(18);
         cudaMemcpyAsync(res1 + bd, x, sizeof(float) * B * d, cudaMemcpyDeviceToDevice);
         gemm(M, false, true, B, d, d, atty + bd, d, P + off[APW] + (size_t)l * d * d, d, 1.f, res1 + bd, d);
         k_bias_act<<<GRID((long)B * d)>>>(res1 + bd, P + off[APB] + l * d, B, d, 0);
@@ -1560,6 +1631,7 @@ static void transformer_fwd(Model* M, int B, int K, const int* start, const int*
         cudaMemcpyAsync(res2 + bd, res1 + bd, sizeof(float) * B * d, cudaMemcpyDeviceToDevice);
         gemm(M, false, true, B, d, D.dff, fchg + (size_t)l * B * D.dff, D.dff, P + off[FPW] + (size_t)l * d * D.dff, D.dff, 1.f, res2 + bd, d);
         k_bias_act<<<GRID((long)B * d)>>>(res2 + bd, P + off[FPB] + l * d, B, d, 0);
+        PROFX(19);
         x = res2 + bd;
     }
     k_ln_fwd<<<lnb, 256>>>(lnf, lnfm, lnfr, x, P + off[LNFW], P + off[LNFB], B, d);
@@ -1596,11 +1668,14 @@ static int transformer_bwd(Model* M, int B, int K, const int* start, const int* 
                                ln2m + l * B, ln2r + l * B, B, d);
         linear_bwd(M, dres, atty + bd, P + off[APW] + (size_t)l * d * d, B, d, d, datty, false,
                    G + off[APW] + (size_t)l * d * d, G + off[APB] + l * d);
+        PROFX(28);
         attention_bwd(M, dqkv, datty, qkv + bd * 3, att + (size_t)l * B * D.nh * K, start, end, B, K);
+        PROFX(29);
         linear_bwd(M, dqkv, ln1 + bd, P + off[QKVW] + (size_t)l * 3 * d * d, B, d, 3 * d, dln, false,
                    G + off[QKVW] + (size_t)l * 3 * d * d, G + off[QKVB] + l * 3 * d);
         k_ln_bwd<<<lnb, 256>>>(dres, G + off[LN1W] + l * d, G + off[LN1B] + l * d, dln, xl, P + off[LN1W] + l * d,
                                ln1m + l * B, ln1r + l * B, B, d);
+        PROFX(30);
     }
     return 0;
 }
@@ -1651,7 +1726,7 @@ __global__ void k_uni_tokens(const uint8_t* iimg, const float* idrv, const uint8
     }
 }
 // Bin-embedding input (task 00036): hot [rows, V*K] = each used value of in [rows, V] (centred) split two-hot over
-// the K bins, unused values and bins 0. Row r is token r % nt (cand: every row a move token, nt - 1).
+// the K bins, unused values and bins 0 (hot zeroed before it). Row r is token r % nt (cand: every row a move token, nt - 1).
 __global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int K, int cand, const int* sl) {
     const long n = rows * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
@@ -1659,13 +1734,32 @@ __global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int
         const long r = i / V;
         const int k = cand ? nt - 1 : (int)(r % nt);
         float* o = hot + i * K;
-        for (int b = 0; b < K; b++) o[b] = 0.f;
         if (j >= uni_used_(k, V, sl)) continue;
         const float p = fminf(fmaxf(in[i] + 0.5f, 0.f), 1.f) * (K - 1);
         const int lo = min((int)floorf(p), K - 2);
         const float w = p - lo;
         o[lo] = 1.f - w;
         o[lo + 1] = w;
+    }
+}
+// The bin-embedding input without a dense two-hot array (task 00062): only each value's two bins are read. x [rows, d] =
+// the two-hot W_in map of in [rows, V] (centred; unused values 0) + bias; W [d, V * K].
+__global__ void k_uni_in(float* x, const float* in, const float* W, const float* bias, long rows, int V, int K, int d,
+                         int nt, const int* sl) {
+    const long n = rows * d;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const long r = i / d;
+        const int o = (int)(i % d), used = uni_used_((int)(r % nt), V, sl);
+        const float* w = W + (long)o * V * K;
+        const float* v = in + r * V;
+        float s = bias[o];
+        for (int j = 0; j < used; j++) {
+            const float p = fminf(fmaxf(v[j] + 0.5f, 0.f), 1.f) * (K - 1);
+            const int lo = min((int)floorf(p), K - 2);
+            const float f = p - lo;
+            s += w[j * K + lo] * (1.f - f) + w[j * K + lo + 1] * f;
+        }
+        x[i] = s;
     }
 }
 // xin [B*nt, d] += slot[k] + wpe[pos[b]] (back: their gradients from x = dres, atomics)
@@ -1954,19 +2048,29 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     float* in = M->u_in.get((size_t)rows * V);
     float* tgt = M->u_tgt.get((size_t)rows * V);
     float* xin = M->xin.get((size_t)rows * d);
+#ifdef VM_PROF
+    if (train) { cudaDeviceSynchronize(); prof_last = prof_now(); prof_n++; }
+#endif
     k_uni_tokens<<<GRID((long)rows * V)>>>(M->has_in ? M->iimg : M->img, M->has_in ? M->idrv : M->drv, M->img, M->drv,
                                          M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img, D.patch, D.gp,
                                          D.ch, M->uslot);
-    const float* uin = in;   // W_in's input: the centred values, or their two-hot bins
-    if (D.ib) {
+    PROF(0);
+    const float* uin = in;   // W_in's input: the centred values, or their two-hot bins (only the gradient needs them)
+    if (D.ib && train) {
         float* hot = M->u_hot.get((size_t)rows * D.VI);
+        CK(cudaMemsetAsync(hot, 0, (size_t)rows * D.VI * sizeof(float)));
         k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, K, 0, M->uslot);
         uin = hot;
     }
-    linear(M, xin, uin, P + off[UIW], P + off[UIB], rows, D.VI, d, 0);
+    PROF(1);
+    if (D.ib && !train) k_uni_in<<<GRID((long)rows * d)>>>(xin, in, P + off[UIW], P + off[UIB], (long)rows, V, K, d, nt, M->uslot);
+    else linear(M, xin, uin, P + off[UIW], P + off[UIB], rows, D.VI, d, 0);
+    PROF(2);
     k_uni_embed<<<GRID((long)rows * d)>>>(xin, P + off[USL], D.age ? nullptr : P + off[WPE], M->pos, B, nt, d, 0, nullptr,
                                           nullptr);
+    PROF(3);
     transformer_fwd(M, rows, KT, M->tstart, M->tend);
+    PROF(4);
     float* lnf = M->lnf.p;
     if (!train && !all) {
         float* z2 = M->zm.get((size_t)B * 2 * d);
@@ -1979,6 +2083,7 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     }
     float* lg = M->u_log.get((size_t)rows * D.OV);
     linear(M, lg, lnf, P + off[UOW], P + off[UOB], rows, d, D.OV, 0);
+    PROF(5);
     if (!train) {
         k_uni_probs<<<GRID((long)rows * V)>>>(lg, M->u_val.get((size_t)rows * V), (long)rows * V, K);
         CK(cudaGetLastError());
@@ -1991,13 +2096,18 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
                                            M->u_ce.get(rows), M->uslot);   // the mean over the tokens with a target
     M->ce_S = M->S;
     M->ce_T = T;
+    PROF(6);
     float* dz = M->dz.get((size_t)rows * d);
     linear_bwd(M, lg, lnf, P + off[UOW], rows, d, D.OV, dz, false, G + off[UOW], G + off[UOB]);
+    PROF(7);
     if (transformer_bwd(M, rows, KT, M->tstart, M->tend)) return -1;
+    PROF(8);
     float* dres = M->dres.p;
     linear_bwd(M, dres, uin, P + off[UIW], rows, D.VI, d, nullptr, false, G + off[UIW], G + off[UIB]);
+    PROF(9);
     k_uni_embed<<<GRID((long)rows * d)>>>(dres, nullptr, nullptr, M->pos, B, nt, d, 1, G + off[USL],
                                           D.age ? nullptr : G + off[WPE]);
+    PROF(10);
     CK(cudaGetLastError());
     return 0;
 }
@@ -2341,6 +2451,7 @@ static int uni_cand_core(Model* M, int Mc, const float* cand, float* hunger, boo
     const float* cuin = cin;
     if (D.ib) {
         float* hot = M->c_hot.get((size_t)R * D.VI);
+        CK(cudaMemsetAsync(hot, 0, (size_t)R * D.VI * sizeof(float)));
         k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.nbin, 1, M->uslot);
         cuin = hot;
     }
@@ -2431,21 +2542,15 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
     float* in = M->r_in.get((size_t)R * V);
     k_uni_tokens<<<GRID((long)R * V)>>>(img, drv, img, drv, act, nullptr, in, nullptr, N, nt, V, S, D.patch, D.gp, D.ch,
                                         M->uslot);
-    const float* uin = in;
-    if (D.ib) {
-        float* hot = M->r_hot.get((size_t)R * D.VI);
-        k_uni_twohot<<<GRID((long)R * V)>>>(in, hot, R, nt, V, K, 0, M->uslot);
-        uin = hot;
-    }
     float* x = M->r_x.get((size_t)R * d);
-    linear(M, x, uin, P + off[UIW], P + off[UIB], R, D.VI, d, 0);
+    if (D.ib) k_uni_in<<<GRID((long)R * d)>>>(x, in, P + off[UIW], P + off[UIB], (long)R, V, K, d, nt, M->uslot);
+    else linear(M, x, in, P + off[UIW], P + off[UIB], R, D.VI, d, 0);
     k_uni_embed<<<GRID((long)R * d)>>>(x, P + off[USL], nullptr, nullptr, N, nt, d, 0, nullptr, nullptr);
     float* ln = M->r_ln.get((size_t)R * d);
     float* lnm = M->r_lnm.get(R);
     float* lnr = M->r_lnr.get(R);
     float* q3 = M->r_q3.get((size_t)R * d3);
     float* att = M->r_att.get((size_t)R * nh * Kw);
-    float* A = M->r_A.get((size_t)R * nh * T);
     float* y = M->r_y.get((size_t)R * d);
     float* res = M->c_res.get((size_t)R * d);
     float* fch = M->r_fch.get((size_t)R * D.dff);
@@ -2461,16 +2566,11 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
         CK(cudaMemcpy2DAsync(base + (long)wp * nt * d3, (size_t)sk * sizeof(float), q3, (size_t)sq * sizeof(float),
                              (size_t)sq * sizeof(float), N, cudaMemcpyDeviceToDevice));
         const float* win = base + (long)ws * nt * d3;
-        for (int a = 0; a < nh; a++) {
-            gemm_sb(M, false, true, nt, Kw, hs, scale, q3 + a * hs, 3 * d, sq, win + d + a * hs, 3 * d, sk, 0.f,
-                    att + (long)a * Kw, nh * Kw, sa, N);
-            gemm_sb(M, false, true, R, T, hs, scale, q3 + a * hs, 3 * d, (long)R * d3, E + a * hs, d, (long)T * d, 0.f,
-                    A + a * T, nh * T, (long)R * nh * T, 1);
-        }
-        k_ring_softmax<<<(unsigned)(((long)R * nh * 32 + 255) / 256), 256>>>(att, A, ilo, R, Kw, nh, nt, T, cur);
-        for (int a = 0; a < nh; a++)
-            gemm_sb(M, false, false, nt, hs, Kw, 1.f, att + (long)a * Kw, nh * Kw, sa, win + 2 * d + a * hs, 3 * d, sk, 0.f,
-                    y + a * hs, d, (long)nt * d, N);
+        gemm_heads(M, false, true, nt, Kw, hs, scale, q3, 3 * d, hs, sq, win + d, 3 * d, hs, sk, 0.f, att, nh * Kw, Kw, sa, nh,
+                   N);
+        k_ring_softmax<<<(unsigned)(((long)R * nh * 32 + 255) / 256), 256>>>(att, q3, E, ilo, R, Kw, nh, nt, d, cur, scale);
+        gemm_heads(M, false, false, nt, hs, Kw, 1.f, att, nh * Kw, Kw, sa, win + 2 * d, 3 * d, hs, sk, 0.f, y, d, hs,
+                   (long)nt * d, nh, N);
         cudaMemcpyAsync(res, x, sizeof(float) * R * d, cudaMemcpyDeviceToDevice);
         gemm(M, false, true, R, d, d, y, d, P + off[APW] + (size_t)l * d * d, d, 1.f, res, d);
         k_bias_act<<<GRID((long)R * d)>>>(res, P + off[APB] + l * d, R, d, 0);
@@ -2584,10 +2684,12 @@ int vmc_update(void* h, const PPOConfig* pcp) {
     const long h0 = M->off[PIW], h1 = M->off[VB] + M->sz[VB], p0 = M->off[PR1W], p1 = M->off[PEW];
     k_sqnorm<<<256, 256>>>(M->G, M->n_params, h0, h1, p0, p1, M->off[AX1W], M->acc + 5);
     k_clip<<<1, 1>>>(M->acc + 5, pc.max_grad_norm, pc.pi_own_clip, M->clip);
+    PROF(11);
     M->step++;
     const float bc1 = 1.0f - powf(pc.beta1, (float)M->step), bc2 = 1.0f - powf(pc.beta2, (float)M->step);
     k_adamw<<<GRID(M->n_params)>>>(M->P, M->G, M->m, M->v, M->n_params, pc.lr, pc.beta1, pc.beta2, pc.adam_eps,
                                    pc.weight_decay, bc1, bc2, M->clip, h0, h1);
+    PROF(12);
     CK(cudaGetLastError());
     return 0;
 }
