@@ -73,6 +73,19 @@ Profile of QN (four pieces) alone on the 3090 (`online.profile`, `VM_PROF` build
   (slower than the GEMM; kept for acting only).
 - The ring saves ~2 ms of a ~21 ms tick while learning; it is an acting-only gain, as expected.
 
+### After vm-00054
+
+- **Memory:** long-term memory 2.46 to 0.41 GB (no next frames, one channel for a gray model); a process's activations shared
+  by its models (978 to 550 MiB of GPU for four pieces).
+- **MPS** (restarted 2026-10-31): six lifetimes 174 to 405 model-ticks/s.
+- **Update:** 3.45 to 3.10 ms: the residual, its bias and the feed-forward bias folded into one kernel each; no memset where
+  the GEMMs write everything; the universal model's unused uploads dropped; the age key's query gradient in the softmax
+  kernel. A batched GEMM across heads for the age key was slower (0.53 ms) than kernels (0.31): GEMMs are for big matrices.
+- **The earlier "33 µs a call" was too simple.** Twelve kernel launches removed saved 0.12 ms: plain launches cost ~10 µs.
+  Most stages now run near the 3090's arithmetic limit (the feed-forward GEMMs at ~10 TFLOPs/s). Further speed has to come
+  from less arithmetic, or concurrency between lifetimes (MPS), not from merging calls. Batching pieces into one call
+  would gain less than the 2× estimated.
+
 ## Results
 
 Write-up: [`../00054-age-key-ring/README.md`](../00054-age-key-ring/README.md). Over the last 20k ticks: QN 43.5 food, 3.5
