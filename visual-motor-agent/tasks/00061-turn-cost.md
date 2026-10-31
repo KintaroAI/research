@@ -1,7 +1,7 @@
 # Task 00061: Turning Costs Hunger (experiment vm-00053)
 
 **Date:** 2026-10-30
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -34,3 +34,8 @@
   0.43 frozen).
 - **Measure:** food and poison per 1k ticks over 40k–60k, smoothness, mean hunger, and frozen aim.
 - Hypotheses: paths get smoother; food holds if the body keeps aiming; the risk is sailing past food.
+
+## Results
+
+Write-up: [`../00053-turn-cost/README.md`](../00053-turn-cost/README.md). Over the last 20k ticks: QG 42.8 food, 4.8 poison;
+QT2 31.7, 6.5, smoothness 0.71; QT4 38.9, 10.3, smoothness 0.91.

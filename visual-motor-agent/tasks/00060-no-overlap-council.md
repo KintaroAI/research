@@ -1,7 +1,7 @@
 # Task 00060: Circles That Never Overlap, and a Council of Pieces (experiment vm-00052)
 
 **Date:** 2026-10-30
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -45,3 +45,9 @@
 - **Measure:** food and poison per 1k ticks over 40k–60k; frozen aim, move size and `--touch`.
 - Hypotheses: no_overlap removes the same-tick touches, up to a quarter of the poison; council keeps most of the food
   with about a third of the poison, and may learn better or worse than frozen shows.
+
+## Results
+
+Write-up: [`../00052-no-overlap-council/README.md`](../00052-no-overlap-council/README.md). Over the last 20k ticks: QG 42.8
+food, 4.8 poison; QN 43.5, 3.5; QC 29.3, 1.9; QCN 34.9, 2.1. No overlap takes poison down 27% at no cost; council halves it
+again at 20-32% of the food, and its paths are twice as smooth.
