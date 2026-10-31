@@ -554,17 +554,20 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     held for that many steps and scored by the predicted hunger after the last (uni_lookahead). Returns the moves [N, 3]
     (dx, dy in [-1, 1], click 0 / 1), the share of bodies where the instinct overrode the first sample, and the mean
     predicted gain; per_body (task 00059): also each body's predicted next hunger after its move [N] (with the
-    instinct; without it NaN)."""
+    instinct; without it NaN) and the sharpness of its move prediction [N]: minus the entropy over the bins, dx plus
+    dy."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
     M = max(1, m)
     fast = m > 1 and horizon == 1 and hasattr(model, "uni_candidates")
-    cand, h = [], []
+    cand, h, sharp = [], [], []
     for i in range(0, N, UNI_CHUNK):   # at most UNI_CHUNK windows per forward pass (bounded memory)
         sl = slice(i, i + UNI_CHUNK)
         probs = model.forward_uni(img[sl], drv[sl], a0[sl], es[sl], values=False, move_probs=True)["move_probs"][:, -1]
         n = probs.shape[0]
+        if per_body:
+            sharp.append((probs[:, :2] * np.log(np.maximum(probs[:, :2], 1e-12))).sum((1, 2)))
         idx = np.minimum((np.cumsum(probs, -1)[:, None] < rng.random((n, M, 3, 1))).sum(-1), bins - 1)   # [n, M, 3]
         c = idx / (bins - 1)
         cc = np.stack([2 * c[..., 0] - 1, 2 * c[..., 1] - 1, (c[..., 2] > 0.5).astype(np.float64)], -1).astype(np.float32)
@@ -573,7 +576,7 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
             h.append(model.uni_candidates(cc))
     cand = np.concatenate(cand)
     if m <= 1:
-        return (cand[:, 0], 0.0, 0.0) + ((np.full(N, np.nan),) if per_body else ())
+        return (cand[:, 0], 0.0, 0.0) + ((np.full(N, np.nan), np.concatenate(sharp)) if per_body else ())
     if horizon > 1:
         h = uni_lookahead(model, img, drv, act, es, cand, horizon, jacobi, decode)
     elif fast:
@@ -591,7 +594,7 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     pick = np.where(h[:, 0] - h[np.arange(N), best] <= tol, 0, best)
     gain = h[:, 0] - h[np.arange(N), pick]
     out = cand[np.arange(N), pick], float((pick != 0).mean()), float(gain.mean())
-    return out + ((h[np.arange(N), pick],) if per_body else ())
+    return out + ((h[np.arange(N), pick], np.concatenate(sharp)) if per_body else ())
 
 
 def sample_moves(agent, out, rng):

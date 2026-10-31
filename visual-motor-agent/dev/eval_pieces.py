@@ -2,7 +2,8 @@
 act for --ticks ticks in --bodies copies of its world, without learning. Prints food and poison per 1k ticks; the size
 of the moves made; how well a move points at the nearest food (cosine, ego view: the cursor at the centre); with
 pieces, each piece's share of the wins by the quadrant the food is in, and with --rule random the same pieces with
-the winner drawn at random, so that the selection's own part shows. --rule council and veto score every piece's move
+the winner drawn at random, so that the selection's own part shows; how smooth the path is (the cosine of successive
+moves), and on what share of ticks the pieces' predicted hungers differ by more than 0.005. --rule council and veto score every piece's move
 with every piece and make the one with the lowest mean (council) or lowest worst (veto) predicted next hunger. --touch
 takes every poison touch apart: the hunger before it, the ticks since the last food against all ticks, food on the same
 tick, whether the piece that made the move foresaw the rise, whether another piece did, and whether another piece's
@@ -77,7 +78,8 @@ def run(path, ticks, bodies, rule, seed, touch=False):
     obs = env.observe()
     hist, es = [], np.ones(bodies, np.uint8)
     food = poison = 0
-    size, cos_near, cos_all = [], [], []
+    size, cos_near, cos_all, smooth = [], [], [], []
+    split = 0
     won = np.zeros((4, max(S, 4)))
     near = 16.0
     since = np.full(bodies, 10 ** 6)                         # ticks since each body's last food
@@ -91,11 +93,15 @@ def run(path, ticks, bodies, rule, seed, touch=False):
                          on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True)
                  for m in models]
         hunger = np.stack([p[3] for p in props])              # [S, N]
+        split += (hunger.max(0) - hunger.min(0) > 0.005).sum()
         cand = np.stack([p[0] for p in props], 1)             # [N, S, 3]
         if cross:   # right after each piece's pass: its score of every piece's move, [scorer, N, mover]
             hc = np.stack([m.uni_candidates(cand) for m in models])
             np.testing.assert_allclose(hc[np.arange(S), :, np.arange(S)].T, hunger.T, atol=1e-4)   # its own score again
         a, w = pieces_move(models, props, use, rng)
+        if t:
+            smooth.append(cosine(a[:, :2].astype(np.float64), last[:, :2].astype(np.float64)).mean())
+        last = a
         h_before = obs["drives"][:, 0].copy()
         missed = np.stack([touches_poison(env, cand[:, k]) for k in range(S)], 1) if touch else None
         d = relative(env, env.target)
@@ -128,9 +134,10 @@ def run(path, ticks, bodies, rule, seed, touch=False):
         since[inf["success"]] = 0
         es = done.astype(np.uint8)
     n = ticks * bodies / 1000.0
-    print("%-14s %-6s food %5.1f poison %4.1f share %.2f  move size %.3f  cos to food %.3f (within %d px %.3f)" % (
-        os.path.basename(path), use, food / n, poison / n, food / max(food + poison, 1), np.mean(size), np.mean(cos_all),
-        near, np.mean(cos_near)), flush=True)
+    print("%-14s %-6s food %5.1f poison %4.1f share %.2f  move size %.3f  smooth %.3f  gain differs %.2f  cos to food "
+          "%.3f (within %d px %.3f)" % (os.path.basename(path), use, food / n, poison / n, food / max(food + poison, 1),
+                                        np.mean(size), np.mean(smooth), split / (ticks * bodies), np.mean(cos_all), near,
+                                        np.mean(cos_near)), flush=True)
     if S > 1 and use != "mean":
         print("  wins by food quadrant, food within %d px (rows TL TR BL BR, columns piece):" % near)
         print(np.array2string(won[:, :S] / np.maximum(won[:, :S].sum(1, keepdims=True), 1), precision=2, floatmode="fixed"))
@@ -145,7 +152,7 @@ def main():
     ap.add_argument("runs", nargs="+")
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
-    ap.add_argument("--rule", default="gain", help="pieces: mean, max, gain, random, council or veto")
+    ap.add_argument("--rule", default="gain", help="pieces: mean, max, gain, random, council, veto, sharp or gain_sharp")
     ap.add_argument("--touch", action="store_true", help="take every poison touch apart")
     ap.add_argument("--seed", type=int, default=1234)
     a = ap.parse_args()

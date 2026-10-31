@@ -120,18 +120,27 @@ def body_move(moves, rule="mean", hunger=None, rng=None):
     return m.astype(np.float32), won
 
 
+CLOSE = 0.005   # gain_sharp: predicted hungers this close are a tie (as online.instinct_tol)
+
+
 def pieces_move(models, props, rule, rng):
     """The body's move and who made it from the pieces' props (uni_act's, per_body), right after them: council and veto
     (task 00060) have every piece score every piece's move ([scorer, N, mover], only the move token computed; the GPU's
-    uni_candidates) and make the one with the lowest mean or lowest worst predicted next hunger; else body_move."""
+    uni_candidates) and make the one with the lowest mean or lowest worst predicted next hunger. sharp: the piece with
+    the sharpest move prediction makes its move; gain_sharp: the sharpest among those within CLOSE of the lowest
+    predicted hunger, so gain decides when something is at stake. Else body_move."""
     moves = [p[0] for p in props]
     hunger = np.stack([p[3] for p in props])
-    if rule not in ("council", "veto"):
+    if rule not in ("council", "veto", "sharp", "gain_sharp"):
         return body_move(moves, rule, hunger, rng)
     N = len(moves[0])
     cand = np.stack(moves, 1)
-    scores = np.stack([m.uni_candidates(cand) for m in models])
-    w = (scores.mean(0) if rule == "council" else scores.max(0)).argmin(1)
+    if rule in ("sharp", "gain_sharp"):
+        sharp = np.stack([p[4] for p in props])                               # [S, N]
+        w = (sharp if rule == "sharp" else np.where(hunger <= hunger.min(0) + CLOSE, sharp, -np.inf)).argmax(0)
+    else:
+        scores = np.stack([m.uni_candidates(cand) for m in models])
+        w = (scores.mean(0) if rule == "council" else scores.max(0)).argmin(1)
     m, _ = body_move(moves, "mean")                                           # the click: a majority
     m[:, :2] = cand[np.arange(N), w, :2]
     return m, np.stack([w, w], 1)

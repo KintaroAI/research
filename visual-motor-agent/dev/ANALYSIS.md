@@ -105,6 +105,18 @@ The two-hot cross-entropy (nats per letter) at the token that predicts each lett
 summary tokens, splits): their training losses are not comparable. Text lifetimes overfit after ~30k ticks, so compare
 at the best checkpoint, not only at 100k. In the normal text world (every patch a letter) it measures what `eval_predict.py`'s patch cross-entropy does.
 
+## 5b. Pieces of one body (`eval_pieces.py`, task 00059)
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_pieces.py RUN [RUN ...] --rule gain --touch
+```
+
+Frozen final checkpoints (a one-model run works too) in 16 worlds for 1,500 ticks: food, poison, move size, smoothness,
+aim at food within 16 pixels, wins by the food's quadrant. `--rule` swaps the rule on frozen weights (mean, max, gain,
+random, council, veto, sharp, gain_sharp). `--touch` takes each poison touch apart. Lifetime numbers come from each
+run's `metrics.jsonl`, over 40k-60k: `all_hits_per_1k`, `all_poison_per_1k`, per piece `prop_dx_pK`, `agree_pK`,
+`won_x_pK`.
+
 ## 6. Writing up
 
 The experiment directory holds only README.md and Makefile (the tag keeps the code). The README is the report: goal,

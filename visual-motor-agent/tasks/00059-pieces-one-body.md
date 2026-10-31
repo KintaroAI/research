@@ -1,7 +1,7 @@
 # Task 00059: Separate Transformers That Share One Body (experiment vm-00051)
 
 **Date:** 2026-10-30
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -62,32 +62,9 @@
 - Hypotheses: H, Q ≈ F in foraging (each piece sees the whole scene through the thumbnails; moves need coarse
   positions); QW ≈ Q (the scene is local). Division of labour: no prior; the mean rewards agreement.
 
-## Results so far
+## Results
 
-Mean of three seeds over 40k–60k ticks (food and poison per 1k ticks):
-
-| arm | food | poison | food share |
-|---|---|---|---|
-| F | 19.0 | 10.5 | 0.64 |
-| F64 | 19.6 | 6.1 | 0.76 |
-| H (mean) | 8.0 | 9.6 | 0.45 |
-| Q (mean) | 8.8 | 7.1 | 0.55 |
-| QM (max) | 27.6 | 22.0 | 0.56 |
-| QG (gain) | 42.8 | 4.8 | 0.90 |
-
-Frozen 60k checkpoints (`eval_pieces.py`, 16 bodies, 1,500 ticks, means of three seeds; aim: the cosine of the move
-made and the direction to food within 16 pixels):
-
-| arm | food | poison | move size | aim |
-|---|---|---|---|---|
-| F | 19.9 | 10.2 | 0.53 | 0.28 |
-| F64 | 19.4 | 5.3 | 0.53 | 0.34 |
-| QG, winner by gain | 43.0 | 4.7 | 0.69 | 0.63 |
-| QG, winner at random | 38.3 | 6.3 | 0.69 | 0.53 |
-
-- The rule feeds back into the proposals, each piece sampling from its prediction of the move made: the mean shrinks
-  them (Q 0.11–0.32, H 0.19–0.28), max drives them to the limit (1.00), gain leaves them at 0.63–0.75.
-- More candidates halve the poison and add no food. A piece drawn at random still aims far better than F or F64, so
-  most of QG's lead was built during learning, not by the selection at acting time. The piece whose quadrant holds the
-  food does not win more often than chance (21–26%). QR (a lifetime with a random winner) tests whether the competition
-  during learning is the cause.
+Write-up: [`../00051-pieces-one-body/README.md`](../00051-pieces-one-body/README.md). QG (quadrants, gain) makes 42.8 food
+and 4.8 poison per 1k over the last 20k ticks; F 19.0 and 10.5; F64 19.6 and 6.1; Q 8.8 and 7.1; H 8.0 and 9.6; QM 27.5 and
+21.9; QR 13.4 and 6.8. Frozen, QG with a random winner keeps 38.3 food, so the competition teaches during learning. The
+piece that moved foresaw ~1% of its 339 poison touches: the winner's curse, followed up in task 00060.
