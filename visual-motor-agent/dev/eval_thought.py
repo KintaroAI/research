@@ -99,7 +99,7 @@ def run(path, ticks, bodies, seed, shuffle, vid):
             w = hist + [dict(img=obs["image"], drv=obs["drives"], act=np.zeros((bodies, 3), np.float32),
                              es=done.astype(np.uint8))]
             s2 = lambda k: np.stack([x[k] for x in w], 1)   # noqa: E731
-            dream = thought_dream(models[-1], s2("img"), s2("drv"), s2("act"), s2("es"), on["thought_jacobi"])
+            dream = thought_dream(models[-1], s2("img"), s2("drv"), s2("act"), s2("es"), on["thought_jacobi"], on["thought_decode"])
         obs = dict(obs, image=env.think(dream))
         es = done.astype(np.uint8)
         food += int(inf["success"].sum())

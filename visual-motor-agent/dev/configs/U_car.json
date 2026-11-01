@@ -1,0 +1,50 @@
+{
+  "name": "U_car",
+  "description": "Task 00067: the default universal model, unchanged, as a small car in MuJoCo: one camera on its nose, food and poison boxes to touch, hunger as in the default world.",
+  "env": {
+    "kind": "car"
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "patch": 8,
+    "universal": 1,
+    "bins": 32,
+    "gray": 1,
+    "ctx": 8,
+    "in_bins": 1,
+    "uni_pyr": 3,
+    "sum_thumb": 1,
+    "band_n": 4,
+    "band_cols": 2,
+    "age_key": 1
+  },
+  "online": {
+    "actor": "self",
+    "steps": 20000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_eps": 0.0,
+    "goal": 0,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "instinct_m": 16,
+    "instinct_tol": 0.005,
+    "device": "cuda",
+    "save_every": 5000,
+    "log_every": 1000,
+    "threads": 4,
+    "pieces": 1,
+    "piece_rule": "gain",
+    "ring": 1
+  }
+}

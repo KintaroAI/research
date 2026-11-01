@@ -20,6 +20,9 @@ def make_config(env: dict, **overrides):
     if d.get("kind", "circle") == "text":
         from .text_world import TextConfig
         return TextConfig(**dict(d, **overrides)).validate()
+    if d.get("kind", "circle") == "car":   # task 00067: a car in MuJoCo
+        from .car_world import CarConfig
+        return CarConfig(**dict(d, **overrides)).validate()
     d.pop("kind", None)
     thought = d.pop("thought", None)
     cue = d.pop("cue", None)
@@ -39,6 +42,9 @@ def make_world(num_envs: int, config, seed: int = 0):
     if getattr(config, "kind", "circle") == "text":
         from .text_world import TextWorld
         return TextWorld(num_envs, config, seed=seed)
+    if getattr(config, "kind", "circle") == "car":
+        from .car_world import CarWorld
+        return CarWorld(num_envs, config, seed=seed)
     from .circle_world import CircleWorld
     if getattr(config, "cue", None) is not None:
         from .cue_world import CueWorld
