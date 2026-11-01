@@ -74,8 +74,9 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     `vmc_free` again (that list leaked 14 GB in the test file).
   - **The universal model** (task 00023, `../ARCHITECTURE.md`; as built, with every parameter and buffer: `../ARCHITECTURE_REVIEW.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
-    channel per patch (task 00024). Start from `configs/U_universal.json` (grayscale world, checkerboard poison, dots,
-    the instinct; `lifetime.py`). Its forward is `Agent.forward_uni` / `CudaModel.forward_uni`; `vm_forward` refuses it.
+    channel per patch (task 00024). Start from `configs/U_default.json` (vm-00054's QNA, the default since 2026-10-31: four
+    quadrant transformers, gain, age key, ring, the egocentric touch world without overlaps; `lifetime.py`);
+    `configs/U_universal.json` is the one-model form (grayscale world, checkerboard poison, dots, the instinct). Its forward is `Agent.forward_uni` / `CudaModel.forward_uni`; `vm_forward` refuses it.
     `online.click_bias` is skipped for models without a policy head (it used to write into the next parameter).
     Surprise gating (task 00028): `online.store_surprise` with the universal model on the GPU; a step's surprise is its
     largest token cross-entropy relative to that slot's recent mean (`GatedMemory.note_tokens`, read one tick late from
