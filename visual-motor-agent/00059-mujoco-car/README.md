@@ -1,7 +1,7 @@
 # vm-00059: A Small Car in MuJoCo
 
 **Date:** 2026-10-31
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00059` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00059/`
 **Task plan:** [`../tasks/00067-mujoco-car.md`](../tasks/00067-mujoco-car.md)

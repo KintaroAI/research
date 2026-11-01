@@ -1,7 +1,7 @@
 # vm-00058: Bigger and Smaller Transformers
 
 **Date:** 2026-10-31
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00058` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00058/`
 **Task plan:** [`../tasks/00066-model-size.md`](../tasks/00066-model-size.md)

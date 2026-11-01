@@ -1,7 +1,7 @@
 # vm-00057: The Delayed-Cue World
 
 **Date:** 2026-10-31
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00057` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00057/`
 **Task plan:** [`../tasks/00065-delayed-cue.md`](../tasks/00065-delayed-cue.md)
