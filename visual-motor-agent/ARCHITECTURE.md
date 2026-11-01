@@ -303,3 +303,27 @@ every tick:
 | 20% babbling outside the model | the model's own samples | a rule outside the model |
 | act token (a query trained by auxiliary losses) | removed; the policy is the patch_64 → move prediction | it held contact but not the direction (vm-00016), and was a special token |
 | memory gated by hunger relief and surprise | keep everything; later, the model's own surprise | relief gating was specific to hunger |
+
+## 13. Beyond Prediction: the Research Plan (2026-11-01)
+
+The model predicts well, in pixels, text and a camera. What it does not yet show is anything a reactive predictor cannot do: its context is 8 ticks, its long-term memory is only replayed in training and never recalled while acting, and a rule outside the network chooses its moves. Foraging hardly tests any of this, so better food numbers may say little. Further work should aim at what is missing, in this order. This is a judgment, not a result.
+
+| challenge | what is missing | the question | first step |
+|---|---|---|---|
+| **1. One set of weights, many worlds** | "universal" so far means the same code, not the same mind | Can one life pass through circles, text and sound and come back without having forgotten? | swap worlds within a life (the worlds exist) |
+| **2. Learning from one event** | a skill takes tens of thousands of ticks | Can something seen once change behaviour 1,000 ticks later? | a place or rule shown once, needed later |
+| **3. Abstraction over time** | the pyramid compresses space, nothing compresses time | Can the model predict beyond its window, at the level of events and not pixels? | a pyramid over ticks |
+| **4. Where goals come from** | a hand-written rule picks moves | Can the hunger rule give way to something general, such as making what happens match what is expected? | mimicry: task 00078, vm-00068, then the scrambled keyboard |
+| **5. Scale** | N log N attention is going well | Does quality hold when the world grows 10× and learning stays local? | continue vm-00050 onward |
+
+**Tests.** A ladder of tasks a reactive agent provably cannot solve, each with a blind control: the delayed cue (`env.cue`), then a rule that changes silently in mid-life, a place visited once and needed later, a two-step errand.
+
+**Abstraction lives in the weights** (the owner). There is no separate store for it: what the model knows about time is in its weights, shaped by the error it reduces. The limit is the error, not the place. Next-tick prediction rewards what changes by the next tick, and an event that matters 100 ticks later sends no gradient across a window of 8. Predicting several steps ahead widens this (self-forcing does, to 3 steps), but far pixels are unpredictable and blur. So a time pyramid is not an alternative to weights: it gives them a target at a longer scale, as a summary token gives one in space.
+
+**Length of a life.** At about 100 ms of lived time per tick (an assumption), 60k ticks is 100 minutes old. Some abilities may need far more experience. A 10M-tick life is about 35 hours alone on the 4090 with the default model, so it should be tried. Small models can mislead both ways: an idea may look dead at 1M parameters and live at scale, and a neat mechanism may not survive growth.
+
+**A baby's training** (the owner). A child who is never taught does not learn to speak. So grow the model with an outside trainer, without reinforcement: the trainer's words and answers are only more input, and prediction does the learning. Social teaching is not reward. Steps: a scripted trainer that names what the model is looking at (pixels and text in one world), then one that answers what the model says, later perhaps a real language model as the trainer. It meets challenge 1 (several kinds of input in one life) and challenge 4 (speaking, with the owner's point that input and output are different channels: task 00077).
+
+**Reflection is generation read back** (the owner). A language model's reasoning is one generator whose output returns as its input: a thought, then a thought about it. Dreaming into the future is the same operation, and so is saying a word out loud and hearing it. So reflection needs no new part, only the loop we already have. It can be tested: fill a gap, read the result back with what followed, fill it again, and see whether the second pass is better than the first. A small model may gain nothing from rereading: in a language model this skill was learned from a great deal of human reasoning.
+
+**What to memorize** (the owner). Grow the model until it understands what matters, then let it choose what to keep, by surprise and by its own judgment of whether something is worth keeping. Surprise alone is not enough: noise stays surprising for ever, and our world has moving dots that should test this. Candidates for the judgment, none of them a label: **learning progress** (keep what lowers future error, not what is merely high in error), whether replaying a chunk actually helped later prediction, and, once there is a trainer, what the trainer responds to. Learning also slows on what is already predicted (arm S of vm-00068).
