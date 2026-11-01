@@ -6,7 +6,8 @@ Usage (from visual-motor-agent/dev):
 --horizon / --decode override the run's own instinct (instinct_h, instinct_decode). --vs RUN2 also runs a second
 agent in the same worlds (same seeds) and writes compare.mp4: the two views side by side. A run of pieces
 (online.pieces, task 00059) plays all its pieces with its own online.piece_rule; the frame outlines the piece that made
-the move.
+the move, and acts on the key and value ring if the run did. --rule overrides the rule (a run made before the rule's
+behaviour changed: vm-00063's RA is rank_first). compare_video.py shows many runs at once.
 """
 import argparse
 import dataclasses
@@ -50,6 +51,8 @@ def run(args, path):
         ion["instinct_h"] = args.horizon
     if args.decode:
         ion["instinct_decode"] = args.decode
+    if getattr(args, "rule", ""):
+        ion["piece_rule"] = args.rule
     inst = (ion["instinct_m"], ion["instinct_tol"], ion["instinct_h"], ion["instinct_jacobi"], ion["instinct_decode"])
     goal = info["config"]["online"]["goal"]
     n = args.worlds
@@ -58,6 +61,10 @@ def run(args, path):
     rng = np.random.default_rng(0)
     L = agent.config["ctx"]
     hist, obs = [], env.observe()
+    ring = S > 1 and ion["ring"]
+    if ring:
+        for m_ in models:
+            m_.uni_ring_reset(n)
     prev_a = np.zeros((n, 3), np.float32)
     es = np.ones(n, np.uint8)
     rec = []    # per step, for world 0: the frame and cursor after the move, the click's kind, hunger
@@ -68,11 +75,15 @@ def run(args, path):
                    act=np.zeros((n, 3), np.float32))
         won = -1
         if S > 1:   # task 00059: every piece's move, the body's by the run's rule
-            st = lambda k: np.stack([w[k] for w in hist + [cur]], 1)   # noqa: E731
+            win = ([] if ring else hist) + [cur]
+            st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
             props = [uni_act(m_, st("img"), st("drv"), st("act").astype(np.float32), st("es"), agent.config["bins"], rng,
-                             *inst, per_body=True) for m_ in models]
-            a, w_ = pieces_move(models, props, ion["piece_rule"], rng)
+                             *inst, per_body=True, ring=ring) for m_ in models]
+            a, w_ = pieces_move(models, props, ion["piece_rule"], rng, lam=ion["piece_lambda"], temp=ion["piece_temp"])
             won = int(w_[0, 0])
+            if ring:
+                for m_ in models:
+                    m_.uni_ring_move(a)
         else:
             a = eval_moves(ev, hist + [cur], rng, inst)
         cur["act"] = a
@@ -287,6 +298,7 @@ def main():
     ap.add_argument("--title", default="")
     ap.add_argument("--horizon", type=int, default=0, help="override the run's instinct_h")
     ap.add_argument("--decode", default="", choices=["", "mean", "mode", "pair"], help="override instinct_decode")
+    ap.add_argument("--rule", default="", help="override the run's online.piece_rule")
     ap.add_argument("--vs", default="", help="a second run: compare.mp4 shows both in the same worlds")
     ap.add_argument("--vs-title", default="")
     ap.add_argument("-o", "--out", required=True)
