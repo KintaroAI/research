@@ -123,13 +123,15 @@ def body_move(moves, rule="mean", hunger=None, rng=None):
 CLOSE = 0.005   # gain_sharp: predicted hungers this close are a tie (as online.instinct_tol)
 
 
-def pieces_move(models, props, rule, rng, prev=None):
+def pieces_move(models, props, rule, rng, prev=None, lam=1.0, temp=0.01):
     """The body's move and who made it from the pieces' props (uni_act's, per_body), right after them: council and veto
     (task 00060) have every piece score every piece's move ([scorer, N, mover], only the move token computed; the GPU's
     uni_candidates) and make the one with the lowest mean or lowest worst predicted next hunger. sharp: the piece with
     the sharpest move prediction makes its move; gain_sharp: the sharpest among those within CLOSE of the lowest
     predicted hunger, so gain decides when something is at stake; gain_stay: as gain, but on a tie the piece that made
-    the last move (prev [N]) makes this one. Else body_move."""
+    the last move (prev [N]) makes this one. Task 00072: pessimism: as council, the lowest mean + lam x the scorers' spread (disagreement as a warning); rank:
+    every piece ranks every move, the lowest sum of ranks (ties at random, within a scorer and between sums; rank_first: a tie between sums goes to the lowest piece, a fixed convention, vm-00063); soft: the proposals' mean, weighted by softmin(predicted hunger / temp), from
+    the mean at a high temp to gain at a low one. Else body_move."""
     moves = [p[0] for p in props]
     hunger = np.stack([p[3] for p in props])
     N = len(moves[0])
@@ -141,7 +143,13 @@ def pieces_move(models, props, rule, rng, prev=None):
         m, _ = body_move(moves, "mean")
         m[:, :2] = np.stack(moves, 1)[np.arange(N), best, :2]
         return m, np.stack([best, best], 1)
-    if rule not in ("council", "veto", "sharp", "gain_sharp"):
+    if rule == "soft":
+        w = np.exp(-(hunger - hunger.min(0)) / temp)
+        w = (w / w.sum(0)).astype(np.float32)                                 # [S, N]
+        m, won = body_move(moves, "mean")
+        m[:, :2] = (w[:, :, None] * np.stack(moves)[:, :, :2]).sum(0)
+        return m, won
+    if rule not in ("council", "veto", "sharp", "gain_sharp", "pessimism", "rank", "rank_first"):
         return body_move(moves, rule, hunger, rng)
     cand = np.stack(moves, 1)
     if rule in ("sharp", "gain_sharp"):
@@ -149,7 +157,13 @@ def pieces_move(models, props, rule, rng, prev=None):
         w = (sharp if rule == "sharp" else np.where(hunger <= hunger.min(0) + CLOSE, sharp, -np.inf)).argmax(0)
     else:
         scores = np.stack([m.uni_candidates(cand) for m in models])
-        w = (scores.mean(0) if rule == "council" else scores.max(0)).argmin(1)
+        if rule in ("rank", "rank_first"):
+            ranks = (scores + 1e-9 * rng.random(scores.shape)).argsort(2).argsort(2).sum(0)
+            w = (ranks if rule == "rank_first" else ranks + rng.random(ranks.shape)).argmin(1)   # the sums are small integers and tie often
+        elif rule == "pessimism":
+            w = (scores.mean(0) + lam * scores.std(0)).argmin(1)
+        else:
+            w = (scores.mean(0) if rule == "council" else scores.max(0)).argmin(1)
     m, _ = body_move(moves, "mean")                                           # the click: a majority
     m[:, :2] = cand[np.arange(N), w, :2]
     return m, np.stack([w, w], 1)
@@ -201,11 +215,12 @@ def main():
     S = int(cfg["model"].get("band_n", 0)) if on["pieces"] else 1   # task 00059: the pieces of one body
     if on["pieces"] and (S < 2 or args.init or not cfg["model"].get("universal")):
         raise ValueError("online.pieces needs the universal model with model.band_n >= 2 (and no --init)")
-    scored = on["piece_rule"] in ("gain", "council", "veto")
-    if on["piece_rule"] not in ("mean", "max", "gain", "random", "council", "veto") or (scored and on["instinct_m"] <= 1):
-        raise ValueError("online.piece_rule: mean, max, random, or gain, council, veto (with online.instinct_m > 1)")
-    if on["piece_rule"] in ("council", "veto") and on["device"] != "cuda":
-        raise ValueError("online.piece_rule council and veto run on the GPU (online.device=cuda)")
+    together = ("council", "veto", "pessimism", "rank", "rank_first")                     # every piece scores every move
+    scored = on["piece_rule"] in ("gain", "gain_sharp", "soft") + together
+    if on["piece_rule"] not in ("mean", "max", "random") + ("gain", "gain_sharp", "soft") + together or (scored and on["instinct_m"] <= 1):
+        raise ValueError("online.piece_rule: mean, max, random, or gain, gain_sharp, soft, council, veto, pessimism, rank, rank_first (with online.instinct_m > 1)")
+    if on["piece_rule"] in together and on["device"] != "cuda":
+        raise ValueError("online.piece_rule council, veto, pessimism, rank and rank_first run on the GPU (online.device=cuda)")
     if S > 1:
         agents = [agent_lib.Agent(dict(cfg["model"], band_k=k), seed=piece_seed(args.seed, k)) for k in range(S)]
     else:
@@ -331,7 +346,7 @@ def main():
                              agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
                              on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
                      for um in umodels]
-            a, won = pieces_move(umodels, props, on["piece_rule"], rng)
+            a, won = pieces_move(umodels, props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
             win["override"] += np.mean([p[1] for p in props]) * N
             win["gain"] += np.mean([p[2] for p in props]) * N
             if S > 1:

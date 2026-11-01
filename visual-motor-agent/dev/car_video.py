@@ -30,6 +30,7 @@ def main():
     ap.add_argument("--ticks", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--ckpt", default="final", help="final, or a tick")
+    ap.add_argument("--reverse", action="store_true", help="a run of vm-00059..61, whose car could reverse")
     ap.add_argument("--world-tick", type=int, default=None, help="the world's tick at the start, for its density; default: the life's last")
     a = ap.parse_args()
     info = json.load(open(os.path.join(a.run, "info.json")))
@@ -39,7 +40,8 @@ def main():
     agents = [agent_lib.Agent.load(os.path.join(a.run, ckpt_name(tick, k, S))) for k in range(S)]
     models = [cuda_lib.CudaModel(x) for x in agents]
     L, bins = agents[0].config["ctx"], agents[0].config["bins"]
-    env = make_world(1, make_config(info["config"]["env"], auto_reset=True), seed=a.seed)
+    env = make_world(1, make_config(dict(info["config"]["env"], reverse=a.reverse or info["config"]["env"].get("reverse", False)), auto_reset=True),
+                     seed=a.seed)
     env.t = int(on["steps"]) if a.world_tick is None else a.world_tick
     rng = np.random.default_rng(a.seed)
     obs, hist, es = env.observe(), [], np.ones(1, np.uint8)

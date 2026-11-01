@@ -1,7 +1,7 @@
 # Task 00070: A Slower Tick for the Car (experiment vm-00061)
 
 **Date:** 2026-10-31
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -28,4 +28,4 @@
 
 ## Results
 
-Pending.
+Write-up: [`../00061-slow-tick-car/README.md`](../00061-slow-tick-car/README.md). At 5 ticks/s the car seeks boxes (nearly 3x blind at 48 boxes) but shows no preference for food; at 6 boxes SD makes 4.3 food, 4.2 poison, against blind 3.9, 3.5.

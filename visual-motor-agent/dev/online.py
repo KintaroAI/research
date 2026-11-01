@@ -90,8 +90,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # lifetime, one world and one body; each piece its own weights; the body's move from theirs by
                       # piece_rule: mean, max (per axis the proposal of the largest magnitude) or gain (the move of the
                       # piece whose instinct predicts the lowest next hunger), random (the move of a random piece),
-                      # council or veto (every piece scores every move: the lowest mean, or lowest worst)
-                      pieces=0, piece_rule="mean",
+                      # council or veto (every piece scores every move: the lowest mean, or lowest worst), and the
+                      # rules of task 00072 (pieces_move in lifetime.py): gain_sharp, soft, pessimism, rank, rank_first
+                      pieces=0, piece_rule="mean", piece_lambda=1.0, piece_temp=0.01,
                       # task 00062 (lifetime.py, model.age_key on the GPU): act on a key and value ring, computing only
                       # each new step's tokens; profile: split the tick's time in the metrics (waits for the GPU)
                       ring=0, profile=0,

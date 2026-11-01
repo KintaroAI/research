@@ -239,19 +239,20 @@ every tick:
       by noise.
     - The winner's curse: the lowest of the pieces' own predictions favours the piece that misses a danger. The mover
       foresaw ~1% of its 339 poison touches; another piece did in 60%.
-    - Cost: scoring every move by every piece is S² one-token steps per tick, which does not stay cheap at many pieces.
+    - Cost: scoring every move by every piece is S² one-token steps per tick, which does not stay cheap at many pieces (~13% of a tick at four pieces).
+    - Lifetimes on one build (vm-00063, eight seeds, last 20k): council has a third of gain's poison with no food lost that eight seeds can show. A fixed convention for ties beats a random one: rank with ties to the lowest piece makes 33.0 food, with fair ties 24.9. Arbitrary choices should be consistent.
   - **Algorithms to try:**
     | algorithm | how it chooses | answers | open risk |
     |---|---|---|---|
-    | gain | the lowest own predicted hunger | what works so far (42.8 food, 4.8 poison) | ties; the winner's curse |
-    | council | every piece scores every move, the lowest mean | the curse (frozen: 36.8 food, 1.7 poison) | S² scores; lifetime in vm-00052 |
-    | veto | the lowest worst score | the curse, more strictly (33.4, 1.4) | timid; one pessimist blocks |
-    | pessimism | the lowest mean + λ · spread of the scores | disagreement as a warning | λ; a middle of council and veto |
-    | rank vote (Borda) | each piece ranks the moves, the ranks add | scores of different scale; a piece's bias | discards how much better a move is |
-    | confidence on ties | gain, the sharpest move prediction on a tie | ties (frozen: 43.5, 5.8) | a habit spreads between pieces |
+    | gain | the lowest own predicted hunger | the default (lifetime: 28.7 ± 5.7 food, 3.90 ± 0.47 poison) | ties; the winner's curse |
+    | council | every piece scores every move, the lowest mean | the curse (lifetime: **32.8 ± 10.4, 1.30 ± 0.45**, the best so far) | S² scores |
+    | veto | the lowest worst score | the curse, more strictly (lifetime: 19.3 ± 5.5, 1.66 ± 0.66) | tried: council's poison, less food |
+    | pessimism | the lowest mean + λ · spread of the scores | disagreement as a warning (lifetime, λ 1: 17.6 ± 6.9, 1.70 ± 0.69) | tried: as veto |
+    | rank vote (Borda) | each piece ranks the moves, the ranks add | scores of different scale; a piece's bias (lifetime: `rank_first` 33.0 ± 5.7, 1.88 ± 0.61; `rank`, fair ties, 24.9 ± 6.8, 2.90 ± 1.41) | discards how much better a move is |
+    | confidence on ties | gain, the sharpest move prediction on a tie | ties (frozen 43.5, 5.8; lifetime 32.1 ± 7.1, 7.77 ± 1.93) | tried: a habit spreads, poison doubles |
     | staying on ties | gain, the last winner on a tie | commitment | frozen: nothing (paths no smoother) |
     | mean of the tied | average only the proposals within a tie | ties, without arbitrary choice | cancels opposite proposals, shrinks them |
-    | soft selection | a mean weighted by softmin(predicted hunger) | spans mean and gain by a temperature | shrinking returns at a high one |
+    | soft selection | a mean weighted by softmin(predicted hunger) | spans mean and gain by a temperature (lifetime at 0.01: 8.7 ± 5.1, 7.49 ± 1.46, the mean's level) | a much lower temperature is untried |
     | direction vote | proposals vote in direction bins; the fullest bin decides, its mean is made | ties, opposite proposals | the bin size; loses precise moves |
     | population code | each piece has preferred directions; a move is their activity-weighted sum (as motor cortex) | a fixed split without fixed roles | the shrinking of any mean |
     | negotiation | pieces take turns: each sees earlier proposals (move tokens) before proposing | coordination itself | order; more passes per tick |

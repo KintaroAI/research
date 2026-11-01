@@ -13,13 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from world.car_world import CarConfig, CarWorld  # noqa: E402
 
 
-def walk(rng, kind, hold, last, t):
+def walk(rng, kind, hold, last, t, reverse):
     if kind == "straight":
         return np.array([0.0, 1.0, 0.0], np.float32)
     if kind == "random":      # a new random move every tick: it hardly goes anywhere
         return rng.uniform(-1, 1, 3).astype(np.float32)
     if t % hold == 0:         # a held random move: drives around
-        return np.array([rng.uniform(-1, 1), rng.uniform(0, 1), 0.0], np.float32)
+        return np.array([rng.uniform(-1, 1), rng.uniform(0, 1) if reverse else rng.uniform(-1, 1), 0.0], np.float32)   # speed uniform in 0..1
     return last
 
 
@@ -31,15 +31,16 @@ def main():
     ap.add_argument("--foods", type=int, default=3)
     ap.add_argument("--poisons", type=int, default=3)
     ap.add_argument("--frame-skip", type=int, default=10)
+    ap.add_argument("--reverse", action="store_true", help="the car of vm-00059..61")
     a = ap.parse_args()
     for kind in ("random", "held", "straight"):
         out = []
         for s in range(a.seeds):
-            w = CarWorld(1, CarConfig(foods=a.foods, poisons=a.poisons, frame_skip=a.frame_skip), seed=s)
+            w = CarWorld(1, CarConfig(foods=a.foods, poisons=a.poisons, frame_skip=a.frame_skip, reverse=a.reverse), seed=s)
             rng = np.random.default_rng(s)
             m = np.zeros(3, np.float32)
             for t in range(a.ticks):
-                m = walk(rng, kind, a.hold, m, t)
+                m = walk(rng, kind, a.hold, m, t, a.reverse)
                 w.step(m[None])
             out.append(w.touched * 1000.0 / a.ticks)
             w.close()

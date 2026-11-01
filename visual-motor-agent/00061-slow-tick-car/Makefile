@@ -14,7 +14,7 @@ OUT = $(HOME)/data/research/visual-motor-agent/exp_00061
 G = CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pipe
 D = $(G) CUDA_VISIBLE_DEVICES=1 MUJOCO_EGL_DEVICE_ID=1
 C = $(G) CUDA_VISIBLE_DEVICES=0 MUJOCO_EGL_DEVICE_ID=0
-SLOW = --set env.frame_skip=40
+SLOW = --set env.frame_skip=40 --set env.reverse=true   # the car could reverse here; since task 00071 it needs saying
 
 .PHONY: all runs chance
 
@@ -31,4 +31,4 @@ runs:
 
 chance:
 	mkdir -p $(OUT)
-	cd $(DEV) && for n in 24 12 6 3; do echo "== $$((2 * n)) boxes"; MUJOCO_EGL_DEVICE_ID=0 $(PY) car_chance.py --ticks 10000 --frame-skip 40 --foods $$n --poisons $$n; done | tee $(OUT)/chance.txt
+	cd $(DEV) && for n in 24 12 6 3; do echo "== $$((2 * n)) boxes"; MUJOCO_EGL_DEVICE_ID=0 $(PY) car_chance.py --ticks 10000 --frame-skip 40 --reverse --foods $$n --poisons $$n; done | tee $(OUT)/chance.txt

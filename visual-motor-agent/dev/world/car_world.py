@@ -1,7 +1,7 @@
 """CarWorld (task 00067): a small car in MuJoCo, with CircleWorld's interface, so that the universal model lives in it unchanged.
 
-A differential-drive car with two driven wheels and a caster, seen through a camera on its nose. Move value 0 turns, value 1 drives; the click
-is ignored. Food boxes are solid, poison boxes black and white checker; touching one acts as env.touch does and replaces it. Objects live on a
+A differential-drive car with two driven wheels and a caster, seen through a camera on its nose. Move value 0 turns, value 1 drives: -1 stops, +1 is full speed,
+and it never reverses (task 00071; reverse = true gives vm-00059..61's car, -1 full reverse, 0 stopped). The click is ignored. Food boxes are solid, poison boxes black and white checker; touching one acts as env.touch does and replaces it. Objects live on a
 torus around the car (each drawn at its nearest image), so the world has no walls and no seams. Hunger as in the default world. The frame is the
 camera's picture in grey, 3 equal channels. MUJOCO_GL=egl; pick the card with MUJOCO_EGL_DEVICE_ID.
 With dense = D (task 00068), a life starts with D times the boxes: held until tick dense_hold, then fewer by the same share per tick, down to foods and
@@ -82,6 +82,7 @@ class CarConfig:
     h_rate: float = 0.001
     h_relief: float = 1.0
     poison_add: float = 0.5
+    reverse: bool = False         # task 00071: False: forward only, drive value -1..1 is speed 0..1; True: -1..1 is reverse to forward
     dense: int = 1                # task 00068: a life starts with this many times the foods and poisons (1: no schedule)
     dense_hold: int = 0           # ticks at the full count
     dense_end: int = 0            # the tick from which only foods and poisons are left
@@ -233,7 +234,7 @@ class CarWorld:
         self.t += 1
         alive = self.alive()
         for b, d in enumerate(self.datas):
-            d.ctrl[0] = a[b, 1] * c.speed
+            d.ctrl[0] = (a[b, 1] if c.reverse else (a[b, 1] + 1.0) / 2.0) * c.speed
             d.ctrl[1] = a[b, 0] * c.spin
             self.mj.mj_step(self.model, d, nstep=c.frame_skip)
             self.max_tilt = max(self.max_tilt, self.tilt(b))

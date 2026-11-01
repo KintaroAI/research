@@ -75,14 +75,14 @@ def test_the_moves_move_it():
     w = world()
     clear(w)
     drive(w, [0, 1, 0], 40)
-    assert 1.5 < w._xy(0)[0] < 2.5 and abs(w._xy(0)[1]) < 0.2                # about 1 m/s, along +x
-    drive(w, [0, 0, 0], 20)
+    assert 1.5 < w._xy(0)[0] < 2.5 and abs(w._xy(0)[1]) < 0.2                # about 0.9 m/s, along +x
+    drive(w, [0, -1, 0], 20)
     p = w._xy(0)
-    drive(w, [0, 0, 0], 40)
-    assert np.hypot(*(w._xy(0) - p)) < 0.05                                   # no move, no motion
+    drive(w, [0, -1, 0], 40)
+    assert np.hypot(*(w._xy(0) - p)) < 0.05                                   # -1 stops
     y0 = w.yaw(0)
-    drive(w, [1, 0, 0], 10)
-    assert 0.8 < (w.yaw(0) - y0) % (2 * np.pi) < 2.0                          # turn: about 3 rad/s, on the spot
+    drive(w, [1, -1, 0], 10)
+    assert 0.8 < (w.yaw(0) - y0) % (2 * np.pi) < 2.0                          # a turn at a stop: about 3 rad/s, on the spot
     assert np.hypot(*(w._xy(0) - p)) < 0.1
     click = world()
     clear(click)
@@ -93,6 +93,35 @@ def test_the_moves_move_it():
     np.testing.assert_allclose(click._xy(0), plain._xy(0), atol=1e-9)         # the click does nothing
     for x in (w, click, plain):
         x.close()
+
+
+def test_it_never_reverses():
+    """Task 00071: the drive value is a speed from 0 to full; boxes behind the camera are not driven into backwards."""
+    half = world()
+    clear(half)
+    drive(half, [0, 0, 0], 40)
+    full = world()
+    clear(full)
+    drive(full, [0, 1, 0], 40)
+    assert 0.4 * full._xy(0)[0] < half._xy(0)[0] < 0.6 * full._xy(0)[0]       # a middle value is half speed
+    w = world()
+    clear(w)
+    rng = np.random.default_rng(1)
+    for _ in range(200):                                                      # any drive value, no turning: never backwards
+        x = w._xy(0)[0]
+        w.step(np.array([[0, rng.uniform(-1, 1), 0]], np.float32))
+        assert w._xy(0)[0] >= x - 0.005
+    assert w.datas[0].ctrl[0] >= 0.0
+    for x in (half, full, w):
+        x.close()
+
+
+def test_the_old_car_could_reverse():
+    w = world(reverse=True)
+    clear(w)
+    drive(w, [0, -1, 0], 40)
+    assert w._xy(0)[0] < -1.5
+    w.close()
 
 
 @pytest.mark.parametrize("k,food", [(0, True), (4, False)])

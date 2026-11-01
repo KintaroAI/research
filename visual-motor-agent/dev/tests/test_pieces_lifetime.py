@@ -87,6 +87,39 @@ def test_council_and_veto():
     assert m[:, 2].tolist() == [1.0, 1.0]
 
 
+def test_pessimism_counts_disagreement():
+    props = [(A, 0, 0, np.zeros(2)), (B, 0, 0, np.zeros(2)), (C, 0, 0, np.zeros(2))]
+    s = [Scorer([[0.1, 0.9, 0.3], [0.5, 0.2, 0.2]]), Scorer([[0.1, 0.1, 0.3], [0.5, 0.2, 0.2]]),
+         Scorer([[0.7, 0.2, 0.3], [0.5, 0.2, 0.6]])]
+    # means [.3, .4, .3], [.5, .2, .33]; spreads [.28, .36, 0], [0, 0, .19]: mover 2 is agreed on, mover 0 not
+    m, won = pieces_move(s, props, "pessimism", np.random.default_rng(0))
+    assert won[:, 0].tolist() == [2, 1]
+    np.testing.assert_allclose(m[:, :2], [C[0, :2], B[1, :2]])
+    assert pieces_move(s, props, "pessimism", np.random.default_rng(0), lam=0.0)[1][:, 0].tolist() == [0, 1]   # no spread: council
+
+
+def test_rank_votes_ignore_how_far_a_score_is():
+    props = [(x[:1], 0, 0, np.zeros(1)) for x in (A, B, C)]
+    s = [Scorer([[0.1, 0.2, 0.9]]), Scorer([[0.2, 0.1, 0.3]]), Scorer([[0.9, 0.3, 0.1]])]
+    assert pieces_move(s, props, "rank", np.random.default_rng(0))[1][:, 0].tolist() == [1]   # ranks [0 1 2], [1 0 2], [2 1 0] add to [3 2 4]
+    far = [Scorer([[0.1, 0.2, 0.3]]), Scorer([[0.1, 0.2, 0.3]]), Scorer([[0.15, 0.1, 99.0]])]
+    assert pieces_move(far, props, "rank", np.random.default_rng(0))[1][:, 0].tolist() == [0]  # [0 1 2], [0 1 2], [1 0 2] add to [1 2 6]
+    tie = [Scorer([[0.1, 0.2, 0.3]]), Scorer([[0.1, 0.2, 0.3]]), Scorer([[9.0, 0.2, 0.3]])]    # [0 1 2], [0 1 2], [2 0 1] add to [2 2 5]
+    assert {int(pieces_move(tie, props, "rank", np.random.default_rng(k))[1][0, 0]) for k in range(40)} == {0, 1}   # a tie between sums goes to either, not to the first
+    assert {int(pieces_move(tie, props, "rank_first", np.random.default_rng(k))[1][0, 0]) for k in range(40)} == {0}     # a fixed convention
+
+
+def test_soft_spans_mean_and_gain():
+    h = np.array([[0.5, 0.2], [0.4, 0.3], [0.6, 0.1]])
+    props = [(x, 0, 0, y) for x, y in zip((A, B, C), h)]
+    far, won = pieces_move(None, props, "soft", np.random.default_rng(0), temp=1e6)
+    np.testing.assert_allclose(far, body_move([A, B, C])[0], atol=1e-4)                    # a high temperature: the mean
+    assert (won == -1).all()
+    near = pieces_move(None, props, "soft", np.random.default_rng(0), temp=1e-4)[0]
+    np.testing.assert_allclose(near[:, :2], np.array([B[0, :2], C[1, :2]]), atol=1e-4)     # a low one: gain
+    assert near[:, 2].tolist() == [1.0, 1.0]
+
+
 def test_body_move_gain():
     h = np.array([[0.5, 0.2], [0.4, 0.3], [0.6, 0.1]])                       # [S, N] predicted next hunger
     m, won = body_move([A, B, C], "gain", h)
@@ -109,10 +142,10 @@ def run(tmp_path, dev, extra):
 
 @pytest.mark.parametrize("dev", ["cpu", "cuda"])
 @pytest.mark.parametrize("S,cols,rule", [(2, 1, "mean"), (4, 2, "mean"), (4, 2, "max"), (2, 1, "gain"), (4, 2, "random"),
-                                         (4, 2, "council"), (2, 1, "veto")],
-                         ids=["halves", "quadrants", "max", "gain", "random", "council", "veto"])
+                                         (4, 2, "council"), (2, 1, "veto"), (4, 2, "pessimism"), (2, 1, "rank"), (4, 2, "soft"), (2, 1, "gain_sharp")],
+                         ids=["halves", "quadrants", "max", "gain", "random", "council", "veto", "pessimism", "rank", "soft", "gain_sharp"])
 def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols, rule):
-    if dev == "cuda" and not HAVE_GPU or dev == "cpu" and rule in ("council", "veto"):
+    if dev == "cuda" and not HAVE_GPU or dev == "cpu" and rule in ("council", "veto", "pessimism", "rank"):
         pytest.skip("needs libvmcuda.so and a GPU")
     out = run(tmp_path, dev, ["--set", "model.band_n=%d" % S, "--set", "model.band_cols=%d" % cols,
                               "--set", "online.pieces=1", "--set", "online.piece_rule=" + rule])
@@ -130,7 +163,7 @@ def test_pieces_learn_from_their_own_start(tmp_path, dev, S, cols, rule):
     rows = [json.loads(line) for line in open(os.path.join(out, "metrics.jsonl"))]
     assert all("agree_p%d" % k in rows[-1] and "prop_dx_p%d" % k in rows[-1] for k in range(S))
     won = np.array([[r["won_x_p%d" % k] for k in range(S)] for r in rows])  # each axis made by one piece, or none
-    np.testing.assert_allclose(won.sum(1), 0.0 if rule == "mean" else 1.0, atol=1e-9)
+    np.testing.assert_allclose(won.sum(1), 0.0 if rule in ("mean", "soft") else 1.0, atol=1e-9)
     if dev == "cuda":
         assert all("uni_ce_patch_p%d" % k in rows[-1] for k in range(S))
 
