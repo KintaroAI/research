@@ -377,7 +377,7 @@ def _draw_cursor(image: np.ndarray, cursor: np.ndarray, outline: RGB, color: RGB
 
 def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarray,
                  target_alive: np.ndarray, config: EnvConfig, dots: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-                 hazards: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> np.ndarray:
+                 hazards: Optional[Tuple[np.ndarray, np.ndarray]] = None, swap: Optional[np.ndarray] = None) -> np.ndarray:
     """Render N world states to uint8 images of shape (N, size, size, 3).
 
     Pure function of (cursor hotspot pixel, set of circle pixels, colors).
@@ -398,7 +398,7 @@ def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarra
     background pixels after the circle (so under it) and before the dots, with the circle's pixel test.
     """
     if config.wrap:
-        return _to_gray(_render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots, hazards), config)
+        return _to_gray(_render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots, hazards, swap), config)
     size = int(config.size)
     cursor = np.asarray(cursor_xy, dtype=np.float64).reshape(-1, 2)
     target = np.asarray(target_xy, dtype=np.float64).reshape(-1, 2)
@@ -441,9 +441,10 @@ def wrap_delta(a: np.ndarray, b: np.ndarray, size: float) -> np.ndarray:
     return np.mod(a - b + 0.5 * size, size) - 0.5 * size
 
 
-def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, hazards=None) -> np.ndarray:
+def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, hazards=None, swap=None) -> np.ndarray:
     """render_state for the wrap-around world: circles drawn with the wrap-around pixel test, the view shifted so the
-    cursor sits at the center if egocentric. Same layers as render_state."""
+    cursor sits at the center if egocentric. Same layers as render_state. swap (n,) bool (task 00065): those frames draw
+    the food in the hazard's pattern and the hazard solid."""
     size = int(config.size)
     S = float(size)
     cursor = np.asarray(cursor_xy, dtype=np.float64).reshape(-1, 2)
@@ -464,11 +465,13 @@ def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, 
         return _inside(dx, dy, radii[..., None, None], square).any(1)
 
     tmask = mask(target[:, None], radius[:, None]) & alive[:, None, None]
-    image[tmask] = np.array(_rgb(config.target_color), np.uint8)
+    sw = None if swap is None else np.asarray(swap, dtype=bool)[:, None, None]
+    chk = _checker(size, config.hazard_checker_cell)[None] if sw is not None or config.hazard_pattern == "checker" else None
+    image[tmask if sw is None else tmask & (~sw | chk)] = np.array(_rgb(config.target_color), np.uint8)
     if hazards is not None and hazards[0].shape[1] > 0:
         hmask = mask(hazards[0], hazards[1], config.hazard_shape == "square") & ~tmask
         if config.hazard_pattern == "checker":
-            hmask &= _checker(size, config.hazard_checker_cell)[None]
+            hmask &= chk if sw is None else chk | sw
         image[hmask] = np.array(_rgb(config.hazard_color), np.uint8)
     if dots is not None and dots[0].shape[1] > 0:
         _draw_dots(image, np.mod(dots[0] + shift[:, None], S), dots[1], int(config.dot_size), _rgb(config.bg_color))
@@ -839,12 +842,16 @@ class CircleWorld:
         return {"image": self._render(), "drives": self._drive_obs()}
 
     def _render(self, idx: Optional[np.ndarray] = None) -> np.ndarray:
+        sw = getattr(self, "swap", None)   # task 00065: the food drawn as the poison
         if idx is None:
             return render_state(self.cursor, self.target, self.radius, self.target_alive, self.config,
-                                (self.dot_pos, self.dot_val), (self.hz_pos, self.hz_rad))
+                                (self.dot_pos, self.dot_val), (self.hz_pos, self.hz_rad), swap=sw)
         return render_state(self.cursor[idx], self.target[idx], self.radius[idx],
                             self.target_alive[idx], self.config, (self.dot_pos[idx], self.dot_val[idx]),
-                            (self.hz_pos[idx], self.hz_rad[idx]))
+                            (self.hz_pos[idx], self.hz_rad[idx]), swap=None if sw is None else sw[idx])
+
+    def _settle(self, success, poison) -> None:
+        """After the touches of a step, before its frame: nothing here (CueWorld, task 00065)."""
 
     def _drive_obs(self) -> np.ndarray:
         if self.config.drives:
@@ -983,6 +990,8 @@ class CircleWorld:
             self.target_alive &= ~success
         if cfg.touch and cfg.hazards and in_hazard.any():
             self._respawn_hazards(hz_hit)
+
+        self._settle(success, poison)   # a world with trials (task 00065): the next phase, before anything is drawn
 
         # 6. Termination.
         done = (success & cfg.end_on_success) | (self.t >= cfg.max_steps)

@@ -69,8 +69,11 @@ class ThoughtWorld:
         """Per body-tick since the last call: the mean change of a pixel, the share of quiet ticks, waves and areas started."""
         s, n = self.st, max(self.st["ticks"], 1)
         self.reset_stats()
-        return dict(thought_change=s["change"] / n, thought_quiet=s["quiet"] / n, thought_waves=s["waves"] / n,
-                    thought_areas=s["areas"] / n)
+        out = dict(thought_change=s["change"] / n, thought_quiet=s["quiet"] / n, thought_waves=s["waves"] / n,
+                   thought_areas=s["areas"] / n, thought_extreme=float((np.abs(self.T - 0.5) > 0.45).mean()))
+        if hasattr(self.world, "stats"):   # a world with trials (task 00065)
+            out.update(self.world.stats())
+        return out
 
     def thought_frames(self):
         return np.repeat(np.clip(np.rint(self.T * 255.0), 0, 255).astype(np.uint8)[..., None], 3, -1)

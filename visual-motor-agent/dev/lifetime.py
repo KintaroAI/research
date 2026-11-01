@@ -378,7 +378,7 @@ def main():
             if env.cfg.mode == "dream":
                 dream = thought_dream(gpus[-1], st_("img", obs["image"]), st_("drv", obs["drives"]).astype(np.float32),
                                       st_("act", np.zeros((N, 3), np.float32)), st_("es", done.astype(np.uint8)),
-                                      on["thought_jacobi"], "pair")
+                                      on["thought_jacobi"], on["thought_decode"])
             obs = dict(obs, image=env.think(dream))
             win["t_think"] += time.time() - t_think
         hz = inf["gt_in_hazard"][:N] if "gt_in_hazard" in inf else np.zeros(N, bool)     # scoring only

@@ -96,7 +96,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # each new step's tokens; profile: split the tick's time in the metrics (waits for the GPU)
                       ring=0, profile=0,
                       # task 00064 (env.thought): Jacobi iterations of the thought transformer's dream of its next frame
-                      thought_jacobi=2)
+                      thought_jacobi=2,
+                      # task 00065: how a dream becomes the next thought: pair (snaps to a bin) or mean (the grey fix)
+                      thought_decode="pair")
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
