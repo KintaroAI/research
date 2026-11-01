@@ -120,6 +120,21 @@ def test_hunger_rises_and_stops_at_one():
     w.close()
 
 
+def test_a_slower_tick_goes_further_per_tick():
+    """5 ticks/s (task 00070): about 0.2 m a tick at full drive, still under the touch distance, and still upright."""
+    w = world(frame_skip=40)
+    clear(w)
+    drive(w, [0, 1, 0], 10)
+    p = w._xy(0)
+    drive(w, [0, 1, 0], 1)
+    assert 0.15 < np.hypot(*(w._xy(0) - p)) < w.config.touch
+    rng = np.random.default_rng(0)
+    for _ in range(300):
+        w.step(rng.choice([-1.0, 1.0], (1, 3)).astype(np.float32))
+        assert w.tilt(0) < 5.0
+    w.close()
+
+
 def test_the_torus_has_no_edge():
     """Far from the origin, the objects are still around the car, drawn at their nearest images."""
     w = world()

@@ -1,7 +1,7 @@
 # Task 00068: A Dense Start for the Car (experiment vm-00060)
 
 **Date:** 2026-10-31
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -45,4 +45,5 @@ blind drivers are rerun. vm-00059's results are from the flipping car.
 
 ## Results
 
-Pending.
+Write-up: [`../00060-dense-car/README.md`](../00060-dense-car/README.md). At 6 boxes D makes 0.7 food and 0.47 poison per 1k against a blind held driver's 1.2 and 1.2; two of C's three seeds touched
+nothing. The dense start gave experience, not skill. Next: the clock (task 00070).
