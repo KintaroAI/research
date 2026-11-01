@@ -487,7 +487,7 @@ def main():
                     row["agree_p%d" % k] = float(win["agree"][k] / bs)
                     row["won_x_p%d" % k], row["won_y_p%d" % k] = (win["won"][k] / bs).tolist()   # max, gain
             row.update(gate_metrics(gms))
-            if thinking:
+            if hasattr(env, "stats"):
                 row.update(env.stats())
             mf.write(json.dumps(row) + "\n")
             mf.flush()

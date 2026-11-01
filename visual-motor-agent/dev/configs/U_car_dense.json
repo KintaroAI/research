@@ -1,0 +1,53 @@
+{
+  "name": "U_car_dense",
+  "description": "Task 00068: U_car.json with a dense start: 48 boxes for 10k ticks, then three halvings down to 6 boxes at 40k, and 6 to the end.",
+  "env": {
+    "kind": "car",
+    "dense": 8,
+    "dense_hold": 10000,
+    "dense_end": 40000
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  },
+  "model": {
+    "patch": 8,
+    "universal": 1,
+    "bins": 32,
+    "gray": 1,
+    "ctx": 8,
+    "in_bins": 1,
+    "uni_pyr": 3,
+    "sum_thumb": 1,
+    "band_n": 4,
+    "band_cols": 2,
+    "age_key": 1
+  },
+  "online": {
+    "actor": "self",
+    "steps": 60000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_eps": 0.0,
+    "goal": 0,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "instinct_m": 16,
+    "instinct_tol": 0.005,
+    "device": "cuda",
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4,
+    "pieces": 1,
+    "piece_rule": "gain",
+    "ring": 1
+  }
+}

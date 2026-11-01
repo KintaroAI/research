@@ -28,11 +28,13 @@ def main():
     ap.add_argument("--ticks", type=int, default=20000)
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--hold", type=int, default=20)
+    ap.add_argument("--foods", type=int, default=3)
+    ap.add_argument("--poisons", type=int, default=3)
     a = ap.parse_args()
     for kind in ("random", "held", "straight"):
         out = []
         for s in range(a.seeds):
-            w = CarWorld(1, CarConfig(), seed=s)
+            w = CarWorld(1, CarConfig(foods=a.foods, poisons=a.poisons), seed=s)
             rng = np.random.default_rng(s)
             m = np.zeros(3, np.float32)
             for t in range(a.ticks):

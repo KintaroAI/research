@@ -4,6 +4,8 @@ A differential-drive car with two driven wheels and a caster, seen through a cam
 is ignored. Food boxes are solid, poison boxes black and white checker; touching one acts as env.touch does and replaces it. Objects live on a
 torus around the car (each drawn at its nearest image), so the world has no walls and no seams. Hunger as in the default world. The frame is the
 camera's picture in grey, 3 equal channels. MUJOCO_GL=egl; pick the card with MUJOCO_EGL_DEVICE_ID.
+With dense = D (task 00068), a life starts with D times the boxes: held until tick dense_hold, then fewer by the same share per tick, down to foods and
+poisons at tick dense_end. Removed boxes (the highest indices first) lie out of sight below the floor and cannot be touched.
 """
 
 import dataclasses
@@ -78,6 +80,9 @@ class CarConfig:
     h_rate: float = 0.001
     h_relief: float = 1.0
     poison_add: float = 0.5
+    dense: int = 1                # task 00068: a life starts with this many times the foods and poisons (1: no schedule)
+    dense_hold: int = 0           # ticks at the full count
+    dense_end: int = 0            # the tick from which only foods and poisons are left
     # read by the agent loops, as in EnvConfig
     drives: bool = True
     respawn: bool = True
@@ -95,6 +100,10 @@ class CarConfig:
             raise ValueError("spawn_min must exceed touch, or a new object is touched at once")
         if self.side < 2 * self.spawn_min + 2 * self.touch:
             raise ValueError("side is too small for spawn_min")
+        if self.dense < 1:
+            raise ValueError("dense must be >= 1")
+        if self.dense > 1 and not 0 <= self.dense_hold < self.dense_end:
+            raise ValueError("dense needs 0 <= dense_hold < dense_end")
         return self
 
 
@@ -110,14 +119,15 @@ class CarWorld:
         self.num_envs = int(num_envs)
         self.config = dataclasses.replace(config if config is not None else CarConfig()).validate()
         c = self.config
-        self.K = c.foods + c.poisons
-        objects = "\n".join(OBJECT % (k, "food" if k < c.foods else "poison") for k in range(self.K))
+        self.F, self.K = c.foods * c.dense, (c.foods + c.poisons) * c.dense   # the most boxes a life has: foods first
+        objects = "\n".join(OBJECT % (k, "food" if k < self.F else "poison") for k in range(self.K))
         self.model = mujoco.MjModel.from_xml_string(XML % dict(dt=c.dt, fovy=c.fovy, objects=objects))
         self.datas = [mujoco.MjData(self.model) for _ in range(self.num_envs)]
         self.car_q = self.model.jnt_qposadr[0]
         self.rng = np.random.default_rng(seed)
+        self.t = 0                             # the world's tick, for the schedule
         self.hunger = np.full(self.num_envs, 0.5)
-        self.obj = np.zeros((self.num_envs, self.K, 2))
+        self.obj = np.full((self.num_envs, self.K, 2), np.nan)
         for b in range(self.num_envs):
             for k in range(self.K):
                 self.obj[b, k] = self._place(b, k, self._xy(b))
@@ -129,6 +139,23 @@ class CarWorld:
     def _xy(self, b: int) -> np.ndarray:
         return self.datas[b].qpos[self.car_q:self.car_q + 2].copy()
 
+    def counts(self, t: Optional[int] = None) -> tuple:
+        """Food and poison boxes alive at tick t (default: now)."""
+        c = self.config
+        t = self.t if t is None else t
+        if c.dense == 1 or t >= c.dense_end:
+            return c.foods, c.poisons
+        m = c.dense if t <= c.dense_hold else c.dense ** (1.0 - (t - c.dense_hold) / (c.dense_end - c.dense_hold))
+        return int(round(c.foods * m)), int(round(c.poisons * m))
+
+    def alive(self) -> np.ndarray:
+        """Which boxes are alive now: [K] bool."""
+        f, p = self.counts()
+        a = np.zeros(self.K, bool)
+        a[:f] = True
+        a[self.F:self.F + p] = True
+        return a
+
     def yaw(self, b: int) -> float:
         w, x, y, z = self.datas[b].qpos[self.car_q + 3:self.car_q + 7]
         return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
@@ -139,7 +166,7 @@ class CarWorld:
         return (self.obj[b] - xy + s / 2) % s - s / 2
 
     def _place(self, b: int, k: int, xy: np.ndarray) -> np.ndarray:
-        """A free place for object k: far from the car, and from the other objects (those placed so far, or the rest)."""
+        """A free place for object k: far from the car, and from the others placed and alive."""
         c = self.config
         for _ in range(1000):
             p = self.rng.uniform(0, c.side, 2)
@@ -147,7 +174,7 @@ class CarWorld:
                 continue
             d = (self.obj[b] - p + c.side / 2) % c.side - c.side / 2
             d = np.delete(np.hypot(d[:, 0], d[:, 1]), k)
-            if (d >= c.spawn_min / 2).all() or (self.obj[b] == 0).all():
+            if not (d[~np.isnan(d)] < c.spawn_min / 2).any():
                 return p
         return p
 
@@ -155,6 +182,7 @@ class CarWorld:
         """The mocap boxes at the objects' nearest images."""
         d, xy = self.datas[b], self._xy(b)
         d.mocap_pos[:, :2] = xy + self.near(b, xy)
+        d.mocap_pos[:, 2] = np.where(self.alive(), 0.0, -5.0)   # the removed below the floor
         self.mj.mj_forward(self.model, d)   # the bodies and the cameras
 
     # ------------------------------------------------------------------ frames
@@ -194,14 +222,16 @@ class CarWorld:
         a = np.clip(np.asarray(actions, np.float64), -1.0, 1.0)
         n = self.num_envs
         success, poison = np.zeros(n, bool), np.zeros(n, bool)
+        self.t += 1
+        alive = self.alive()
         for b, d in enumerate(self.datas):
             d.ctrl[0] = a[b, 1] * c.speed
             d.ctrl[1] = a[b, 0] * c.spin
             self.mj.mj_step(self.model, d, nstep=c.frame_skip)
             xy = self._xy(b)
             rel = self.near(b, xy)
-            for k in np.flatnonzero(np.hypot(rel[:, 0], rel[:, 1]) < c.touch):
-                if k < c.foods:
+            for k in np.flatnonzero(alive & (np.hypot(rel[:, 0], rel[:, 1]) < c.touch)):
+                if k < self.F:
                     success[b] = True
                 else:
                     poison[b] = True
@@ -219,7 +249,8 @@ class CarWorld:
         return obs, np.zeros(n, np.float32), f.copy(), info
 
     def stats(self) -> Dict[str, Any]:
-        return {}
+        f, p = self.counts()
+        return dict(car_foods=f, car_poisons=p)
 
     def close(self) -> None:
         for r in self.renderers.values():

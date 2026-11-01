@@ -133,26 +133,104 @@ def test_the_torus_has_no_edge():
     w.close()
 
 
+SCHED = dict(dense=8, dense_hold=100, dense_end=400)
+
+
+def test_the_schedule():
+    w = world(**SCHED)
+    assert w.K == 48 and w.F == 24
+    assert w.counts(0) == w.counts(100) == (24, 24)
+    assert w.counts(200) == (12, 12) and w.counts(300) == (6, 6)              # three halvings over dense_hold .. dense_end
+    assert w.counts(399) == (3, 3) and w.counts(400) == w.counts(10 ** 6) == (3, 3)
+    last = 24
+    for t in range(100, 401):
+        now = w.counts(t)[0]
+        assert now <= last
+        last = now
+    assert w.stats() == dict(car_foods=24, car_poisons=24)
+    w.close()
+
+
+def test_no_schedule_by_default():
+    w = world()
+    assert w.counts(0) == w.counts(10 ** 6) == (3, 3) and w.alive().all() and w.K == 6
+    w.close()
+
+
+def test_a_schedule_with_one_changes_nothing():
+    a, b = world(seed=5), world(seed=5, dense=1, dense_hold=7, dense_end=9)
+    np.testing.assert_array_equal(a.obj, b.obj)
+    np.testing.assert_array_equal(drive(a, [.3, 1, 0], 30)[0]["image"], drive(b, [.3, 1, 0], 30)[0]["image"])
+    a.close()
+    b.close()
+
+
+def test_a_removed_box_is_neither_drawn_nor_touched():
+    w = world(**SCHED)
+    w.t = 400
+    alive = w.alive()
+    assert alive.sum() == 6 and alive[:3].all() and not alive[3:24].any() and alive[24:27].all() and not alive[27:].any()
+    clear(w)
+    gone = 10                                                                  # a removed food box
+    w.obj[0, gone] = w._xy(0) + [0.1, 0.0]
+    w.hunger[:] = 0.4
+    _, _, _, inf = w.step(np.zeros((1, 3), np.float32))
+    assert not inf["success"][0] and abs(float(w.hunger[0]) - 0.401) < 1e-6
+    assert w.datas[0].mocap_pos[gone, 2] == -5.0 and w.datas[0].mocap_pos[0, 2] == 0.0
+    w.obj[0, gone] = w._xy(0) + [1.0, 0.0]                                     # in front of the camera, and not in the frame
+    w._frame = None
+    empty = w.observe()["image"]
+    w.t = 0                                                                    # alive again: drawn
+    w._frame = None
+    assert not np.array_equal(empty, w.observe()["image"])
+    w.close()
+
+
+def test_a_touched_box_is_replaced_while_the_count_stands():
+    w = world(**SCHED)
+    w.hunger[:] = 0.4
+    clear(w)
+    w.obj[0, 30] = w._xy(0) + [0.1, 0.0]                                       # a poison box above the final count
+    _, _, _, inf = w.step(np.zeros((1, 3), np.float32))
+    assert inf["gt_hazard_click"][0] and not inf["success"][0]
+    assert np.hypot(*w.near(0, w._xy(0))[30]) >= w.config.spawn_min and w.alive()[30]
+    w.close()
+
+
+def test_a_dense_world_starts_spread_out():
+    w = world(**SCHED)
+    rel = w.obj[0][:, None] - w.obj[0][None]
+    d = np.hypot(*(((rel + 2.5) % 5.0 - 2.5).transpose(2, 0, 1)))
+    assert d[~np.eye(48, dtype=bool)].min() >= 0.5
+    assert np.hypot(*w.near(0, w._xy(0)).T).min() >= 1.0
+    w.close()
+
+
 def test_make_world():
     w = make_world(1, make_config({"kind": "car", "foods": 2, "poisons": 1}, auto_reset=True), seed=1)
     assert isinstance(w, CarWorld) and w.K == 3
     w.close()
 
 
-@pytest.mark.parametrize("bad", [dict(foods=0), dict(poisons=-1), dict(size=4), dict(touch=2.0), dict(side=2.0), dict(kind="x")],
-                         ids=["no_food", "poisons", "size", "touch", "side", "kind"])
+@pytest.mark.parametrize("bad", [dict(foods=0), dict(poisons=-1), dict(size=4), dict(touch=2.0), dict(side=2.0), dict(kind="x"), dict(dense=0),
+                                 dict(dense=2), dict(dense=2, dense_hold=5, dense_end=5)],
+                         ids=["no_food", "poisons", "size", "touch", "side", "kind", "dense", "no_end", "hold_at_end"])
 def test_invalid(bad):
     with pytest.raises(ValueError):
         CarConfig(**bad).validate()
 
 
 @pytest.mark.skipif(not HAVE_GPU, reason="needs libvmcuda.so and a GPU")
-def test_a_short_lifetime(tmp_path):
+@pytest.mark.parametrize("cfg,want", [("U_car", 3), ("U_car_dense", 3)], ids=["plain", "dense"])
+def test_a_short_lifetime(tmp_path, cfg, want):
     out = str(tmp_path / "car")
-    r = subprocess.run([sys.executable, "lifetime.py", "--config", "configs/U_car.json", "--seed", "3", "-o", out, "--set", "online.steps=60",
-                        "--set", "online.save_every=60", "--set", "online.log_every=30", "--set", "online.store_warmup=16"],
+    extra = ["--set", "env.dense_hold=20", "--set", "env.dense_end=50"] if cfg == "U_car_dense" else []
+    r = subprocess.run([sys.executable, "lifetime.py", "--config", "configs/%s.json" % cfg, "--seed", "3", "-o", out, "--set", "online.steps=60",
+                        "--set", "online.save_every=60", "--set", "online.log_every=30", "--set", "online.store_warmup=16"] + extra,
                        cwd=DEV, capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stderr[-3000:]
     rows = [json.loads(line) for line in open(os.path.join(out, "metrics.jsonl"))]
-    assert rows[-1]["step"] == 60 and "uni_ce_patch" in rows[-1]
+    assert rows[-1]["step"] == 60 and "uni_ce_patch" in rows[-1] and rows[-1]["car_foods"] == want
+    if cfg == "U_car_dense":
+        assert rows[0]["car_foods"] > want
     assert json.load(open(os.path.join(out, "info.json")))["pieces"] == 4
