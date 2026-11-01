@@ -1,7 +1,7 @@
 # Task 00064: A Thought World Beside the Real One (experiment vm-00056)
 
 **Date:** 2026-10-31
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -54,3 +54,7 @@ step of backpropagation through a dream.
   information (decode the food's place from thought alone, also after it left the window; shuffling thought in a window, what
   breaks).
 - **Later:** a delayed-cue world, the real test of a memory: a mark flashes and is gone for 20-30 ticks, longer than the window.
+
+## Write-up
+
+[`../00056-thought-world/README.md`](../00056-thought-world/README.md). T 33.1 food, 3.1 poison; TL 25.1, 3.5; TF 21.7, 4.0; TN 15.7, 10.7 (stopped at 41k). Thought collapses to black and white shapes, and holds no linearly readable food position.

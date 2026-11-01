@@ -1,7 +1,7 @@
 # Task 00063: More Seeds for the Best Arms (experiment vm-00055)
 
 **Date:** 2026-10-31
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -22,3 +22,7 @@
   above 30 food; `smooth`.
 - **Questions:** Does the age key plus ring cost food (QNA against QN)? How much poison does council remove, at what food?
   Are bad seeds (below 25 food) a stable fraction, and do they share something early (at 10k–20k)?
+
+## Write-up
+
+[`../00055-more-seeds/README.md`](../00055-more-seeds/README.md). QN 41.4 ± 8.0 food, 3.3 ± 0.6 poison; QNA 34.7 ± 10.2, 3.5 ± 0.6; QCA 28.8 ± 9.1, 1.5 ± 0.4.
