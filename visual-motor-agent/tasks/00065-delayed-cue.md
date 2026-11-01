@@ -53,3 +53,9 @@ Two pieces, gain, age key, ring (as vm-00056's T), [world | thought], 60k ticks,
 
 Reading: CT or CG above CF, with CH above them, is memory. If CH fails the world is too hard and says nothing of thought. If CT and CG sit at CF
 (as expected: no gradient teaches what to write), the next step is a step of backpropagation through a dream.
+
+## Results So Far
+
+Interim: [`../00057-delayed-cue/README.md`](../00057-delayed-cue/README.md). Seeds 3 and 4 finished, seeds 1 and 2 running. Food share over each run's
+last complete 10k ticks: CH 0.540 ± 0.017, CS 0.499, CF 0.487, CT 0.503, CG 0.529. CH has not clearly learned the rule (seed 4 reaches 0.65 on both
+samples, seed 2 0.585, the others nothing), so the thought arms say nothing yet. Mean decoding keeps thought grey.
