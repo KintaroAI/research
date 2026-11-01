@@ -123,6 +123,9 @@ def body_move(moves, rule="mean", hunger=None, rng=None):
 CLOSE = 0.005   # gain_sharp: predicted hungers this close are a tie (as online.instinct_tol)
 
 
+TIED = {"in": ("uni_in_w", "uni_in_b"), "inout": ("uni_in_w", "uni_in_b", "uni_out_w", "uni_out_b")}   # online.tie_tables
+
+
 def pieces_move(models, props, rule, rng, prev=None, lam=1.0, temp=0.01):
     """The body's move and who made it from the pieces' props (uni_act's, per_body), right after them: council and veto
     (task 00060) have every piece score every piece's move ([scorer, N, mover], only the move token computed; the GPU's
@@ -221,11 +224,18 @@ def main():
         raise ValueError("online.piece_rule: mean, max, random, or gain, gain_sharp, soft, council, veto, pessimism, rank, rank_first (with online.instinct_m > 1)")
     if on["piece_rule"] in together and on["device"] != "cuda":
         raise ValueError("online.piece_rule council, veto, pessimism, rank and rank_first run on the GPU (online.device=cuda)")
+    if on["tie_tables"] and (on["tie_tables"] not in TIED or S < 2 or on["device"] != "cuda"):
+        raise ValueError("online.tie_tables: in or inout, for online.pieces on the GPU (online.device=cuda)")
     if S > 1:
         agents = [agent_lib.Agent(dict(cfg["model"], band_k=k), seed=piece_seed(args.seed, k)) for k in range(S)]
     else:
         agents = [agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)]
     agent = agents[0]
+    tied = [(o, n) for name, o, n in agent.param_layout() if name in TIED.get(on["tie_tables"], ())]   # task 00076
+    for a_ in agents[1:] if tied else ():                                         # from piece 0's tables
+        for o, n in tied:
+            a_.params()[o:o + n] = agent.params()[o:o + n]
+        a_.params_changed()
     pib = {name: (o, n) for name, o, n in agent.param_layout()}["pi_b"]
     if on["click_bias"] is not None and not args.init and pib[1]:   # initial click-logit bias, e.g. -2.197 = p 0.1
         agent.params()[pib[0] + 2] = on["click_bias"]                 # (no policy head, e.g. the universal model: none)
@@ -447,6 +457,8 @@ def main():
                         if k:
                             fill_rollout(rk, rows, L)
                         stats.append(ag.update(rk, zeros, ppo))
+                if tied:
+                    cuda_lib.tie(gpus, tied)
                 if stats[0] is not None:
                     win["stats"].append({key: float(np.mean([s_[key] for s_ in stats])) for key in stats[0]
                                          if isinstance(stats[0][key], (int, float))})

@@ -547,7 +547,8 @@ struct Dims {
     int act, cds, cfx;                    // act token on/off; prediction frame -> coarse frame block side; coarse values
     int uni, V, nbin, OV, ch;             // universal model: on/off; values per token; bins per value; head outputs;
                                           // channels per patch pixel (1 with gray, else 3)
-    int ib, VI;                           // bin-embedding input on/off (task 00036); W_in's input width (V or V * bins)
+    int ib, VI;                           // bin-embedding input on/off (task 00036); W_in's input width (V or VC * bins)
+    int cv, VC;                           // a channel per value (task 00075): on/off; the table's value positions (V, or V + VM_UNI_EXTRA)
 };
 static Dims make_dims(const VMConfig& c) {
     Dims D;
@@ -592,9 +593,11 @@ static Dims make_dims(const VMConfig& c) {
     D.ch = (D.uni && c.gray) ? 1 : 3;
     D.V = D.uni ? D.patch * D.patch * D.ch : 0;
     D.nbin = D.uni ? c.bins : 0;
-    D.OV = D.V * D.nbin;
+    D.cv = D.uni ? c.uni_chan : 0;
+    D.VC = D.V + (D.cv ? VM_UNI_EXTRA : 0);
+    D.OV = D.VC * D.nbin;
     D.ib = D.uni ? c.in_bins : 0;
-    D.VI = D.ib ? D.V * D.nbin : D.V;
+    D.VI = D.ib ? D.VC * D.nbin : D.V;
     D.cell = D.patch ? c.pred_img / D.gp : 0;
     D.cpx = D.cell * D.cell * 3;
     D.KT = D.K * D.ntok;
@@ -1320,17 +1323,25 @@ static void seq_fwd_patch(const Model* M, Workspace* W, const SeqView& sv, bool 
 // within the context; every token predicts the next token's values: the move token the drives after its step.
 // Summary tokens (task 00047, vm_uni_slot) have no values: the token before one has no target.
 
+// A channel per value (task 00075): where a token's values start in W_in, by its kind; and where the values that token
+// k predicts start in W_out (the last token before the move: the move; the move token: the next body).
+static inline int uni_chan_of(const Dims& D, int kind) { return !D.cv ? 0 : (kind == 0 ? D.V : (kind == 3 ? D.V + 2 : 0)); }
+static inline int uni_target_chan(const Dims& D, int k) {
+    return !D.cv ? 0 : (k == D.ntok - 1 ? D.V : (k == D.ntok - 2 ? D.V + 2 : 0));
+}
+
 // The token values of step t, slot k, into v [V] (raw, in [0, 1]); returns the number used.
 // Bin-embedding input (task 00036): the first u of V values in [0, 1], each split two-hot over K bins (centres
 // k / (K - 1)), into out [V * K]; unused values and bins 0.
-static void uni_twohot(const float* v, int u, int V, int K, float* out) {
-    for (int i = 0; i < V * K; i++) out[i] = 0.f;
+// With a channel per value (task 00075) they go from position ch on.
+static void uni_twohot(const float* v, int u, int ch, int VI, int K, float* out) {
+    for (int i = 0; i < VI; i++) out[i] = 0.f;
     for (int j = 0; j < u; j++) {
         const float p = fminf(fmaxf(v[j], 0.f), 1.f) * (K - 1);
         const int lo = std::min((int)floorf(p), K - 2);
         const float w = p - lo;
-        out[(size_t)j * K + lo] = 1.f - w;
-        out[(size_t)j * K + lo + 1] = w;
+        out[(size_t)(ch + j) * K + lo] = 1.f - w;
+        out[(size_t)(ch + j) * K + lo + 1] = w;
     }
 }
 
@@ -1394,7 +1405,7 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
                 memcpy(W->u_tgt.data() + (size_t)(i - 1) * V, val, sizeof(float) * V);
                 W->u_use[i - 1] = u;
             }
-            if (D.ib) uni_twohot(val, u, V, D.nbin, in);
+            if (D.ib) uni_twohot(val, u, uni_chan_of(D, M->uslot[k].kind), D.VI, D.nbin, in);
             else for (int j = 0; j < u; j++) in[j] -= 0.5f;
             if (k == nt - 1) {   // the move token predicts the drives after its step
                 float* tg = W->u_tgt.data() + (size_t)i * V;
@@ -1421,7 +1432,7 @@ static void uni_head_row(const Model* M, const float* z, float* row, float* prob
     const Dims& D = M->D;
     linear_fwd(row, z, M->wt.data() + M->off[UOW], M->params.data() + M->off[UOB], 1, D.d, D.OV);
     const int K = D.nbin;
-    for (int u = 0; u < D.V; u++) {
+    for (int u = 0; u < D.VC; u++) {
         const float* l = row + (size_t)u * K;
         float* p = prob + (size_t)u * K;
         float mx = l[0];
@@ -2137,11 +2148,12 @@ static void seq_loss_uni(const Model* M, Workspace* W, const SeqView& sv, float 
         float* dz = W->dz.data() + (size_t)i * d;
         for (int j = 0; j < d; j++) dz[j] = 0.f;
         const float sc = inv_tok / u;
+        const int ch = uni_target_chan(D, k);
         double ce = 0, se = 0;
         for (int v = 0; v < u; v++) {
             int lo; float wlo, whi;
             two_hot(tg[v], K, lo, wlo, whi);
-            float* p = prob + (size_t)v * K;
+            float* p = prob + (size_t)(ch + v) * K;
             float ev = 0.f;
             for (int b = 0; b < K; b++) ev += p[b] * (float)b / (K - 1);
             ce -= wlo * logf(std::max(p[lo], 1e-30f)) + whi * logf(std::max(p[lo + 1], 1e-30f));
@@ -2150,7 +2162,7 @@ static void seq_loss_uni(const Model* M, Workspace* W, const SeqView& sv, float 
             p[lo + 1] -= whi;
             for (int b = 0; b < K; b++) {
                 const float g = p[b] * sc;
-                const int r = v * K + b;
+                const int r = (ch + v) * K + b;
                 gb[r] += g;
                 const float* wr = Wo + (size_t)r * d;
                 float* gw = gW + (size_t)r * d;
@@ -2583,6 +2595,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[57] = c.band_win;
     h[58] = c.age_key;
     h[59] = c.img_w;
+    h[60] = c.uni_chan;
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2619,6 +2632,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.band_win = h[57];
     c.age_key = h[58];
     c.img_w = h[59];
+    c.uni_chan = h[60];
 }
 
 // =====================================================================================
@@ -3023,19 +3037,21 @@ void vm_forward_uni(void* a, int S, int T, const uint8_t* images, const float* d
             if (!values && !(move_probs && mv) && !(next_body && nb)) continue;
             uni_head_row(M, W->lnf.data() + (size_t)i * D.d, W->u_row.data(), W->u_prob.data());
             const float* p = W->u_prob.data();
+            const int ch = uni_target_chan(D, i % nt), nch = ch == D.V ? 2 : 3;   // the rest of a row with a channel: as without
             if (values) {
                 float* out = values + (b * nt + i) * V;
                 for (int u = 0; u < V; u++) {
+                    const int c = (ch && u < nch) ? ch + u : u;
                     float ev = 0.f;
-                    for (int k = 0; k < K; k++) ev += p[(size_t)u * K + k] * (float)k / (K - 1);
+                    for (int k = 0; k < K; k++) ev += p[(size_t)c * K + k] * (float)k / (K - 1);
                     out[u] = ev;
                 }
             }
-            if (move_probs && mv) memcpy(move_probs + (b + i / nt) * 3 * K, p, sizeof(float) * 3 * K);
+            if (move_probs && mv) memcpy(move_probs + (b + i / nt) * 3 * K, p + (size_t)ch * K, sizeof(float) * 3 * K);
             if (next_body && nb)
                 for (int u = 0; u < 2; u++) {
                     float ev = 0.f;
-                    for (int k = 0; k < K; k++) ev += p[(size_t)u * K + k] * (float)k / (K - 1);
+                    for (int k = 0; k < K; k++) ev += p[(size_t)(ch + u) * K + k] * (float)k / (K - 1);
                     next_body[(b + i / nt) * 2 + u] = ev;
                 }
         }

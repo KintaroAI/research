@@ -70,7 +70,7 @@ the loss, not to the input. The outputs predict the same [0, 1] values (§5).
 `slot[s]` is a learned embedding per slot (66 of them: the body, each patch position, the move); the patch slots start
 from a 2D sine-cosine code of the patch centre. The slot embedding is the only thing that says what a token is, as a
 position embedding is in an LLM. The cost of sharing `W_in`: hunger enters through the same weights as pixel 0 of a
-patch, and the network must separate them using the slot embedding.
+patch, and the network must separate them using the slot embedding. `model.uni_chan` (task 00075) removes this cost: the body's and the move's values get their own rows in `W_in` and `W_out`; off by default until vm-00066 reads.
 
 ## 5. One Prediction, One Loss
 

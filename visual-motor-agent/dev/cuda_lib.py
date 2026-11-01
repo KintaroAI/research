@@ -55,6 +55,7 @@ def lib():
             "vmc_grads": (i32, [vp, fp]),
             "vmc_set_params": (i32, [vp, fp]),
             "vmc_sync": (i32, [vp]),
+            "vmc_tie": (i32, [C.POINTER(vp), i32, C.c_long, C.c_long, i32]),
             "vmc_forward": (i32, [vp, i32, i32, u8p, fp, fp, fp, u8p, fp, fp, fp, fp, fp, fp, fp]),
             "vmc_forward_uni": (i32, [vp, i32, i32, u8p, fp, fp, u8p, fp, fp, fp]),
             "vmc_uni_candidates": (i32, [vp, i32, fp, fp]),
@@ -121,6 +122,13 @@ def device_free():
 def has(name):
     """Whether the loaded libvmcuda.so has a function (older builds lack the newer ones)."""
     return hasattr(lib(), name)
+
+
+def tie(models, ranges, mean=1):
+    """One table for several models (task 00076): each (offset, size) of their params becomes the mean (mean=0: models[0]'s)."""
+    hs = (C.c_void_p * len(models))(*[m.handle for m in models])
+    for off, size in ranges:
+        _check(lib().vmc_tie(hs, len(models), off, size, mean), "tie")
 
 
 def _p(a, ct):

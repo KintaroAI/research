@@ -66,6 +66,12 @@ def uni_dims(cfg):
     return len(uni_slot_table(cfg)["kind"]), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
 
 
+def uni_channel(kind, V):
+    """Where a token of this kind starts in the tables, with model.uni_chan (task 00075): the body's and the move's values
+    after a patch's V."""
+    return V if kind == 0 else (V + 2 if kind == 3 else 0)
+
+
 def uni_grid_w(cfg):
     """The patch grid's width (task 00064); its height is img // patch."""
     return (cfg.get("img_w", 0) or cfg["img"]) // cfg["patch"]
@@ -204,8 +210,9 @@ def uni_shapes(cfg):
     if not on:
         return {"uni_in_w": (0,), "uni_in_b": (0,), "uni_slot": (0,), "uni_out_w": (0,), "uni_out_b": (0,)}
     nt, V, K = uni_dims(cfg)
-    VI = V * K if cfg.get("in_bins", 0) else V                      # bin-embedding input (task 00036)
-    return {"uni_in_w": (d, VI), "uni_in_b": (d,), "uni_slot": (nt, d), "uni_out_w": (V * K, d), "uni_out_b": (V * K,)}
+    VC = V + 5 if cfg.get("uni_chan", 0) else V                     # a channel per value (task 00075)
+    VI = VC * K if cfg.get("in_bins", 0) else V                     # bin-embedding input (task 00036)
+    return {"uni_in_w": (d, VI), "uni_in_b": (d,), "uni_slot": (nt, d), "uni_out_w": (VC * K, d), "uni_out_b": (VC * K,)}
 
 
 def patch_dims(cfg):
@@ -600,7 +607,16 @@ def forward_uni(P, cfg, images, drives, actions, ep_start):
     v, used = uni_values(cfg, images, drives, actions)
     m = (np.arange(V)[None, :] < used[:, None]).astype(np.float64)               # [nt, V]
     if cfg.get("in_bins", 0):   # bin-embedding input (task 00036): each used value two-hot over the K bins
-        x = torch.tensor(two_hot(v, K) * m[..., None], dtype=dt).reshape(S, T * nt, V * K)
+        hot = two_hot(v, K) * m[..., None]
+        if cfg.get("uni_chan", 0):   # task 00075: a token's values start at its channel
+            kind = uni_slot_table(cfg)["kind"]
+            x = np.zeros((S, T, nt, V + 5, K))
+            for k in range(nt):
+                ch, u = uni_channel(kind[k], V), int(used[k])
+                x[:, :, k, ch:ch + u] = hot[:, :, k, :u]
+            x = torch.tensor(x, dtype=dt).reshape(S, T * nt, (V + 5) * K)
+        else:
+            x = torch.tensor(hot, dtype=dt).reshape(S, T * nt, V * K)
     else:
         x = torch.tensor((v - 0.5) * m, dtype=dt).reshape(S, T * nt, V)
     ss = segment_starts(np.asarray(ep_start, bool))
@@ -617,7 +633,13 @@ def forward_uni(P, cfg, images, drives, actions, ep_start):
     if allow is not None:   # attention regions (task 00044): by the slots of query and key
         mask = mask & allow[idx[:, None] % nt, idx[None, :] % nt][None]
     hz = transformer(P, cfg, h, torch.tensor(mask)[:, None], uni_ages(cfg, T, nt))
-    logits = F.linear(hz, P["uni_out_w"], P["uni_out_b"]).reshape(S, T * nt, V, K)
+    logits = F.linear(hz, P["uni_out_w"], P["uni_out_b"])
+    if cfg.get("uni_chan", 0):   # each row's V values from the channel of the token it predicts
+        idx = np.tile(np.arange(V), (nt, 1))
+        idx[nt - 1, :2] = V, V + 1                                                 # the move token: the next body
+        idx[nt - 2, :3] = V + 2, V + 3, V + 4                                      # the token before it: the move
+        logits = logits.reshape(S, T, nt, V + 5, K)[:, :, np.arange(nt)[:, None], torch.tensor(idx)]
+    logits = logits.reshape(S, T * nt, V, K)
     return dict(h=hz, logits=logits, values=v, used=used, step=step)
 
 

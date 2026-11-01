@@ -92,7 +92,7 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # piece whose instinct predicts the lowest next hunger), random (the move of a random piece),
                       # council or veto (every piece scores every move: the lowest mean, or lowest worst), and the
                       # rules of task 00072 (pieces_move in lifetime.py): gain_sharp, soft, pessimism, rank, rank_first
-                      pieces=0, piece_rule="mean", piece_lambda=1.0, piece_temp=0.01,
+                      pieces=0, piece_rule="mean", piece_lambda=1.0, piece_temp=0.01, tie_tables="",
                       # task 00062 (lifetime.py, model.age_key on the GPU): act on a key and value ring, computing only
                       # each new step's tokens; profile: split the tick's time in the metrics (waits for the GPU)
                       ring=0, profile=0,

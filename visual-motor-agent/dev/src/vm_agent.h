@@ -85,7 +85,10 @@ typedef struct {
                         //     read at attention, score = q . (k + wpe[age]) / sqrt(hs), age = reader's step - key's step,
                         //     split among the heads as K, so a token's K and V do not depend on the window
     int img_w;          // universal: > 0 = frames img high and img_w wide (task 00064); 0 = square
+    int uni_chan;       // universal, in_bins: 1 = a channel per value (task 00075): W_in and W_out get V + 5 value positions, the body's
+                        //     2 and the move's 3 after the patch's V, so that no position has two meanings; 0 = all share 0..V-1
 } VMConfig;
+#define VM_UNI_EXTRA 5   // uni_chan: the value positions after a patch's: the body's 2, the move's 3 (task 00075)
 
 // The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
 // token right after the last patch of its block (uni_sum: a band of R rows; uni_pyr: a 2^l x 2^l block at level l, finer
@@ -271,6 +274,7 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
     if (c->age_key < 0 || c->age_key > 1 || (c->age_key && !c->universal)) return 0;
     if (c->img_w < 0) return 0;
+    if (c->uni_chan < 0 || c->uni_chan > 1 || (c->uni_chan && (!c->universal || !c->in_bins))) return 0;
     if (c->img_w > 0 && (!c->universal || c->patch <= 0 || c->img_w % c->patch || c->attn_split > 1 || c->attn_win ||
                          c->uni_sum || c->band_cols == 2))   // task 00064
         return 0;

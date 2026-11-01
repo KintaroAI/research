@@ -57,7 +57,8 @@ struct Dims {
     int patch, gp, npch, ntok, pdim, cell, cpx;   // patch tokens (0: the CNN model): side, grid, patches, tokens per
                                                   // step, values per patch, predicted cell side and values
     int act, cds, cfx;   // act token on/off (task 00020); prediction frame -> coarse frame block side; coarse values
-    int ib, VI;                 // bin-embedding input (task 00036): on/off; the input map's width (V or V * bins)
+    int ib, VI;                 // bin-embedding input (task 00036): on/off; the input map's width (V or VC * bins)
+    int cv, VC;                 // a channel per value (task 00075): on/off; the tables' value positions
     int uni, V, nbin, OV, ch;   // universal model (task 00023): on/off; values per token; bins per value; head
                                 // outputs; channels per patch pixel (1 with gray, else 3)
     int nsum, nnot;             // summary tokens per step (tasks 00047, 00048; 0: none); tokens without a target
@@ -81,8 +82,9 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         if (D.age && c.ctx > 32) return false;   // the softmax kernels keep one lane per age
         if (!vm_attn_valid(&c)) return false;
         D.ch = (D.uni && c.gray) ? 1 : 3;
-        D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0; D.OV = D.V * D.nbin;
-        D.ib = D.uni ? c.in_bins : 0; D.VI = D.ib ? D.V * D.nbin : D.V;
+        D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0;
+        D.cv = D.uni ? c.uni_chan : 0; D.VC = D.V + (D.cv ? VM_UNI_EXTRA : 0); D.OV = D.VC * D.nbin;
+        D.ib = D.uni ? c.in_bins : 0; D.VI = D.ib ? D.VC * D.nbin : D.V;
         if (c.pred_img % (c.img / D.patch) || c.d_model % c.n_head) return false;
         D.cell = c.pred_img / (c.img / D.patch); D.cpx = D.cell * D.cell * 3;
         D.img = c.img; D.in_ch = 5; D.c1 = c.c1; D.c2 = c.c2; D.c3 = c.c3;
@@ -96,7 +98,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         return true;
     }
     D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1; D.iw = c.img;
-    D.uni = D.V = D.nbin = D.OV = 0; D.ch = 3; D.nsum = D.nnot = 0; D.age = 0;
+    D.uni = D.V = D.nbin = D.OV = D.cv = D.VC = 0; D.ch = 3; D.nsum = D.nnot = 0; D.age = 0;
     if (c.universal || c.gray) return false;
     if (!c.coord || !c.pred_residual || !c.pred_skip) return false;
     if (c.img % 8 || c.pred_img % 4 || c.img / c.pred_img != 2 || c.d_model % c.n_head || c.pb <= 0) return false;
@@ -1108,7 +1110,7 @@ struct Buf {   // device float buffer, grown on demand; freed with its owner (no
 };
 
 struct Scratch {
-    Buf xin, ln1, ln1m, ln1r, att, datt, atty, res1, ln2, ln2m, ln2r, fch, fchg, res2, lnf, lnfm, lnfr, dz, dres, dln, datty, dqkv, dfch, dfchg, u_in, u_tgt, u_log, u_val, u_hot, dage, zm;
+    Buf xin, ln1, ln1m, ln1r, att, datt, atty, res1, ln2, ln2m, ln2r, fch, fchg, res2, lnf, lnfm, lnfr, dz, dres, dln, datty, dqkv, dfch, dfchg, u_in, u_tgt, u_log, u_lc, u_val, u_hot, dage, zm;
 };
 static Scratch* scratch_ = nullptr;
 static int scratch_users_ = 0;
@@ -1128,7 +1130,7 @@ struct Model {
         &atty = scr->atty, &res1 = scr->res1, &ln2 = scr->ln2, &ln2m = scr->ln2m, &ln2r = scr->ln2r, &fch = scr->fch,
         &fchg = scr->fchg, &res2 = scr->res2, &lnf = scr->lnf, &lnfm = scr->lnfm, &lnfr = scr->lnfr, &dz = scr->dz,
         &dres = scr->dres, &dln = scr->dln, &datty = scr->datty, &dqkv = scr->dqkv, &dfch = scr->dfch,
-        &dfchg = scr->dfchg, &u_in = scr->u_in, &u_tgt = scr->u_tgt, &u_log = scr->u_log, &u_val = scr->u_val,
+        &dfchg = scr->dfchg, &u_in = scr->u_in, &u_tgt = scr->u_tgt, &u_log = scr->u_log, &u_lc = scr->u_lc, &u_val = scr->u_val,
         &u_hot = scr->u_hot, &dage = scr->dage, &zm = scr->zm;
     VMConfig cfg;
     Dims D;
@@ -1180,6 +1182,7 @@ struct Model {
     int ce_S = 0, ce_T = 0;
     // the instinct's candidates (vmc_uni_candidates): their inputs, activations and outputs, one row per candidate
     Buf c_in, c_x, c_ln, c_lnm, c_lnr, c_qkv, c_att, c_res, c_fch, c_fchg, c_lg, c_val;
+    Buf c_lc, r_lc;                  // with a channel per value (task 00075): the head's logits by channel
     int *tstart = nullptr, *tend = nullptr;      // patch tokens: each token's key range
     unsigned char* allow = nullptr;              // attention regions (task 00044): [allow_nt^2] on the device, or NULL
     int* uslot = nullptr;                        // the universal model's slots [UNI_SLOT * ntok] on the device
@@ -1746,6 +1749,12 @@ __device__ inline int uni_used_(int k, int V, const int* sl) {
     const int kind = sl[UNI_SLOT * k];
     return kind == 0 ? 2 : (kind == 3 ? 3 : (kind == 2 ? (sl[UNI_SLOT * k + 4] ? V : 0) : V));
 }
+// A channel per value (task 00075; VC = V: off): where token k's values start in W_in, by its kind.
+__device__ inline int uni_chan_(int k, int V, int VC, const int* sl) {
+    if (VC == V) return 0;
+    const int kind = sl[UNI_SLOT * k];
+    return kind == 0 ? V : (kind == 3 ? V + 2 : 0);
+}
 __device__ inline float uni_value_(const uint8_t* img, const float* drv, const float* act, long b, int k, int j, int nt,
                                    int V, int S, int ps, int gp, int ch, const int* sl, int W) {
     const int* e = sl + UNI_SLOT * k;
@@ -1785,13 +1794,14 @@ __global__ void k_uni_tokens(const uint8_t* iimg, const float* idrv, const uint8
 }
 // Bin-embedding input (task 00036): hot [rows, V*K] = each used value of in [rows, V] (centred) split two-hot over
 // the K bins, unused values and bins 0 (hot zeroed before it). Row r is token r % nt (cand: every row a move token, nt - 1).
-__global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int K, int cand, const int* sl) {
+// hot's row is VC * K wide: a token's values start at its channel (task 00075).
+__global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int V, int VC, int K, int cand, const int* sl) {
     const long n = rows * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V;
         const long r = i / V;
         const int k = cand ? nt - 1 : (int)(r % nt);
-        float* o = hot + i * K;
+        float* o = hot + (r * VC + uni_chan_(k, V, VC, sl) + j) * K;
         if (j >= uni_used_(k, V, sl)) continue;
         const float p = fminf(fmaxf(in[i] + 0.5f, 0.f), 1.f) * (K - 1);
         const int lo = min((int)floorf(p), K - 2);
@@ -1801,14 +1811,14 @@ __global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int
     }
 }
 // The bin-embedding input without a dense two-hot array (task 00062): only each value's two bins are read. x [rows, d] =
-// the two-hot W_in map of in [rows, V] (centred; unused values 0) + bias; W [d, V * K].
-__global__ void k_uni_in(float* x, const float* in, const float* W, const float* bias, long rows, int V, int K, int d,
+// the two-hot W_in map of in [rows, V] (centred; unused values 0) + bias; W [d, VC * K].
+__global__ void k_uni_in(float* x, const float* in, const float* W, const float* bias, long rows, int V, int VC, int K, int d,
                          int nt, const int* sl) {
     const long n = rows * d;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const long r = i / d;
-        const int o = (int)(i % d), used = uni_used_((int)(r % nt), V, sl);
-        const float* w = W + (long)o * V * K;
+        const int k = (int)(r % nt), o = (int)(i % d), used = uni_used_(k, V, sl);
+        const float* w = W + (long)o * VC * K + (long)uni_chan_(k, V, VC, sl) * K;
         const float* v = in + r * V;
         float s = bias[o];
         for (int j = 0; j < used; j++) {
@@ -1839,7 +1849,7 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
 // UNI_LOSS_THREADS threads (a multiple of 32).
 #define UNI_LOSS_THREADS 256
 __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc,
-                           float* tok_ce, const int* sl, const float* bo) {
+                           float* tok_ce, const int* sl, const float* bo, int cv) {
     __shared__ double sh[2][UNI_LOSS_THREADS / 32];
     const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
     const int u = k == nt - 1 ? 2 : uni_used_(k + 1, V, sl), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
@@ -1848,12 +1858,13 @@ __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V,
         if (threadIdx.x == 0) tok_ce[r] = 0.f;
         return;
     }
+    const int ch = !cv ? 0 : (k == nt - 1 ? V : (k == nt - 2 ? V + 2 : 0));   // the bias of the predicted token's channel (task 00075)
     double ce = 0, se = 0;   // lane 0 of each warp
     for (int v = w; v < V; v += nw) {
         float* l = lg + ((long)r * V + v) * K;
         if (v >= u) { for (int b = lane; b < K; b += 32) l[b] = 0.f; continue; }
         float mx = -1e30f;
-        for (int b = lane; b < K; b += 32) { l[b] += bo[v * K + b]; mx = fmaxf(mx, l[b]); }   // the head's bias, here
+        for (int b = lane; b < K; b += 32) { l[b] += bo[(ch + v) * K + b]; mx = fmaxf(mx, l[b]); }   // the head's bias, here
         for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
         float sum = 0.f;
         for (int b = lane; b < K; b += 32) { const float e = expf(l[b] - mx); l[b] = e; sum += e; }
@@ -1938,6 +1949,22 @@ __global__ void k_uni_last2(const float* lnf, float* out, int B, int nt, int d) 
     }
 }
 // Forward only: per (row, value) the softmax in place and the expected value val [rows, V]
+// A channel per value (task 00075): the head's logits lc [rows, VC, K] by channel -> lg [rows, V, K] by value, so that all
+// that reads predictions stays as it is. Rows go in frames of nt: the last predicts the next body, the one before it
+// the move (their other values keep the patch channels); nt = 2: k_uni_last2's rows, nt = 1: candidates.
+// back: lg's gradients into lc (zeroed before it).
+__global__ void k_uni_pick(float* lc, float* lg, long rows, int nt, int V, int VC, int K, int back) {
+    const long n = rows * V * K;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const int b = (int)(i % K), j = (int)((i / K) % V);
+        const long r = i / ((long)V * K);
+        const int k = (int)(r % nt), ch = k == nt - 1 ? V : (k == nt - 2 ? V + 2 : 0), u = k == nt - 1 ? 2 : 3;
+        const bool own = ch && j < u;
+        float* c = lc + (r * VC + (own ? ch + j : j)) * K + b;
+        if (!back) lg[i] = *c;
+        else if (own || !ch) *c = lg[i];
+    }
+}
 __global__ void k_uni_probs(float* lg, float* val, long n, int K) {
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         float* l = lg + i * K;
@@ -2117,11 +2144,11 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     if (D.ib && train) {
         float* hot = M->u_hot.get((size_t)rows * D.VI);
         CK(cudaMemsetAsync(hot, 0, (size_t)rows * D.VI * sizeof(float)));
-        k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, K, 0, M->uslot);
+        k_uni_twohot<<<GRID((long)rows * V)>>>(in, hot, rows, nt, V, D.VC, K, 0, M->uslot);
         uin = hot;
     }
     PROF(1);
-    if (D.ib && !train) k_uni_in<<<GRID((long)rows * d)>>>(xin, in, P + off[UIW], P + off[UIB], (long)rows, V, K, d, nt, M->uslot);
+    if (D.ib && !train) k_uni_in<<<GRID((long)rows * d)>>>(xin, in, P + off[UIW], P + off[UIB], (long)rows, V, D.VC, K, d, nt, M->uslot);
     else gemm(M, false, true, rows, d, D.VI, uin, D.VI, P + off[UIW], D.VI, 0.f, xin, d);
     PROF(2);
     k_uni_embed<<<GRID((long)rows * d)>>>(xin, P + off[USL], D.age ? nullptr : P + off[WPE], M->pos, B, nt, d, 0, nullptr,
@@ -2133,15 +2160,19 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     if (!train && !all) {
         float* z2 = M->zm.get((size_t)B * 2 * d);
         k_uni_last2<<<GRID((long)B * 2 * d)>>>(lnf, z2, B, nt, d);
-        float* lg2 = M->u_log.get((size_t)B * 2 * D.OV);
-        linear(M, lg2, z2, P + off[UOW], P + off[UOB], B * 2, d, D.OV, 0);
+        float* lg2 = M->u_log.get((size_t)B * 2 * V * K);
+        float* lc2 = D.cv ? M->u_lc.get((size_t)B * 2 * D.OV) : lg2;
+        linear(M, lc2, z2, P + off[UOW], P + off[UOB], B * 2, d, D.OV, 0);
+        if (D.cv) k_uni_pick<<<GRID((long)B * 2 * V * K)>>>(lc2, lg2, (long)B * 2, 2, V, D.VC, K, 0);
         k_uni_probs<<<GRID((long)B * 2 * V)>>>(lg2, M->u_val.get((size_t)B * 2 * V), (long)B * 2 * V, K);
         CK(cudaGetLastError());
         return 0;
     }
-    float* lg = M->u_log.get((size_t)rows * D.OV);
-    if (train) gemm(M, false, true, rows, D.OV, d, lnf, d, P + off[UOW], d, 0.f, lg, D.OV);   // the loss adds the bias
-    else linear(M, lg, lnf, P + off[UOW], P + off[UOB], rows, d, D.OV, 0);
+    float* lg = M->u_log.get((size_t)rows * V * K);
+    float* lc = D.cv ? M->u_lc.get((size_t)rows * D.OV) : lg;
+    if (train) gemm(M, false, true, rows, D.OV, d, lnf, d, P + off[UOW], d, 0.f, lc, D.OV);   // the loss adds the bias
+    else linear(M, lc, lnf, P + off[UOW], P + off[UOB], rows, d, D.OV, 0);
+    if (D.cv) k_uni_pick<<<GRID((long)rows * V * K)>>>(lc, lg, (long)rows, nt, V, D.VC, K, 0);
     PROF(5);
     if (!train) {
         k_uni_probs<<<GRID((long)rows * V)>>>(lg, M->u_val.get((size_t)rows * V), (long)rows * V, K);
@@ -2152,12 +2183,16 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     for (int i = 0; i < 8; i++) M->coef[i] = 0.f;
     k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / ((float)B * (nt - D.nnot)), M->acc,
-                                           M->u_ce.get(rows), M->uslot, P + off[UOB]);   // the mean over the tokens with a target
+                                           M->u_ce.get(rows), M->uslot, P + off[UOB], D.cv);   // the mean over the tokens with a target
     M->ce_S = M->S;
     M->ce_T = T;
     PROF(6);
     float* dz = M->dz.get((size_t)rows * d);
-    linear_bwd(M, lg, lnf, P + off[UOW], rows, d, D.OV, dz, false, G + off[UOW], G + off[UOB]);
+    if (D.cv) {
+        CK(cudaMemsetAsync(lc, 0, (size_t)rows * D.OV * sizeof(float)));
+        k_uni_pick<<<GRID((long)rows * V * K)>>>(lc, lg, (long)rows, nt, V, D.VC, K, 1);
+    }
+    linear_bwd(M, lc, lnf, P + off[UOW], rows, d, D.OV, dz, false, G + off[UOW], G + off[UOB]);
     PROF(7);
     if (transformer_bwd(M, rows, KT, M->tstart, M->tend)) return -1;
     PROF(8);
@@ -2511,7 +2546,7 @@ static int uni_cand_core(Model* M, int Mc, const float* cand, float* hunger, boo
     if (D.ib) {
         float* hot = M->c_hot.get((size_t)R * D.VI);
         CK(cudaMemsetAsync(hot, 0, (size_t)R * D.VI * sizeof(float)));
-        k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.nbin, 1, M->uslot);
+        k_uni_twohot<<<GRID((long)R * V)>>>(cin, hot, R, nt, V, D.VC, D.nbin, 1, M->uslot);
         cuin = hot;
     }
     linear(M, x, cuin, P + off[UIW], P + off[UIB], R, D.VI, d, 0);
@@ -2536,8 +2571,10 @@ static int uni_cand_core(Model* M, int Mc, const float* cand, float* hunger, boo
         k_add_res<<<GRID((long)R * d)>>>(x, res, P + off[FPB] + l * d, (long)R, d);
     }
     k_ln_fwd<<<lnb, 256>>>(ln, lnm, lnr, x, P + off[LNFW], P + off[LNFB], R, d);
-    float* lg = M->c_lg.get((size_t)R * D.OV);
-    linear(M, lg, ln, P + off[UOW], P + off[UOB], R, d, D.OV, 0);
+    float* lg = M->c_lg.get((size_t)R * V * D.nbin);
+    float* lc = D.cv ? M->c_lc.get((size_t)R * D.OV) : lg;
+    linear(M, lc, ln, P + off[UOW], P + off[UOB], R, d, D.OV, 0);
+    if (D.cv) k_uni_pick<<<GRID((long)R * V * D.nbin)>>>(lc, lg, (long)R, 1, V, D.VC, D.nbin, 0);
     k_uni_probs<<<GRID((long)R * V)>>>(lg, val, (long)R * V, D.nbin);
     if (hunger)
         CK(cudaMemcpy2D(hunger, sizeof(float), val, (size_t)V * sizeof(float), sizeof(float), R, cudaMemcpyDeviceToHost));
@@ -2600,7 +2637,7 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
     k_uni_tokens<<<GRID((long)R * V)>>>(img, drv, img, drv, act, nullptr, in, nullptr, N, nt, V, S, D.patch, D.gp, D.ch,
                                         M->uslot, D.iw);
     float* x = M->r_x.get((size_t)R * d);
-    if (D.ib) k_uni_in<<<GRID((long)R * d)>>>(x, in, P + off[UIW], P + off[UIB], (long)R, V, K, d, nt, M->uslot);
+    if (D.ib) k_uni_in<<<GRID((long)R * d)>>>(x, in, P + off[UIW], P + off[UIB], (long)R, V, D.VC, K, d, nt, M->uslot);
     else gemm(M, false, true, R, d, D.VI, in, D.VI, P + off[UIW], D.VI, 0.f, x, d);
     k_uni_embed<<<GRID((long)R * d)>>>(x, P + off[USL], nullptr, nullptr, N, nt, d, 0, nullptr, nullptr,
                                        D.ib ? nullptr : P + off[UIB]);
@@ -2640,8 +2677,10 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
     k_ln_fwd<<<lnb, 256>>>(ln, lnm, lnr, x, P + off[LNFW], P + off[LNFB], R, d);
     float* z2 = M->r_z.get((size_t)N * 2 * d);
     k_uni_last2<<<GRID((long)N * 2 * d)>>>(ln, z2, N, nt, d);
-    float* lg = M->r_lg.get((size_t)N * 2 * D.OV);
-    linear(M, lg, z2, P + off[UOW], P + off[UOB], N * 2, d, D.OV, 0);
+    float* lg = M->r_lg.get((size_t)N * 2 * V * K);
+    float* lc = D.cv ? M->r_lc.get((size_t)N * 2 * D.OV) : lg;
+    linear(M, lc, z2, P + off[UOW], P + off[UOB], N * 2, d, D.OV, 0);
+    if (D.cv) k_uni_pick<<<GRID((long)N * 2 * V * K)>>>(lc, lg, (long)N * 2, 2, V, D.VC, K, 0);
     k_uni_probs<<<GRID((long)N * 2 * V)>>>(lg, M->r_val.get((size_t)N * 2 * V), (long)N * 2 * V, K);
     CK(cudaGetLastError());
     M->r_last = true;
@@ -2795,6 +2834,27 @@ int vmc_grads(void* h, float* out) {
 int vmc_set_params(void* h, const float* params) {
     Model* M = (Model*)h;
     CK(cudaMemcpy(M->P, params, M->n_params * sizeof(float), cudaMemcpyHostToDevice));
+    return 0;
+}
+// One table for several pieces (task 00076): params [off, off + len) of the n models (the same layout, one device) become
+// their mean; mean = 0: piece 0's.
+__global__ void k_tie_add(float* a, const float* b, float sb, float sa, long n) {
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x)
+        a[i] = sa * a[i] + (b ? sb * b[i] : 0.f);
+}
+int vmc_tie(void** hs, int n, long off, long len, int mean) {
+    if (n < 2 || off < 0 || len < 1) return -1;
+    float* a = ((Model*)hs[0])->P + off;
+    for (int i = 0; i < n; i++)
+        if (((Model*)hs[i])->n_params != ((Model*)hs[0])->n_params || off + len > ((Model*)hs[i])->n_params) return -1;
+    if (mean) {
+        for (int i = 1; i < n; i++)
+            k_tie_add<<<GRID(len)>>>(a, ((Model*)hs[i])->P + off, 1.f, 1.f, len);
+        k_tie_add<<<GRID(len)>>>(a, nullptr, 0.f, 1.0f / n, len);
+    }
+    for (int i = 1; i < n; i++)
+        CK(cudaMemcpyAsync(((Model*)hs[i])->P + off, a, (size_t)len * sizeof(float), cudaMemcpyDeviceToDevice));
+    CK(cudaGetLastError());
     return 0;
 }
 int vmc_sync(void* h) { CK(cudaDeviceSynchronize()); return 0; }

@@ -84,6 +84,7 @@ int vmc_params(void* h, float* out);   // device -> host copies of n_params floa
 int vmc_grads(void* h, float* out);
 int vmc_set_params(void* h, const float* params);   // host -> device (resets nothing else)
 int vmc_sync(void* h);
+int vmc_tie(void** hs, int n, long off, long len, int mean);   // task 00076: one table for n models
 
 #ifdef __cplusplus
 }
