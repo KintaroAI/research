@@ -133,6 +133,24 @@ def test_the_torus_has_no_edge():
     w.close()
 
 
+@pytest.mark.parametrize("hold", [1, 5], ids=["every_tick", "held_5"])
+def test_harsh_driving_never_tips_it(hold):
+    """The first car flipped under moves that change sharply, as a model's do, and stayed on its back (vm-00059)."""
+    w = world()
+    rng = np.random.default_rng(0)
+    worst = 0.0
+    m = np.zeros((1, 3), np.float32)
+    for t in range(1500):
+        if t % hold == 0:
+            m = rng.choice([-1.0, 1.0], (1, 3)).astype(np.float32)
+        w.step(m)
+        worst = max(worst, w.tilt(0))
+        assert w.datas[0].cam_xpos[0, 2] > 0.05                               # the camera stays above the floor
+    assert worst < 5.0 and w.stats()["car_max_tilt"] == worst
+    assert w.stats()["car_max_tilt"] == 0.0                                   # since the last read
+    w.close()
+
+
 SCHED = dict(dense=8, dense_hold=100, dense_end=400)
 
 
@@ -147,7 +165,7 @@ def test_the_schedule():
         now = w.counts(t)[0]
         assert now <= last
         last = now
-    assert w.stats() == dict(car_foods=24, car_poisons=24)
+    assert w.stats() == dict(car_foods=24, car_poisons=24, car_max_tilt=0.0)
     w.close()
 
 

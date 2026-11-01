@@ -70,6 +70,18 @@ Hits per 1,000 steps PD 7.2, 6.0, 6.3; PP 6.4, 7.2, 10.6; PL 6.6, 9.3, 7.9 (vm-0
 Hunger at the cap of 1: PD 0.23–0.34, PP 0.33–0.57, PL 0.40–0.53 of steps. Episodic test at 60k: PD 0.86, 0.71, 0.76;
 PP 0.84, 0.84, 0.87.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The patch model's prediction works for food, partly for poison** (hypotheses 1 and 2, partly supported). After a

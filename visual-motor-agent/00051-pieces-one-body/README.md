@@ -72,6 +72,22 @@ quadrant holds food within 16 pixels wins 21–26% of those ticks: chance.
 
 Touches by ticks since food follow all ticks (1–2 ticks after food: 6–10% of touches, 8–9% of ticks).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_QG_s1/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **The rule feeds back into the proposals.** A piece samples from its prediction of the move made. The mean makes a

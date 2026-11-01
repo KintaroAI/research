@@ -89,6 +89,22 @@ vm-00035, last quarter: TB 12–19 food / 9.8–17.3 poison; TSF4 12–21 / 3.6�
   390–500. The allocentric dreams (vm-00035) never empty (285–335 at step 200) but lose (TB) or misplace (TSF4) the
   cursor.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_ESF4_s3_vs_TSF4_s3/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **The prediction holds: poison falls further, and food doubles.** With the 4-step pair lookahead ESF4 touches 2.6

@@ -140,6 +140,22 @@ All samples: `exp_00039/text_dream_TC_t0.8.json`.
   test's numbers are 27.3 / 5.6, 39.6 / 6.8 and 60.4 / 3.0 (seed 3 is the best checkerboard seed in both arms).
   `forage.mp4` and `forage_sheet.png`: the split agent alone.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_EC_s3_vs_EB_s3/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **Image prediction survives the checkerboard, as it survived the row split.** Held-out patch cross-entropy is equal

@@ -73,6 +73,14 @@ leave to read philosophy, / And while I pause, serve in your harmony."*
   too son, and despair."*
 - GPT, sampled: *"ce they think Richarge: / To have we doubt that re-dange then thou, by condition / Most in time gone"*
 
+<!-- figures -->
+## Figures
+
+![Validation error](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The universal model generates as well as the classical GPT** given the same data. Teacher-forced it predicts the

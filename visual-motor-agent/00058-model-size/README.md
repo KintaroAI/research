@@ -42,6 +42,18 @@ The input and output tables grow with d, not d², so twice the width gives 2.84�
 | S | 15.9 / 17.3 | 24.0 / 11.3 | 31.1 / 6.9 | 34.5 / 5.4 | 33.8 / 3.7 | 41.1 / 2.7 |
 | B | 18.9 / 18.6 | 28.0 / 12.1 | 29.6 / 7.6 | 32.5 / 4.7 | 32.7 / 4.2 | 34.1 / 3.2 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Size barely changes foraging.** The three means lie inside a seed spread of 13–59, and vm-00055 puts the default's own eight seeds at 34.7 ± 10.2.

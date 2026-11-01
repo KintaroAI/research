@@ -71,6 +71,14 @@ alone 1.61–1.62); frozen 1.629 / 1.620 / 1.621; dni 1.643 / 1.620 / 1.644 (sti
 | dni: cosine of predicted and true gradient | 0.33–0.37 | 0.27–0.30 | 0.27–0.28 | 0.28–0.29 |
 | dni + tie: cosine | 0.39–0.40 | 0.33 | 0.31 | 0.31–0.32 |
 
+<!-- figures -->
+## Figures
+
+![Validation error](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed. The 8 best arms of 12 by their last value.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The stack learns with the cut; the best way across it is the bottom's own loss.** A random bottom already lets

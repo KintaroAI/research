@@ -73,6 +73,18 @@ baseline at 1.0 (1.249 / 1.251 under itself): 1.734 against 1.673 under GPT; at 
 - Self-forcing, sampled (T=1): *"us day to hell: / I' fear metlers and show's done. Ah, cousin, learn, / For no report,
   bewith good face son, yond,"*
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The expectation was wrong for prediction.** Self-forcing predicts real text better at every checkpoint of every

@@ -84,6 +84,22 @@ patches (661–980).
 | **U s3** | 1.00 / 0.91 | 24.2 / 6.7 (0.02) | 11.3 / 18.3 (0.30) | 10.9 / 30.3 (0.49) | 0.58 / 0.93 / 0.94 | 0.50 / 0.69 / 0.94 |
 | U, vm-00025 | 0.71–1.00 / 0.66–0.82 | 4.2–13.4 / 2.0–5.2 | 3.3–6.5 / 1.3–11.8 (0.02–0.28) | 2.4–10.9 / 1.7–31.8 | 0.60–0.82 / 0.63–0.83 / 0.86–0.90 | 0.17–0.78 / 0.59–0.83 / 0.58–0.91 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_S_s2/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **Surprise-gated memory still keeps every life working** (hypothesis 1, supported): no S life was trapped, and all

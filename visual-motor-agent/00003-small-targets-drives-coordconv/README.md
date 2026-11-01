@@ -106,6 +106,18 @@ Without a prediction loss, the only difference that reaches the policy is the tw
 channels. The prediction-head options (`pred_residual`, `pred_skip`) are unused when
 `ppo.pred_coef=0`.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Success per episode](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 1. **Babbling pre-training removes the small-target plateau (H1 confirmed, 2 seeds).**

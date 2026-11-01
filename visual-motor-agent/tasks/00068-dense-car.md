@@ -35,6 +35,14 @@
 `tests/test_car_world.py`: the counts at given ticks; a removed box is neither drawn nor touched; a touched box is replaced while the count stands; no
 schedule by default, with the same frames as before; invalid settings; a short lifetime with the schedule.
 
+## A Bug Found on the Way
+
+The first start of these runs was stopped at 36k and 20k ticks. Under moves that change sharply, as a model's do, the car of task 00067 flipped onto its back
+and stayed there: 58–66% of ticks upside down in a blind test, the camera below the floor. Only smooth drivers stayed up. The tall chassis had its wheels at the
+back and strong motors. The car now has a low ballast, its wheels under its centre with a skid at each end, and torque limits: at most 0.2° of tilt under the same
+drivers, 0.9 m/s, 2.6 rad/s. `car_max_tilt` is logged and `test_harsh_driving_never_tips_it` keeps it so. Outputs of the stopped start: `exp_00060_flipped/`. The
+blind drivers are rerun. vm-00059's results are from the flipping car.
+
 ## Results
 
 Pending.

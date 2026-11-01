@@ -87,6 +87,18 @@ The token under the cursor: 0.69–0.76 in every arm.
 All patch tokens side by side: cursor 0.90–0.97, circle 0.97–0.98, direction 0.76–0.88 (ASB highest: 0.97 / 0.98 /
 0.86–0.88).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 ### Parallel bodies make the best basic agent so far (hypothesis 3, supported)

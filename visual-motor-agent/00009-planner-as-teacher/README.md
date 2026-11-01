@@ -182,6 +182,18 @@ did the planner test and the probes.
 | TDM | +0.23, +0.47 | 0.52, 0.47 |
 | TDM+ | +0.38, +0.21 | 0.57, 0.71 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 ### The habit works without the planner (hypothesis 1, confirmed)

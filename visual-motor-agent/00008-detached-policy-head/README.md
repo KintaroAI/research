@@ -253,6 +253,18 @@ The circle from v at 50k: controls 0.16–0.40; D 0.25–0.74; DI 0.37–0.51; D
 Order: memory U seeds 1, 2, then memory R seeds 1, 2. vm-00007's agents: −0.05 to +0.04, and the command
 changed it by at most 0.03. Birth: +0.02, −0.01, with 23% of the steps at a wall.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 ### The move loss erodes the features (hypothesis 1, confirmed for the cursor, not for the circle)

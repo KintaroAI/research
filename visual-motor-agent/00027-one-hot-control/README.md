@@ -46,6 +46,18 @@ Val nats per letter (C: by glyph; B and GPT from vm-00026):
 | B (grey levels), 3 seeds | 2.39–2.40 | 2.03–2.10 | 1.94–1.98 | 1.82–1.89 | 1.84–1.85 | 1.80–1.82 | 1.796–1.804 |
 | classical GPT, 3 seeds | 1.67–1.69 | 1.615–1.635 | 1.62–1.63 | 1.66–1.70 | 1.71–1.78 | 1.80–1.92 | 1.615–1.617 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The embedding table speeds up learning but does not close the gap** (hypothesis rejected): one-hot letters learn

@@ -61,6 +61,18 @@ lifetime, and does vision gain or at least not lose?
 | U s3 | 0.98 / 1.00 / 0.99 | 26.5 / 10.2 (0.02) | 27.0 / 31.8 | 0.70 / 0.80 / 0.95 | 20.1 / 12.8 (0.04) | 0.719 / 0.272 / 0.669 |
 | **bins s3** | 0.82 / 0.67 / 0.87 | 11.0 / **4.4** (0.03) | 5.8 / 5.9 | 0.51 / 0.81 / 0.91 | 5.0 / 7.5 (0.07) | **0.708 / 0.249** / 0.169 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Text: the universal model is now as good as a classical GPT on the same data** (hypothesis 1, supported): its

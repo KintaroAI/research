@@ -222,6 +222,18 @@ Random babbling hits in 0.47–0.48 of its episodes (vm-00005 B).
   steps) to 0.03–0.04 (steps 95–100k). vm-00005's babbler, a different model with different
   data, reaches 0.018–0.020, so this comparison is only rough.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 1. **The world is learned, but the drives only with replay (hypothesis 1, partly).**

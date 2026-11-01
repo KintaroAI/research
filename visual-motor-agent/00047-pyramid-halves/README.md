@@ -63,6 +63,18 @@ vm-00046's NB, NB2, NB3a: 1.720–1.725 at their best (30k), 1.97 at 100k.
 | VS, 20k | 1.982 | 1.744 | 1.750 | 1.712 | 2.091 | 2.521 | 2.104 | 1.869 |
 | VS, 60k | 1.789 | 1.645 | 1.697 | 1.633 | 1.814 | **2.418** | 2.062 | 1.816 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The left half is as good as an unsplit model; the right half is not.** At 60k the left columns average 1.69, the

@@ -36,6 +36,18 @@ finding: CFT has none, CPT one seed.
 | CF | 21.2 / 15.3 | 22.0 / 5.8 | 32.5 / 4.1 |
 | CPT (1 seed) | 11.4 / 10.3 | 12.1 / 5.5 | not run |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Thumbnails did not help:** CFT has more than twice CF's poison in life, the reverse of what the world was built to show.

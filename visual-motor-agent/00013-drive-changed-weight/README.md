@@ -88,6 +88,18 @@ loss and in the latent hunger loss.
 
 For DMI (weight 10): contact R² up to 0.28 in one lifetime, no avoidance (0.059–0.104).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The weight does not make contact learned where it matters** (hypothesis 1, not supported). The drives head, which

@@ -118,6 +118,18 @@ vm-00010 (16×16, detached, episodic world): all patch tokens cursor 0.94–0.98
 
 P8D +0.142, +0.032, +0.157; P8A +0.041, +0.003, +0.030; P16A +0.014, +0.011, +0.025; P64A +0.057, +0.000, +0.065.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 ### No contact learned (hypothesis 1, not supported, and confounded)

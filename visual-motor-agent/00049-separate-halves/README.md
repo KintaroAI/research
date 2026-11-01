@@ -58,6 +58,18 @@ vm-00046's NB (the normal world, 66 tokens): 1.721 at its best.
 By line, H is level with NB3 everywhere (line 5, the bottom transformer's first, is 1.85 in H and ~1.88–2.26 in NB3
 across checkpoints: a bump of the text or the layout, not of the cut).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Horizontal halves lose nothing.** Two transformers with no shared weights, exchanging only thumbnails, predict as

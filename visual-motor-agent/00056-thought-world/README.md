@@ -60,6 +60,22 @@ drift, stall, and start again. Over the last 20k ticks of life a pixel changes 3
 | food / poison, frozen | 28.2 / 1.6 | 38.0 / 4.7 | 24.4 / 1.3 |
 | shuffled thought | 32.2 / 3.5 | 21.0 / 5.6 | 23.8 / 1.6 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![Stills from a video](images/sheet.png)
+
+*Stills from this experiment's video, in time order.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Thought stays alive,** on its own: waves are rarely needed. But it did not stay grey: each dream sharpens the last, and the field collapsed

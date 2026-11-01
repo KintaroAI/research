@@ -44,6 +44,18 @@ Val nats per letter (the rows marked vm-00026 for comparison):
 
 The offline universal model's train loss at 90–100k: 1.55–1.57 (the lifetime's: 1.56–1.59).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training); Validation error](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The data explains a part of the gap for GPT, none of it for the universal model.** On a lifetime's batches GPT is

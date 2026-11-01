@@ -109,6 +109,22 @@ What the videos show of the behaviour:
   consistent with R4: a dream that loses the cursor within a few steps cannot show the lookahead a contact 4 steps
   ahead.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_TSF4_s3_vs_TB_s1/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **The agent steers, without being rewarded for it.** Every run's own move prediction (instinct off) is near the

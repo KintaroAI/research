@@ -78,6 +78,22 @@ The cursor's distance after 16 dreamed steps over the life:
 | base s3 | 0.82 / 0.67 / 0.87 | 11.0 / 4.4 (0.03) | 5.8 / 5.9 | 0.51 / 0.81 / 0.91 | 10.4 / 8.4 → 13.7 / 7.2 | 5.0 / 7.5 (0.07) |
 | SF s3 | 0.88 / 0.86 / 0.90 | 8.8 / 2.8 (0.03) | 3.2 / 2.3 | 0.87 / 0.60 / 0.84 | 9.3 / 2.9 → 8.4 / 3.8 | 5.4 / 11.3 (0.13) |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The model's dream beside the real frames](images/sheet.png)
+
+*The model's dream beside the real frames (`video_SF_s2/dream_pair_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **The dream stays truer, the cursor's position most** (hypothesis 1, supported): after 16 dreamed steps the cursor

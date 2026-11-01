@@ -84,6 +84,18 @@ S's chunks were made surprising by the move token (10,372–12,537), the body to
 | S s2 | 0.96 / 0.98 | 9.7 / 12.8 (0.09) | 12.7 / 5.5 (0.03) | 9.8 / 10.0 (0.07) | 0.61 / 0.65 / 0.76 | 0.61 / 0.82 / 0.88 |
 | S s3 | 0.98 / 0.99 | 12.9 / 9.2 (0.06) | 17.3 / 4.9 (0.02) | 10.5 / 9.2 (0.06) | 0.51 / 0.80 / 0.68 | 0.56 / 0.91 / 0.87 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The most recent 100k steps trap every lifetime** (hypothesis 1, supported): U s1 from 380k, s2 from 340k (with

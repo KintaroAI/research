@@ -284,6 +284,18 @@ The region near the cursor is 4% of the frame, near the dots 21%.
 P0 −0.03, −0.16 / +0.01, −0.12; PD −0.09, −0.06 / −0.12, −0.14; PMD −0.04, −0.05 / −0.07, −0.05; CD −0.06, +0.02 /
 −0.11, +0.00; CMDI +0.00, +0.02 / −0.04, +0.12; D-U −0.02, +0.07 / −0.01, +0.12; DMI-U +0.20, +0.13 / +0.28, +0.13.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 ### The move token, not the patches, is the bottleneck (hypothesis 1, not supported)

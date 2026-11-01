@@ -77,6 +77,18 @@ Measures: the online clicks, the memory's composition, the frozen forage test wi
 (Right: the share of felt clicks whose predicted effect has the right sign; flat: clicks on nothing predicted within
 0.05. The true poison effect is about +0.47.)
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Surprise keeps the rare events** (hypothesis 1, supported): S's memory holds 2–5× the relief chunks of a random

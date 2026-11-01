@@ -72,6 +72,18 @@ Train loss at 90–100k: B 1.56–1.59 (val 1.80–1.82); A 3.26 (val 3.37).
 - **By position within A's token** (64 letters): flat, 3.29–3.38 at every position, the first letter (which directly
   follows the previous token's last letter) included.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training); Validation error](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **One letter per token works, about 0.18 nats per letter behind the classical GPT** (hypothesis 1, partly): B's best

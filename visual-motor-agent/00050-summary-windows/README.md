@@ -40,6 +40,18 @@ What does that cost?
 | Q | 1.825 | 1.695 | 1.686 | 1.661 | 1.773 | 1.682 | 1.675 | 1.630 |
 | W | 2.328 | 1.871 | 1.786 | 1.742 | 1.913 | 1.746 | 1.915 | 1.855 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Four pieces with every summary lose nothing:** Q is the best text result of its time, and still falling at 40k.

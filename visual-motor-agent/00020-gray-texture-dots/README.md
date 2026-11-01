@@ -65,6 +65,18 @@ All patch tokens: 0.95–0.97 / 0.99 / 0.88–0.91, with the eight moving dots o
 Online, last 10k: G0's food hits 0.6–1.8 per 1k with hunger at the cap 49–72% of the steps; GI's 3.0–16.1, the cap
 5–8%.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Grayscale with a texture works as well as colour for seeing** (hypothesis 2, supported): the patch tokens hold the

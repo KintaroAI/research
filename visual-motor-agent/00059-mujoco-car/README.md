@@ -6,6 +6,11 @@
 **Outputs:** `~/data/research/visual-motor-agent/exp_00059/`
 **Task plan:** [`../tasks/00067-mujoco-car.md`](../tasks/00067-mujoco-car.md)
 
+> **Correction (2026-10-31).** This car had a bug. Under moves that change sharply, as a model's do, it flipped onto its back and stayed there, with its camera below
+> the floor: 58–66% of ticks upside down in a blind test. The results below are from that car, so the model's food figures and the blind random driver's say
+> little about foraging, and the analysis's "too little experience" is at best part of the story. Only the plumbing result stands. The car is fixed in
+> [vm-00060](../00060-dense-car/README.md) (task 00068), which replaces this test.
+
 ## Goal
 
 A quick test: does the universal model live in a 3-D physics world, unchanged, and does its instinct work there?
@@ -46,6 +51,22 @@ A quick test: does the universal model live in a 3-D physics world, unchanged, a
 | s3 | 0.523 | 0.115 | 0.347 | 0.58, 0.64 |
 
 Speed: 29 ticks/s each, three together. The world alone runs ~2,000 ticks/s. Frozen, 1,000 ticks: 0, 1 and 2 food, no poison.
+
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*What the car's camera sees, under random moves.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![Stills from a video](images/sheet.png)
+
+*Stills from this experiment's video, in time order. The tilted horizon and the dark floor are the bug described in the correction above: the car had tipped over.*
+<!-- /figures -->
 
 ## Analysis
 

@@ -50,6 +50,18 @@ Close each, alone and together: a world where circles never overlap, and a counc
 | QC | 31.9 | 2.1 | 0.70 | 16–57% | 10–16% |
 | QCN | 34.5 | 1.6 | 0.81 | 0% | 17–27% |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **No overlap removes what it should:** same-tick touches go to zero, and poison falls 27% (4.8 to 3.5), matching the 26%

@@ -95,6 +95,18 @@ around them. Here it lives in the same worlds, on the GPU (task 00015).
 
 The hazards cover about 6.5% of the screen.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The planner agent forages three to seven times better than the basic agent** in every world (hypothesis 1), from

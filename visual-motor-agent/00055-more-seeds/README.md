@@ -34,6 +34,18 @@ to seeds 1–3 of vm-00052 and vm-00054. Fifteen lifetimes under MPS on the 3090
 | QNA | 21.9, 40.5, 59.2, 21.1, 31.8, 35.6, 29.2, 38.5 | 17.3, 33.9, 47.7, 15.8, 27.6, 29.0, 22.5, 40.2 | 0.95 |
 | QCA | 18.3, 36.3, 32.9, 41.6, 18.6, 26.4, 14.4, 41.7 | 22.8, 36.0, 28.1, 39.6, 16.7, 28.1, 18.6, 50.7 | 0.92 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Council's poison gain is real:** 1.5 against 3.3, intervals apart. Its food cost is probably real too: 28.8 against 41.4, intervals just touching.

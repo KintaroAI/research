@@ -116,8 +116,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
   - `reference/torch_reference.py`: float64 PyTorch re-implementation, used by the tests (and by
     `analyze_patch.py tokens` for all token outputs).
   - `configs/*.json`: runs from the plan's experiment matrix (A–F) plus reward-free babbling (P_*).
-- **`NNNNN-experiment-name/`**: experiment snapshots (README.md + Makefile only; the git tag
-  `exp/vm-NNNNN` preserves the source).
+- **`NNNNN-experiment-name/`**: experiment snapshots (README.md, Makefile, and `images/` with small PNGs for the README, at most 960 px wide and 200 KB each, made
+  by `dev/readme_images.py`; nothing else, and no other binaries; the git tag `exp/vm-NNNNN` preserves the source).
 - **`tasks/`**: numbered task plans (write one before implementing a plan).
 
 ## Build & Test (from dev/)

@@ -37,6 +37,18 @@ lives in the world, the model learns it by prediction, and the instinct avoids n
 | QT2 | 18.3 / 19.1 | 27.5 / 15.5 | 27.0 / 10.2 | 27.1 / 8.6 | 29.7 / 6.2 | 33.6 / 6.8 |
 | QT4 | 24.5 / 22.1 | 33.9 / 18.8 | 37.9 / 14.6 | 41.2 / 14.4 | 40.6 / 10.5 | 37.2 / 10.2 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The world did what no selection rule did:** smoothness 0.91 at c = 0.04. Learned through hunger alone, with no change

@@ -102,6 +102,18 @@ spends 55–87% of its steps at a wall (random babbling: 17%) and hits 0.2 times
 
 Share of steps inside a hazard (TH, forage test): 0.057, 0.062, 0.069 at birth; 0.066, 0.067, 0.064 at 60k.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 ### Walls absorb the habit (hypothesis 1, not with walls)

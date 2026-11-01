@@ -44,6 +44,14 @@ Val nats per letter:
 | **R7** | **input: bin embeddings** | 1.93 | 1.75 | 1.68 | 1.65 | **1.63** |
 | **R8** | **input: bin embeddings, GPT's initialisation** | 1.75 | 1.62 | **1.57** | 1.58 | 1.61 |
 
+<!-- figures -->
+## Figures
+
+![Validation error](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed. The 8 best arms of 9 by their last value.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The input map is the whole gap.** An embedding table for letters alone takes the universal model from 1.93–2.00

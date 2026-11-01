@@ -88,6 +88,18 @@ runs of this experiment).
 to raise it, and of clicks on nothing predicted flat, in the agent's real 8-step windows.) At 100k the click test
 ranks the arms the same way except U, which is still close to the others (food right 0.38–0.70, poison 0.53–0.80).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The recent steps alone are the worst memory** (hypothesis 1, supported): two of three U lifetimes ended stuck at

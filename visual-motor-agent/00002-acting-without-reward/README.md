@@ -206,6 +206,22 @@ The sweep confirms this is not a search problem:
 | horizon 20 | 0.81 | 11 |
 | horizon 20, colored noise β 2, σ0 1.0 | 0.88 | 9 |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Success per episode](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![Imagined against real frames](images/sheet.png)
+
+*Imagined against real frames (`006_P_dyn_p50_s1/analysis/ckpt_02097152/imagination.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 1. **A world model learned without reward supports goal-directed action.** The agent babbled with a

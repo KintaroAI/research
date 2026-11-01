@@ -6,7 +6,7 @@
 #
 # Usage:
 #   make runs   — 60k ticks, seeds 1-3: D (48 boxes, down to 6 by 40k, configs/U_car_dense.json), C (6 boxes, configs/U_car.json)
-#   make chance — blind drivers among 48, 24 and 12 boxes (6 boxes: exp_00059/chance.txt)
+#   make chance — blind drivers among 48, 24, 12 and 6 boxes
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -30,4 +30,4 @@ runs:
 
 chance:
 	mkdir -p $(OUT)
-	cd $(DEV) && for n in 24 12 6; do echo "== $$((2 * n)) boxes"; MUJOCO_EGL_DEVICE_ID=0 $(PY) car_chance.py --ticks 5000 --foods $$n --poisons $$n; done | tee $(OUT)/chance.txt
+	cd $(DEV) && for n in 24 12 6 3; do echo "== $$((2 * n)) boxes"; MUJOCO_EGL_DEVICE_ID=0 $(PY) car_chance.py --ticks 10000 --foods $$n --poisons $$n; done | tee $(OUT)/chance.txt

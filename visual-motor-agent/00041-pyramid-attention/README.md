@@ -138,6 +138,22 @@ cover column 7 for column 0.
   **EP 24 food, 11 poison; EB 66 food, 3 poison**. Over the 16 worlds the frozen test's numbers are 17.3 / 7.1 and
   60.4 / 3.0; seed 3 is EP's weakest seed. `forage.mp4` and `forage_sheet.png`: EP alone.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_EP_s3_vs_EB_s3/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **The pyramid scales as intended but does not pay off at this size.** Its share of the attention scores falls from

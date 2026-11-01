@@ -82,6 +82,22 @@ CH by seed, per 10k: s1 0.50, 0.46, 0.49, 0.45, 0.52, 0.50; s2 0.53, 0.47, 0.51,
 
 Videos: `exp_00057/videos/grey_fix_s3.mp4`, `grey_fix_s4.mp4`, CG over CT from the same start (`eval_thought.py --video` gives one run's).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![Stills from a video](images/sheet.png)
+
+*Stills from this experiment's video, in time order.*
+<!-- /figures -->
+
 ## Analysis
 
 - **No memory shown, and the test was not valid.** CT and CG sit on the floor, but the control that needs no memory reached only 0.542 ± 0.017,

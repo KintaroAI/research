@@ -35,12 +35,14 @@ XML = """
     <body name="car" pos="0 0 .03">
       <freejoint/>
       <geom name="chassis" type="box" size=".1 .06 .015" mass=".3" rgba=".5 .7 .9 1"/>
+      <geom name="ballast" type="box" size=".08 .05 .006" pos="0 0 -.012" mass="1" rgba=".5 .7 .9 1"/>
       <geom name="caster" type="sphere" size=".015" pos=".08 0 -.015" mass=".01" condim="1" priority="1" friction="0 0 0"/>
-      <body name="left" pos="-.05 .07 0" zaxis="0 1 0">
+      <geom name="tail" type="sphere" size=".015" pos="-.09 0 -.015" mass=".01" condim="1" priority="1" friction="0 0 0"/>
+      <body name="left" pos="0 .07 0" zaxis="0 1 0">
         <joint name="left"/>
         <geom type="cylinder" size=".03 .01" mass=".05" friction="1.5" rgba=".2 .2 .2 1"/>
       </body>
-      <body name="right" pos="-.05 -.07 0" zaxis="0 1 0">
+      <body name="right" pos="0 -.07 0" zaxis="0 1 0">
         <joint name="right"/>
         <geom type="cylinder" size=".03 .01" mass=".05" friction="1.5" rgba=".2 .2 .2 1"/>
       </body>
@@ -54,8 +56,8 @@ XML = """
     <fixed name="turn"><joint joint="left" coef="-.5"/><joint joint="right" coef=".5"/></fixed>
   </tendon>
   <actuator>
-    <velocity name="forward" tendon="forward" kv=".06"/>
-    <velocity name="turn" tendon="turn" kv=".06"/>
+    <velocity name="forward" tendon="forward" kv=".06" forcelimited="true" forcerange="-.12 .12"/>
+    <velocity name="turn" tendon="turn" kv=".06" forcelimited="true" forcerange="-.06 .06"/>
   </actuator>
 </mujoco>
 """
@@ -126,6 +128,7 @@ class CarWorld:
         self.car_q = self.model.jnt_qposadr[0]
         self.rng = np.random.default_rng(seed)
         self.t = 0                             # the world's tick, for the schedule
+        self.max_tilt = 0.0                    # since the last stats()
         self.hunger = np.full(self.num_envs, 0.5)
         self.obj = np.full((self.num_envs, self.K, 2), np.nan)
         for b in range(self.num_envs):
@@ -155,6 +158,11 @@ class CarWorld:
         a[:f] = True
         a[self.F:self.F + p] = True
         return a
+
+    def tilt(self, b: int) -> float:
+        """Degrees between the car's up and the world's: 0 on its wheels, 180 on its back."""
+        w, x, y, z = self.datas[b].qpos[self.car_q + 3:self.car_q + 7]
+        return float(np.degrees(np.arccos(np.clip(1.0 - 2.0 * (x * x + y * y), -1.0, 1.0))))
 
     def yaw(self, b: int) -> float:
         w, x, y, z = self.datas[b].qpos[self.car_q + 3:self.car_q + 7]
@@ -228,6 +236,7 @@ class CarWorld:
             d.ctrl[0] = a[b, 1] * c.speed
             d.ctrl[1] = a[b, 0] * c.spin
             self.mj.mj_step(self.model, d, nstep=c.frame_skip)
+            self.max_tilt = max(self.max_tilt, self.tilt(b))
             xy = self._xy(b)
             rel = self.near(b, xy)
             for k in np.flatnonzero(alive & (np.hypot(rel[:, 0], rel[:, 1]) < c.touch)):
@@ -250,7 +259,9 @@ class CarWorld:
 
     def stats(self) -> Dict[str, Any]:
         f, p = self.counts()
-        return dict(car_foods=f, car_poisons=p)
+        out = dict(car_foods=f, car_poisons=p, car_max_tilt=self.max_tilt)
+        self.max_tilt = 0.0
+        return out
 
     def close(self) -> None:
         for r in self.renderers.values():

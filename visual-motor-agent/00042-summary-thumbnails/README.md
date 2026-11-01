@@ -100,6 +100,18 @@ TPT: COMINIUS:
 
 Prediction held: patch cross-entropy over the same ticks is 0.707–0.716 against EB's 0.717.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Thumbnails do not bring the food back.** The suspicion of vm-00040 was a content-free token predicting the move. EFT

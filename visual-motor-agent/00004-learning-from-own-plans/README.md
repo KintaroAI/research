@@ -210,6 +210,22 @@ B, 54–77%.
   manifold of real latents. Training it on imagined chain steps blurs the edge, but keeps the cost
   robust to the model's own errors.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Success per episode](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![Imagined against real frames](images/sheet.png)
+
+*Imagined against real frames (`006_B_babble_from006_s1/analysis/ckpt_00262144/imagination.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 1. **Learning from its own plans brings the planner to PPO level, still without reward.**

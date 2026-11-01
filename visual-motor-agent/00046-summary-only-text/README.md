@@ -63,6 +63,18 @@ Within 1% over the whole life.
 NB repeats vm-00030's baseline seed 1 (1.718 at 30k, 1.972 at 100k). Every text lifetime overfits after ~30k: the
 corpus is ~1M letters, and a 100k-step memory replays it over and over.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The text world as this experiment's model sees it: each frame is a page, one letter per block of grey.*
+
+![Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The premise holds.** NB2's thumbnails carry exactly what NB's patches do, and a model fed only them learns the

@@ -36,6 +36,18 @@ when task 00052 found the position bug, and not resumed, since these arms carry 
 | SF (2 seeds) | 12.9 / 13.2 | 15.7 / 7.7 | not run |
 | SFT | 19.7 / 13.2 | 22.0 / 8.6 | 26.0 / 6.4 (2 seeds) |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The control fell the most:** SB is 43% under EB, though only the poison's outline changed. The summary arms barely moved.

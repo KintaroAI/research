@@ -79,6 +79,18 @@ step, so the cap is rarely reached and most hazard steps leave a trace.
 The planner's imagined extra hunger inside a hazard (12 still steps; world +0.183): +0.020, +0.013, −0.009 at 20k;
 −0.012, −0.002, −0.010 at 40k. Hunger at the cap: 0.00–0.19 of steps (online, last 10k).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Without the cap, the CNN agent learns contact** (hypothesis 1, partly supported). DMI's drives head predicts

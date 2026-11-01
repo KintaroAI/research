@@ -100,6 +100,18 @@ H4 models at 100k also with the 1-step instinct:
 | U s2 | 9.2 / 12.8 (0.09) | 4.5 / 5.7 (0.08) | | 4.9 / 3.8 (0.01) |
 | U s3 | 25.8 / 28.9 (0.16) | 28.1 / 32.6 (0.13) | | 26.9 / 13.4 (0.04) |
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The model can use 4 steps, but not with its own imagined frames.** Given the real future frames, its 4-step

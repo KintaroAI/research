@@ -44,6 +44,18 @@ scrambled, and lost about 40% of the food while predicting well. Was this the ca
 
 XTP's best: 1.914 / 1.924 / 1.916 (mean 1.918), against TP's 1.921 with the bug.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The bug was real, and it was not the cause.** With the codes right, summaries collect no more: XF and XFT are below EF and

@@ -60,6 +60,22 @@ can a tick get?
 QN alone, no timing waits: 50.4 to **57.7 ticks/s** from batching the attention GEMMs; with the age key and the ring, 44.8 to
 50.6. The update is ~70% of a tick; a call costs ~33 µs, whatever it computes.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![Stills from a video](images/sheet.png)
+
+*Stills from this experiment's video, in time order.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The age key costs nothing.** In text it is the best result so far (1.681, one seed, against 1.703), still falling at 40k.

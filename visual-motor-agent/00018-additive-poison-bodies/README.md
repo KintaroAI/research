@@ -63,6 +63,18 @@ Two follow-ups to vm-00017, both about whether the prediction works:
 Online, last 10k: food hits Q1 7.5–9.2, Q32 5.3–5.8, Q1B 8.1–11.0 per 1k; poison clicks 6–21 per 1k; hunger at the cap
 0.21–0.48 of steps.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The prediction works by 100k in every arm** (hypothesis 1, mostly supported): food −0.08 to −0.27 of −0.30,

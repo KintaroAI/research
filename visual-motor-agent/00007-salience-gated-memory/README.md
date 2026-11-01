@@ -348,6 +348,22 @@ circle's edge (`analyze_imagination.py`, 30k):
 
 Relative to inside, R's imagined relief outside is the same as U's (0.55–0.58 against 0.51–0.56).
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed. The 8 best arms of 12 by their last value.*
+
+![Imagined against real frames](images/sheet.png)
+
+*Imagined against real frames (`032_L_U50_s4/analysis/ckpt_00030000/imagination.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 ### Basic agent: the gate changes the memory, not the moves

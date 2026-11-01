@@ -68,6 +68,18 @@ on 1–10% of ticks.
 
 All patch tokens: cursor 0.95–0.97, direction 0.88–0.91; the last patch's output (the policy's input): direction 0.23–0.39.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **Food is learned with time, poison is not, in the click test** (hypothesis 1, partly): by 200k three seeds of six

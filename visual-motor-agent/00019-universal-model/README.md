@@ -82,6 +82,18 @@ the instinct overrode the policy's first sample on 2–6% of ticks; hunger at th
 
 Cross-entropy per value: body 0.24–0.28, patch 0.63, move 0.31–1.42; the patch values' squared error 0.0015–0.0020.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+<!-- /figures -->
+
 ## Analysis
 
 - **The universal model works, and nothing erases the scene** (hypothesis 2, supported). With the move loss attached and

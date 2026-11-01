@@ -144,6 +144,22 @@ All samples: `exp_00037/text_dream_{base,TS,TV}_t0.8.json`.
 - ES's hunger climbs through long stretches between meals and jumps at poison touches throughout; EB's stays near 0,
   a meal every 15 steps or so; ESg is in between, with few poison touches.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_ES_s3_vs_EB_s3/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **In the image world the split costs prediction nothing.** Held-out patch cross-entropy is equal or slightly better

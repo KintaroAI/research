@@ -175,6 +175,22 @@ By column (seed 1): EW 0.820 0.781 0.777 0.750 0.739 0.785 0.784 0.786; EH 0.793
   28.3 / 22.7 and 60.4 / 3.0. EH s3 is the seed whose poison avoidance broke most. `forage.mp4` and
   `forage_sheet.png`: EH alone.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Food touched per 1k ticks; Poison touched per 1k ticks; Text: patch cross-entropy (training)](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![The frozen agent foraging](images/sheet.png)
+
+*The frozen agent foraging (`video_EH_s3_vs_EB_s3/forage_sheet.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 - **In text the hierarchy nearly closes the gap at a third of the cost.**

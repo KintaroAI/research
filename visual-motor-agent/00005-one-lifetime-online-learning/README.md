@@ -278,6 +278,22 @@ noted (`make r4`, `make continue`).
      190k–200k, and by 43–45% between 100k and 200k. With a fresh optimizer they move 13% in 5k
      steps.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Targets hit per 1k ticks](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed.*
+
+![Imagined against real frames](images/sheet.png)
+
+*Imagined against real frames (`009_B_online_babble_s2/analysis/ckpt_00200000/imagination.png`).*
+<!-- /figures -->
+
 ## Analysis
 
 1. **One lifetime is enough (hypotheses 1 and 2, confirmed).**

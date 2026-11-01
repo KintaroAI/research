@@ -346,6 +346,18 @@ These gaps are one or two evaluation intervals in a single seed, within the seed
 radius 12–16. Both arms end at 1.00 success and a median of 10–11 steps. This long plateau with no
 reward signal is the regime where reward-free pre-training should matter most.
 
+<!-- figures -->
+## Figures
+
+![Frames of the world](images/world.png)
+
+*The world of this experiment as its model sees it, every 12 ticks. Moves are random: this shows the world, not the trained agent.*
+
+![Success per episode](images/curves.png)
+
+*From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed. The 8 best arms of 19 by their last value.*
+<!-- /figures -->
+
 ## Analysis
 
 **Reward-free learning of action consequences.** Learning is ordered by frequency and locality:
