@@ -1,7 +1,7 @@
 # vm-00063: Ways to Choose the Move
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00063` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00063/`
 **Task plan:** [`../tasks/00072-selection-rules.md`](../tasks/00072-selection-rules.md)

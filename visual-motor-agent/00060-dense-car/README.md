@@ -1,7 +1,7 @@
 # vm-00060: A Dense Start for the Car
 
 **Date:** 2026-10-31
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00060` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00060/` (the stopped first start, with the car that flipped: `exp_00060_flipped/`)
 **Task plan:** [`../tasks/00068-dense-car.md`](../tasks/00068-dense-car.md)

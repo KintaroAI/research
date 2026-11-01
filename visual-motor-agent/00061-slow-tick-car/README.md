@@ -1,7 +1,7 @@
 # vm-00061: A Slower Tick for the Car
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00061` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00061/`
 **Task plan:** [`../tasks/00070-slow-tick-car.md`](../tasks/00070-slow-tick-car.md)

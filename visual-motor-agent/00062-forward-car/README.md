@@ -1,7 +1,7 @@
 # vm-00062: A Car That Only Goes Forward
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00062` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00062/`
 **Task plan:** [`../tasks/00071-forward-car.md`](../tasks/00071-forward-car.md)
