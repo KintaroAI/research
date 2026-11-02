@@ -147,6 +147,15 @@ def test_each_piece_is_read_from_its_own_slots():
         assert (agent_lib.uni_layout(a.config)["kind"][p + 1] == 1).all()
 
 
+def test_the_first_patch_of_a_thing():
+    from eval_sense import first_patch
+    m = np.zeros((64, 64), bool)
+    assert first_patch(m, 64, 8) is None
+    m[18:40, 26:44] = True                # patch (2, 3) holds 6 x 6 of it, a quarter or more
+    f = first_patch(m, 64, 8)
+    assert f[18:24, 26:32].all() and f.sum() == 36
+
+
 def test_a_lifetime_and_its_frozen_test(tmp_path):
     out = str(tmp_path / "x")
     cmd = [sys.executable, "lifetime.py", "--config", "configs/U_sense.json", "-o", out, "--set", "online.steps=40", "--set", "online.save_every=40",

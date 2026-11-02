@@ -1,7 +1,7 @@
 # Task 00081: Two Senses, One Body (experiment vm-00070)
 
 **Date:** 2026-11-01
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -49,8 +49,10 @@ If 2 fails while 1 holds, words reach the view's piece too weakly, and the summa
 
 ## Verification
 
-`tests/test_sense_world.py`, 10 tests: the view half is the world's, the text half the sentence; drops last longer than the context, never both; `cut` turns both off; shuffled words match by chance; a lifetime and its frozen test run. No model code changes.
+`tests/test_sense_world.py`, 12 tests: the view half is the world's, the text half the sentence; drops last longer than the context, never both; `cut` turns both off; shuffled words match by chance; each piece is read from its own slots; the first patch of a thing; a lifetime and its frozen test run. No model code changes.
 
 ## Results
 
-Pending.
+Eight seeds each. **Readings 1 and 3 are met, reading 2 is not.** As lived minus cut, ST against SS: letters +0.059 ± 0.020 against +0.010 ± 0.014; error over the named thing −0.0008 ± 0.0016 against −0.0008 ± 0.0010; food with the eyes closed +7.7 ± 4.9 against +1.1 ± 3.4. Whole sentences 0.67 against 0.07, and poison with the eyes closed 3.5 against 14.1 per 1k ticks.
+
+The fallback above is wrong: added after the results, `eval_steer.py` shows that the view piece proposes moves from the words as well as the text piece does, so words do reach it. The first-patch error, also added, does not clear zero. Words reach the view piece's move and not, as far as these scores can see, its picture. The scorer had a bug (a piece read from another's slots), fixed before SS was scored. Full results in `../00070-two-senses/README.md`.

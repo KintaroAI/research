@@ -7,6 +7,7 @@
 #   make runs-st — ST, the true teacher, seeds 1-8, on the RTX 4090
 #   make runs-ss — SS, shuffled words, seeds 1-8, on the RTX 4090 too
 #   make eval    — eval_sense.py on both arms, as lived and cut, on GPU $(GPU)
+#   make steer   — eval_steer.py on both arms, on GPU $(GPU): who steers with the eyes closed, and where to
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -15,9 +16,9 @@ G = CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pi
 RUN = $(PY) lifetime.py --config configs/U_sense.json
 GPU = 1
 
-.PHONY: all runs-st runs-ss eval
+.PHONY: all runs-st runs-ss eval steer
 
-all: runs-st runs-ss eval
+all: runs-st runs-ss eval steer
 
 runs-st:
 	mkdir -p $(OUT)
@@ -34,4 +35,9 @@ runs-ss:
 eval:
 	cd $(DEV) && for a in ST SS; do \
 	  CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$(GPU) $(PY) eval_sense.py $$(ls -d $(OUT)/$${a}_s?) > $(OUT)/eval_$$a.jsonl; \
+	done
+
+steer:
+	cd $(DEV) && for a in ST SS; do \
+	  CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$(GPU) $(PY) eval_steer.py $$(ls -d $(OUT)/$${a}_s?) > $(OUT)/steer_$$a.jsonl; \
 	done

@@ -4,7 +4,8 @@ back, from a window that holds nothing of it, as the context is shorter than the
   words from the picture: at the teacher's return, the letters of its sentence after the first, read from the text piece's
     prediction (within a frame each token sees the tokens before it, so the first letter only says that the text is back). The
     rest of a word follows from its first letter, so `direction` and `range` give the first letters of those two words alone;
-  the picture from words: at the eyes' return, the view piece's error per pixel, over the view and over the thing the teacher names.
+  the picture from words: at the eyes' return, the view piece's error per pixel, over the view and over the thing the teacher names,
+    and over the thing's first patch: the rest of it is given away by the patches before it in the frame.
 And food and poison per 1k ticks with the eyes closed, and with them open.
 
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_sense.py RUN [RUN ...] --ticks 1500
@@ -35,6 +36,20 @@ def read_letters(frame, size):
     return np.abs(cell[..., None] - lv).argmin(-1)
 
 
+def first_patch(m, H, p):
+    """The thing's pixels [H, H] bool in the first patch, in reading order, that holds a quarter of a patch of it (None if none):
+    the only part of it that nothing earlier in the frame gives away."""
+    g = H // p
+    n = m.reshape(g, p, g, p).sum((1, 3)).ravel()
+    i = np.flatnonzero(n * 4 >= p * p)
+    if not len(i):
+        return None
+    r, c = np.unravel_index(i[0], (g, g))
+    f = np.zeros_like(m)
+    f[r * p:(r + 1) * p, c * p:(c + 1) * p] = m[r * p:(r + 1) * p, c * p:(c + 1) * p]
+    return f
+
+
 def patch_slots(agents):
     """The tokens that predict each piece's patches: a piece's own, as the summaries between them fall differently in each."""
     return [agent_lib.uni_layout(a.config)["patch"] - 1 for a in agents]
@@ -56,7 +71,7 @@ def live(path, ticks, bodies, seed, cut, rule):
     obs = env.observe()
     hist, es = [], np.ones(bodies, np.uint8)
     was = dict(eyes=env.eyes > 0, quiet=env.quiet > 0)
-    r = dict(blind=0, seen=0, food_blind=0, food_seen=0, poison_blind=0, poison_seen=0, mae=[], mae_thing=[], letters=[], sentences=[], direction=[], range=[])
+    r = dict(blind=0, seen=0, food_blind=0, food_seen=0, poison_blind=0, poison_seen=0, mae=[], mae_thing=[], letters=[], sentences=[], direction=[], range=[], first_mae=[], first_pred=[], first_real=[])
     yy, xx = np.mgrid[:H, :H] - H / 2.0
     for t in range(ticks):
         cur = dict(img=obs["image"], drv=obs["drives"], act=np.zeros((bodies, 3), np.float32), es=es)
@@ -80,6 +95,11 @@ def live(path, ticks, bodies, seed, cut, rule):
                         m = np.hypot(dx, dy) <= rad[b]
                         r["mae"].append(np.abs(pred[i] - real[i]).mean() / 255.0)
                         r["mae_thing"].append(np.abs(pred[i] - real[i])[m].mean() / 255.0 if m.any() else np.nan)
+                        f = first_patch(m, H, c["patch"])
+                        if f is not None:
+                            r["first_mae"].append(np.abs(pred[i] - real[i])[f].mean() / 255.0)
+                            r["first_pred"].append(pred[i][f].mean() / 255.0)
+                            r["first_real"].append(real[i][f].mean() / 255.0)
                 else:
                     for i, b in enumerate(idx):
                         want = read_letters(real[i], H)[:len(WORDS)]
@@ -129,6 +149,7 @@ def main():
                        sentences=float(np.mean(r["sentences"])) if r["sentences"] else None, n_text=len(r["letters"]),
                        direction=float(np.mean(r["direction"])) if r["direction"] else None,
                        range=float(np.mean(r["range"])) if r["range"] else None,
+                       **{k: float(np.mean(r[k])) if r[k] else None for k in ("first_mae", "first_pred", "first_real")},
                        food_blind=1000.0 * r["food_blind"] / max(r["blind"], 1), poison_blind=1000.0 * r["poison_blind"] / max(r["blind"], 1),
                        food_seen=1000.0 * r["food_seen"] / max(r["seen"], 1), poison_seen=1000.0 * r["poison_seen"] / max(r["seen"], 1))
             print(json.dumps(row), flush=True)

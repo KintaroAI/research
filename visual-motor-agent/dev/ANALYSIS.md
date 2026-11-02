@@ -117,6 +117,15 @@ random, council, veto, sharp, gain_sharp). `--touch` takes each poison touch apa
 run's `metrics.jsonl`, over 40k-60k: `all_hits_per_1k`, `all_poison_per_1k`, per piece `prop_dx_pK`, `agree_pK`,
 `won_x_pK`.
 
+## 5c. Two senses (`eval_sense.py`, `eval_steer.py`, task 00081)
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_sense.py RUN [RUN ...] --ticks 1500 > eval.jsonl
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_steer.py RUN [RUN ...] --ticks 1500 > steer.jsonl
+```
+
+`eval_sense.py`: two rows per run, as lived and `cut`, where the other sense goes off too. Each sense is scored at its first tick back: `letters`, `sentences`, `direction`, `range` for the teacher, `mae`, `mae_thing`, `first_mae` for the eyes; then food and poison per 1k ticks with the eyes closed and open. Read lived minus cut seed by seed, and against the shuffled arm. `eval_steer.py`: with the eyes open, closed within the context, and closed past it: food, poison, who made the move, and the aim of each piece's proposal. Read a piece from its own layout: `uni_layout(piece.config)`, as summaries fall differently in each.
+
 ## 6. Writing up
 
 The experiment directory holds only README.md and Makefile (the tag keeps the code). The README is the report: goal,
