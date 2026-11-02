@@ -36,4 +36,9 @@ Short trial: 2,200 ticks of LT with `online.replay=500000`, 13.8 ticks/s against
 
 ## Results
 
-Pending.
+Interim: LD finished at 500k, LT at 422k. See the [README](../00069-long-life-pieces/README.md).
+
+- Reading 1: no LD life trapped (worst mean hunger 0.076, least food 35.5). LT to come.
+- Reading 2: met for LD by poison, −2.40 ± 0.60, with food +1.6 ± 5.2. LT to come.
+- Reading 3: not judged. At 400–420k LT − LD food is +15.7 ± 12.0.
+- Not asked in advance: move CE climbs from 0.16 to 0.91 over LD's life with the moves about the same, and at 500k `gain` does no better than a random piece.

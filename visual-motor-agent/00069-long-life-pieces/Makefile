@@ -5,7 +5,9 @@
 #
 # Usage:
 #   make runs-lt — LT, seeds 1-4 on the RTX 4090: 16 pieces, shared tables; about 10 hours
-#   make runs-ld — LD, seeds 1-4 on the RTX 3090: the default, 4 pieces; about 7 hours
+#   make runs-ld — LD, seeds 1-4 on the RTX 3090: the default, 4 pieces; about 8 hours
+#   make frozen — eval_pieces.py at the end of each life, gain and a random piece, without MPS, on the RTX 3090 (frozen_LD.txt, frozen_LT.txt)
+#   make videos — frozen agents at 500k from the same start: LD's four seeds (videos/ld_seeds/compare.mp4; the single ARM.mp4 is the last seed, since all four runs are named LD)
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -13,7 +15,7 @@ OUT = $(HOME)/data/research/visual-motor-agent/exp_00069
 G = CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pipe
 RUN = $(PY) lifetime.py --config configs/U_default.json --set online.steps=500000 --set online.replay=500000 --set online.save_every=50000
 
-.PHONY: all runs-lt runs-ld
+.PHONY: all runs-lt runs-ld frozen videos
 
 all: runs-lt runs-ld
 
@@ -28,3 +30,15 @@ runs-ld:
 	cd $(DEV) && { for s in 1 2 3 4; do \
 	  $(G) CUDA_VISIBLE_DEVICES=0 $(RUN) --seed $$s --set name=LD -o $(OUT)/LD_s$$s > $(OUT)/LD_s$$s.log 2>&1 & \
 	done; wait; }
+
+frozen:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 && for a in LD LT; do \
+	  for s in 1 2 3 4; do \
+	    $(PY) eval_pieces.py $(OUT)/$${a}_s$$s --rule gain --ring; \
+	    $(PY) eval_pieces.py $(OUT)/$${a}_s$$s --rule random --ring; \
+	  done > $(OUT)/frozen_$$a.txt 2>&1; \
+	done
+
+videos:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 $(PY) compare_video.py --cols 2 --worlds 16 --step 500000 -o $(OUT)/videos/ld_seeds \
+	  "$(OUT)/LD_s1:LD seed 1:gain" "$(OUT)/LD_s2:LD seed 2:gain" "$(OUT)/LD_s3:LD seed 3:gain" "$(OUT)/LD_s4:LD seed 4:gain"
