@@ -1,7 +1,7 @@
 # vm-00070: Two Senses, One Body
 
 **Date:** 2026-11-02
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00070` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00070/`
 **Task plan:** [`../tasks/00081-two-senses.md`](../tasks/00081-two-senses.md)
