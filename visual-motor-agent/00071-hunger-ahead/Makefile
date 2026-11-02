@@ -5,7 +5,7 @@
 #
 # Usage:
 #   make runs — K1, K4, K16, seeds 1-3 on the RTX 4090 and 4-6 on the RTX 3090, nine lives on each at once
-#   make frozen — eval_hunger.py chain and reach on all 18 lives, then the tables, the readings against K1 and images/aim.png
+#   make frozen — eval_hunger.py chain, reach and poison on all 18 lives, then the tables, the readings against K1 and images/aim.png
 #   make videos — K1, K4, K16 side by side from the same start, seeds 3 and 2
 
 DEV = ../dev
@@ -26,14 +26,14 @@ runs:
 	done; done; wait; }
 
 frozen:
-	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { for w in chain reach; do \
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { for w in chain reach poison; do \
 	  { CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py $$w $(OUT)/K1_s1 $(OUT)/K4_s1 $(OUT)/K16_s1 $(OUT)/K1_s2 $(OUT)/K4_s2 $(OUT)/K16_s2 --ticks 1500 & \
 	    CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py $$w $(OUT)/K1_s3 $(OUT)/K4_s3 $(OUT)/K16_s3 --ticks 1500 & \
 	    CUDA_VISIBLE_DEVICES=1 $(PY) eval_hunger.py $$w $(OUT)/K1_s4 $(OUT)/K4_s4 $(OUT)/K16_s4 $(OUT)/K1_s5 $(OUT)/K4_s5 $(OUT)/K16_s5 --ticks 1500 & \
 	    CUDA_VISIBLE_DEVICES=1 $(PY) eval_hunger.py $$w $(OUT)/K1_s6 $(OUT)/K4_s6 $(OUT)/K16_s6 --ticks 1500 & \
 	    wait; } > $(OUT)/hunger_$$w.jsonl; \
 	done; }
-	cd $(DEV) && $(PY) eval_hunger.py show $(OUT)/hunger_chain.jsonl $(OUT)/hunger_reach.jsonl --base K1 --plot ../00071-hunger-ahead/images/aim.png
+	cd $(DEV) && $(PY) eval_hunger.py show $(OUT)/hunger_chain.jsonl $(OUT)/hunger_reach.jsonl $(OUT)/hunger_poison.jsonl --base K1 --plot ../00071-hunger-ahead/images/aim.png
 
 videos:
 	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 $(PY) compare_video.py --cols 3 --worlds 16 --step 60000 -o $(OUT)/videos/seed3 \

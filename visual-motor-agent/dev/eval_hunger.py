@@ -7,6 +7,8 @@ vm-00069's lives. Rows of JSON on stdout, one per run or arm; `show` reads them 
     chain  is there a chain of moves, or chaos and a grab? seen: the model. blind: the same moves, tick by tick, in another world. grab: those blind moves, but
            straight at the food whenever one move can touch it. And the aim at the food by the gap to its edge, seen and blind (the blind aim is the baseline: it
            is above 0, since a path that nears a food is more often moving toward it).
+    poison what a touch really costs (vm-00071): the mean of the next 1, 4 and 16 hungers after a touch, against ticks with no touch or food that start at the
+           same hunger, how soon the next meal comes, and the mean hunger of the run.
 
 Ground truth (the world's cursor, food and poison) is for scoring only and never reaches the model.
 
@@ -227,6 +229,41 @@ def chain(path, ticks, bodies, seed):
                cos_seen=(aim["seen"] / np.maximum(count["seen"], 1)).tolist(), cos_blind=(aim["blind"] / np.maximum(count["blind"], 1)).tolist())
 
 
+def poison(path, ticks, bodies, seed):
+    from world import make_world
+
+    life = Life(path, bodies, seed)
+    env = make_world(bodies, life.cfg, seed=seed)
+    obs = env.observe()
+    H, F, P = [], [], []
+    for t in range(ticks):
+        H.append(obs["drives"][:, 0].astype(np.float64).copy())
+        a = life.act(obs)
+        obs, _, done, inf = env.step(a)
+        life.es = done.astype(np.uint8)
+        F.append(np.asarray(inf["success"], bool).copy())
+        P.append(np.asarray(inf["gt_hazard_click"], bool).copy())
+    life.close()
+    H, F, P = np.array(H), np.array(F), np.array(P)
+    row = dict(mode="poison", run=os.path.basename(path), hunger=float(H.mean()), median=float(np.median(H)), food=F.sum() * 1000.0 / F.size, poison=P.sum() * 1000.0 / P.size)
+    T = ticks - 1 - 16
+    g = np.digitize(H, EDGES) - 1
+    for k in (1, 4, 16):
+        m = np.stack([H[t + 1:t + 1 + k].mean(0) for t in range(T)])
+        touch, plain = P[:T], ~P[:T] & ~F[:T]
+        d, n = 0.0, 0
+        for j in range(len(EDGES) - 1):
+            a, b = touch & (g[:T] == j), plain & (g[:T] == j)
+            if a.sum() and b.sum():
+                d += a.sum() * (m[a].mean() - m[b].mean())
+                n += a.sum()
+        row[f"rise{k}"] = d / max(n, 1)
+    wait = [nxt[0] - t for b in range(bodies) for t in np.flatnonzero(P[:, b]) for nxt in [np.flatnonzero(F[t + 1:, b]) + t + 1] if len(nxt)]
+    row["to_food"] = float(np.mean(wait)) if wait else None
+    row["fed_16"] = sum(w <= 16 for w in wait) / max(int(P.sum()), 1)
+    yield row
+
+
 def interval(x):
     """The t 95% half-interval of the mean of up to 8 seeds."""
     x = np.asarray(x, float)
@@ -263,6 +300,9 @@ def show(paths):
                 if a != "real":
                     line += "".join("  d%s %+.2f +- %.2f" % (k, (get(a, k) - get("real", k)).mean(), interval(get(a, k) - get("real", k))) for k in ("food", "poison"))
                 print(line)
+        A = [r for r in R if r["mode"] == "poison"]
+        if A:
+            print(f"{arm}: {len(A)} seeds. " + ", ".join("%s %.3f" % (k, np.mean([r[k] for r in A])) for k in ("hunger", "median", "rise1", "rise4", "rise16", "to_food", "fed_16")))
         A = [r for r in R if r["mode"] == "chain"]
         if A:
             get = lambda f, k: np.array([r[f][k] for r in A])                                             # noqa: E731
@@ -334,7 +374,7 @@ def plot_aim(paths, out):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=("reach", "told", "chain", "show"))
+    ap.add_argument("what", choices=("reach", "told", "chain", "poison", "show"))
     ap.add_argument("runs", nargs="+", help="run directories (show: the rows printed)")
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
@@ -350,5 +390,5 @@ if __name__ == "__main__":
             plot_aim(args.runs, args.plot)
     else:
         for run in args.runs:
-            for row in dict(reach=reach, told=told, chain=chain)[args.what](run, args.ticks, args.bodies, args.seed):
+            for row in dict(reach=reach, told=told, chain=chain, poison=poison)[args.what](run, args.ticks, args.bodies, args.seed):
                 print(json.dumps(row, default=float), flush=True)

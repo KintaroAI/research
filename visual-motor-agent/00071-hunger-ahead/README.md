@@ -117,7 +117,7 @@ Not in the repository: `~/data/research/visual-motor-agent/exp_00071/videos/`, `
 - **K4 is the arm that works.** Food goes from 39.0 to 67.8 with poison where it was. LD settled at 42.8 food and LT, with 16 pieces, at 58.5 (vm-00069), though those are other lives with other seeds, so this is not a controlled comparison.
 - **The whole gain comes after 20k ticks.** All arms are level until then. K1 then goes nearly flat while K4 and K16 are still climbing at 60k. This is what a target that reflects the agent's own habits should do, since better moves make better targets, but nothing here shows that this is the cause.
 - **K16 has the widest reach and loses the near field.** It aims best past 16 px, but its aim at 0–4 px falls to .57 from .80, and it eats only 50–70% of the food in reach, against 85–94% for K1.
-- **K16 hardly sees poison.** Its predicted rise is .017, a fifteenth of K1's, under the tolerance on 58% of its pairs, and it picks a poison move 30% of the time. One guess: a meal resets hunger, and food comes about every 15 ticks, so most of a 16-tick mean is untouched by what a poison does. Another: the mean is a noisier target to learn. Neither was tested.
+- **K16 hardly sees poison.** Its predicted rise is .017, a fifteenth of K1's, under the tolerance on 58% of its pairs, and it picks a poison move 30% of the time. See the section after the conclusions: the real cost is about sixteen times what it predicts.
 - **The tolerance costs K4 more.** The mean over 4 ticks about halves the predicted drop for food, so fewer drops clear .005: 52% against 84% at hunger .02–.04. K4 eats less of the food in reach than K1 at every level, by 3–7 points. It more than earns this back by arriving at food more often, but the tolerance was tuned on next-tick hunger.
 - **Still not a plan.** Aim fades past about 16 px in K4, a reach of perhaps one or two moves more than K1, and the world is still seen whole. But the walk and a last grab no longer explain the food: 39% of K4's against 65% of K1's. What the labels give is a value of a move under the agent's habits, and that is what a wider reach means here.
 - **Moves are about as jumpy.** Smoothness .25, .32 and .38; the differences from K1, +.08 ± .20 and +.14 ± .17, are within their intervals.
@@ -132,10 +132,32 @@ Not in the repository: `~/data/research/visual-motor-agent/exp_00071/videos/`, `
 4. **It took one change in the target,** with no new token, table or head, though it gives up next-tick hunger, and with that the body in dreams and self-forcing.
 5. `h_rate` at 5 times, the fallback in the task plan, was not needed.
 
+## After the write-up: what poison really costs (2026-11-02)
+
+The owner's observation: with more food the damage from poison is less, since hunger drops again in a few steps, so K16's poison may be fine. Measured with `eval_hunger.py poison`, frozen, 16 worlds, 1,500 ticks, all 18 lives. The real cost compares a touch with ticks that had no touch or food and started at the same hunger.
+
+| measure | K1 | K4 | K16 |
+|---|---|---|---|
+| Food within 16 ticks of a poison touch | 48% | 71% | 84% |
+| Real cost over the next 16 ticks | .36 | .29 | .27 |
+| Real cost over the arm's own k ticks | .47 | .45 | .27 |
+| Predicted cost (R5) | .25 | .17 | .02 |
+| Mean hunger | .074 | .035 | .060 |
+| Median hunger | .021 | .010 | .009 |
+| Ticks from a touch to the next meal | 26.4 | 13.5 | 10.2 |
+| Ticks between meals, 1000 / food | 25.9 | 14.0 | 14.8 |
+
+- **The mechanism is real.** Food resets hunger, so poison hurts only until the next meal. A touch adds about .48 at once and .27 over 16 ticks at K16, and that 16-tick cost is about a quarter lower than at K1.
+- **It does not make poison cheap, and it does not explain K16.** K16 predicts about a sixteenth of the real cost, so it is probably not weighing poison against food. The analysis's first guess, that the mean hides the cost, is weakened: the real cost over 16 ticks is still large. Why the prediction is so low is open. The real and predicted costs are close but not the same measurement.
+- **K16 pays for it.** With about K4's food its mean hunger is higher, +.025 ± .017, and its median is the same, so the extra hunger is in the tail. 6.6 extra touches per 1k at .27 over 16 ticks comes to about .029, close to that gap.
+- **A hint in the owner's favour.** K16's next meal comes about 10 ticks after a touch, with meals about 15 ticks apart, while K1 and K4 show no such gap. K16's poison may come on the way to food, such as on a straight run. The wait from a random tick was not measured, and walking through poison without noticing it would look the same.
+- **Mean hunger is the better score,** since it is what the agent minimizes. K4 still wins, −.039 ± .023 against K1, all six seeds. K16 does not clearly beat K1, −.014 ± .037, though its median does, −.012 ± .006.
+- **It depends on the world:** `h_relief` is 1.0, so one meal wipes out all the damage. With partial relief poison's cost would linger.
+
 ## Next steps
 
 - K4 with its own tolerance: the drop is about half, so .005 probably hides food that K1 would see.
 - K2 and K8, to find where poison starts to go.
 - K4 for a long life: it is still climbing at 60k.
-- Why K16 hardly sees poison, by comparing the predicted rise with the real rise in the mean.
+- Why K16 predicts so little of poison's real cost.
 - The general form: every token predicts itself k ticks ahead, so that dreams stay right (challenge 3 of §13 in `../ARCHITECTURE.md`).
