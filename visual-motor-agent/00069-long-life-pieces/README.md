@@ -1,7 +1,7 @@
 # vm-00069: Long Lives for Many Pieces
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00069` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00069/`
 **Task plan:** [`../tasks/00080-long-life-pieces.md`](../tasks/00080-long-life-pieces.md)
