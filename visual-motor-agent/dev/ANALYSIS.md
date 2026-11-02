@@ -127,6 +127,17 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_steer
 
 `eval_sense.py`: two rows per run, as lived and `cut`, where the other sense goes off too. Each sense is scored at its first tick back: `letters`, `sentences`, `direction`, `range` for the teacher, `mae`, `mae_thing`, `first_mae` for the eyes; then food and poison per 1k ticks with the eyes closed and open. Read lived minus cut seed by seed, and against the shuffled arm. `eval_steer.py`: with the eyes open, closed within the context, and closed past it: food, poison, who made the move, and the aim of each piece's proposal. Read a piece from its own layout: `uni_layout(piece.config)`, as summaries fall differently in each.
 
+## 5d. What hunger does to the move (`eval_hunger.py`, vm-00069)
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunger.py reach RUN [RUN ...] --ticks 1500 > reach.jsonl
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunger.py told RUN [RUN ...] --ticks 750 > told.jsonl
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunger.py chain RUN [RUN ...] --ticks 1500 > chain.jsonl
+./venv/bin/python eval_hunger.py show reach.jsonl told.jsonl chain.jsonl
+```
+
+Frozen final checkpoints on the ring, 16 worlds. `reach`: with food one move away, by real hunger: the predicted drop, whether it clears the tolerance, whether the lowest predicted hunger is a food move. `told`: the model told a false hunger, and the real one with the tolerance at 0, paired by seed. `chain`: the moves replayed blind in another world, those moves with a perfect one-step grab, and aim by the gap to the food's edge. The blind aim is the baseline and it is above 0. It needs a world with `CircleWorld`'s food and poison.
+
 ## 6. Writing up
 
 The experiment directory holds only README.md and Makefile (the tag keeps the code). The README is the report: goal,
