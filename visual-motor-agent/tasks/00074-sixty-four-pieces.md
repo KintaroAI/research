@@ -1,7 +1,7 @@
 # Task 00074: Sixty-Four Pieces in One Body (experiment vm-00065)
 
 **Date:** 2026-11-01
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -35,4 +35,13 @@ The existing suite (no code change). `lifetime.py` ran both arms for 2,000 ticks
 
 ## Results
 
-Pending.
+The last 20k ticks, per 1k, eight seeds:
+
+| arm | food | poison | food share | mean hunger |
+|---|---|---|---|---|
+| G64 (`gain`) | 56.5 ± 3.9 | 9.16 ± 1.05 | 0.86 | 0.076 |
+| C64 (`council`) | 29.8 ± 8.6 | 0.65 ± 0.69 | 0.98 | 0.052 |
+| G16 | 57.0 ± 6.4 | 5.70 ± 0.61 | 0.91 | 0.073 |
+| C16 | 34.7 ± 7.0 | 0.62 ± 0.19 | 0.98 | 0.045 |
+
+The reading is met for both rules: G64 − G16 food −0.5 ± 6.8 at share 0.86, C64 − C16 −4.9 ± 8.0 at share 0.98. 64 pieces survive, with no gain over 16 for about 4 times the compute, and 16 stays the split to use. What gain adds on poison over a random piece goes −1.8, 0.0, +2.7 at 4, 16 and 64 pieces. C64's food separates by GPU (38.2 on the 3090, 21.3 on the 4090), which seeds and GPUs being assigned together leaves unexplained; G64 does not. See the [README](../00065-sixty-four-pieces/README.md).
