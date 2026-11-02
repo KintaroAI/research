@@ -1,8 +1,8 @@
 # vm-00073: Log Summaries
 
 **Date:** 2026-11-02
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00073` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00073/`
 **Task plan:** [`../tasks/00084-log-summaries.md`](../tasks/00084-log-summaries.md)
 
