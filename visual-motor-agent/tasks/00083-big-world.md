@@ -1,7 +1,7 @@
 # Task 00083: The Big World, the Same Experiment at Twice the Side (experiment vm-00072)
 
 **Date:** 2026-11-02
-**Status:** Paused (2026-11-02, the owner: log summaries first, task 00084; lives stopped at about 3,000 ticks on the 4090 and 1,000 on the 3090)
+**Status:** In progress (restarted 2026-11-02 after task 00084, with log summaries, K1 and K4, the owner's decision)
 
 ## Context
 
@@ -35,7 +35,9 @@ Timed alone on the 4090, 300 ticks, without MPS:
 
 The others are cheaper or no faster, but each is a second change against vm-00071, and the question here is the world. The default world runs at 76 ticks/s alone, so about 4 times slower.
 
-**Same arms and readings as vm-00071,** each against K1 of this world. Aim uses the same gaps in pixels, and the density is the same, so a move's reach means the same thing.
+**The restart (2026-11-02).** After vm-00073 the owner chose log summaries, the new default, and K1 and K4 only, since K16 failed on poison twice. The first start, with every summary and K16, was stopped at about 3,000 and 1,000 ticks and nothing was read from it; its lives are in `exp_00072/stopped_all_summaries/`. So a quarter holds 64 patches, 39 of the 85 summaries, the body and the move: 105 tokens per step, and the comparison in the world is K4 against K1, with vm-00073 beside it for the small world. The table above stands for what was timed then.
+
+**Same readings as vm-00071,** K4 against K1 of this world. Aim uses the same gaps in pixels, and the density is the same, so a move's reach means the same thing.
 
 ## The readings, set before the results
 

@@ -1,6 +1,6 @@
 {
   "name": "U_big",
-  "description": "vm-00072: the default at twice the side. A 128 x 128 world with food, poison and dots of the same size in pixels and four times as many of each, so the same density. The model sees 16 x 16 patches and four levels of summaries.",
+  "description": "vm-00072: the default at twice the side. A 128 x 128 world with food, poison and dots of the same size in pixels and four times as many of each, so the same density. The model sees 16 x 16 patches and four levels of summaries, log summaries as in the default: a quarter reads 39 of the 85.",
   "env": {
     "bonuses": false,
     "drives": true,
@@ -44,7 +44,8 @@
     "band_n": 4,
     "band_cols": 2,
     "age_key": 1,
-    "img": 128
+    "img": 128,
+    "band_win": 1
   },
   "online": {
     "actor": "self",
