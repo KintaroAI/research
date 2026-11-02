@@ -1,7 +1,7 @@
 # Task 00076: One Table for All Pieces (experiment vm-00067)
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 
 ## Context
 

@@ -1,7 +1,7 @@
 # Task 00075: A Channel per Value (experiment vm-00066)
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 
 ## Context
 

@@ -1,7 +1,7 @@
 # vm-00066: A Channel per Value
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00066` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00066/`; control C16 in `exp_00064/`
 **Task plan:** [`../tasks/00075-value-channels.md`](../tasks/00075-value-channels.md)

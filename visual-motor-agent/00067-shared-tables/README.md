@@ -1,7 +1,7 @@
 # vm-00067: One Table for All Pieces
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00067` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00067/`; controls G16 in `exp_00064/`, NA in `exp_00063/`
 **Task plan:** [`../tasks/00076-shared-tables.md`](../tasks/00076-shared-tables.md)
