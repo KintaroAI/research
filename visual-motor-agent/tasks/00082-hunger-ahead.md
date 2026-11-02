@@ -1,7 +1,7 @@
 # Task 00082: Hunger Ahead, a Chain of Moves (experiment vm-00071)
 
 **Date:** 2026-11-02
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -51,8 +51,8 @@ Each is an arm against K1, seed by seed, 95% interval on six seeds.
 - [x] `lifetime.py`: memory and lag from `future_k`; the rows' next hunger from the labels; refuse without the universal model or with self-forcing
 - [x] `tests/test_online_memory.py`: the labels
 - [x] Reading 1 on the GPU
-- [ ] `00071-hunger-ahead/`: README, Makefile
-- [ ] Runs, frozen tests, write-up
+- [x] `00071-hunger-ahead/`: README, Makefile
+- [x] Runs, frozen tests, write-up: K4 meets all four readings; K16 meets reach and chain, and fails on poison (`../00071-hunger-ahead/README.md`)
 
 ## Verification
 

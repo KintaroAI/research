@@ -11,7 +11,9 @@ vm-00069's lives. Rows of JSON on stdout, one per run or arm; `show` reads them 
 Ground truth (the world's cursor, food and poison) is for scoring only and never reaches the model.
 
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunger.py reach RUN [RUN ...] --ticks 1500 > reach.jsonl
-    ./venv/bin/python eval_hunger.py show reach.jsonl told.jsonl chain.jsonl
+    ./venv/bin/python eval_hunger.py show reach.jsonl told.jsonl chain.jsonl [--base K1] [--plot aim.png]
+
+--base: each arm's chain rows against that arm, paired by seed (vm-00071's readings). --plot: aim by the gap to the food, by arm.
 """
 import argparse
 import json
@@ -274,6 +276,62 @@ def show(paths):
                 print("  %-6s %.3f %+.3f %+.3f" % (name, np.mean([r["share"][j] for r in A]), np.mean([r["cos_seen"][j] for r in A]), np.mean([r["cos_blind"][j] for r in A])))
 
 
+def chain_arms(rows):
+    A = {}
+    for r in rows:
+        if r["mode"] == "chain":
+            arm, seed = r["run"].split("_s")
+            A.setdefault(arm, {})[int(seed)] = r
+    return A
+
+
+def versus(paths, base):
+    """Each arm's chain rows against the base arm, seed by seed: aim at gaps of 12-24 pixels, weighted by ticks, and the lead over blind with a perfect grab."""
+    A = chain_arms([json.loads(line) for p in paths for line in open(p)])
+    far = lambda r: float(np.dot(r["cos_seen"][4:6], r["share"][4:6]) / np.sum(r["share"][4:6]))      # noqa: E731
+    near = lambda r: float(np.dot(r["cos_blind"][4:6], r["share"][4:6]) / np.sum(r["share"][4:6]))    # noqa: E731
+    lead = lambda r: r["food"]["seen"] - r["food"]["grab"]                                            # noqa: E731
+    for arm in sorted(set(A) - {base}):
+        seeds = sorted(set(A[arm]) & set(A[base]))
+        print(f"{arm} - {base}, {len(seeds)} seeds")
+        for name, f in (("aim 12-24", far), ("aim 12-24, blind", near), ("lead over grab", lead), ("food", lambda r: r["food"]["seen"]), ("poison", lambda r: r["poison"]["seen"])):
+            d = np.array([f(A[arm][s]) - f(A[base][s]) for s in seeds])
+            print("  %-17s %+.3f +- %.3f, seeds %s" % (name, d.mean(), interval(d), np.round(d, 3).tolist()))
+
+
+def plot_aim(paths, out):
+    """Aim by the gap to the food, one line per arm, the blind aim of all arms as the baseline."""
+    from readme_images import COLORS, GRID, INK, MUTED_INK, SURFACE, plt, save
+
+    A = chain_arms([json.loads(line) for p in paths for line in open(p)])
+    names = GAP_NAMES[1:]
+    fig, ax = plt.subplots(figsize=(6.4, 3.4), dpi=100, facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+    x = np.arange(len(names))
+    arms = sorted(A, key=lambda a: a + "_")                       # the order of the run folders, so that an arm has readme_images.py's colour
+    ends = []
+    for i, arm in enumerate(arms):
+        y = np.mean([r["cos_seen"][1:] for r in A[arm].values()], 0)
+        ax.plot(x, y, color=COLORS[i], lw=2, marker="o", ms=5, mec=SURFACE, mew=1.5, label=arm, solid_capstyle="round")
+        ends.append((y[2], arm))
+    blind = np.mean([r["cos_blind"][1:] for a in arms for r in A[a].values()], 0)
+    ax.plot(x, blind, color=MUTED_INK, lw=2, ls=(0, (1, 2)), label="blind, all arms")
+    for y, arm in ends:
+        ax.annotate(arm, (2, y), xytext=(0, 7), textcoords="offset points", ha="center", fontsize=8, color=MUTED_INK)
+    ax.set_xticks(x, names)
+    ax.set_xlabel("gap from the cursor to the food's edge, pixels (a move is at most 4 per axis)", fontsize=9, color=MUTED_INK)
+    ax.set_title("Aim at the food: cosine of the move to it", fontsize=11, color=INK, loc="left")
+    ax.grid(axis="y", color=GRID, lw=1)
+    ax.set_axisbelow(True)
+    for k in ("top", "right", "left"):
+        ax.spines[k].set_visible(False)
+    ax.spines["bottom"].set_color(GRID)
+    ax.tick_params(colors=MUTED_INK, labelsize=9, length=0)
+    ax.legend(frameon=False, fontsize=8, labelcolor=MUTED_INK, ncol=len(arms) + 1, loc="upper right", handlelength=1.6)
+    fig.tight_layout()
+    save(fig, out)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("what", choices=("reach", "told", "chain", "show"))
@@ -281,9 +339,15 @@ if __name__ == "__main__":
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--base", help="show: the arm the others are read against, paired by seed")
+    ap.add_argument("--plot", help="show: where to write the plot of aim by gap")
     args = ap.parse_args()
     if args.what == "show":
         show(args.runs)
+        if args.base:
+            versus(args.runs, args.base)
+        if args.plot:
+            plot_aim(args.runs, args.plot)
     else:
         for run in args.runs:
             for row in dict(reach=reach, told=told, chain=chain)[args.what](run, args.ticks, args.bodies, args.seed):

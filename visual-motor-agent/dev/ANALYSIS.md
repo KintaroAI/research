@@ -133,8 +133,10 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_steer
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunger.py reach RUN [RUN ...] --ticks 1500 > reach.jsonl
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunger.py told RUN [RUN ...] --ticks 750 > told.jsonl
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunger.py chain RUN [RUN ...] --ticks 1500 > chain.jsonl
-./venv/bin/python eval_hunger.py show reach.jsonl told.jsonl chain.jsonl
+./venv/bin/python eval_hunger.py show reach.jsonl told.jsonl chain.jsonl [--base K1] [--plot aim.png]
 ```
+
+`--base` reads each arm's chain rows against that arm, paired by seed, and `--plot` draws the aim by the gap to the food (vm-00071).
 
 Frozen final checkpoints on the ring, 16 worlds. `reach`: with food one move away, by real hunger: the predicted drop, whether it clears the tolerance, whether the lowest predicted hunger is a food move. `told`: the model told a false hunger, and the real one with the tolerance at 0, paired by seed. `chain`: the moves replayed blind in another world, those moves with a perfect one-step grab, and aim by the gap to the food's edge. The blind aim is the baseline and it is above 0. It needs a world with `CircleWorld`'s food and poison.
 
