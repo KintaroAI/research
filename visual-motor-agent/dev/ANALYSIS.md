@@ -83,6 +83,7 @@ the dream curve at h = 1, 6, 11, 16. Runs from several experiments can be mixed 
 #   --vs RUN2 [--vs-title T] adds compare.mp4: two agents side by side in the same world (world 0)
 # forage 200 steps, then dream 200 on the model's own predictions and moves, the real world beside it
 ./venv/bin/python dream_video.py RUN --step 100000 --real 200 --dream 200 -o DIR    # dream_pair.mp4, .npz, sheet
+./venv/bin/python sense_video.py RUN:LABEL RUN:LABEL --ticks 1500 -o DIR    # two-senses runs: compare.mp4 with the view, the text sense and the eyes closed; forage_video.py cannot show this world
 ./venv/bin/python dream_measures.py DIR/dream_pair.npz
 ```
 

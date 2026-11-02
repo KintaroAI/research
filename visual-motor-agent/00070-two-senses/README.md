@@ -98,6 +98,10 @@ Within the context (1–8 ticks closed): ST 23.2 food, 3.5 poison; SS 15.2, 12.4
 *From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed. With the eyes open most of the time, the arms look alike: the difference is in R3 and R4.*
 <!-- /figures -->
 
+![ST and SS side by side at tick 822, ST with its eyes closed](images/video_still.png)
+
+*A still from `make video`: ST seed 6 and SS seed 3, the seeds closest to their arms' mean food, frozen, from the same start. Each row is one agent: its view, its text sense with the letters drawn on for the reader, the teacher's words against what is true, and its counts. With the eyes closed the model sees black; the dim picture is the real world, drawn for the viewer. Over these 1,500 ticks and 16 worlds the eyes-closed counts ended at 37 food and 2 poison for ST, 19 and 27 for SS. That is one seed of each arm: the eight-seed results are R1–R4.*
+
 ## Analysis
 
 - **The words guide it.** With the eyes closed past its memory, ST still eats six food for every poison and SS eats fewer food than poison. Nobody told it what a word means, and no reward ever touched the text: it learned them by predicting. With the eyes open the arms eat the same within the interval and hunger is equal, so this is not a stronger agent overall, though in the lifetimes ST also touches a little less poison with its eyes open (−1.4 ± 0.9). Poison is the sharp result, and it comes from the moves: ST turns away from a poison it cannot see, and SS does not.
