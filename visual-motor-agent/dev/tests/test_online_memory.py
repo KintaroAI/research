@@ -317,3 +317,27 @@ def test_a_universal_gray_memory_keeps_one_channel_and_no_next_frames():
     r.add(img=frame, nimg=frame, drv=np.zeros(2), ndrv=np.zeros(2), pa=np.zeros(3), pr=0, es=0, act=np.zeros(3), rew=0,
           done=0, hit=0, cmd=0)
     np.testing.assert_array_equal(r.frames(np.array([0]))[0], frame)
+
+
+def test_future_labels_mean_of_the_next_k_outcomes():
+    ndrv = np.array([.1, .2, .3, .4, .5, .6], np.float32)
+    done = np.zeros(6, bool)
+    lab = online.future_labels(ndrv, done, 3)
+    assert np.allclose(lab[:4], [.2, .3, .4, .5])                       # complete: k - 1 steps ahead are in the stretch
+    assert np.array_equal(online.future_labels(ndrv, done, 1), ndrv)    # k = 1 is the next hunger itself
+
+
+def test_future_labels_stop_at_the_end_of_an_episode():
+    ndrv = np.array([.1, .2, .3, .4, .5, .6], np.float32)
+    done = np.array([0, 1, 0, 0, 0, 0], bool)
+    lab = online.future_labels(ndrv, done, 3)
+    assert np.allclose(lab[:3], [.15, .2, .4])
+
+
+def test_future_labels_a_sooner_meal_scores_lower():
+    """The mean: of two meals in the horizon, the sooner one is the better, which hunger at t + k would have the other way."""
+    soon = np.array([.0, .001, .002, .003], np.float32)                 # eaten on the first step
+    late = np.array([.03, .031, .032, .0], np.float32)                  # eaten on the last
+    done = np.zeros(4, bool)
+    assert online.future_labels(soon, done, 4)[0] < online.future_labels(late, done, 4)[0]
+    assert soon[3] > late[3]

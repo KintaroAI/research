@@ -76,6 +76,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00023 (the universal model): the hunger instinct, one-step lookahead over instinct_m
                       # candidate moves (0: the policy alone), keeping the first sample within instinct_tol of the best
                       instinct_m=0, instinct_tol=0.005,
+                      # task 00082: the hunger the move token predicts, and the instinct reads, is the mean over the next
+                      # future_k ticks (0: the next tick; 1 is the same thing, through the hindsight labels)
+                      future_k=0,
                       # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
                       # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",
@@ -217,13 +220,29 @@ def delta_labels(drv0, ndrv0, done, k):
     return out
 
 
+def future_labels(ndrv0, done, k):
+    """For each step j of a stretch of consecutive steps: the mean hunger after its next k steps (the outcomes of the
+    steps j .. j+k-1), or up to the end of j's episode if it ends sooner (task 00082). Labels near the end of the stretch
+    need the k-1 steps after it to be included."""
+    n = len(ndrv0)
+    out = np.zeros(n, np.float32)
+    end = n - 1                   # the last step of j's episode in the stretch
+    for j in range(n - 1, -1, -1):
+        if done[j]:
+            end = j
+        out[j] = ndrv0[j:min(j + k - 1, end) + 1].mean()
+    return out
+
+
 def goal_labels(m, idx, k, mode):
-    """The hindsight command of the steps idx (consecutive, physical indices into memory fields m) of form mode."""
+    """The hindsight labels of the steps idx (consecutive, physical indices into memory fields m) of form mode."""
     if mode == "relief":
         return hindsight_labels(m.hit[idx], m.done[idx], m.drv[idx, 0], k)
     if mode == "delta":
         return delta_labels(m.drv[idx, 0], m.ndrv[idx, 0], m.done[idx], k)
-    raise ValueError("online.goal_mode must be 'relief' or 'delta'")
+    if mode == "future":
+        return future_labels(m.ndrv[idx, 0], m.done[idx], k)
+    raise ValueError("online.goal_mode must be 'relief', 'delta' or 'future'")
 
 
 def downsample_u8(img, f):

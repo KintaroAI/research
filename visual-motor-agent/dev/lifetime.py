@@ -18,6 +18,9 @@ Surprise gating (online.store_surprise > 0) for the universal model on the GPU (
 largest of its tokens' cross-entropies in the update that trained on it (as the newest window), each divided by its
 slot's recent mean (GatedMemory.note_tokens). It is read on the next tick, after acting, when the GPU is idle.
 
+Hunger ahead (online.future_k = k, task 00082): the hunger the move token learns to predict, and the instinct reads, is
+the mean over the next k ticks, labelled in hindsight from real futures (the newest window ends k - 1 ticks back).
+
 Command (online.goal=1): online.goal_mode = "relief" (vm-00006: its hunger if a hit follows within goal_k steps, else
 0) or "delta" (the change of hunger over the next goal_k steps: relief positive, hazards and time negative). When
 acting, the command is the current hunger: "relieve all of it".
@@ -265,6 +268,9 @@ def main():
         raise ValueError("lifetime.py measures surprise for the universal model on the GPU only (online.device=cuda)")
     if uni and goal_k:
         raise ValueError("the universal model has no command: set online.goal=0")
+    future_k = on["future_k"]                 # task 00082: the hunger predicted is the mean over the next future_k ticks
+    if future_k and (not uni or on["sf_windows"]):
+        raise ValueError("online.future_k needs the universal model, without self-forcing")
     if goal_k and not agent.config["use_prev_reward"]:
         raise ValueError("online.goal=1 needs model.use_prev_reward=1 (the scalar token slot carries the goal)")
     ppo = dict(agent_lib.DEFAULT_PPO)
@@ -273,12 +279,14 @@ def main():
     if ppo["use_ppo"] or not env_cfg.drives:
         raise ValueError("lifetime.py is reward-free: needs ppo.use_ppo=0 and env.drives=true")
     L, B = agent.config["ctx"], on["batch"]
-    lag = goal_k - 1 if goal_k else 0         # the newest window whose hindsight labels are complete
+    label_k = goal_k or future_k              # the steps a hindsight label looks ahead
+    lag = label_k - 1 if label_k else 0       # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"])
-    gms = [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, tokens=tok_sur, **kept)]
-    gms += [GatedMemory(on, L, env_cfg.size, goal_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
+    gate_on = dict(on, goal_mode="future") if future_k else on
+    gms = [GatedMemory(gate_on, L, env_cfg.size, label_k, args.seed, tokens=tok_sur, **kept)]
+    gms += [GatedMemory(gate_on, L, env_cfg.size, label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
             for b in range(1, N0)]
     store = gms[0].store
     gpu, fwd, gpus = None, agent.forward, [None] * S
@@ -453,6 +461,9 @@ def main():
                 else:
                     parts.append(gms[0]._from_stm(gms[0].stm.starts(L, B, rng, lag)[1:], lag))
                 rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].stm.fields}
+            if future_k:   # the next body's hunger is only a target: the inputs keep the hunger of each step
+                rows["ndrv"] = rows["ndrv"].copy()
+                rows["ndrv"][..., 0] = rows["pr"]
             ro = rollout(len(rows["img"]))
             fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
