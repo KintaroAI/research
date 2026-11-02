@@ -1,7 +1,7 @@
 # Task 00075: A Channel per Value (experiment vm-00066)
 
 **Date:** 2026-11-01
-**Status:** In progress
+**Status:** Complete (pending tag)
 
 ## Context
 
@@ -38,4 +38,4 @@ The channels are a cleanup, so they need no gain to stay: they **stay in the def
 
 ## Results
 
-Pending.
+Eight seeds, last 20k ticks, per 1k: CH 29.5 ± 6.2 food, 0.65 ± 0.17 poison; C16 34.7 ± 7.0, 0.62 ± 0.19. Food −5.2 ± 11.0, poison +0.03 ± 0.26, so **the reading is met and the channels stay in the design**. Body CE +0.001 ± 0.004 and move CE +0.004 ± 0.020: the mixing cost nothing measurable. `U_default.json` is not changed yet: they were tested at 16 pieces, and the controls would need a rerun. Full results in `../00066-value-channels/README.md`.

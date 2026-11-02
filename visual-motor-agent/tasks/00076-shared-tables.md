@@ -1,7 +1,7 @@
 # Task 00076: One Table for All Pieces (experiment vm-00067)
 
 **Date:** 2026-11-01
-**Status:** In progress
+**Status:** Complete (pending tag)
 
 ## Context
 
@@ -34,4 +34,4 @@ Food over the last 20k ticks, against G16 and against NA, seed by seed:
 
 ## Results
 
-Pending.
+Eight seeds, last 20k ticks, per 1k: TB 49.3 ± 10.8 food, 3.49 ± 0.60 poison; G16 57.0 ± 6.4, 5.70 ± 0.61; NA 28.7 ± 5.7, 3.90 ± 0.47. TB − G16 −7.7 ± 13.4 includes zero, so **by the reading more tokens do not explain the rise**; TB − NA is +20.6 ± 12.7. The intervals still leave room for the tables to account for part of it, up to about three quarters. One table also lowers poison (−2.21 ± 0.83), patch CE (−0.010 ± 0.003) and move CE (−0.232 ± 0.066), and gain's guard against poison returns (frozen, −1.1 ± 0.9 against a random piece). The `in` arm did not run. Full results in `../00067-shared-tables/README.md`.
