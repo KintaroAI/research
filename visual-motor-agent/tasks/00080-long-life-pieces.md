@@ -1,7 +1,7 @@
 # Task 00080: Long Lives for Many Pieces (experiment vm-00069)
 
 **Date:** 2026-11-01
-**Status:** In progress
+**Status:** Complete
 
 ## Context
 
@@ -36,9 +36,16 @@ Short trial: 2,200 ticks of LT with `online.replay=500000`, 13.8 ticks/s against
 
 ## Results
 
-Interim: LD finished at 500k, LT at 422k. See the [README](../00069-long-life-pieces/README.md).
+The last 20k ticks, per 1k, four seeds:
 
-- Reading 1: no LD life trapped (worst mean hunger 0.076, least food 35.5). LT to come.
-- Reading 2: met for LD by poison, −2.40 ± 0.60, with food +1.6 ± 5.2. LT to come.
-- Reading 3: not judged. At 400–420k LT − LD food is +15.7 ± 12.0.
-- Not asked in advance: move CE climbs from 0.16 to 0.91 over LD's life with the moves about the same, and at 500k `gain` does no better than a random piece.
+| arm | food | poison | share | hunger |
+|---|---|---|---|---|
+| LD | 42.8 ± 10.5 | 0.34 ± 0.04 | 0.99 | 0.041 |
+| LT | 58.5 ± 16.5 | 0.57 ± 0.55 | 0.99 | 0.028 |
+
+- Reading 1: no life trapped in either arm (worst mean hunger 0.076, least food 35.5).
+- Reading 2: met for both, in poison: LD −2.40 ± 0.60 with food +1.6 ± 5.2, LT −3.80 ± 1.87 with food −4.2 ± 7.5.
+- Reading 3: **not met.** LT − LD food +15.7 ± 18.1. All four seeds are above zero and the frozen check gives the same size, but the reading as set stands.
+- Not asked in advance: move CE climbs from about 0.15 to 0.91 and 1.00 with the moves about the same, unexplained; by 500k `gain` does no better than a random piece.
+
+See the [README](../00069-long-life-pieces/README.md).

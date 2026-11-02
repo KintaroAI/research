@@ -7,7 +7,8 @@
 #   make runs-lt — LT, seeds 1-4 on the RTX 4090: 16 pieces, shared tables; about 10 hours
 #   make runs-ld — LD, seeds 1-4 on the RTX 3090: the default, 4 pieces; about 8 hours
 #   make frozen — eval_pieces.py at the end of each life, gain and a random piece, without MPS, on the RTX 3090 (frozen_LD.txt, frozen_LT.txt)
-#   make videos — frozen agents at 500k from the same start: LD's four seeds (videos/ld_seeds/compare.mp4; the single ARM.mp4 is the last seed, since all four runs are named LD)
+#   make videos — frozen agents at 500k from the same start: each arm's four seeds (videos/ld_seeds, videos/lt_seeds; the single ARM.mp4 is the last seed, since an arm's runs share a name)
+#                 and LT seed 4 against LD seed 1, the seeds closest to their arms' mean food (videos/lt_vs_ld). Labels hold no colon: RUN:LABEL:RULE
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -42,3 +43,7 @@ frozen:
 videos:
 	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 $(PY) compare_video.py --cols 2 --worlds 16 --step 500000 -o $(OUT)/videos/ld_seeds \
 	  "$(OUT)/LD_s1:LD seed 1:gain" "$(OUT)/LD_s2:LD seed 2:gain" "$(OUT)/LD_s3:LD seed 3:gain" "$(OUT)/LD_s4:LD seed 4:gain"
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 $(PY) compare_video.py --cols 2 --worlds 16 --step 500000 -o $(OUT)/videos/lt_seeds \
+	  "$(OUT)/LT_s1:LT seed 1:gain" "$(OUT)/LT_s2:LT seed 2:gain" "$(OUT)/LT_s3:LT seed 3:gain" "$(OUT)/LT_s4:LT seed 4:gain"
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 $(PY) compare_video.py --cols 2 --worlds 16 --step 500000 -o $(OUT)/videos/lt_vs_ld \
+	  "$(OUT)/LT_s4:LT, 16 pieces, shared tables:gain" "$(OUT)/LD_s1:LD, the default, 4 pieces:gain"
