@@ -16,6 +16,7 @@ Ground truth (the world's cursor, food and poison) is for scoring only and never
     ./venv/bin/python eval_hunger.py show reach.jsonl told.jsonl chain.jsonl [--base K1] [--plot aim.png]
 
 --base: each arm's chain rows against that arm, paired by seed (vm-00071's readings). --plot: aim by the gap to the food, by arm.
+compare DIR_BASE DIR_OTHER: two experiments' folders, same arm and seed, from their hunger_*.jsonl and metrics.
 """
 import argparse
 import json
@@ -102,6 +103,10 @@ def would_touch(env, cand):
     dx = wrap_delta(new[..., 0], env.target[:, None, 0], size)
     dy = wrap_delta(new[..., 1], env.target[:, None, 1], size)
     food = (dx * dx + dy * dy <= env.radius[:, None] ** 2) & env.target_alive[:, None]
+    for k in range(env.fx_pos.shape[1]):   # the other foods (task 00083)
+        dx = wrap_delta(new[..., 0], env.fx_pos[:, None, k, 0], size)
+        dy = wrap_delta(new[..., 1], env.fx_pos[:, None, k, 1], size)
+        food |= dx * dx + dy * dy <= env.fx_rad[:, None, k] ** 2
     hx = wrap_delta(new[:, :, None, 0] - env.hz_pos[:, None, :, 0], 0.0, size)
     hy = wrap_delta(new[:, :, None, 1] - env.hz_pos[:, None, :, 1], 0.0, size)
     return food, _inside(hx, hy, env.hz_rad[:, None], c.hazard_shape == "square").any(2)
@@ -339,6 +344,40 @@ def versus(paths, base):
             print("  %-17s %+.3f +- %.3f, seeds %s" % (name, d.mean(), interval(d), np.round(d, 3).tolist()))
 
 
+def compare(base, other):
+    """The arms of two experiments, same arm and seed (vm-00073): other minus base, from each folder's hunger_chain.jsonl, hunger_poison.jsonl and metrics, last 20k."""
+    def rows(d, mode):
+        out = {}
+        for line in open(os.path.join(d, f"hunger_{mode}.jsonl")):
+            r = json.loads(line)
+            arm, seed = r["run"].split("_s")
+            out[arm, int(seed)] = r
+        return out
+
+    def life(d, arm, seed, key):
+        x = [json.loads(line) for line in open(os.path.join(d, f"{arm}_s{seed}", "metrics.jsonl"))]
+        return float(np.mean([r[key] for r in x if r["step"] > x[-1]["step"] - 20000]))
+
+    far = lambda r, k="cos_seen": float(np.dot(r[k][4:6], r["share"][4:6]) / np.sum(r["share"][4:6]))   # noqa: E731
+    keys = sorted(rows(base, "chain"), key=lambda a: (int(a[0][1:]), a[1]))
+    arms = sorted({a for a, _ in keys}, key=lambda a: int(a[1:]))
+    chains, poisons = [rows(d, "chain") for d in (base, other)], [rows(d, "poison") for d in (base, other)]
+    measures = (("food, last 20k", lambda i, q: life((base, other)[i], *q, "step_hits")), ("poison, last 20k", lambda i, q: life((base, other)[i], *q, "poison")),
+                ("aim 12-24", lambda i, q: far(chains[i][q])), ("lead over grab", lambda i, q: chains[i][q]["food"]["seen"] - chains[i][q]["food"]["grab"]),
+                ("mean hunger", lambda i, q: poisons[i][q]["hunger"]))
+    for name, f in measures:
+        print(name)
+        for arm in arms:
+            seeds = [s for a, s in keys if a == arm]
+            x, y = (np.array([f(i, (arm, s)) for s in seeds]) for i in (0, 1))
+            d = y - x
+            print("  %-4s %.3f %.3f  %+.3f +- %.3f, seeds %s" % (arm, x.mean(), y.mean(), d.mean(), interval(d), np.round(d, 2).tolist()))
+    print("aim by the gap: " + " ".join(GAP_NAMES[1:]))
+    for arm in arms:
+        for i, c in enumerate(chains):
+            print("  %-4s %d  %s" % (arm, i, " ".join("%.2f" % np.mean([c[arm, s]["cos_seen"][j] for a, s in keys if a == arm]) for j in range(1, len(GAP_NAMES)))))
+
+
 def plot_aim(paths, out):
     """Aim by the gap to the food, one line per arm, the blind aim of all arms as the baseline."""
     from readme_images import COLORS, GRID, INK, MUTED_INK, SURFACE, plt, save
@@ -374,7 +413,7 @@ def plot_aim(paths, out):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=("reach", "told", "chain", "poison", "show"))
+    ap.add_argument("what", choices=("reach", "told", "chain", "poison", "show", "compare"))
     ap.add_argument("runs", nargs="+", help="run directories (show: the rows printed)")
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
@@ -382,7 +421,9 @@ if __name__ == "__main__":
     ap.add_argument("--base", help="show: the arm the others are read against, paired by seed")
     ap.add_argument("--plot", help="show: where to write the plot of aim by gap")
     args = ap.parse_args()
-    if args.what == "show":
+    if args.what == "compare":
+        compare(*args.runs)
+    elif args.what == "show":
         show(args.runs)
         if args.base:
             versus(args.runs, args.base)

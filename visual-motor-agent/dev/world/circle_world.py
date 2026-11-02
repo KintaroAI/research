@@ -162,6 +162,7 @@ class EnvConfig:
     touch: bool = False                 # (task 00042) food and poison act on contact, no click needed: the cursor
                                         # inside the circle is a success; inside a hazard it applies hazard_click /
                                         # hazard_click_add and that hazard is replaced by a new one away from the cursor
+    foods: int = 1                      # (task 00083) food circles; above 1 needs wrap, respawn and still food. target is always the nearest
     no_overlap: bool = False            # (task 00060, needs wrap and round hazards) no two circles overlap: a new one is
                                         # placed clear of the others; moving ones bounce off each other and off food
     turn_cost: float = 0.0              # (task 00061) hunger per step += turn_cost * |move - previous move|^2 / 8: a full
@@ -229,6 +230,10 @@ class EnvConfig:
             raise ValueError("touch needs respawn")
         if self.turn_cost < 0:
             raise ValueError("turn_cost must be >= 0")
+        if int(self.foods) != self.foods or self.foods < 1:
+            raise ValueError(f"foods must be an integer >= 1, got {self.foods!r}")
+        if self.foods > 1 and not (self.wrap and self.respawn and self.target_speed == 0):
+            raise ValueError("foods above 1 needs wrap, respawn and still food")
         if self.no_overlap and not (self.wrap and self.hazard_shape == "circle"):
             raise ValueError("no_overlap needs wrap and round hazards")
         if self.hazards and not 0 < self.hazard_radius_min <= self.hazard_radius_max <= self.size / 2:
@@ -377,7 +382,8 @@ def _draw_cursor(image: np.ndarray, cursor: np.ndarray, outline: RGB, color: RGB
 
 def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarray,
                  target_alive: np.ndarray, config: EnvConfig, dots: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-                 hazards: Optional[Tuple[np.ndarray, np.ndarray]] = None, swap: Optional[np.ndarray] = None) -> np.ndarray:
+                 hazards: Optional[Tuple[np.ndarray, np.ndarray]] = None, swap: Optional[np.ndarray] = None,
+                 more: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> np.ndarray:
     """Render N world states to uint8 images of shape (N, size, size, 3).
 
     Pure function of (cursor hotspot pixel, set of circle pixels, colors).
@@ -398,7 +404,7 @@ def render_state(cursor_xy: np.ndarray, target_xy: np.ndarray, radius: np.ndarra
     background pixels after the circle (so under it) and before the dots, with the circle's pixel test.
     """
     if config.wrap:
-        return _to_gray(_render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots, hazards, swap), config)
+        return _to_gray(_render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots, hazards, swap, more), config)
     size = int(config.size)
     cursor = np.asarray(cursor_xy, dtype=np.float64).reshape(-1, 2)
     target = np.asarray(target_xy, dtype=np.float64).reshape(-1, 2)
@@ -441,10 +447,10 @@ def wrap_delta(a: np.ndarray, b: np.ndarray, size: float) -> np.ndarray:
     return np.mod(a - b + 0.5 * size, size) - 0.5 * size
 
 
-def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, hazards=None, swap=None) -> np.ndarray:
+def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, hazards=None, swap=None, more=None) -> np.ndarray:
     """render_state for the wrap-around world: circles drawn with the wrap-around pixel test, the view shifted so the
     cursor sits at the center if egocentric. Same layers as render_state. swap (n,) bool (task 00065): those frames draw
-    the food in the hazard's pattern and the hazard solid."""
+    the food in the hazard's pattern and the hazard solid. more (centers (n,E,2), radii (n,E)): the other foods."""
     size = int(config.size)
     S = float(size)
     cursor = np.asarray(cursor_xy, dtype=np.float64).reshape(-1, 2)
@@ -465,6 +471,8 @@ def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, 
         return _inside(dx, dy, radii[..., None, None], square).any(1)
 
     tmask = mask(target[:, None], radius[:, None]) & alive[:, None, None]
+    if more is not None and more[0].shape[1] > 0:
+        tmask |= mask(more[0], more[1])
     sw = None if swap is None else np.asarray(swap, dtype=bool)[:, None, None]
     chk = _checker(size, config.hazard_checker_cell)[None] if sw is not None or config.hazard_pattern == "checker" else None
     image[tmask if sw is None else tmask & (~sw | chk)] = np.array(_rgb(config.target_color), np.uint8)
@@ -622,6 +630,12 @@ class CircleWorld:
         self._hz_rngs = ([np.random.Generator(np.random.PCG64(s))
                           for s in np.random.SeedSequence(seed, spawn_key=(0x4A2D,)).spawn(self.num_envs)]
                          if h else [])
+        e = int(c.foods) - 1   # the other foods (task 00083), with their own generators: foods = 1 draws what it always drew
+        self._fx_rngs = ([np.random.Generator(np.random.PCG64(s))
+                          for s in np.random.SeedSequence(seed, spawn_key=(0xF00D,)).spawn(self.num_envs)]
+                         if e else [])
+        self.fx_pos = np.zeros((self.num_envs, e, 2))
+        self.fx_rad = np.zeros((self.num_envs, e))
         self.target_vel = np.zeros((self.num_envs, 2))
         self.hz_pos = np.zeros((self.num_envs, h, 2))
         self.hz_vel = np.zeros((self.num_envs, h, 2))
@@ -711,6 +725,15 @@ class CircleWorld:
             for i in idx:
                 ang = 2.0 * np.pi * self._spawn_rngs[i].random()
                 self.target_vel[i] = cfg.target_speed * np.array([np.cos(ang), np.sin(ang)])
+        e = int(cfg.foods) - 1
+        for i in idx if e else ():   # the other foods, one at a time, clear of the food and of the ones before them
+            for k in range(e):
+                for _ in range(1000):
+                    u = self._fx_rngs[i].random(3)
+                    r = cfg.radius_min + (cfg.radius_max - cfg.radius_min) * u[0]
+                    self.fx_pos[i, k], self.fx_rad[i, k] = (size * u[1], size * u[2]), r
+                    if self._clear(i, *self.fx_pos[i, k], r, hazards=0, others=k):
+                        break
         h = int(cfg.hazards)
         if h:   # per env from its own hazard generator: H radii, centers, directions
             for i in idx:
@@ -726,10 +749,24 @@ class CircleWorld:
                             if self._clear(i, *self.hz_pos[i, k], r[k], hazards=k):
                                 break
                             self.hz_pos[i, k] = r[k] + (size - 2 * r[k]) * self._hz_rngs[i].random(2)
+        if e:
+            self._nearest_first(self.cursor)
 
-    def _clear(self, i: int, x: float, y: float, r: float, hazards: Optional[int] = None, food: bool = True) -> bool:
-        """no_overlap: the circle (x, y, r) of env i clears the food (if food) and the first hazards hazards (None:
-        every hazard). Without no_overlap always True."""
+    def _nearest_first(self, pos: np.ndarray) -> None:
+        """foods above 1 (task 00083): the food nearest pos, by the gap to its edge, goes in slot 0, the one that the hit test, relief and respawn work on."""
+        size = float(self.config.size)
+        xy = np.concatenate((self.target[:, None], self.fx_pos), 1)
+        rad = np.concatenate((self.radius[:, None], self.fx_rad), 1)
+        gap = np.hypot(wrap_delta(xy[..., 0], pos[:, None, 0], size), wrap_delta(xy[..., 1], pos[:, None, 1], size)) - rad
+        best = gap.argmin(1)
+        for i in np.flatnonzero(best):
+            k = best[i] - 1
+            self.target[i], self.fx_pos[i, k] = self.fx_pos[i, k].copy(), self.target[i].copy()
+            self.radius[i], self.fx_rad[i, k] = self.fx_rad[i, k], self.radius[i]
+
+    def _clear(self, i: int, x: float, y: float, r: float, hazards: Optional[int] = None, food: bool = True, others: Optional[int] = None) -> bool:
+        """no_overlap: the circle (x, y, r) of env i clears the food (if food), the first others of the other foods (None: all of them) and the first
+        hazards hazards (None: every hazard). Without no_overlap always True."""
         cfg = self.config
         if not cfg.no_overlap:
             return True
@@ -737,6 +774,10 @@ class CircleWorld:
         if food and self.target_alive[i]:
             dx, dy = wrap_delta(x, self.target[i, 0], size), wrap_delta(y, self.target[i, 1], size)
             if dx * dx + dy * dy <= (r + self.radius[i]) ** 2:
+                return False
+        for k in range(self.fx_pos.shape[1] if others is None else others):
+            dx, dy = wrap_delta(x, self.fx_pos[i, k, 0], size), wrap_delta(y, self.fx_pos[i, k, 1], size)
+            if dx * dx + dy * dy <= (r + self.fx_rad[i, k]) ** 2:
                 return False
         ids = range(int(cfg.hazards) if hazards is None else hazards) if isinstance(hazards, (int, type(None))) else hazards
         for k in ids:
@@ -752,10 +793,13 @@ class CircleWorld:
         size, h = float(cfg.size), int(cfg.hazards)
         moves_food = cfg.target_speed > 0
         for i in range(self.num_envs):
-            pos = np.concatenate((self.hz_pos[i], self.target[i][None]))
-            vel = np.concatenate((self.hz_vel[i], (self.target_vel[i] if moves_food else np.zeros(2))[None]))
-            rad = np.append(self.hz_rad[i], self.radius[i])
-            n, hit = h + 1 if self.target_alive[i] else h, False
+            pos = np.concatenate((self.hz_pos[i], self.target[i][None], self.fx_pos[i]))   # the other foods stand still, as the food does
+            vel = np.concatenate((self.hz_vel[i], (self.target_vel[i] if moves_food else np.zeros(2))[None], np.zeros_like(self.fx_pos[i])))
+            rad = np.concatenate((self.hz_rad[i], [self.radius[i]], self.fx_rad[i]))
+            n, hit = len(pos) if self.target_alive[i] else h, False
+            dd = np.hypot(wrap_delta(pos[None, :n, 0], pos[:n, None, 0], size), wrap_delta(pos[None, :n, 1], pos[:n, None, 1], size))
+            if not np.any(np.triu(dd < rad[None, :n] + rad[:n, None], 1)):   # most ticks, most worlds
+                continue
             for _ in range(64):   # a push can make a new overlap (a squeeze takes a few rounds)
                 again = False
                 for a in range(n):
@@ -845,10 +889,10 @@ class CircleWorld:
         sw = getattr(self, "swap", None)   # task 00065: the food drawn as the poison
         if idx is None:
             return render_state(self.cursor, self.target, self.radius, self.target_alive, self.config,
-                                (self.dot_pos, self.dot_val), (self.hz_pos, self.hz_rad), swap=sw)
+                                (self.dot_pos, self.dot_val), (self.hz_pos, self.hz_rad), swap=sw, more=(self.fx_pos, self.fx_rad))
         return render_state(self.cursor[idx], self.target[idx], self.radius[idx],
                             self.target_alive[idx], self.config, (self.dot_pos[idx], self.dot_val[idx]),
-                            (self.hz_pos[idx], self.hz_rad[idx]), swap=None if sw is None else sw[idx])
+                            (self.hz_pos[idx], self.hz_rad[idx]), swap=None if sw is None else sw[idx], more=(self.fx_pos[idx], self.fx_rad[idx]))
 
     def _settle(self, success, poison) -> None:
         """After the touches of a step, before its frame: nothing here (CueWorld, task 00065)."""
@@ -897,6 +941,8 @@ class CircleWorld:
             delta = new - old
         disp = np.sqrt(delta[:, 0] * delta[:, 0] + delta[:, 1] * delta[:, 1])
         self.cursor = new
+        if cfg.foods > 1:
+            self._nearest_first(new)
 
         # 2. Hit test at the new continuous position.
         if cfg.wrap:
@@ -990,6 +1036,8 @@ class CircleWorld:
             self.target_alive &= ~success
         if cfg.touch and cfg.hazards and in_hazard.any():
             self._respawn_hazards(hz_hit)
+        if cfg.foods > 1:
+            self._nearest_first(self.cursor)
 
         self._settle(success, poison)   # a world with trials (task 00065): the next phase, before anything is drawn
 
@@ -1063,13 +1111,16 @@ class CircleWorld:
             state["dot_rng_state"] = np.array([_encode_rng(g) for g in self._dot_rngs], dtype=np.uint64)
         for name, on in (("target_vel", self.config.target_speed > 0), ("hz_pos", self.config.hazards),
                          ("hz_vel", self.config.hazards), ("hz_rad", self.config.hazards),
-                         ("ep_hits", self.config.respawn), ("last_move", self.config.turn_cost > 0)):
+                         ("ep_hits", self.config.respawn), ("last_move", self.config.turn_cost > 0),
+                         ("fx_pos", self.config.foods > 1), ("fx_rad", self.config.foods > 1)):
             if on:
                 state[name] = getattr(self, name).copy()
         if self._spawn_rngs:
             state["spawn_rng_state"] = np.array([_encode_rng(g) for g in self._spawn_rngs], dtype=np.uint64)
         if self._hz_rngs:
             state["hz_rng_state"] = np.array([_encode_rng(g) for g in self._hz_rngs], dtype=np.uint64)
+        if self._fx_rngs:
+            state["fx_rng_state"] = np.array([_encode_rng(g) for g in self._fx_rngs], dtype=np.uint64)
         return state
 
     def set_state(self, state: Dict[str, Any]) -> None:
@@ -1099,12 +1150,12 @@ class CircleWorld:
                         raise ValueError(f"state[{key!r}] must have shape {getattr(self, key).shape}")
                     setattr(self, key, arr)
                 continue
-            if key in ("spawn_rng_state", "hz_rng_state"):
-                for gen, row in zip(self._spawn_rngs if key == "spawn_rng_state" else self._hz_rngs,
-                                    np.asarray(value, dtype=np.uint64)):
+            if key in ("spawn_rng_state", "hz_rng_state", "fx_rng_state"):
+                gens = dict(spawn_rng_state=self._spawn_rngs, hz_rng_state=self._hz_rngs, fx_rng_state=self._fx_rngs)[key]
+                for gen, row in zip(gens, np.asarray(value, dtype=np.uint64)):
                     gen.bit_generator.state = _decode_rng(row)
                 continue
-            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits", "last_move"):
+            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits", "last_move", "fx_pos", "fx_rad"):
                 arr = np.array(value, dtype=getattr(self, key).dtype)
                 if arr.shape != getattr(self, key).shape:
                     raise ValueError(f"state[{key!r}] must have shape {getattr(self, key).shape}")

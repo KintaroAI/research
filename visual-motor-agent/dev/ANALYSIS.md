@@ -140,6 +140,16 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python eval_hunge
 
 Frozen final checkpoints on the ring, 16 worlds. `reach`: with food one move away, by real hunger: the predicted drop, whether it clears the tolerance, whether the lowest predicted hunger is a food move. `told`: the model told a false hunger, and the real one with the tolerance at 0, paired by seed. `chain`: the moves replayed blind in another world, those moves with a perfect one-step grab, and aim by the gap to the food's edge. The blind aim is the baseline and it is above 0. It needs a world with `CircleWorld`'s food and poison.
 
+## 5e. Two experiments side by side, and the cost of a bigger world (vm-00073)
+
+```bash
+./venv/bin/python eval_hunger.py compare EXP_BASE EXP_OTHER        # same arm and seed, from each folder's hunger_*.jsonl and metrics
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 ./venv/bin/python bench_scale.py -o OUT > scaling.jsonl   # on an idle GPU, without MPS
+./venv/bin/python bench_scale.py --plot scaling.jsonl scaling.png
+```
+
+`bench_scale.py` runs worlds of side 64, 128 and 256 with 4, 16 and 64 transformers, every summary and log summaries, and reports the model's time per tick by part. The `t_` columns of `metrics.jsonl` are seconds per 1,000 ticks, whatever `online.log_every` is.
+
 ## 6. Writing up
 
 The experiment directory holds only README.md and Makefile (the tag keeps the code). The README is the report: goal,

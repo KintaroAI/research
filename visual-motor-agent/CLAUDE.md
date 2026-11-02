@@ -51,6 +51,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     per 1k; `forage_chance.py`: blind walks, food : poison at most 0.78; vm-00035). `configs/U_touch_ego.json` adds
     `env.egocentric` (vm-00036): ~2× the food and less poison in every arm.
   - **Hunger ahead** (task 00082, vm-00071): `online.future_k = k`, the hunger a move is scored on is the mean over the next k ticks, labelled in hindsight; k = 4 gives about 1.7 times the food with no more poison, k = 16 stops seeing poison; refused with self-forcing.
+  - **Several foods** (task 00083, vm-00072, paused): `env.foods = F`, still circles beside the food; `target` is always the nearest, so the step and the tools work on it. `configs/U_big.json`: 128 x 128 with 4 times as much of everything.
   - **Two senses** (task 00081, vm-00070): `env.sense` (`world/sense_world.py`, `configs/U_sense.json`): a view and a text sense in one wide frame, a scripted teacher, each sense going off by itself; `eval_sense.py` scores a sense's return against `sense.cut`, `eval_steer.py` who steers with the eyes closed.
   - **One half teaches another** (task 00078, vm-00068): `reference/mimic.py` (PyTorch, one letter per tick; arms Z, N, A, B, S, E): half 2 learns only from half 1's distribution and is heard where words are missing.
   - **Two stacked boxes, backprop cut between them** (task 00045, vm-00038): `reference/stacked_local.py` (PyTorch,
@@ -78,7 +79,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
   - **The universal model** (task 00023, `../ARCHITECTURE.md`; as built, with every parameter and buffer: `../ARCHITECTURE_REVIEW.md`): `model.universal=1` with `model.patch`: one token
     format, fully causal next-token prediction, one head, two-hot cross-entropy over `model.bins`; `model.gray=1` reads one
     channel per patch (task 00024). Start from `configs/U_default.json` (vm-00054's QNA, the default since 2026-10-31: four
-    quadrant transformers, gain, age key, ring, the egocentric touch world without overlaps; `lifetime.py`);
+    quadrant transformers, gain, age key, ring, the egocentric touch world without overlaps, log summaries `band_win = 1` since 2026-11-02, vm-00073; `lifetime.py`);
     `configs/U_universal.json` is the one-model form (grayscale world, checkerboard poison, dots, the instinct). Its forward is `Agent.forward_uni` / `CudaModel.forward_uni`; `vm_forward` refuses it.
     `online.click_bias` is skipped for models without a policy head (it used to write into the next parameter).
     Surprise gating (task 00028): `online.store_surprise` with the universal model on the GPU; a step's surprise is its
