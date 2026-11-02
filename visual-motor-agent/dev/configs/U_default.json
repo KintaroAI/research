@@ -1,6 +1,6 @@
 {
   "name": "U_default",
-  "description": "The default universal model: vm-00054's QNA (vm-00055: 34.7 +- 10.2 food, 3.5 +- 0.6 poison per 1k over eight seeds). Four separate transformers, one per quadrant of the view, each with its own patches and every pyramid summary; one body, the move by gain; position by age, acting on a key and value ring. The egocentric touch world with checker poison in 2x2 cells and circles that never overlap.",
+  "description": "The default universal model: vm-00054's QNA (vm-00055: 34.7 +- 10.2 food, 3.5 +- 0.6 poison per 1k over eight seeds). Four separate transformers, one per quadrant of the view, each with its own patches and every pyramid summary; one body, the move by gain; position by age, acting on a key and value ring. The egocentric touch world with checker poison in 2x2 cells and circles that never overlap. A channel per value (vm-00066, the default since 2026-11-01, the owner): the body and the move have their own rows in the tables.",
   "env": {
     "bonuses": false,
     "drives": true,
@@ -30,6 +30,7 @@
     "lr": 0.0003
   },
   "model": {
+    "uni_chan": 1,
     "patch": 8,
     "universal": 1,
     "bins": 32,

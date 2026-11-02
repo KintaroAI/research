@@ -70,4 +70,4 @@ Food by seed: CH 35.8, 25.3, 20.6, 41.0, 36.3, 22.6, 25.0, 29.8.
 
 1. The channels pass the rule set in advance and stay in the design.
 2. Sharing rows between hunger, the move and pixels did no measurable harm.
-3. `configs/U_default.json` is not changed yet: the channels were tested at 16 pieces, the default has 4, and every control would need a rerun. They go in at the next rerun of the controls.
+3. `configs/U_default.json` has `model.uni_chan=1` since this experiment (the owner, 2026-11-01): 970,402 parameters per piece against 929,282, 76 ticks/s alone on the 4090 against 79. They were tested at 16 pieces under council, not at the default's 4 under gain, and controls from before this date (NA, CO, G16, C16) ran without them.
