@@ -1,7 +1,7 @@
 # vm-00068: Saying It Out Loud, in Text
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00068` (code: `visual-motor-agent/dev/reference/mimic.py`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00068/`
 **Task plan:** [`../tasks/00078-mimic-text.md`](../tasks/00078-mimic-text.md)

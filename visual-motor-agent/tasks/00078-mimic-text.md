@@ -1,7 +1,7 @@
 # Task 00078: Saying It Out Loud, in Text (experiment vm-00068)
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 
 ## Context
 

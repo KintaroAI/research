@@ -111,7 +111,7 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00065](00065-sixty-four-pieces/README.md) | Sixty-four transformers in one body (`model.band_n=64`, 1 patch each): G64 (gain), C64 (council); seeds 1-8, 60k | In progress | Running. |
 | [00066](00066-value-channels/README.md) | A channel per value (`model.uni_chan=1`: body and move get their own rows in `W_in` and `W_out`): CH (council, 16 pieces); seeds 1-8, 60k | In progress | Waiting for the 4090. |
 | [00067](00067-shared-tables/README.md) | One table for all pieces (`online.tie_tables=inout`): TB (gain, 16 pieces); seeds 1-8, 60k: is the rise at 16 pieces more tokens? | In progress | Waiting for the 4090. |
-| [00068](00068-mimic-text/README.md) | Saying it out loud, in text: half 1 predicts letters, half 2 learns only from half 1 and says the missing words, so the model hears itself (`reference/mimic.py`, PyTorch prototype); arms Z, N, A, B, S, E | Complete (pending tag) | Half 2 never sees the world and beats half 1 on held-out text by 0.05–0.30 nats. Hearing itself does no detectable harm, and half 1 copes better with its own errors. Weighting by error stops overfitting. |
+| [00068](00068-mimic-text/README.md) | Saying it out loud, in text: half 1 predicts letters, half 2 learns only from half 1 and says the missing words, so the model hears itself (`reference/mimic.py`, PyTorch prototype); arms Z, N, A, B, S, E | Complete | Half 2 never sees the world and beats half 1 on held-out text by 0.05–0.30 nats. Hearing itself does no detectable harm, and half 1 copes better with its own errors. Weighting by error stops overfitting. |
 
 ## Open Questions
 
