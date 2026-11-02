@@ -1,7 +1,7 @@
 # Task 00078: Saying It Out Loud, in Text (experiment vm-00068)
 
 **Date:** 2026-11-01
-**Status:** In progress
+**Status:** Complete (pending tag)
 
 ## Context
 
@@ -51,4 +51,9 @@ On the held-out 10% of the text:
 
 ## Results
 
-Pending.
+Three seeds, 12k ticks. Full results in `../00068-mimic-text/README.md`.
+
+- **Reading 1, met:** half 2's whole-word accuracy in A is 111% of half 1's (0.069 against 0.062). Half 2 also beats its teacher on held-out text in every arm, by 0.05–0.30 nats.
+- **Reading 2, met narrowly:** blanks minus fills in A, +0.049 ± 0.042.
+- **Reading 3, met, but its reference was badly chosen:** Z overfits (held-out CE 1.719 at 3k ticks, 1.824 at 12k). Against the frozen A, B is level: −0.059 ± 0.071 at `q = 0.3`, +0.003 ± 0.031 at `q = 0.8`.
+- **Not planned:** S's weights ran from tick 0, and they stop the overfitting (flat at about 1.68). Half 1 that hears itself loses much less after a gap (B 0.74, S 0.58, A 0.87 nats). Ignoring its own letters (E) is worse than learning them.

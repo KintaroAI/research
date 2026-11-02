@@ -50,6 +50,7 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     replaced away from the cursor (`configs/U_touch.json`, smaller food; a random walk touches 4.7 food and 11.8 poison
     per 1k; `forage_chance.py`: blind walks, food : poison at most 0.78; vm-00035). `configs/U_touch_ego.json` adds
     `env.egocentric` (vm-00036): ~2× the food and less poison in every arm.
+  - **One half teaches another** (task 00078, vm-00068): `reference/mimic.py` (PyTorch, one letter per tick; arms Z, N, A, B, S, E): half 2 learns only from half 1's distribution and is heard where words are missing.
   - **Two stacked boxes, backprop cut between them** (task 00045, vm-00038): `reference/stacked_local.py` (PyTorch,
     text world; arms e2e / frozen / local / dtp / dni, `--tie`, `--cut-norm`), `reference/stacked_summary.py`.
   - **Attention in regions** (task 00044, vm-00037; `vm_attn_allow` in `vm_agent.h`, `torch_reference.attn_allow`):
