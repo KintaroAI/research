@@ -3,6 +3,7 @@ lifetime's pieces keep equal tables and different other weights; invalid setting
 
 Requires libvmagent.so; the GPU tests libvmcuda.so and a GPU.
 """
+import json
 import os
 import subprocess
 import sys
@@ -85,8 +86,34 @@ def test_a_lifetime_keeps_the_tables_equal(tmp_path, mode):
         assert not np.array_equal(a[1].params()[o:o + s], a[0].params()[o:o + s])
 
 
+@gpu
+def test_tie_every_averages_only_at_its_ticks(tmp_path):
+    """Task 00079: tables equal right after an average, apart between them, with their distance logged."""
+    out, r = lifetime(tmp_path, ["--set", "online.tie_tables=inout", "--set", "online.tie_every=8"])
+    assert r.returncode == 0, r.stderr[-800:]
+    a = [agent_lib.Agent.load(os.path.join(out, "ckpt_00000024_p%d.bin" % k)) for k in range(4)]
+    for o, s in ranges(a[0], TIED["inout"]):
+        for x in a[1:]:
+            np.testing.assert_array_equal(x.params()[o:o + s], a[0].params()[o:o + s])
+    rows = [json.loads(l) for l in open(os.path.join(out, "metrics.jsonl"))]
+    assert any(q.get("tie_gap", 0) > 0 for q in rows)
+
+
+@gpu
+def test_tie_every_longer_than_a_life(tmp_path):
+    """Same tables at birth, never averaged: they move apart."""
+    out, r = lifetime(tmp_path, ["--set", "online.tie_tables=inout", "--set", "online.tie_every=1000"])
+    assert r.returncode == 0, r.stderr[-800:]
+    a0 = [agent_lib.Agent.load(os.path.join(out, "ckpt_00000000_p%d.bin" % k)) for k in range(2)]
+    a = [agent_lib.Agent.load(os.path.join(out, "ckpt_00000024_p%d.bin" % k)) for k in range(2)]
+    (o, s), = ranges(a[0], ["uni_in_w"])
+    np.testing.assert_array_equal(a0[0].params()[o:o + s], a0[1].params()[o:o + s])
+    assert not np.array_equal(a[0].params()[o:o + s], a[1].params()[o:o + s])
+
+
 @pytest.mark.parametrize("extra", [["--set", "online.tie_tables=all"], ["--set", "online.tie_tables=in", "--set", "online.device=cpu", "--set", "online.ring=0", "--set", "online.piece_rule=gain"],
-                                   ["--set", "online.tie_tables=in", "--set", "online.pieces=0"]], ids=["unknown", "cpu", "one_model"])
+                                   ["--set", "online.tie_tables=in", "--set", "online.pieces=0"],
+                                   ["--set", "online.tie_tables=in", "--set", "online.tie_every=0"]], ids=["unknown", "cpu", "one_model", "zero"])
 def test_invalid(tmp_path, extra):
     _, r = lifetime(tmp_path, extra)
     assert r.returncode != 0 and "ValueError" in r.stderr

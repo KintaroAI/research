@@ -126,6 +126,14 @@ CLOSE = 0.005   # gain_sharp: predicted hungers this close are a tie (as online.
 TIED = {"in": ("uni_in_w", "uni_in_b"), "inout": ("uni_in_w", "uni_in_b", "uni_out_w", "uni_out_b")}   # online.tie_tables
 
 
+def table_gap(models, ranges):
+    """How far the pieces' tables have moved apart (task 00079): their spread around the mean, relative to the mean's size."""
+    p = [m.params() for m in models]
+    x = np.stack([np.concatenate([q[o:o + n] for o, n in ranges]) for q in p])
+    mean = x.mean(0)
+    return float(np.sqrt(((x - mean) ** 2).sum(1).mean() / (mean ** 2).sum()))
+
+
 def pieces_move(models, props, rule, rng, prev=None, lam=1.0, temp=0.01):
     """The body's move and who made it from the pieces' props (uni_act's, per_body), right after them: council and veto
     (task 00060) have every piece score every piece's move ([scorer, N, mover], only the move token computed; the GPU's
@@ -224,6 +232,8 @@ def main():
         raise ValueError("online.piece_rule: mean, max, random, or gain, gain_sharp, soft, council, veto, pessimism, rank, rank_first (with online.instinct_m > 1)")
     if on["piece_rule"] in together and on["device"] != "cuda":
         raise ValueError("online.piece_rule council, veto, pessimism, rank and rank_first run on the GPU (online.device=cuda)")
+    if on["tie_every"] < 1:
+        raise ValueError("online.tie_every: at least 1")
     if on["tie_tables"] and (on["tie_tables"] not in TIED or S < 2 or on["device"] != "cuda"):
         raise ValueError("online.tie_tables: in or inout, for online.pieces on the GPU (online.device=cuda)")
     if S > 1:
@@ -232,6 +242,7 @@ def main():
         agents = [agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)]
     agent = agents[0]
     tied = [(o, n) for name, o, n in agent.param_layout() if name in TIED.get(on["tie_tables"], ())]   # task 00076
+    last_tie = 0
     for a_ in agents[1:] if tied else ():                                         # from piece 0's tables
         for o, n in tied:
             a_.params()[o:o + n] = agent.params()[o:o + n]
@@ -457,8 +468,11 @@ def main():
                         if k:
                             fill_rollout(rk, rows, L)
                         stats.append(ag.update(rk, zeros, ppo))
-                if tied:
+                if tied and tick - last_tie >= on["tie_every"]:   # task 00079: an average every so many ticks; 1: every update
+                    if on["tie_every"] > 1:
+                        win["tie_gap"] = table_gap(gpus, tied)
                     cuda_lib.tie(gpus, tied)
+                    last_tie = tick
                 if stats[0] is not None:
                     win["stats"].append({key: float(np.mean([s_[key] for s_ in stats])) for key in stats[0]
                                          if isinstance(stats[0][key], (int, float))})
@@ -513,6 +527,8 @@ def main():
                     row["prop_dx_p%d" % k], row["prop_dy_p%d" % k] = (win["prop"][k] / bs).tolist()
                     row["agree_p%d" % k] = float(win["agree"][k] / bs)
                     row["won_x_p%d" % k], row["won_y_p%d" % k] = (win["won"][k] / bs).tolist()   # max, gain
+            if "tie_gap" in win:
+                row["tie_gap"] = win.pop("tie_gap")
             row.update(gate_metrics(gms))
             if hasattr(env, "stats"):
                 row.update(env.stats())

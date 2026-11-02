@@ -112,6 +112,7 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00066](00066-value-channels/README.md) | A channel per value (`model.uni_chan=1`: body and move get their own rows in `W_in` and `W_out`): CH (council, 16 pieces); seeds 1-8, 60k | Complete | The reading is met: food −5.2 ± 11.0, poison +0.03 ± 0.26; body and move CE do not move. The channels stay in the design. |
 | [00067](00067-shared-tables/README.md) | One table for all pieces (`online.tie_tables=inout`): TB (gain, 16 pieces); seeds 1-8, 60k: is the rise at 16 pieces more tokens? | Complete | TB − G16 food −7.7 ± 13.4, TB − NA +20.6 ± 12.7: the rise survives one table. Poison −2.21 ± 0.83, patch CE −0.010 ± 0.003, with half the distinct parameters. |
 | [00068](00068-mimic-text/README.md) | Saying it out loud, in text: half 1 predicts letters, half 2 learns only from half 1 and says the missing words, so the model hears itself (`reference/mimic.py`, PyTorch prototype); arms Z, N, A, B, S, E | Complete | Half 2 never sees the world and beats half 1 on held-out text by 0.05–0.30 nats. Hearing itself does no detectable harm, and half 1 copes better with its own errors. Weighting by error stops overfitting. |
+| [00069](00069-long-life-pieces/README.md) | Long lives: 500k ticks with a memory of the whole life: LT (16 pieces, shared tables), LD (the default, 4 pieces); seeds 1-4, gain | In progress | LT on the 4090, LD waits for the 3090. |
 
 ## Open Questions
 
