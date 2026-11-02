@@ -1,7 +1,7 @@
 # vm-00065: Sixty-Four Pieces in One Body
 
 **Date:** 2026-11-01
-**Status:** Complete (pending tag)
+**Status:** Complete
 **Source:** `exp/vm-00065` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00065/`; controls G16 and C16 in `exp_00064/`, NA and CO in `exp_00063/`
 **Task plan:** [`../tasks/00074-sixty-four-pieces.md`](../tasks/00074-sixty-four-pieces.md)
