@@ -74,3 +74,16 @@ def test_the_stream_keeps_a_long_mask_for_its_span():
     f = np.full((8, 64, 64, 3), 40, np.uint8)
     a = [patches(s(f)[:, None])[:, 0] for _ in range(5)]
     assert all(np.array_equal(a[0], x) for x in a[:4]) and not np.array_equal(a[0], a[4])
+
+
+def test_the_stream_leaves_the_frame_it_is_given():
+    s = ClogStream(np.random.default_rng(8), 4, 64, 64, 8, 0.5)
+    f = np.full((4, 64, 64, 3), 40, np.uint8)
+    seen = s(f)
+    assert not np.array_equal(seen, f) and (f == 40).all()
+
+
+def test_each_transformer_acting_has_its_own_view():
+    f = np.full((4, 64, 64, 3), 40, np.uint8)
+    a, b = (ClogStream(np.random.default_rng([1, 0xC107, k]), 4, 64, 64, 8, 0.3)(f) for k in range(2))
+    assert not np.array_equal(a, b)

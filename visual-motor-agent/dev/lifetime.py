@@ -18,6 +18,7 @@ Surprise gating (online.store_surprise > 0) for the universal model on the GPU (
 largest of its tokens' cross-entropies in the update that trained on it (as the newest window), each divided by its
 slot's recent mean (GatedMemory.note_tokens). It is read on the next tick, after acting, when the GPU is idle.
 
+Clogged acting (online.clog_act = 1, task 00086): each transformer also acts on its own damaged view; the world and memory stay clean.
 Clogged channels (online.clog = p, task 00085): about p of the patches of each step are damaged in each transformer's input, its own damage, drawn fresh each time a
 window is used, some for the whole window and some for one step, black or speckled, while the target stays clean. Memory and acting stay clean.
 
@@ -61,7 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import (STAT_KEYS, GatedMemory, clog_frames, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
+from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
                     thought_dream, uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
@@ -277,6 +278,8 @@ def main():
     clog = on["clog"]                         # task 00085: each transformer's inputs damaged, the targets clean
     if clog and (not uni or on["device"] != "cuda" or on["sf_windows"]):
         raise ValueError("online.clog needs the universal model on the GPU, without self-forcing")
+    if on["clog_act"] and not (clog and on["ring"]):
+        raise ValueError("online.clog_act needs online.clog above 0 and online.ring")
     if goal_k and not agent.config["use_prev_reward"]:
         raise ValueError("online.goal=1 needs model.use_prev_reward=1 (the scalar token slot carries the goal)")
     ppo = dict(agent_lib.DEFAULT_PPO)
@@ -290,6 +293,10 @@ def main():
     rng = np.random.default_rng(args.seed)
     clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
     damaged = lambda r: (clog_frames(r["img"], clog_rng, agent.config["patch"], clog, on["clog_long"]), r["drv"]) if clog else None   # noqa: E731
+    views = [None] * S                        # task 00086: each transformer's damaged view while acting, its own generator
+    if on["clog_act"]:
+        ac = agent.config
+        views = [ClogStream(np.random.default_rng([args.seed, 0xC107, k]), N0, ac["img"], ac.get("img_w") or ac["img"], ac["patch"], clog, on["clog_long"]) for k in range(S)]
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"])
     gate_on = dict(on, goal_mode="future") if future_k else on
@@ -379,10 +386,10 @@ def main():
         win["t_window"] += time.time() - t_
         t_ = time.time()
         if uni:   # the universal model: its own move prediction, and the instinct; pieces: each its own, the mean made
-            props = [uni_act(um, win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
+            props = [uni_act(um, view(win_in[0][:, 0])[:, None] if view else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
                              on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
-                     for um in umodels]
+                     for um, view in zip(umodels, views)]
             a, won = pieces_move(umodels, props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
             win["override"] += np.mean([p[1] for p in props]) * N
             win["gain"] += np.mean([p[2] for p in props]) * N

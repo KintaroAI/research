@@ -82,6 +82,8 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
+                      # task 00086: each transformer also acts on its own damaged view (ClogStream, the same p); needs clog and the ring. The world and memory stay clean
+                      clog_act=0,
                       # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
                       # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",

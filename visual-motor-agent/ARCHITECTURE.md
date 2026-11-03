@@ -322,7 +322,7 @@ The model predicts well, in pixels, text and a camera. What it does not yet show
 
 **A bigger world (vm-00072).** At twice the side, the same density and log summaries, K4 against K1 holds: food 42.1 against 21.7, no more poison, in all six seeds. Both eat about 60% of the small world's food because the world asks for it: the next food is 24.6 pixels away against 15.3, and even a perfect chaser loses 37%. More than half of the ticks are spent past 24 pixels, where aim is nearly gone.
 
-**Clogged channels (vm-00074).** `online.clog = p`: each transformer gets its own damaged input, black or speckled, against clean targets, with memory and acting clean. Error under long damage is .053 to .064 against .114, and error on clean input does not move. With damage while acting, food is about twice the control's and poison a third or less. Unpredicted and not yet explained: on clean input poison falls to about a third too. Two cases of the design are not tried yet: real closed eyes, and permanent damage on the target as well.
+**Clogged channels (vm-00074).** `online.clog = p`: each transformer gets its own damaged input, black or speckled, against clean targets, with memory and acting clean. Error under long damage is .053 to .064 against .114, and error on clean input does not move. With damage while acting, food is about twice the control's and poison a third or less. Unpredicted and not yet explained: on clean input poison falls to about a third too. Two cases of the design are not tried yet: real closed eyes, and permanent damage on the target as well. How it works: section 14.
 
 **Log summaries (vm-00073, the default since 2026-11-02, the owner).** `model.band_win = 1`: a transformer reads a summary only within 1 cell of itself at that level, sharp near and coarse far. With transformers of a fixed size that is O(log N) summaries each. Quadrupling the area and the transformers costs 5.2 and 5.7 times per tick, against 10.5 and 26 with every summary. At 64 x 64 no loss could be seen in food, poison, reach or hunger, a mild test (7 of 21 summaries) with wide intervals. Not measured yet: quality at 128 and above, and with 16 or 64 transformers.
 
@@ -351,3 +351,57 @@ The model predicts well, in pixels, text and a camera. What it does not yet show
 **Expectation passed between pieces** (the owner). Today pieces share only summaries of the real frame, so no piece hears what another one expects. To try: feed a piece's predicted summaries to the others, so that expectation travels as well as sight. The thought half of vm-00056 is a crude form, where predictions return as input. **An imagery score** can copy the human test: show an ambiguous frame with two patterns overlapped, prime the model with one, and measure how far its prediction leans that way, against no priming and against priming with the other.
 
 **Exercises across senses** (the owner). Speech should be able to recreate an image, and an image a description, which should help with learning to speak. It needs no new mechanism: it is vm-00068's gap again, with a word missing and the model filling it in, now from another sense. It also gives speech a reason: vm-00068's model only continues text, while this one says a particular word because of what it sees. That is naming, how children begin. It must cross real senses (the owner): a caption drawn in the frame is still vision, and it goes when the eyes close, so restoring it from the picture is restoring vision from vision. The smallest real version (the owner: use the two worlds we have, visual and text): text as a separate sense beside vision, not drawn into the picture: a frame of two parts (`model.img_w`), a view and a text strip with its own pieces, joined only by the summaries. Letters are grey levels as in the text world, so the universal model needs no change; a small alphabet of up to about 30 letters keeps the view's 32 bins, as a full 65 needs more. A scripted teacher writes what is near ("food left", "poison near"). The world then drops each sense by itself: the text stops while the thing stays in view, or the eyes close while the text goes on, for longer than the context (the torus is the size of the view, so nothing can leave it). Built as task 00081, vm-00070. Score how well the hidden view is restored from the sound and the silent sound from the view, against a model with that other sense cut. Within a frame earlier slots predict later ones, and the scene barely changes between ticks, so each direction is taught only while the other sense is absent. This is the first rung of the baby trainer above, and sound (task 00077) and the mouth can take the strip's place later. Do this one first: the model needs no change. First result (vm-00070): words came from the picture, and words steered the body with the eyes closed, through the summaries, for the view piece too. No picture measurably came from words: what they gave reached action, not imagery. An exercise that asks for the picture itself is the open test.
+
+## 14. How Damage Works (tasks 00085, 00086)
+
+The owner's idea: damage what a transformer receives, score it against the truth, and the system as a whole learns to restore what does not arrive. Each transformer has its own imperfections, so the four do not share one bad picture.
+
+### The three cases
+
+| Case | Input | Target | Lasts | Built? |
+|---|---|---|---|---|
+| Temporary damage, clogged channels | damaged, different per transformer | clean | one step, or a whole window | **yes** |
+| Closed eyes | blank | blank, the frame itself is blank | while closed | no: a real event in the world, nothing to restore |
+| Permanent damage, a blind spot | no signal | no signal | the whole life | no: it would test tracking food through the gap |
+
+Only the first has a clean truth to train against, so only the first is a restoration task. Black means "missing": there is no separate flag.
+
+### One training update
+
+1. **The windows.** Memory gives 8 windows of 8 steps, the newest and 7 replayed, all clean. Every transformer trains on the same windows.
+2. **A copy per transformer.** For each transformer in turn, `clog_frames` copies the windows and damages the copy with its own draw. With 4 transformers there are 4 different damaged copies. They are drawn again at every update, so a chunk of memory comes back with different damage each time it is replayed.
+3. **Which patches.** The choice is made per 8 x 8 patch, over the whole frame, including the quarters a transformer does not own. About p of the patches of each step are hit: half of that is **long**, the same patches in all 8 steps, and half is **brief**, one step each, drawn step by step. `brief_rate` allows for the two overlapping, so the share comes out at p.
+4. **What happens to a patch.** Each chosen patch is black or speckled, a coin flip per patch, held through its window. Black is all zeros. Speckle replaces about half of the patch's pixels with random brightness. Pixels are never hit one at a time.
+5. **Input tokens.** From the transformer's damaged copy: its patch tokens from its own quarter only, and its summary tokens averaged from the same copy, level by level. So damage in another quarter reaches it only through summaries, thinned by the averaging. Body and move tokens are not damaged.
+6. **Targets.** From the one clean frame, patches and summaries alike, for all four transformers. The loss is the usual one, and nothing tells the model which patches were hit.
+
+### While acting
+
+`online.clog` alone damages training only. Acting and memory are clean, and damage is practice. `online.clog_act = 1` (vm-00075, the owner) makes it part of life:
+
+| | `clog` | `clog` and `clog_act` |
+|---|---|---|
+| Acting during a life | clean | **damaged, each transformer its own** |
+| A transformer's ring, its context | clean | **damaged** |
+| The world, food and hunger | clean | clean |
+| Memory | clean | clean |
+| Training input | fresh damage | fresh damage |
+| Training targets | clean | clean |
+
+Acting works tick by tick, so it uses `ClogStream`: the long patches and the kind of each patch are drawn every 16 ticks, all at once, and the brief ones every tick. It has the same p as training, and its own generator per transformer.
+
+Memory stays clean because the targets come from it. Storing what each transformer saw as well would cost five copies of each frame and replay the same damage each time. So the damage seen while choosing a move does not match the damage drawn when that moment is replayed: memory records what happened, not how it looked.
+
+### Measuring it
+
+- `eval_clog.py score`: acts on clean, and shows the same window clean, with brief damage and with long damage. Predictions of the chosen patches are scored against the clean frame, on all pixels and on those holding something, beside copying the last frame.
+- `eval_hunger.py chain --clog .3`: each transformer acts on its own damaged view, on any run, including one that never trained on damage.
+- `clog_video.py`: the world, what each transformer gets in its own quarter, and what they predict, with the same damage for each run.
+
+### What it has shown
+
+vm-00074, against K4: error under long damage .064 (10%) and .053 (30%) against .114, clean error unchanged. With 30% damage while acting, food 92.7 and 77.7 against 45.2, poison 4.1 and 1.8 against 13.2. On clean input poison falls to about a third, which nothing predicted and nothing yet explains. vm-00075 is running.
+
+### Where it lives
+
+`online.py`: `clog_masks`, `brief_rate`, `damage`, `clog_frames`, `ClogStream`. `lifetime.py`: `damaged` hands each transformer's copy to `update_rollout(inputs=...)`, and `views` hold the acting streams. `tests/test_clog.py`.

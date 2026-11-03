@@ -14,6 +14,7 @@ The owner: add noise to random pixels in random transformers, and train against 
 
 - **The damage:** `online.clog = p`. In each batch, for each transformer, about p of the patches of each step are damaged, drawn for the whole frame and different for each transformer. Half of it lasts the whole 8-step window and half one step (`online.clog_long`). Half of the damaged patches are black, half speckled: half of their pixels replaced at random. Damage outside a transformer's quarter reaches it through its summaries, which are built from its damaged frame.
 - **What stays clean:** targets, memory and acting. The body and the move are not damaged.
+- **The whole mechanism,** step by step: [`ARCHITECTURE.md`, section 14](../ARCHITECTURE.md).
 - **Arms:** K4 with log summaries in the 64 x 64 world, C10 and C30, six seeds, 60k ticks, all on the 4090 at 36 ticks/s, seeds 1–3 first and 4–6 after them. The control is vm-00073's K4.
 - **Control rerun (not planned):** the poison result was too large to rest on a control from older code, so K4 with no damage was run again on the arms' code, seeds 1–3, as K4R.
 - **Frozen tests:** `eval_clog.py`, predictions against the clean frame with 30% damage; `eval_hunger.py chain --clog .3`, each transformer acting on its own damaged view; `chain` on clean input. Final weights, 16 worlds, 1,500 ticks.
