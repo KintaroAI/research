@@ -1,7 +1,7 @@
 # Task 00086: Clogged Acting, Living With the Damage (experiment vm-00075)
 
 **Date:** 2026-11-02
-**Status:** Running, started 2026-11-02 19:58
+**Status:** Complete
 
 ## Context
 
@@ -30,10 +30,10 @@ The same frozen tests as vm-00074: `eval_hunger.py chain --clog .3`, `chain` on 
 ## The readings, set before the results
 
 1. **Plumbing:** with `clog_act = 0` a life draws what it drew; with it on, memory holds clean frames and the transformers act on different damaged views. **Met:** the switch off draws nothing, the stream leaves the frame it is given, the views differ on the GPU, and a life refuses `clog_act` without `clog`.
-2. **The cost of growing up damaged:** food over the first 10k ticks is below the C arm's by more than its interval. Expected: a young model cannot restore yet.
-3. **It catches up:** over the last 20k ticks, while acting on damage, food is not below the same arm's frozen food under damage in vm-00074, A10 against C10 and A30 against C30, by more than its interval.
-4. **The final model is no worse:** frozen food under damage not below, and poison not above, the C arm's by more than the interval, and restoration error under `long` not above.
-5. **Clean input:** frozen poison on clean input stays below the control's by more than the interval.
+2. **The cost of growing up damaged:** food over the first 10k ticks is below the C arm's by more than its interval. Expected: a young model cannot restore yet. **Not met:** −.8 ± 11.8 and +4.5 ± 12.9.
+3. **It catches up:** over the last 20k ticks, while acting on damage, food is not below the same arm's frozen food under damage in vm-00074, A10 against C10 and A30 against C30, by more than its interval. **Met:** +.4 ± 31.8 and +19.2 ± 24.0.
+4. **The final model is no worse:** frozen food under damage not below, and poison not above, the C arm's by more than the interval, and restoration error under `long` not above. **Met.**
+5. **Clean input:** frozen poison on clean input stays below the control's by more than the interval. **Met:** −1.9 ± .6 and −2.1 ± .4.
 
 ## Not in this one
 
@@ -46,7 +46,7 @@ The other two cases: closed eyes, and permanent damage. Damage to the body and t
 - [x] `tests/test_clog.py`: the stream leaves its frame untouched
 - [x] `00075-clogged-acting/`: README, Makefile
 - [x] Reading 1 on the GPU
-- [ ] Runs, frozen tests, write-up
+- [x] Runs, frozen tests, write-up
 
 ## Verification
 

@@ -400,7 +400,7 @@ Memory stays clean because the targets come from it. Storing what each transform
 
 ### What it has shown
 
-vm-00074, against K4: error under long damage .064 (10%) and .053 (30%) against .114, clean error unchanged. With 30% damage while acting, food 92.7 and 77.7 against 45.2, poison 4.1 and 1.8 against 13.2. On clean input poison falls to about a third, which nothing predicted and nothing yet explains. vm-00075 is running.
+vm-00074, against K4: error under long damage .064 (10%) and .053 (30%) against .114, clean error unchanged. With 30% damage while acting, food 92.7 and 77.7 against 45.2, poison 4.1 and 1.8 against 13.2. On clean input poison falls to about a third, which nothing predicted and nothing yet explains. vm-00075, damage while acting too: no cost could be measured. Lived food over the last 20k is 93 and 97, the final models are level with or above vm-00074's, and clean poison stays at about a third to two fifths of the control's. The predicted early cost did not appear.
 
 ### Where it lives
 
