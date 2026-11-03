@@ -7,6 +7,7 @@
 #   make runs — N5 to N100, seeds 1 and 2 on the RTX 4090 and 3 on the RTX 3090, 24 lives at once
 #   make frozen — eval_noise.py chain and error, every run at every test level in LEVELS, without MPS
 #   make show — tables of train level by test level
+#   make figures — the README's images (noise_figures.py)
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -16,7 +17,7 @@ G = CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pi
 RUN = $(PY) lifetime.py --config configs/U_default.json --set online.future_k=4
 LEVELS = 0 0.1 0.5 0.9 0.95 1
 
-.PHONY: all runs frozen show
+.PHONY: all runs frozen show figures
 
 all: runs
 
@@ -38,3 +39,6 @@ frozen:
 
 show:
 	cd $(DEV) && $(PY) eval_noise.py show $(OUT)/chain_a.jsonl $(OUT)/chain_b.jsonl $(OUT)/error.jsonl
+
+figures:
+	cd $(DEV) && $(PY) noise_figures.py

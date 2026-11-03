@@ -1,7 +1,7 @@
 # Task 00087: White Noise, Where Does It Break (experiment vm-00076)
 
 **Date:** 2026-11-02
-**Status:** In progress
+**Status:** Complete (stage 1; stages 2 and 3 not started)
 
 ## Context
 
@@ -43,20 +43,21 @@
 
 ## The readings, set before the results
 
-1. **Plumbing:** `noise = 0` is the old world draw for draw; the share of replaced pixels is q; q = 1 keeps nothing of the frame; the noise is fresh each tick; memory and targets carry it.
-2. **The floor:** at q = 1 the lead over blind is zero within its interval, three seeds.
-3. **Poison first:** the lead on poison falls to half at a lower level than the lead on food.
-4. **Which failure:** named from the cross-tests, at the level where food is half broken.
-5. **The maximum (the owner's prediction):** on either curve, an arm above the control by more than its interval, with higher levels below that arm. Food, poison and aim are read separately. With three seeds the interval on food is very wide, about ±60 going by the spread of C10 against K4 in vm-00074, so stage 1 can only suggest a peak in food, and stage 2 repeats any peak with six seeds. Poison and aim are tighter.
+1. **Plumbing:** `noise = 0` is the old world draw for draw; the share of replaced pixels is q; q = 1 keeps nothing of the frame; the noise is fresh each tick; memory and targets carry it. **Met:** 6 unit tests, 5,000 ticks draw for draw.
+2. **The floor:** at q = 1 the lead over blind is zero within its interval, three seeds. **Met:** food −.56 ± 1.40, poison −.43 ± 4.63.
+3. **Poison first:** the lead on poison falls to half at a lower level than the lead on food. **Met:** lived, about .3 against .5; frozen at its own level, the same way but narrower (.37 and .45 of the lead left at .5).
+4. **Which failure:** named from the cross-tests, at the level where food is half broken. **Read: it cannot see, in part.** At .5 the clean-raised model gets nothing, the model raised at .5 keeps half (+30.9 ± 5.9 over K4) and none does better; drowning is ruled out (body CE .26 to .29, clean vision worse with the level raised on); the sign of not learning shows but is adaptation, not stunting.
+5. **The maximum (the owner's prediction):** **Not met** in stage 1: lived .1 75.4 against 73.5; tested clean no arm above K4; clean poison at .1 −.85 ± 2.06, lower in all three seeds, the only hint. on either curve, an arm above the control by more than its interval, with higher levels below that arm. Food, poison and aim are read separately. With three seeds the interval on food is very wide, about ±60 going by the spread of C10 against K4 in vm-00074, so stage 1 can only suggest a peak in food, and stage 2 repeats any peak with six seeds. Poison and aim are tighter.
 
 ## Implementation
 
-- [ ] `world/circle_world.py`: `noise`, its generator, `clean_frame`
-- [ ] `tests/test_noise.py`
-- [ ] `eval_hunger.py`: `chain` at a test level; `eval_noise.py`
-- [ ] `00076-white-noise/`: README, Makefile
-- [ ] Short life on the GPU
-- [ ] Stage 1 runs and frozen tests, write-up
+- [x] `world/circle_world.py`: `noise`, its generator, `clean_frame`
+- [x] `tests/test_noise.py`
+- [x] `eval_hunger.py`: `chain` at a test level; `eval_noise.py`
+- [x] `00076-white-noise/`: README, Makefile
+- [x] Short life on the GPU
+- [x] Stage 1 runs and frozen tests, write-up
+- [ ] Stage 2 (six seeds at 0 and .1) and stage 3 (input-only noise): not started
 
 ## Verification
 
