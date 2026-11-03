@@ -53,7 +53,7 @@ class Scored:
 class Life:
     """A run's frozen pieces, one body per world, and one tick of its acting."""
 
-    def __init__(self, path, bodies, seed):
+    def __init__(self, path, bodies, seed, clog=0.0):
         import agent_lib
         import cuda_lib
         from lifetime import ckpt_name
@@ -71,6 +71,12 @@ class Life:
         for m in self.models:
             m.uni_ring_reset(bodies)
         self.es = np.ones(bodies, np.uint8)
+        self.clogs = [None] * self.S
+        if clog:   # task 00085: each piece acts on its own damaged view
+            from online import ClogStream
+
+            c = agents[0].config
+            self.clogs = [ClogStream(np.random.default_rng([seed, k]), bodies, c["img"], c.get("img_w") or c["img"], c["patch"], clog) for k in range(self.S)]
 
     def act(self, obs, tol=None, told=None):
         from lifetime import pieces_move
@@ -82,8 +88,8 @@ class Life:
             drv[:, 0] = told
         act = np.zeros((self.bodies, 1, 3), np.float32)
         tol = on["instinct_tol"] if tol is None else tol
-        props = [uni_act(m, obs["image"][:, None], drv[:, None], act, self.es[:, None], self.bins, self.rng, on["instinct_m"], tol, on["instinct_h"],
-                         on["instinct_jacobi"], on["instinct_decode"], per_body=True, first="sample", ring=True) for m in self.models]
+        props = [uni_act(m, (c(obs["image"]) if c else obs["image"])[:, None], drv[:, None], act, self.es[:, None], self.bins, self.rng, on["instinct_m"], tol,
+                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first="sample", ring=True) for m, c in zip(self.models, self.clogs)]
         a, _ = pieces_move(self.models, props, on["piece_rule"], self.rng, prev=None)
         for m in self.models:
             m.uni_ring_move(a)
@@ -195,12 +201,12 @@ def told(path, ticks, bodies, seed):
         yield dict(mode="told", run=os.path.basename(path), arm=arm, food=food * k, poison=poison * k, size=float(np.mean(size)), cos_near=float(np.mean(near)))
 
 
-def chain(path, ticks, bodies, seed):
+def chain(path, ticks, bodies, seed, clog=0.0):
     from eval_pieces import relative
     from lifetime import cosine
     from world import make_world
 
-    life = Life(path, bodies, seed)
+    life = Life(path, bodies, seed, clog)
     env, blind, grab = (make_world(bodies, life.cfg, seed=seed + k) for k in range(3))
     obs = env.observe()
     food, poison = dict(seen=0, blind=0, grab=0), dict(seen=0, blind=0, grab=0)
@@ -418,6 +424,7 @@ if __name__ == "__main__":
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--clog", type=float, default=0.0, help="chain: each piece acts on a view with this share of its patches damaged (task 00085)")
     ap.add_argument("--base", help="show: the arm the others are read against, paired by seed")
     ap.add_argument("--plot", help="show: where to write the plot of aim by gap")
     args = ap.parse_args()
@@ -431,5 +438,6 @@ if __name__ == "__main__":
             plot_aim(args.runs, args.plot)
     else:
         for run in args.runs:
-            for row in dict(reach=reach, told=told, chain=chain, poison=poison)[args.what](run, args.ticks, args.bodies, args.seed):
+            how = dict(reach=reach, told=told, chain=lambda *a: chain(*a, args.clog), poison=poison)[args.what]
+            for row in how(run, args.ticks, args.bodies, args.seed):
                 print(json.dumps(row, default=float), flush=True)

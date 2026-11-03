@@ -150,6 +150,10 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 ./venv/bin/python bench_scal
 
 `bench_scale.py` runs worlds of side 64, 128 and 256 with 4, 16 and 64 transformers, every summary and log summaries, and reports the model's time per tick by part. The `t_` columns of `metrics.jsonl` are seconds per 1,000 ticks, whatever `online.log_every` is.
 
+## 5f. What a world asks for, with no model (`eval_food_gap.py`, vm-00072)
+
+`python eval_food_gap.py configs/U_default.json configs/U_big.json`, CPU only. Scripted walkers that chase the nearest food once it is within a reach of 0, 16, 24 pixels or always. Gives each world's food per 1,000 ticks, the gap to the nearest food right after a bite, and how often food is within reach. Use it before reading a drop in food between two worlds as the model's fault.
+
 ## 6. Writing up
 
 The experiment directory holds only README.md and Makefile (the tag keeps the code). The README is the report: goal,

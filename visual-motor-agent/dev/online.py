@@ -79,6 +79,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00082: the hunger the move token predicts, and the instinct reads, is the mean over the next
                       # future_k ticks (0: the next tick; 1 is the same thing, through the hindsight labels)
                       future_k=0,
+                      # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
+                      # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
+                      clog=0.0, clog_long=0.5,
                       # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
                       # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",
@@ -472,6 +475,59 @@ class GatedMemory:
             m["ltm_label_share"] = float((self.store.ltm["lbl"][:n] > 0).mean()) if n else None
         self.counts = collections.Counter()
         return m
+
+
+def brief_rate(p, long_share):
+    """The rate of one-step damage that, with long masks at p * long_share, damages p of the patches of a step (the two overlap)."""
+    q = p * long_share
+    return (p - q) / max(1.0 - q, 1e-9)
+
+
+def clog_masks(rng, n, T, gh, gw, p, long_share):
+    """Which patches are damaged [n, T, gh, gw] bool (task 00085): about p of them, long_share of that in all T steps and the rest in one step each, and the
+    kind of each patch [n, 1, gh, gw] bool, True black, else speckle."""
+    hit = rng.random((n, 1, gh, gw), dtype=np.float32) < p * long_share
+    hit = hit | (rng.random((n, T, gh, gw), dtype=np.float32) < brief_rate(p, long_share))
+    return hit, rng.random((n, 1, gh, gw), dtype=np.float32) < 0.5
+
+
+def damage(frames, hit, black, patch, rng):
+    """A copy of frames [n, T, H, W, 3] u8 with the patches of hit damaged: black patches at 0, the others with half of their pixels at random values."""
+    out = np.array(frames, np.uint8, copy=True)
+    n, T, gh, gw = hit.shape
+    blocks = out.reshape(n, T, gh, patch, gw, patch, 3).transpose(0, 1, 2, 4, 3, 5, 6)   # a view: [n, T, gh, gw, patch, patch, 3]
+    dark = hit & black
+    blocks[dark] = 0
+    speckle = hit & ~dark
+    k = int(speckle.sum())
+    if k:
+        keep = rng.random((k, patch, patch, 1), dtype=np.float32) < 0.5
+        blocks[speckle] = np.where(keep, blocks[speckle], rng.integers(0, 256, (k, patch, patch, 1), dtype=np.uint8))
+    return out
+
+
+def clog_frames(frames, rng, patch, p, long_share=0.5):
+    """Task 00085: frames [n, T, H, W, 3] u8 as one transformer's input: about p of the patches of each step damaged, in a copy."""
+    n, T, H, W = frames.shape[:4]
+    hit, black = clog_masks(rng, n, T, H // patch, W // patch, p, long_share)
+    return damage(frames, hit, black, patch, rng)
+
+
+class ClogStream:
+    """The same damage tick by tick, for one transformer acting in a frozen test: long masks drawn anew every span ticks, brief ones each tick."""
+
+    def __init__(self, rng, n, H, W, patch, p, long_share=0.5, span=16):
+        self.rng, self.n, self.gh, self.gw, self.patch, self.p, self.long_share, self.span = rng, n, H // patch, W // patch, patch, p, long_share, span
+        self.t, self.long, self.black = 0, None, None
+
+    def __call__(self, frame):
+        """frame [n, H, W, 3] -> a damaged copy."""
+        if self.t % self.span == 0:
+            self.long = self.rng.random((self.n, 1, self.gh, self.gw), dtype=np.float32) < self.p * self.long_share
+            self.black = self.rng.random((self.n, 1, self.gh, self.gw), dtype=np.float32) < 0.5
+        self.t += 1
+        hit = self.long | (self.rng.random((self.n, 1, self.gh, self.gw), dtype=np.float32) < brief_rate(self.p, self.long_share))
+        return damage(frame[:, None], hit, self.black, self.patch, self.rng)[:, 0]
 
 
 def fill_rollout(ro, r, L):

@@ -58,6 +58,7 @@ Beside them, mean hunger (vm-00071's section on what poison costs): the score th
 - [x] `configs/U_big.json`
 - [x] Benchmark, the model decided
 - [x] `00072-big-world/`: README, Makefile
+- [x] `eval_food_gap.py`: what each world asks for, with scripted walkers and no model (the owner's explanation of the lower food)
 - [ ] Runs, frozen tests, write-up
 
 ## Verification

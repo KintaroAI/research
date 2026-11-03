@@ -18,6 +18,9 @@ Surprise gating (online.store_surprise > 0) for the universal model on the GPU (
 largest of its tokens' cross-entropies in the update that trained on it (as the newest window), each divided by its
 slot's recent mean (GatedMemory.note_tokens). It is read on the next tick, after acting, when the GPU is idle.
 
+Clogged channels (online.clog = p, task 00085): about p of the patches of each step are damaged in each transformer's input, its own damage, drawn fresh each time a
+window is used, some for the whole window and some for one step, black or speckled, while the target stays clean. Memory and acting stay clean.
+
 Hunger ahead (online.future_k = k, task 00082): the hunger the move token learns to predict, and the instinct reads, is
 the mean over the next k ticks, labelled in hindsight from real futures (the newest window ends k - 1 ticks back).
 
@@ -58,7 +61,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import (STAT_KEYS, GatedMemory, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
+from online import (STAT_KEYS, GatedMemory, clog_frames, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
                     thought_dream, uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
@@ -271,6 +274,9 @@ def main():
     future_k = on["future_k"]                 # task 00082: the hunger predicted is the mean over the next future_k ticks
     if future_k and (not uni or on["sf_windows"]):
         raise ValueError("online.future_k needs the universal model, without self-forcing")
+    clog = on["clog"]                         # task 00085: each transformer's inputs damaged, the targets clean
+    if clog and (not uni or on["device"] != "cuda" or on["sf_windows"]):
+        raise ValueError("online.clog needs the universal model on the GPU, without self-forcing")
     if goal_k and not agent.config["use_prev_reward"]:
         raise ValueError("online.goal=1 needs model.use_prev_reward=1 (the scalar token slot carries the goal)")
     ppo = dict(agent_lib.DEFAULT_PPO)
@@ -282,6 +288,8 @@ def main():
     label_k = goal_k or future_k              # the steps a hindsight label looks ahead
     lag = label_k - 1 if label_k else 0       # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
+    clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
+    damaged = lambda r: (clog_frames(r["img"], clog_rng, agent.config["patch"], clog, on["clog_long"]), r["drv"]) if clog else None   # noqa: E731
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"])
     gate_on = dict(on, goal_mode="future") if future_k else on
@@ -473,7 +481,7 @@ def main():
                 stats = []
                 for k, (g, ag) in enumerate(zip(gpus, agents)):
                     if g:   # a GPU rollout holds only the data: one for all pieces
-                        stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0))
+                        stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0, inputs=damaged(rows)))
                     else:   # a C++ rollout belongs to its agent
                         rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
                         if k:
@@ -490,7 +498,7 @@ def main():
                     for k, s_ in enumerate(stats):
                         win["stats_k"][k].append(s_)
             elif gpu:
-                inputs = None
+                inputs = damaged(rows)
                 if on["sf_windows"]:   # self-forcing (task 00039): replayed windows only, none with an episode start
                     ok = np.flatnonzero(~rows["es"][:, 1:].any(1))
                     ok = ok[ok >= ce_n]
