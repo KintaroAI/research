@@ -1,8 +1,8 @@
 # vm-00076: White Noise
 
 **Date:** 2026-11-02
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00076` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00076/`
 **Task plan:** [`../tasks/00087-white-noise.md`](../tasks/00087-white-noise.md)
 
