@@ -41,6 +41,8 @@ def run(args, path):
     for k in ("bg_color", "target_color", "cursor_color", "cursor_outline", "hazard_color"):
         if k in ec:
             ec[k] = tuple(ec[k])
+    if getattr(args, "noise", None) is not None:   # task 00087: test any run at another level of white noise
+        ec["noise"] = args.noise
     S = int(info.get("pieces", 1))
     agents = [agent_lib.Agent.load(os.path.join(path, ckpt_name(args.step, k, S))) for k in range(S)]
     agent = agents[0]

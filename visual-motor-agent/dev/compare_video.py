@@ -60,13 +60,14 @@ def main():
     ap.add_argument("--steps", type=int, default=1000)
     ap.add_argument("--worlds", type=int, default=8)
     ap.add_argument("--cols", type=int, default=COLS)
+    ap.add_argument("--noise", type=float, help="env.noise for every run (task 00087); default: each run's own")
     ap.add_argument("-o", "--out", required=True)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     recs, labels, metas = [], [], []
     for r in a.runs:
         path, label, *rule = r.split(":")
-        args = types.SimpleNamespace(step=a.step, steps=a.steps, worlds=a.worlds, horizon=0, decode="", rule=rule[0] if rule else "")
+        args = types.SimpleNamespace(step=a.step, steps=a.steps, worlds=a.worlds, horizon=0, decode="", rule=rule[0] if rule else "", noise=a.noise)
         rec, food, poison, meta = run(args, path)
         print("%-40s world 0: food %d poison %d; all %d worlds: food %.1f poison %.1f per %d ticks" % (
             label, food[0], poison[0], len(food), food.mean(), poison.mean(), a.steps), flush=True)

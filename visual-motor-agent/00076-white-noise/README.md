@@ -112,6 +112,26 @@ Bold marks each model at its own level.
 
 At q = 1 the model raised there gets −.56 ± 1.40 food above a blind walk and −.43 ± 4.63 poison below it. Aim tested clean falls with the level a model was raised on, from .175 for K4 to .13 for .05 and .1, .05 for .5, and .01 to .03 from .9 up.
 
+### R6. Stage 2 (2026-11-03): six seeds at q = .1
+
+N10 seeds 4–6 with the same code, frozen at 0 and .1, against vm-00073's K4 seeds 4–6 (`make stage2`, `make frozen2`). Six seeds, t interval df 5:
+
+| N10 − K4, frozen | Tested clean | Tested at .1 |
+|---|---|---|
+| Food | −13.3 ± 17.0 | +30.5 ± 11.0 |
+| Poison | +1.04 ± 2.51 | −9.4 ± 4.8 |
+| Aim 12–24 px | −.048 ± .056 | +.054 ± .033 |
+
+Seeds 4–6 take more clean poison than K4 (+4.62, +1.25, +2.92), so the hint from seeds 1–3 is gone. Lived over the last 20k ticks, six seeds: food 70.4 against 70.0 (+.4 ± 15.0), poison 4.79 against 3.68 (+1.11 ± 1.13).
+
+### Videos
+
+`make videos` (`compare_video.py`, 1,000 ticks from the same start, seed 1 of each arm; outputs in `exp_00076/videos/`, not in the repo):
+- `noise_levels.mp4`: six models, each in the noise it was raised on: q = 0, .1, .25, .5, .75 and 1. Over 8 worlds: food 91.1, 70.6, 86.5, 42.8, 22.4 and 15.9 per 1,000 ticks.
+- `clean_vs_q10_at_q10.mp4`: K4 and N10, both at q = .1. K4 gets food 56.0 and poison 10.2, N10 food 70.6 and poison 2.4.
+
+The owner, from the video: at .1 the poison checkers are still visible, and at .25 almost not, so the rise in poison is to be expected.
+
 ## Figures
 
 ![Food and poison by level](images/levels.png)
@@ -139,13 +159,14 @@ At q = 1 the model raised there gets −.56 ± 1.40 food above a blind walk and 
    - **Lived:** .1 gets 75.4 against 73.5, well inside the interval, and .05 gets less.
    - **Frozen, tested clean:** no arm is above the control on food, poison or aim.
    - **The one hint:** clean poison at .1 is 2.90 against 3.75 (−.85 ± 2.06), lower in all three seeds. It is not significant.
+   - **Stage 2, six seeds: still not met.** Clean poison +1.04 ± 2.51, food −13.3 ± 17.0. The hint is gone.
 
 ## Analysis
 
 - **Each model does best near the level it was raised on.** The diagonal of the cross-tests holds from 0 to .9. A model raised at .5 forages twice as well at .5 as on clean frames, and predicts the clean world better at .5 than on clean frames. It has learned to look through its noise, and to expect it.
 - **The model raised on clean frames is fragile.** At q = .1 its poison is 16.3 against 3.75, more than four times as much, and its food falls by a third. Ten per cent of the pixels are enough to break its view of the checkers.
 - **A life at .1 buys robustness at no measurable clean cost.** Tested at .1, the model raised there takes −12.6 ± 10.2 less poison than K4 and gets +29 ± 36 more food. On clean frames it is level with K4.
-- **Why poison breaks first (a guess, not measured):** the poison checker is a 2 x 2 texture, read pixel by pixel. Food is a gray circle of about 250 pixels whose mean survives the noise. Speckles look like checkers, so poison and noise get mixed up.
+- **Why poison breaks first:** the poison checker is a 2 x 2 texture, read pixel by pixel. Food is a gray circle of about 250 pixels whose mean survives the noise. The owner saw it in the video: at .1 the checkers still show, at .25 almost not. That speckles are mistaken for checkers is a guess, not measured.
 - **Why no maximum:** vm-00074's damage gave a clean target to restore, and the gain on clean poison came with it. Here nothing can be restored: noise in the targets only adds what cannot be learned, so it adds nothing to the model. This is a guess; stage 3 (noise on the input only, clean targets) would test it.
 - **Where it breaks:** between .75 and .9. The model raised at .75 still gets 9 to 10 food above a blind walk at its own level when lived, and 6 when frozen at .9. The model raised at .9 gets 2.
 - **Three seeds are few.** The interval on food is ±30 to ±65. Only effects of 30 or more on food, or of 5 or more on poison, show.
@@ -154,11 +175,10 @@ At q = 1 the model raised there gets −.56 ± 1.40 food above a blind walk and 
 
 1. White noise in the world breaks foraging in stages. Poison goes first, at about q = .3. Food is half gone at .5, and nothing is left between .75 and .9.
 2. At the half-broken level, the noise really hides part of the world. The model raised in it recovers half of what it hides, and no model does better.
-3. The owner's predicted maximum did not appear in three seeds, lived or tested clean. The only hint is a smaller clean poison at .1, inside its interval.
-4. A little noise in life makes a model robust to that noise at no measurable cost. A model raised on clean frames is not: 10% noise quadruples its poison.
+3. The owner's predicted maximum did not appear, lived or tested clean, in three seeds or, at .1, in six.
+4. A little noise in life makes a model robust to that noise: at .1, with six seeds, food +30.5 ± 11.0 and poison −9.4 ± 4.8 against K4. On clean frames it costs a little food, −13.3 ± 17.0, inside the interval. A model raised on clean frames is fragile: 10% noise quadruples its poison.
 
 ## Next steps
 
-- Stage 2: six seeds at q = 0 and .1, to settle the clean-poison hint, the one place the maximum could still show.
-- Stage 3: noise on the input only, with clean targets, at .1 and .5. Is it the noisy target that removes the benefit vm-00074 found?
+- Stage 2 is done (R6). Stage 3, noise on the input only with clean targets, is [vm-00077](../00077-input-noise/README.md): with clean targets the noise helps.
 - The white ceiling, the other end of the owner's idea (ARCHITECTURE section 13): a world where nothing happens, then move both raised models to the structured world.

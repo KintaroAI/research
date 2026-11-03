@@ -57,3 +57,14 @@ def test_only_the_frame_changes():
         ob, _, _, ib = b.step(act)
         assert np.array_equal(oa["drives"], ob["drives"]) and np.array_equal(ia["success"], ib["success"])
         assert np.array_equal(a.clean_frame(), oa["image"]) and np.array_equal(b.clean_frame(), a.clean_frame())
+
+
+def test_input_noise_replaces_about_q_and_leaves_the_frames():
+    from online import noise_frames
+    frames = np.full((3, 8, 64, 64, 3), 40, np.uint8)
+    out = noise_frames(frames, np.random.default_rng(0), 0.3)
+    hit = out[..., 0] != 40
+    assert abs(hit.mean() - 0.3 * 255 / 256) < 0.01
+    assert (frames == 40).all()
+    assert np.array_equal(out[..., 0], out[..., 1]) and np.array_equal(out[..., 0], out[..., 2])
+    assert np.array_equal(noise_frames(frames, np.random.default_rng(0), 0.0), frames)

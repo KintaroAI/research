@@ -8,6 +8,10 @@
 #   make frozen — eval_noise.py chain and error, every run at every test level in LEVELS, without MPS
 #   make show — tables of train level by test level
 #   make figures — the README's images (noise_figures.py)
+#   make stage2 — N10, seeds 4-6, on the RTX 4090 (the control: vm-00073's K4, seeds 4-6)
+#   make frozen2 — chain at 0 and .1 for K4 and N10, seeds 4-6, on the RTX 3090 without MPS
+#   Stage 3, noise on the input only, is vm-00077 (00077-input-noise)
+#   make videos — the two videos: each level's model in its own noise, and K4 against N10 at .1 (compare_video.py)
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -17,7 +21,7 @@ G = CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pi
 RUN = $(PY) lifetime.py --config configs/U_default.json --set online.future_k=4
 LEVELS = 0 0.1 0.5 0.9 0.95 1
 
-.PHONY: all runs frozen show figures
+.PHONY: all runs frozen show figures stage2 frozen2 videos
 
 all: runs
 
@@ -42,3 +46,19 @@ show:
 
 figures:
 	cd $(DEV) && $(PY) noise_figures.py
+
+stage2:
+	cd $(DEV) && { for s in 4 5 6; do \
+	  $(G) CUDA_VISIBLE_DEVICES=1 $(RUN) --set env.noise=0.1 --seed $$s --set name=N10 -o $(OUT)/N10_s$$s > $(OUT)/N10_s$$s.log 2>&1 & \
+	done; wait; }
+
+frozen2:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { \
+	  CUDA_VISIBLE_DEVICES=0 $(PY) eval_noise.py chain $(CTRL)/K4_s4 $(CTRL)/K4_s5 $(CTRL)/K4_s6 --levels 0 0.1 > $(OUT)/chain2_k4.jsonl & \
+	  CUDA_VISIBLE_DEVICES=0 $(PY) eval_noise.py chain $(OUT)/N10_s4 $(OUT)/N10_s5 $(OUT)/N10_s6 --levels 0 0.1 > $(OUT)/chain2_n10.jsonl & \
+	  wait; }
+
+videos:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 && mkdir -p $(OUT)/videos && \
+	  $(PY) compare_video.py $(CTRL)/K4_s1:"q 0, clean" $(OUT)/N10_s1:"q .1" $(OUT)/N25_s1:"q .25" $(OUT)/N50_s1:"q .5" $(OUT)/N75_s1:"q .75" $(OUT)/N100_s1:"q 1" --steps 1000 -o $(OUT)/videos/levels && \
+	  $(PY) compare_video.py $(CTRL)/K4_s1:"raised clean, tested at .1" $(OUT)/N10_s1:"raised at .1, tested at .1" --noise 0.1 --cols 2 --steps 1000 -o $(OUT)/videos/at_q10

@@ -84,6 +84,8 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       clog=0.0, clog_long=0.5,
                       # task 00086: each transformer also acts on its own damaged view (ClogStream, the same p); needs clog and the ring. The world and memory stay clean
                       clog_act=0,
+                      # task 00088: the model's input noised as env.noise does (acting and training, one draw for all transformers), the world, memory and targets clean
+                      noise_in=0.0,
                       # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
                       # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",
@@ -506,6 +508,14 @@ def damage(frames, hit, black, patch, rng):
         keep = rng.random((k, patch, patch, 1), dtype=np.float32) < 0.5
         blocks[speckle] = np.where(keep, blocks[speckle], rng.integers(0, 256, (k, patch, patch, 1), dtype=np.uint8))
     return out
+
+
+def noise_frames(frames, rng, q):
+    """Task 00088: a copy of frames [..., H, W, 3] u8 with each pixel replaced by a random gray with probability q, as env.noise draws it."""
+    shape = frames.shape[:-1]
+    hit = rng.random(shape, dtype=np.float32) < q
+    value = rng.integers(0, 256, shape, dtype=np.uint8)
+    return np.where(hit[..., None], value[..., None], frames)
 
 
 def clog_frames(frames, rng, patch, p, long_share=0.5):

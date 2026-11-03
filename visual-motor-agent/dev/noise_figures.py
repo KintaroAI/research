@@ -1,6 +1,7 @@
-"""The README figures of vm-00076 (task 00087): the world at six levels, food and poison by level, and the cross-tests as a lead over a blind walk.
+"""The README figures of vm-00076 (task 00087) and vm-00077 (task 00088): the world at six levels, food and poison by level, and the cross-tests as a lead over a blind walk.
 
 Run from dev/ after `make -C ../00076-white-noise frozen`:  ./venv/bin/python noise_figures.py
+vm-00077 (task 00088), after `make -C ../00077-input-noise frozen`:  ./venv/bin/python noise_figures.py input
 """
 import json, os, sys
 import numpy as np
@@ -14,7 +15,46 @@ D = os.path.expanduser("~/data/research/visual-motor-agent/")
 IMG = "../00076-white-noise/images/"
 LV = (0, .05, .1, .25, .5, .75, .9, .95, 1)
 ARMS = ["K4"] + ["N%d" % round(q * 100) for q in LV[1:]]
-path = lambda a, s: D + ("exp_00073/" if a == "K4" else "exp_00076/") + "%s_s%d" % (a, s)
+path = lambda a, s: D + ("exp_00073/" if a == "K4" else "exp_00077/" if a[0] == "I" else "exp_00076/") + "%s_s%d" % (a, s)
+
+
+def input_figure(out="../00077-input-noise/images/input.png"):
+    """vm-00077 (task 00088): frozen food and poison by test level, noise in the world (N) against noise on the input only (I)."""
+    C = {}
+    for f in ("exp_00076/chain_a.jsonl", "exp_00076/chain_b.jsonl", "exp_00077/chain3.jsonl"):
+        for line in open(D + f):
+            r = json.loads(line)
+            a, s = r["run"].split("_s")
+            C[a, int(s), r["noise"]] = r
+    TL = (0.0, 0.1, 0.5, 1.0)
+    style = {"K4": ("#555555", "-", "raised clean (K4)"), "N10": ("#2f6fdb", "--", ".1 in the world"), "I10": ("#2f6fdb", "-", ".1 on the input only"),
+             "N50": ("#d9822b", "--", ".5 in the world"), "I50": ("#d9822b", "-", ".5 on the input only")}
+    plt.rcParams.update({"font.size": 11, "axes.spines.top": False, "axes.spines.right": False})
+    fig, axs = plt.subplots(1, 2, figsize=(10.5, 4.2))
+    for ax, ck, title in ((axs[0], "food", "Food per 1,000 ticks, frozen"), (axs[1], "poison", "Poison per 1,000 ticks, frozen")):
+        for a, (col, ls, lab) in style.items():
+            ax.plot(TL, [np.mean([C[a, s, t][ck]["seen"] for s in (1, 2, 3)]) for t in TL], ls, color=col, lw=2, marker="o", ms=5, label=lab)
+        blind = np.mean([C["K4", s, t][ck]["blind"] for s in (1, 2, 3) for t in TL])
+        ax.axhline(blind, color="#999", lw=1.2, ls=":")
+        ax.text(1.0, blind, "blind walk", ha="right", va="bottom", color="#777", fontsize=10)
+        ax.set_title(title, loc="left", fontsize=12, color="#222")
+        ax.set_xlabel("tested at q")
+        ax.set_xticks(TL, ["0", ".1", ".5", "1"])
+        ax.grid(axis="y", color="#e4e4e4", lw=.8)
+        ax.set_axisbelow(True)
+        ax.set_ylim(bottom=0)
+    axs[0].legend(frameon=False, fontsize=9.5, loc="upper right")
+    fig.tight_layout()
+    tmp = out.replace(".png", "_tmp.png")
+    fig.savefig(tmp, dpi=110)
+    plt.close(fig)
+    fit(Image.open(tmp).convert("RGB"), out)
+    os.remove(tmp)
+
+
+if sys.argv[1:] == ["input"]:
+    input_figure()
+    sys.exit()
 
 # 1. the same world at each level
 env = json.load(open(path("K4", 1) + "/info.json"))

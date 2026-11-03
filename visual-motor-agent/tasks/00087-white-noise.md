@@ -1,7 +1,7 @@
 # Task 00087: White Noise, Where Does It Break (experiment vm-00076)
 
 **Date:** 2026-11-02
-**Status:** Complete (stage 1; stages 2 and 3 not started)
+**Status:** Complete (stages 1 and 2 in vm-00076, stage 3 in vm-00077)
 
 ## Context
 
@@ -57,7 +57,9 @@
 - [x] `00076-white-noise/`: README, Makefile
 - [x] Short life on the GPU
 - [x] Stage 1 runs and frozen tests, write-up
-- [ ] Stage 2 (six seeds at 0 and .1) and stage 3 (input-only noise): not started
+- [x] Stage 2 (2026-11-03): N10 seeds 4-6, frozen at 0 and .1. Six seeds against K4 tested clean: poison +1.04 ± 2.51, food −13.3 ± 17.0, aim −.048 ± .056, so the hint is gone and the maximum is not met. Tested at .1: food +30.5 ± 11.0, poison −9.4 ± 4.8, aim +.054 ± .033. Lived last 20k: food +.4 ± 15.0, poison +1.11 ± 1.13. The owner, from the video: at .1 the poison checkers are still visible, at .25 almost not
+- [x] Stage 3: task 00088, experiment vm-00077
+- [x] Write-up of stage 2 in `00076-white-noise/README.md` (R6)
 
 ## Verification
 

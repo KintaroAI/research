@@ -19,6 +19,7 @@ largest of its tokens' cross-entropies in the update that trained on it (as the 
 slot's recent mean (GatedMemory.note_tokens). It is read on the next tick, after acting, when the GPU is idle.
 
 Clogged acting (online.clog_act = 1, task 00086): each transformer also acts on its own damaged view; the world and memory stay clean.
+Input noise (online.noise_in = q, task 00088): the model acts and trains on frames noised as env.noise does, one draw for all transformers; the world, memory and targets stay clean.
 Clogged channels (online.clog = p, task 00085): about p of the patches of each step are damaged in each transformer's input, its own damage, drawn fresh each time a
 window is used, some for the whole window and some for one step, black or speckled, while the target stays clean. Memory and acting stay clean.
 
@@ -62,7 +63,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, dream_inputs, fill_rollout, load_config, sample_moves,  # noqa: E402
+from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
                     thought_dream, uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
@@ -280,6 +281,9 @@ def main():
         raise ValueError("online.clog needs the universal model on the GPU, without self-forcing")
     if on["clog_act"] and not (clog and on["ring"]):
         raise ValueError("online.clog_act needs online.clog above 0 and online.ring")
+    q_in = on["noise_in"]                     # task 00088: noise on the model's input only, the world, memory and targets clean
+    if q_in and (not uni or on["device"] != "cuda" or on["sf_windows"] or clog or not on["ring"]):
+        raise ValueError("online.noise_in needs the universal model on the GPU with the ring, without self-forcing or online.clog")
     if goal_k and not agent.config["use_prev_reward"]:
         raise ValueError("online.goal=1 needs model.use_prev_reward=1 (the scalar token slot carries the goal)")
     ppo = dict(agent_lib.DEFAULT_PPO)
@@ -292,6 +296,8 @@ def main():
     lag = label_k - 1 if label_k else 0       # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
     clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
+    in_rng, act_rng = np.random.default_rng([args.seed, 0x0154]), np.random.default_rng([args.seed, 0x0155])   # task 00088
+    noised = lambda r: (noise_frames(r["img"], in_rng, q_in), r["drv"]) if q_in else None   # noqa: E731
     damaged = lambda r: (clog_frames(r["img"], clog_rng, agent.config["patch"], clog, on["clog_long"]), r["drv"]) if clog else None   # noqa: E731
     views = [None] * S                        # task 00086: each transformer's damaged view while acting, its own generator
     if on["clog_act"]:
@@ -385,6 +391,8 @@ def main():
                        ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
         win["t_window"] += time.time() - t_
         t_ = time.time()
+        if q_in:   # task 00088: one noisy view for every transformer; the ring holds it, memory gets the clean frame
+            win_in[0] = noise_frames(win_in[0], act_rng, q_in)
         if uni:   # the universal model: its own move prediction, and the instinct; pieces: each its own, the mean made
             props = [uni_act(um, view(win_in[0][:, 0])[:, None] if view else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
@@ -486,9 +494,10 @@ def main():
             t_ = time.time()
             if S > 1:   # every piece its own gradient step on the same rows (task 00059)
                 stats = []
+                shared = noised(rows)   # task 00088: one noisy input for all pieces, fresh each update
                 for k, (g, ag) in enumerate(zip(gpus, agents)):
                     if g:   # a GPU rollout holds only the data: one for all pieces
-                        stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0, inputs=damaged(rows)))
+                        stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0, inputs=shared if q_in else damaged(rows)))
                     else:   # a C++ rollout belongs to its agent
                         rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
                         if k:
@@ -505,7 +514,7 @@ def main():
                     for k, s_ in enumerate(stats):
                         win["stats_k"][k].append(s_)
             elif gpu:
-                inputs = damaged(rows)
+                inputs = noised(rows) if q_in else damaged(rows)
                 if on["sf_windows"]:   # self-forcing (task 00039): replayed windows only, none with an episode start
                     ok = np.flatnonzero(~rows["es"][:, 1:].any(1))
                     ok = ok[ok >= ce_n]
