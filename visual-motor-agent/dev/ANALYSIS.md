@@ -154,6 +154,10 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 ./venv/bin/python bench_scal
 
 `python eval_food_gap.py configs/U_default.json configs/U_big.json`, CPU only. Scripted walkers that chase the nearest food once it is within a reach of 0, 16, 24 pixels or always. Gives each world's food per 1,000 ticks, the gap to the nearest food right after a bite, and how often food is within reach. Use it before reading a drop in food between two worlds as the model's fault.
 
+## 5g. Damaged channels (`eval_clog.py`, `clog_video.py`, vm-00074)
+
+`eval_clog.py score` measures restoration against the clean frame, `eval_hunger.py chain --clog .3` foraging with damage while acting. `clog_video.py RUN:LABEL RUN:LABEL` shows a row per run: the world, what the transformers get, what they predict, with the same damage for both.
+
 ## 6. Writing up
 
 The experiment directory holds only README.md and Makefile (the tag keeps the code). The README is the report: goal,

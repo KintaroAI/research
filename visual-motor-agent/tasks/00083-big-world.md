@@ -1,7 +1,7 @@
 # Task 00083: The Big World, the Same Experiment at Twice the Side (experiment vm-00072)
 
 **Date:** 2026-11-02
-**Status:** In progress (restarted 2026-11-02 after task 00084, with log summaries, K1 and K4, the owner's decision)
+**Status:** Complete
 
 ## Context
 
@@ -44,9 +44,9 @@ The others are cheaper or no faster, but each is a second change against vm-0007
 Each is an arm against K1, seed by seed, 95% interval.
 
 1. **Plumbing:** with `foods = 1` the world is the old one, draw for draw; with `foods = 4`, every food is drawn, touching any of them feeds, and no circles overlap. **Met:** the default world matches the code before this task in every frame and drive over 5,000 ticks of 4 worlds, and `tests/test_many_foods.py` passes. A touched food is replaced alone.
-2. **Reach holds:** aim at gaps of 12–24 pixels, weighted by ticks, is above K1's by more than its interval.
-3. **A chain pays:** the lead over blind and a perfect grab is above K1's by more than its interval.
-4. **Food:** over the last 20k ticks food is above K1's by more than its interval, with poison not above K1's by more than its interval.
+2. **Reach holds:** aim at gaps of 12–24 pixels, weighted by ticks, is above K1's by more than its interval. **Met:** +.195 ± .030.
+3. **A chain pays:** the lead over blind and a perfect grab is above K1's by more than its interval. **Met:** +17.3 ± 1.9.
+4. **Food:** over the last 20k ticks food is above K1's by more than its interval, with poison not above K1's by more than its interval. **Met:** +20.4 ± 6.5, poison −.66 ± 1.18.
 
 Beside them, mean hunger (vm-00071's section on what poison costs): the score the agent is minimizing.
 
@@ -59,7 +59,7 @@ Beside them, mean hunger (vm-00071's section on what poison costs): the score th
 - [x] Benchmark, the model decided
 - [x] `00072-big-world/`: README, Makefile
 - [x] `eval_food_gap.py`: what each world asks for, with scripted walkers and no model (the owner's explanation of the lower food)
-- [ ] Runs, frozen tests, write-up
+- [x] Runs, frozen tests, write-up
 
 ## Verification
 

@@ -51,7 +51,8 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     per 1k; `forage_chance.py`: blind walks, food : poison at most 0.78; vm-00035). `configs/U_touch_ego.json` adds
     `env.egocentric` (vm-00036): ~2× the food and less poison in every arm.
   - **Hunger ahead** (task 00082, vm-00071): `online.future_k = k`, the hunger a move is scored on is the mean over the next k ticks, labelled in hindsight; k = 4 gives about 1.7 times the food with no more poison, k = 16 stops seeing poison; refused with self-forcing.
-  - **Several foods** (task 00083, vm-00072, paused): `env.foods = F`, still circles beside the food; `target` is always the nearest, so the step and the tools work on it. `configs/U_big.json`: 128 x 128 with 4 times as much of everything.
+  - **Several foods** (task 00083, vm-00072): `env.foods = F`, still circles beside the food; `target` is always the nearest, so the step and the tools work on it. `configs/U_big.json`: 128 x 128 with 4 times as much of everything.
+  - **Clogged channels** (task 00085, vm-00074): `online.clog = p`, `online.clog_long`, each transformer its own damaged input, black or speckled, whole window or one step, against clean targets. `lifetime.py` hands it to `update_rollout(inputs=...)`. Off by default.
   - **Two senses** (task 00081, vm-00070): `env.sense` (`world/sense_world.py`, `configs/U_sense.json`): a view and a text sense in one wide frame, a scripted teacher, each sense going off by itself; `eval_sense.py` scores a sense's return against `sense.cut`, `eval_steer.py` who steers with the eyes closed.
   - **One half teaches another** (task 00078, vm-00068): `reference/mimic.py` (PyTorch, one letter per tick; arms Z, N, A, B, S, E): half 2 learns only from half 1's distribution and is heard where words are missing.
   - **Two stacked boxes, backprop cut between them** (task 00045, vm-00038): `reference/stacked_local.py` (PyTorch,

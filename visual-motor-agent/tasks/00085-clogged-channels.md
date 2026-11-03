@@ -1,7 +1,7 @@
 # Task 00085: Clogged Channels, Learning to Restore What Does Not Arrive (experiment vm-00074)
 
 **Date:** 2026-11-02
-**Status:** Implemented; running, seeds 1–3 on the 4090 (2026-11-02), seeds 4–6 after vm-00072 frees the 3090
+**Status:** Complete
 
 ## Context
 
@@ -46,9 +46,9 @@ Scored on all pixels and on the pixels that hold something (not background). `ev
 Each is C30 and C10 against the control, seed by seed, 95% interval on six seeds.
 
 1. **Plumbing:** clean frames given as inputs change nothing in the loss, damaged ones raise it, and targets stay clean. **Met,** on a new model on the GPU: the loss is 3.466119 with no inputs and with clean frames as inputs, equal in every digit, about 3.476 with 30% damaged and 3.49 with 90%, and back to 3.466119 on the next batch without inputs.
-2. **Restoration (the main one):** under `long` damage, error on things is below the control's by more than its interval, and below `copy`.
-3. **Clean cost:** on clean input, food over the last 20k is not below by more than its interval, and poison not above by more than its interval.
-4. **Robustness:** frozen food with damage while acting is above the control's by more than its interval.
+2. **Restoration (the main one):** under `long` damage, error on things is below the control's by more than its interval, and below `copy`. **Met:** .064 and .053 against .114, `copy` .22.
+3. **Clean cost:** on clean input, food over the last 20k is not below by more than its interval, and poison not above by more than its interval. **Met:** food +21.7 ± 25.0 and +6.5 ± 26.6, poison −2.57 ± .86 and ± .42, a fall nobody predicted.
+4. **Robustness:** frozen food with damage while acting is above the control's by more than its interval. **Met:** +47.4 ± 21.2 and +32.5 ± 23.0.
 
 A short check on one control life, 150 ticks: on things `clean` .04, `long` .11, `copy` .22. So a model trained on clean frames already beats `copy`, and the comparison that matters in reading 2 is against the control.
 
@@ -64,7 +64,7 @@ Food with the eyes closed needs the two-senses world, and dream length reads a b
 - [x] `eval_hunger.py`: `--clog`; `eval_clog.py`
 - [x] `00074-clogged-channels/`: README, Makefile
 - [x] Reading 1 on the GPU
-- [ ] Runs, frozen tests, write-up
+- [x] Runs, frozen tests, write-up
 
 ## Verification
 

@@ -103,7 +103,7 @@ def run(args, path):
            else "a %d-step lookahead (%s)" % (ion["instinct_h"], ion["instinct_decode"]))
     mc = agent.config
     meta = dict(touch=cfg.touch, ego=cfg.egocentric, verb="touches" if cfg.touch else "clicks",
-                sub="frozen, %s%s; the agent's own 64x64 view" % (how, ", egocentric" if cfg.egocentric else ""),
+                sub="frozen, %s%s; the agent's own %dx%d view" % (how, ", egocentric" if cfg.egocentric else "", cfg.size, cfg.size), size=cfg.size,
                 piece_side=int(round(S ** 0.5)) if S > 1 and mc["band_cols"] == 2 else 0,
                 poison_add=cfg.hazard_click_add, split=split_lines(mc))
     return rec, food, poison, meta
@@ -121,9 +121,11 @@ def frame(rec, t, title, meta):
     d = ImageDraw.Draw(im)
     im.paste(view(rec[t]["img"]), (VX, VY))
     ref = rec[t]["cursor"] if meta["ego"] else None
-    draw_split(d, meta, VX, VY, SCALE)
-    trail(d, rec, t, VX, VY, SCALE, ref)
-    rings(d, rec, t, VX, VY, SCALE, ref)
+    size = meta.get("size", 64)
+    sc = 64 * SCALE / size            # screen pixels per world pixel: any world fills the same square
+    draw_split(d, meta, VX, VY, sc, size)
+    trail(d, rec, t, VX, VY, sc, ref, size=size)
+    rings(d, rec, t, VX, VY, sc, ref, size=size)
     if meta.get("piece_side") and rec[t]["won"] >= 0:   # the piece that made this move
         s, k = meta["piece_side"], rec[t]["won"]
         side = 64 * SCALE // s
@@ -185,48 +187,48 @@ def split_lines(mc):
     return edges, bool(mc.get("attn_cols", 0))
 
 
-def draw_split(d, meta, x0, y0, sc):
+def draw_split(d, meta, x0, y0, sc, size=64):
     """The overlap band(s) of a split model's attention, dashed, on its view."""
     if not meta.get("split"):
         return
     if meta["split"][0] == "checker":                                # region 0's patches: a dot at each centre
         _, P, S = meta["split"]
-        for r in range(64 // P):
-            for c in range(64 // P):
+        for r in range(size // P):
+            for c in range(size // P):
                 if (r + c) % S == 0:
                     x, y = x0 + (c + 0.5) * P * sc, y0 + (r + 0.5) * P * sc
                     d.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(120, 170, 255))
         return
     edges, cols = meta["split"]
     for e in edges:
-        for k in range(0, 64 * sc, 12):
-            a, b = k, min(k + 6, 64 * sc)
+        for k in range(0, int(size * sc), 12):
+            a, b = k, min(k + 6, size * sc)
             seg = [(x0 + e * sc, y0 + a), (x0 + e * sc, y0 + b)] if cols else [(x0 + a, y0 + e * sc), (x0 + b, y0 + e * sc)]
             d.line(seg, fill=(120, 170, 255), width=2)
 
 
-def in_view(p, ref):
+def in_view(p, ref, size=64):
     """A world position in the view: as is, or (egocentric, ref = the current cursor) relative to the cursor drawn at
     the center, wrapped."""
-    return p if ref is None else np.mod(p - ref + 32.0, 64.0)
+    return p if ref is None else np.mod(p - ref + size / 2.0, float(size))
 
 
-def trail(d, rec, t, x0, y0, sc, ref=None, n=30, width=2):
+def trail(d, rec, t, x0, y0, sc, ref=None, n=30, width=2, size=64):
     """The cursor's last n positions (wrapping world: break the line where it jumps across an edge)."""
-    pts = [in_view(r["cursor"], ref) for r in rec[max(0, t - n):t + 1]]
+    pts = [in_view(r["cursor"], ref, size) for r in rec[max(0, t - n):t + 1]]
     for p, q in zip(pts, pts[1:]):
         if np.abs(p - q).max() < 20:
             d.line([(x0 + p[0] * sc, y0 + p[1] * sc), (x0 + q[0] * sc, y0 + q[1] * sc)], fill=TRAIL, width=width)
 
 
-def rings(d, rec, t, x0, y0, sc, ref=None):
+def rings(d, rec, t, x0, y0, sc, ref=None, size=64):
     """Each touch or click as a ring at the cursor, fading over 8 steps."""
     for k in range(max(0, t - 8), t + 1):
         r = rec[k]
         if r["kind"]:
             c = dict(food=FOOD, poison=POISON, empty=EMPTY)[r["kind"]]
             rad = 14 + 3 * (t - k)
-            x, y = x0 + in_view(r["cursor"], ref)[0] * sc, y0 + in_view(r["cursor"], ref)[1] * sc
+            x, y = x0 + in_view(r["cursor"], ref, size)[0] * sc, y0 + in_view(r["cursor"], ref, size)[1] * sc
             d.ellipse([x - rad, y - rad, x + rad, y + rad], outline=c, width=3 if t - k < 4 else 1)
 
 

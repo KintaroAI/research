@@ -5,6 +5,8 @@
 #
 # Usage:
 #   make runs — K1, K4, seeds 1-3 on the RTX 4090 and 4-6 on the RTX 3090, six lives on each at once
+#   make frozen — eval_hunger.py chain, reach and poison, K1 and K4, six seeds, without MPS
+#   make videos — K1 beside K4, 1,000 ticks, seeds 3 and 2
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -12,7 +14,7 @@ OUT = $(HOME)/data/research/visual-motor-agent/exp_00072
 G = CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pipe
 RUN = $(PY) lifetime.py --config configs/U_big.json
 
-.PHONY: all runs
+.PHONY: all runs frozen videos
 
 all: runs
 
@@ -22,3 +24,19 @@ runs:
 	  if [ $$s -le 3 ]; then g=1; else g=0; fi; \
 	  $(G) CUDA_VISIBLE_DEVICES=$$g $(RUN) --set online.future_k=$$k --seed $$s --set name=K$$k -o $(OUT)/K$${k}_s$$s > $(OUT)/K$${k}_s$$s.log 2>&1 & \
 	done; done; wait; }
+
+frozen:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { for w in chain reach poison; do \
+	  { CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py $$w $(OUT)/K1_s1 $(OUT)/K4_s1 $(OUT)/K1_s2 $(OUT)/K4_s2 --ticks 1500 & \
+	    CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py $$w $(OUT)/K1_s3 $(OUT)/K4_s3 --ticks 1500 & \
+	    CUDA_VISIBLE_DEVICES=1 $(PY) eval_hunger.py $$w $(OUT)/K1_s4 $(OUT)/K4_s4 $(OUT)/K1_s5 $(OUT)/K4_s5 --ticks 1500 & \
+	    CUDA_VISIBLE_DEVICES=1 $(PY) eval_hunger.py $$w $(OUT)/K1_s6 $(OUT)/K4_s6 --ticks 1500 & \
+	    wait; } > $(OUT)/hunger_$$w.jsonl; \
+	done; }
+	cd $(DEV) && $(PY) eval_hunger.py show $(OUT)/hunger_chain.jsonl $(OUT)/hunger_reach.jsonl $(OUT)/hunger_poison.jsonl --base K1 --plot ../00072-big-world/images/aim.png
+
+videos:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 && for s in 3 2; do \
+	  $(PY) compare_video.py --cols 2 --worlds 16 --step 60000 -o $(OUT)/videos/seed$$s \
+	    "$(OUT)/K1_s$$s:K1 next tick:gain" "$(OUT)/K4_s$$s:K4 four ticks ahead:gain"; \
+	done
