@@ -1,8 +1,8 @@
 # vm-00077: Input Noise, Clean Targets
 
 **Date:** 2026-11-03
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00077` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00077/`
 **Task plan:** [`../tasks/00088-input-noise.md`](../tasks/00088-input-noise.md)
 
