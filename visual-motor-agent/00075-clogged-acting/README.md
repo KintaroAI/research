@@ -1,8 +1,8 @@
 # vm-00075: Clogged Acting
 
 **Date:** 2026-11-02
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00075` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00075/`
 **Task plan:** [`../tasks/00086-clogged-acting.md`](../tasks/00086-clogged-acting.md)
 
