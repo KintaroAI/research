@@ -1,8 +1,8 @@
 # vm-00072: The Big World
 
 **Date:** 2026-11-02
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00072` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00072/`
 **Task plan:** [`../tasks/00083-big-world.md`](../tasks/00083-big-world.md)
 
