@@ -19,6 +19,7 @@ Ground truth (the world's cursor, food and poison) is for scoring only and never
 compare DIR_BASE DIR_OTHER: two experiments' folders, same arm and seed, from their hunger_*.jsonl and metrics.
 """
 import argparse
+import dataclasses
 import json
 import os
 
@@ -201,12 +202,14 @@ def told(path, ticks, bodies, seed):
         yield dict(mode="told", run=os.path.basename(path), arm=arm, food=food * k, poison=poison * k, size=float(np.mean(size)), cos_near=float(np.mean(near)))
 
 
-def chain(path, ticks, bodies, seed, clog=0.0):
+def chain(path, ticks, bodies, seed, clog=0.0, noise=None):
     from eval_pieces import relative
     from lifetime import cosine
     from world import make_world
 
     life = Life(path, bodies, seed, clog)
+    if noise is not None:   # task 00087: tested at a level of white noise, whatever it was raised on
+        life.cfg = dataclasses.replace(life.cfg, noise=noise)
     env, blind, grab = (make_world(bodies, life.cfg, seed=seed + k) for k in range(3))
     obs = env.observe()
     food, poison = dict(seen=0, blind=0, grab=0), dict(seen=0, blind=0, grab=0)
@@ -235,7 +238,7 @@ def chain(path, ticks, bodies, seed, clog=0.0):
             poison[name] += int(i["gt_hazard_click"].sum())
     life.close()
     k = 1000.0 / (ticks * bodies)
-    yield dict(mode="chain", run=os.path.basename(path), food={q: v * k for q, v in food.items()}, poison={q: v * k for q, v in poison.items()},
+    yield dict(mode="chain", run=os.path.basename(path), noise=life.cfg.noise, food={q: v * k for q, v in food.items()}, poison={q: v * k for q, v in poison.items()},
                smooth=float(np.mean(smooth)), share=(count["seen"] / count["seen"].sum()).tolist(),
                cos_seen=(aim["seen"] / np.maximum(count["seen"], 1)).tolist(), cos_blind=(aim["blind"] / np.maximum(count["blind"], 1)).tolist())
 

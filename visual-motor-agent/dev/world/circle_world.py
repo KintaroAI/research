@@ -162,6 +162,7 @@ class EnvConfig:
     touch: bool = False                 # (task 00042) food and poison act on contact, no click needed: the cursor
                                         # inside the circle is a success; inside a hazard it applies hazard_click /
                                         # hazard_click_add and that hazard is replaced by a new one away from the cursor
+    noise: float = 0.0                  # (task 00087) white noise in the world: each pixel of each frame replaced by a random brightness with this probability
     foods: int = 1                      # (task 00083) food circles; above 1 needs wrap, respawn and still food. target is always the nearest
     no_overlap: bool = False            # (task 00060, needs wrap and round hazards) no two circles overlap: a new one is
                                         # placed clear of the others; moving ones bounce off each other and off food
@@ -191,6 +192,8 @@ class EnvConfig:
         for name in floats:
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite, got {getattr(self, name)!r}")
+        if not 0.0 <= self.noise <= 1.0:
+            raise ValueError(f"noise must be in [0, 1], got {self.noise!r}")
         if not self.max_step_px > 0:
             raise ValueError("max_step_px must be > 0")
         if not 0 < self.radius_min <= self.radius_max <= self.size / 2:
@@ -631,6 +634,7 @@ class CircleWorld:
                           for s in np.random.SeedSequence(seed, spawn_key=(0x4A2D,)).spawn(self.num_envs)]
                          if h else [])
         e = int(c.foods) - 1   # the other foods (task 00083), with their own generators: foods = 1 draws what it always drew
+        self._noise_rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence(seed, spawn_key=(0x0153,))))
         self._fx_rngs = ([np.random.Generator(np.random.PCG64(s))
                           for s in np.random.SeedSequence(seed, spawn_key=(0xF00D,)).spawn(self.num_envs)]
                          if e else [])
@@ -886,6 +890,16 @@ class CircleWorld:
         return {"image": self._render(), "drives": self._drive_obs()}
 
     def _render(self, idx: Optional[np.ndarray] = None) -> np.ndarray:
+        image = self.clean_frame(idx)
+        q = self.config.noise
+        if q > 0:   # task 00087: fresh every frame, its own generator, so noise = 0 is the world as it was
+            hit = self._noise_rng.random(image.shape[:3], dtype=np.float32) < q
+            value = self._noise_rng.integers(0, 256, image.shape[:3], dtype=np.uint8)
+            image = np.where(hit[..., None], value[..., None], image)
+        return image
+
+    def clean_frame(self, idx: Optional[np.ndarray] = None) -> np.ndarray:
+        """The frame without noise: scoring only, never model input."""
         sw = getattr(self, "swap", None)   # task 00065: the food drawn as the poison
         if idx is None:
             return render_state(self.cursor, self.target, self.radius, self.target_alive, self.config,
