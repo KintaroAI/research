@@ -344,6 +344,61 @@ The model predicts well, in pixels, text and a camera. What it does not yet show
 
 **What to memorize** (the owner). Grow the model until it understands what matters, then let it choose what to keep, by surprise and by its own judgment of whether something is worth keeping. Surprise alone is not enough: noise stays surprising for ever, and our world has moving dots that should test this. Candidates for the judgment, none of them a label: **learning progress** (keep what lowers future error, not what is merely high in error), whether replaying a chunk actually helped later prediction, and, once there is a trainer, what the trainer responds to. Learning also slows on what is already predicted (arm S of vm-00068).
 
+**Three memories** (the owner, 2026-11-03). The context is short-term memory and the weights long-term memory, with two refinements.
+
+| | Context | Replay memory | Weights |
+|---|---|---|---|
+| Like | working memory | episodic memory, the hippocampus | knowledge and skills |
+| Holds | the last ctx ticks, exactly | the life's steps in ctx-tick chunks, exactly | what is generally true |
+| Written | every tick | every chunk, by the gate | slowly, by gradient steps |
+| Read while acting | yes | no | yes, implicitly |
+
+- **The weights hold kinds, not events:** "food is gray and round", not "the food was there 50 ticks ago". A one-off fact would be overwritten, so where this food is now is a job for the context. That is why hidden food (vm-00081) tests working memory.
+- **The replay memory is a store that cannot be recalled.** It holds every episode exactly, but only trains the weights, like consolidation in sleep (the complementary learning systems of McClelland, McNaughton and O'Reilly, 1995). What is missing is recall: bringing a relevant past chunk back into the context while acting.
+- **Online learning blurs the line.** A gradient step every tick on the newest window lets a recent event leave a trace in the weights within ticks. That is why a frozen checkpoint understates the living agent (vm-00005), and the weights may carry a little memory past the context. A test: hidden food lived against frozen.
+- **Ways to lengthen the short-term memory:** a longer context (vm-00082); past steps at logarithmic spacing, recent ones dense and old ones sparse, with ages in buckets, exact when recent and coarse when old; delayed copies of the view (vm-00080).
+
+**Two layers of weights** (the owner, 2026-11-03). A fundamental layer and a flexible one on top, the model using their sum. The flexible layer learns fast and aggressively, and is thrown out or decays, so the fundamental model is never damaged. The fundamental layer learns by its own method, from the moments chosen as most important.
+- **Its lineage:** fast weights on slow ones (Hinton and Plaut, 1987; Ba, Hinton and others, 2016), a low-rank adapter on a frozen base (LoRA), and protection of important weights (elastic weight consolidation). In the brain's terms: the flexible layer is the fast hippocampal trace, the fundamental one the slow cortex, and the choice of what to consolidate is sleep.
+- **The simplest form:** W = S + F. Every update trains F, at a high learning rate. Each tick F decays by a factor λ toward 0 (λ = .99 is a half-life of about 70 ticks), and a share η of it moves into S: consolidation by accumulated gradient. With η = 0 the fundamental layer is fixed and the flexible one is a pure short-lived memory. A few lines on the GPU's parameter buffers, no change to the model.
+- **The fuller form, the owner's second half:** S learns only from chosen material, at a low rate. The gate already exists: chunks stored by relief or surprise (`online.store_relief`, `online.store_surprise`). In a separate "sleep" pass, S is trained on them alone.
+- **What it could give:**
+  - A memory between the context and the weights: F, trained every tick, may hold "the food is over there" for tens of ticks (hidden food, vm-00081).
+  - Aggressive learning without drift: a higher learning rate in F alone.
+  - Adaptation that does not erase: after a change in the world, F adapts and S keeps the old.
+- **The risks:**
+  - If F and S see the same gradient, F takes up the error first and S learns less. η and the learning rates set the split.
+  - Adam's moments would be F's, so S's steps need their own scale.
+  - What decays may never be consolidated: a lesson learned and forgotten within the half-life is lost.
+- **Tests:**
+  - Hidden food lived, with and without F.
+  - A higher learning rate with and without F: does F let it be raised without collapse?
+  - A world that changes mid-life and changes back, for example food and poison swapping looks (the cue world's `swap`): how fast does each adapt, and how much of the first world is kept?
+
+**Learning while off** (the owner, 2026-11-03). Turn the outage around: a transformer taken out of acting is the one that learns. Pick one at random, stop its inference, train it for a few ticks, several updates in a row from memory, and turn it back on.
+- **The ground:** with 16 transformers an outage of a quarter cost nothing (vm-00078), and with 4 a tenth of the food at half off (vm-00079).
+- **What it changes:**
+  - Acting and learning separate in time. A tick's acting costs only the live transformers' forward passes, so its latency drops; the updates go where the acting is not.
+  - A transformer learns in bursts, not one step a tick.
+  - The ones acting may not learn at all, or less.
+- **An analogy:** dolphins and some birds sleep with one half of the brain at a time.
+- **To measure:** lived food against the plain outage (off = no learning) and all on, at the same updates per tick in total; ticks per second.
+- **The risks:**
+  - A transformer coming back has changed more at once than it would have tick by tick, and the others act beside a changed neighbour.
+  - Bursts on old memory may lag the world as it is now.
+
+**Acting and learning on different GPUs** (the owner, 2026-11-03). One GPU runs only the forward passes of a life. Others train copies of its transformers on the memory it sends, and send updated weights back, transformer by transformer.
+- **The lineage:** actor–learner systems in reinforcement learning (IMPALA, Ape-X, SEED RL), and today's LLM training with separate inference engines and trainers that sync weights.
+- **Why it fits here:**
+  - The update is most of a tick: 6 of 11 ms with 4 transformers alone on the 4090, 19 of 33 with 16. So acting alone could run 2 to 3 times as fast, and the learner could use larger batches.
+  - A transformer's weights are about 1M numbers, 4 MB: a sync costs almost nothing.
+  - A transformer can be off while its new weights load, which the outage showed the body tolerates.
+- **The costs:**
+  - The acting weights lag the learner's by a few updates. That matters less for prediction than for a policy trained on its own returns, but it should be measured: lag against food.
+  - Memory has to stream from the actor to the learner.
+  - Today's MPS setup already fills both GPUs with many lives, so the gain is for one large or long life, not for many small ones.
+- **A first step on one machine:** the learner on the 3090 and the actor on the 4090, one life with 16 transformers, synced every N updates. Measure ticks per second and food against the same life on one GPU.
+
 **The white ceiling and white noise** (the owner). A child who looks at a blank ceiling, where nothing happens, learns less than one who watches a world with physics in action. Noise is the same problem from the other end of the range: nothing in it can be learned. Infants themselves look longest at things of middle complexity, and away from what is too simple or too complex (Kidd, Piantadosi and Aslin, 2012). Both should lower what a model learns, and it should turn its learning down on both. Learning progress treats them as one case: on a ceiling error stays low and on noise it stays high, and in neither does it fall. To test: raise one model in an empty world, one in noise and one in the structured world, then move all three to the structured world and compare how well each predicts and how fast it catches up. A second arm lets the model choose: does it look away from either? White noise is uncommon in the real world, as the owner notes, but what a model cannot yet predict looks like noise to it, so early on much of a real world may too; speech does to a newborn. A world can be mixed with noise in stages to find where learning stops.
 
 **Energy as the common measure** (the owner). Behaviour should be tied to energy: reducing consumption is a goal. The example: a transformer that adds nothing should do less. If it predicts too well, it works every other tick. If it does too much while others slacken, it gets tired, so that they take over. To test later, among the pieces of one body:
