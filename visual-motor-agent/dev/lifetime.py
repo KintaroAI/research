@@ -19,6 +19,8 @@ largest of its tokens' cross-entropies in the update that trained on it (as the 
 slot's recent mean (GatedMemory.note_tokens). It is read on the next tick, after acting, when the GPU is idle.
 
 Clogged acting (online.clog_act = 1, task 00086): each transformer also acts on its own damaged view; the world and memory stay clean.
+Delayed copies (env.delays, task 00091): the frame is a composite of the view now and in the past (world/delay_world.py); in training the composite is the
+input and the present, tiled, the target (online.delay_targets).
 Outage (online.off = q, task 00089): each transformer is off q of the time, its own two-state chain with off spells of online.off_span ticks on average;
 an off transformer makes no move and takes no update, and its ring skips the ticks it missed (no compute, gaps in its context, ages in ticks). Memory
 keeps which transformers were on at each tick; in an update, a transformer's missed steps are no keys and carry no loss.
@@ -66,7 +68,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
+from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, delay_targets, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
                     thought_dream, uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
@@ -292,6 +294,9 @@ def main():
                   or not 0 < q_off < 1 or on["off_span"] < 1):
         raise ValueError("online.off needs 0 < off < 1, several pieces, the universal model on the GPU with the ring, "
                          "without self-forcing or tied tables")
+    delayed = bool(getattr(env_cfg, "delays", ()))   # task 00091: inputs the composite, targets the present tiled
+    if delayed and (not uni or on["device"] != "cuda" or on["sf_windows"] or clog or q_in or q_off):
+        raise ValueError("env.delays needs the universal model on the GPU, without self-forcing, online.clog, online.noise_in or online.off")
     off_rng = np.random.default_rng([args.seed, 0x0FF])   # its own: off = 0 draws nothing
     is_off, missed = np.zeros(S, bool), np.zeros(S, int)
     p_back = 1.0 / on["off_span"]
@@ -318,8 +323,8 @@ def main():
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off))
     gate_on = dict(on, goal_mode="future") if future_k else on
-    gms = [GatedMemory(gate_on, L, env_cfg.size, label_k, args.seed, tokens=tok_sur, **kept)]
-    gms += [GatedMemory(gate_on, L, env_cfg.size, label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
+    gms = [GatedMemory(gate_on, L, agent.config["img"], label_k, args.seed, tokens=tok_sur, **kept)]   # the model's frame (task 00091: not the world's size)
+    gms += [GatedMemory(gate_on, L, agent.config["img"], label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
             for b in range(1, N0)]
     store = gms[0].store
     gpu, fwd, gpus = None, agent.forward, [None] * S
@@ -514,6 +519,10 @@ def main():
             if future_k:   # the next body's hunger is only a target: the inputs keep the hunger of each step
                 rows["ndrv"] = rows["ndrv"].copy()
                 rows["ndrv"][..., 0] = rows["pr"]
+            seen_in = None
+            if delayed:   # task 00091: the composite as the input, the present tiled as the target
+                seen_in = (rows["img"], rows["drv"])
+                rows = dict(rows, img=delay_targets(rows["img"]))
             ro = rollout(len(rows["img"]))
             fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
@@ -528,7 +537,7 @@ def main():
                     if g:   # a GPU rollout holds only the data: one for all pieces
                         sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
                         stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
-                                                      inputs=shared if q_in else damaged(rows), step_mask=sm))
+                                                      inputs=seen_in if delayed else shared if q_in else damaged(rows), step_mask=sm))
                         who.append(k)
                     else:   # a C++ rollout belongs to its agent
                         rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
@@ -546,7 +555,7 @@ def main():
                     for k, s_ in zip(who, stats):
                         win["stats_k"][k].append(s_)
             elif gpu:
-                inputs = noised(rows) if q_in else damaged(rows)
+                inputs = seen_in if delayed else noised(rows) if q_in else damaged(rows)
                 if on["sf_windows"]:   # self-forcing (task 00039): replayed windows only, none with an episode start
                     ok = np.flatnonzero(~rows["es"][:, 1:].any(1))
                     ok = ok[ok >= ce_n]

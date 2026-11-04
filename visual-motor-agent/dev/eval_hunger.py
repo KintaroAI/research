@@ -54,7 +54,7 @@ class Scored:
 class Life:
     """A run's frozen pieces, one body per world, and one tick of its acting."""
 
-    def __init__(self, path, bodies, seed, clog=0.0, off=0.0):
+    def __init__(self, path, bodies, seed, clog=0.0, off=0.0, view=None):
         import agent_lib
         import cuda_lib
         from lifetime import ckpt_name
@@ -78,6 +78,8 @@ class Life:
 
             c = agents[0].config
             self.clogs = [ClogStream(np.random.default_rng([seed, k]), bodies, c["img"], c.get("img_w") or c["img"], c["patch"], clog) for k in range(self.S)]
+        if view is not None:   # task 00091: one function of the frame for every piece (e.g. blanked copies)
+            self.clogs = [view] * self.S
         # task 00089: pieces off at random, as lifetime.py's online.off, whatever the run lived with (its off_span)
         self.off, self.is_off, self.missed = off, np.zeros(self.S, bool), np.zeros(self.S, int)
         self.off_rng = np.random.default_rng([seed, 0x0FF])
@@ -225,12 +227,12 @@ def told(path, ticks, bodies, seed):
         yield dict(mode="told", run=os.path.basename(path), arm=arm, food=food * k, poison=poison * k, size=float(np.mean(size)), cos_near=float(np.mean(near)))
 
 
-def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0):
+def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0, view=None):
     from eval_pieces import relative
     from lifetime import cosine
     from world import make_world
 
-    life = Life(path, bodies, seed, clog, off)
+    life = Life(path, bodies, seed, clog, off, view)
     if noise is not None:   # task 00087: tested at a level of white noise, whatever it was raised on
         life.cfg = dataclasses.replace(life.cfg, noise=noise)
     env, blind, grab = (make_world(bodies, life.cfg, seed=seed + k) for k in range(3))

@@ -55,6 +55,9 @@ def make_world(num_envs: int, config, seed: int = 0):
         world = CueWorld(num_envs, config, seed=seed)
     else:
         world = CircleWorld(num_envs, config, seed=seed)
+    if getattr(config, "delays", ()):   # task 00091: a 2 x 2 composite of the view now and in the past
+        from .delay_world import DelayWorld
+        world = DelayWorld(world, config.delays)
     if getattr(config, "sense", None) is not None:
         from .sense_world import SenseWorld
         return SenseWorld(num_envs, world, config.sense, seed=seed)

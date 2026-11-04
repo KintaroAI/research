@@ -517,6 +517,14 @@ def damage(frames, hit, black, patch, rng):
     return out
 
 
+def delay_targets(frames):
+    """Task 00091: frames [..., 2H, 2W, C], composites of the view now (top-left) and in the past, as targets: the present
+    tiled four times, so every copy's transformers are trained to output the present."""
+    h, w = frames.shape[-3] // 2, frames.shape[-2] // 2
+    now = frames[..., :h, :w, :]
+    return np.concatenate([np.concatenate([now, now], -2)] * 2, -3)
+
+
 def noise_frames(frames, rng, q):
     """Task 00088: a copy of frames [..., H, W, 3] u8 with each pixel replaced by a random gray with probability q, as env.noise draws it."""
     shape = frames.shape[:-1]

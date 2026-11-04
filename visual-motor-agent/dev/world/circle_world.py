@@ -163,6 +163,7 @@ class EnvConfig:
                                         # inside the circle is a success; inside a hazard it applies hazard_click /
                                         # hazard_click_add and that hazard is replaced by a new one away from the cursor
     noise: float = 0.0                  # (task 00087) white noise in the world: each pixel of each frame replaced by a random brightness with this probability
+    delays: tuple = ()                  # (task 00091) four delays in ticks: the frame becomes a 2 x 2 composite of the view now (delays[0] = 0) and that many ticks ago (world/delay_world.py)
     foods: int = 1                      # (task 00083) food circles; above 1 needs wrap, respawn and still food. target is always the nearest
     no_overlap: bool = False            # (task 00060, needs wrap and round hazards) no two circles overlap: a new one is
                                         # placed clear of the others; moving ones bounce off each other and off food
@@ -194,6 +195,8 @@ class EnvConfig:
                 raise ValueError(f"{name} must be finite, got {getattr(self, name)!r}")
         if not 0.0 <= self.noise <= 1.0:
             raise ValueError(f"noise must be in [0, 1], got {self.noise!r}")
+        if self.delays and (len(self.delays) != 4 or self.delays[0] != 0 or any(int(d) != d or d < 0 for d in self.delays)):
+            raise ValueError(f"delays: four whole ticks, the first 0, got {self.delays!r}")
         if not self.max_step_px > 0:
             raise ValueError("max_step_px must be > 0")
         if not 0 < self.radius_min <= self.radius_max <= self.size / 2:
