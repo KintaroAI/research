@@ -1,7 +1,7 @@
 # 00020: Fact Memorization, Forgetting and Relearning
 
 **Date:** 2026-11-03
-**Status:** Running: stage 1 (S seed 2, M) since 21:34; stage 2 (L, X, G, and S seed 1 again) queued after the visual-motor runs
+**Status:** Stage 1 done (M, two seeds); stage 2 (S again, L, X, G) queued after the visual-motor runs
 **Source:** `dev/facts/` (not yet tagged)
 **Outputs:** `~/data/research/llm-fundamentals/exp_00020/`
 **Task plan:** [`../tasks/00007-fact-memorization.md`](../tasks/00007-fact-memorization.md)
@@ -33,5 +33,16 @@ How often must a GPT see a fact to recall it, how fast does it forget under a st
 
 ## Notes on the runs
 
-- **S seed 1 ran out of GPU memory in a probe, about 2,500 steps in, on the 3090 beside the visual-motor runs.** The probe computed full-vocabulary logits at every position of up to 2,048 prompts and used only the last. It now computes the last position only, with the same logits. The run is redone in stage 2; its log is kept as `S_s1.crashed.log`. The other stage-1 runs keep the first version of the probe, which gives the same numbers.
-- **Stage 1 slowed vm-00080's 3090 lives** from 3.7 to 2.4 ticks/s.
+- **Both S runs ran out of GPU memory in a probe on the 3090 beside the visual-motor runs, seed 1 about 2,500 steps in and seed 2 later.** The probe computed full-vocabulary logits at every position of up to 2,048 prompts and used only the last. It now computes the last position only, with the same logits. Both are redone in stage 2; their logs are kept as `S_s1.crashed.log` and `S_s2.crashed.log`. The M runs, done with the first version of the probe, give the same numbers.
+- **Stage 1 slowed vm-00080's 3090 lives** from 3.7 to as low as 1 tick/s, so the visual-motor queue ends about an hour later.
+
+## Stage 1, size M (interim; the readings wait for all sizes)
+
+Two seeds, 20,000 steps, from `facts/analyze.py`:
+
+- **Savings:** for 600 test facts with a control, first learning took a median of 7.5 showings, relearning 3.0, and a fresh fact learned at the same moment 7.0. Y < X for 87% of facts, and Y < the fresh fact's X for 87%. Savings against the fresh fact, by the delay before relearning (times the time it took to forget): 1, .56; 2, .51; 4, .30.
+- **Repetition:** recalled at least once by 7% of facts shown once, 34% at 8 showings, 85% at 32.
+- **Forgetting:** facts shown 32 times are recalled 33% of the time within 1,000 steps of their last showing, 5% at 1,000–2,000 steps, under 1% after 5,000.
+- **Base facts:** recall peaks at 9% when their showings end (step 4,000), and is near chance by step 6,000.
+- **Extraction:** the paraphrase recalls 0.6% at the end; the reverse 6%, against 3% by chance.
+- **Held at the end:** 442 facts, about 0.001 bits per non-embedding parameter.
