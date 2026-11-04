@@ -48,6 +48,7 @@ def lib():
             "vmc_device_free": (C.c_long, []),
             "vmc_set_batch": (i32, [vp, i32, u8p, fp, fp, fp, u8p, fp, u8p, fp, i32]),
             "vmc_set_uni_inputs": (i32, [vp, i32, u8p, fp]),
+            "vmc_set_step_mask": (i32, [vp, i32, u8p]),
             "vmc_loss_and_grads": (i32, [vp, C.POINTER(PPOConfig)]),
             "vmc_update": (i32, [vp, C.POINTER(PPOConfig)]),
             "vmc_stats": (i32, [vp, C.POINTER(VMCStats)]),
@@ -62,6 +63,7 @@ def lib():
             "vmc_uni_ring_reset": (i32, [vp, i32]),
             "vmc_uni_ring_step": (i32, [vp, u8p, fp, u8p, fp]),
             "vmc_uni_ring_move": (i32, [vp, fp]),
+            "vmc_uni_ring_skip": (i32, [vp, i32]),
             "vmc_uni_token_ce": (i32, [vp, i32, fp]),
             "vmc_forward_uni_step": (i32, [vp, i32, i32, u8p, fp, fp, u8p, i32, i32, fp, fp]),
             "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
@@ -179,6 +181,13 @@ class CudaModel:
         _check(lib().vmc_set_uni_inputs(self.handle, img.shape[0], _p(img, C.c_uint8), _p(drv, C.c_float)),
                "set_uni_inputs")
 
+    def set_step_mask(self, mask):
+        """Task 00089: which steps [S, ctx] of the current batch this model saw (1) or missed (0). A missed step is no key
+        for the seen steps and carries no loss. Cleared by the next set_batch."""
+        m = np.ascontiguousarray(mask, np.uint8)
+        self._mask = m
+        _check(lib().vmc_set_step_mask(self.handle, m.shape[0], _p(m, C.c_uint8)), "set_step_mask")
+
     def _pc(self, ppo_cfg):
         cfg = dict(DEFAULT_PPO)
         cfg.update(ppo_cfg or {})
@@ -192,14 +201,16 @@ class CudaModel:
         _check(lib().vmc_update(self.handle, C.byref(self._pc(ppo_cfg))), "update")
         return self.stats() if stats else None
 
-    def update_rollout(self, ro, ppo_cfg, agent, sync=True, stats=True, inputs=None):
+    def update_rollout(self, ro, ppo_cfg, agent, sync=True, stats=True, inputs=None, step_mask=None):
         """One update from a filled Rollout. sync: all the weights are copied back to the C++ agent; else only the
         log-std (for sampling moves; call sync_to(agent) before saving it). inputs: (frames, bodies) [N, T, ...] as the
-        universal model's token inputs instead of the rollout's (set_uni_inputs). Returns the stats under
-        agent.update()'s names."""
+        universal model's token inputs instead of the rollout's (set_uni_inputs). step_mask [N, T] (task 00089): the
+        steps this model saw (set_step_mask). Returns the stats under agent.update()'s names."""
         self.set_batch(*ro.batch())
         if inputs is not None:
             self.set_uni_inputs(*inputs)
+        if step_mask is not None:
+            self.set_step_mask(step_mask)
         st = self.update(ppo_cfg, stats=stats)   # stats=False: no wait for the GPU here
         p = agent.params()
         if sync:
@@ -349,6 +360,10 @@ class CudaModel:
         """The move made [N, 3] goes into the ring, after uni_ring_step."""
         m = np.ascontiguousarray(moves, np.float32)
         _check(lib().vmc_uni_ring_move(self.handle, _p(m, C.c_float)), "uni_ring_move")
+
+    def uni_ring_skip(self, n):
+        """Task 00089: n ticks this model missed; their slots stay unseen, nothing is computed."""
+        _check(lib().vmc_uni_ring_skip(self.handle, int(n)), "uni_ring_skip")
 
     def uni_token_ce(self, S0):
         """The universal model's last update: each token's cross-entropy at the last step of the batch's first S0

@@ -422,9 +422,11 @@ __global__ void k_attn_bwd(float* dqkv, const float* dout, const float* qkv, con
 #define ATT_GEMM_K 32
 // The age key (task 00062; E, ctx <= 32): a[age] = q . e[age], scaled, computed here, one lane per age, and added to the
 // scores of that age's keys; a row's step is (b % K) / nt.
+// Task 00089 (km, NULL = none): a row whose byte is 1 reads only keys whose byte is 1; a row of a missed step (0) reads
+// as before, and nothing reads it.
 __global__ void k_attn_softmax(float* att, const int* start, const int* end, int B, int K, int nh,
                                const unsigned char* allow, int nt, const float* qkv, const float* E, int d, float scale,
-                               int ntok) {
+                               int ntok, const uint8_t* km) {
     const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
     if (i >= B * nh) return;
     const int b = i / nh, blk = (b / K) * K, lo = start[b] - blk, hi = (end ? end[b] : b) - blk;
@@ -445,16 +447,17 @@ __global__ void k_attn_softmax(float* att, const int* start, const int* end, int
             a[g] = __shfl_sync(0xffffffff, v, g);
         }
     }
+    const bool kq = km && km[b];
     float mx = -1e30f;
     for (int c = lane; c < K; c += 32)
-        if (c >= lo && c <= hi && (!al || al[(blk + c) % nt])) {
+        if (c >= lo && c <= hi && (!al || al[(blk + c) % nt]) && (!kq || km[blk + c])) {
             if (E) w[c] += a[st - c / ntok];
             mx = fmaxf(mx, w[c]);
         }
     for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
     float sum = 0.f;
     for (int c = lane; c < K; c += 32) {
-        const float e = (c >= lo && c <= hi && (!al || al[(blk + c) % nt])) ? expf(w[c] - mx) : 0.f;
+        const float e = (c >= lo && c <= hi && (!al || al[(blk + c) % nt]) && (!kq || km[blk + c])) ? expf(w[c] - mx) : 0.f;
         w[c] = e;
         sum += e;
     }
@@ -504,8 +507,9 @@ __global__ void k_attn_age_ge(float* gE, const float* Dg, const float* qkv, int 
 }
 // The ring (task 00062): the new step's R rows (body r / nt, token r % nt) against a window of Kw keys: the age scores
 // added, then softmax over keys lo[body] * nt .. cur * nt + token, 0 elsewhere. One warp per (row, head).
+// Task 00089: sn [ctx], the window's slots, 1 = a step computed; a skipped tick's slot is no key.
 __global__ void k_ring_softmax(float* att, const float* q3, const float* E, const int* lo, int R, int Kw, int nh, int nt,
-                               int d, int cur, float scale) {
+                               int d, int cur, float scale, const int* sn) {
     const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x % 32;
     if (i >= R * nh) return;
     const int r = i / nh, h = i % nh, hs = d / nh, c0 = lo[r / nt] * nt, c1 = cur * nt + r % nt;
@@ -523,11 +527,11 @@ __global__ void k_ring_softmax(float* att, const float* q3, const float* E, cons
     }
     float mx = -1e30f;
     for (int c = lane; c < Kw; c += 32)
-        if (c >= c0 && c <= c1) { w[c] += a[cur - c / nt]; mx = fmaxf(mx, w[c]); }
+        if (c >= c0 && c <= c1 && sn[c / nt]) { w[c] += a[cur - c / nt]; mx = fmaxf(mx, w[c]); }
     for (int o = 16; o; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, o));
     float sum = 0.f;
     for (int c = lane; c < Kw; c += 32) {
-        const float e = (c >= c0 && c <= c1) ? expf(w[c] - mx) : 0.f;
+        const float e = (c >= c0 && c <= c1 && sn[c / nt]) ? expf(w[c] - mx) : 0.f;
         w[c] = e;
         sum += e;
     }
@@ -1147,6 +1151,10 @@ struct Model {
     uint8_t* iimg = nullptr;
     float* idrv = nullptr;
     bool has_in = false;
+    // task 00089: the uploaded batch's step mask (vmc_set_step_mask), a byte per token row, 0 = a step this transformer
+    // missed: no key for its seen steps, no loss. Cleared by the next upload
+    Buf kmask;
+    bool has_mask = false;
     int cap = 0;   // frames allocated
     // activations and gradients
     Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, qkv, pih, pi, pin, ph1, ph2, ub, pdrv, d1in, dc1, d2in, dc2,
@@ -1178,6 +1186,7 @@ struct Model {
         r_lo;
     int r_N = 0, r_wp = -1;
     std::vector<int> r_start;        // each body's first step in the buffer (after an episode start)
+    std::vector<int> r_seen;         // task 00089: per slot of the buffer, 1 = a step computed, 0 = a tick skipped
     bool r_last = false;             // the last pass was a ring step: the candidates read the ring
     int ce_S = 0, ce_T = 0;
     // the instinct's candidates (vmc_uni_candidates): their inputs, activations and outputs, one row per candidate
@@ -1287,7 +1296,8 @@ static void attention_fwd(Model* M, const float* qkv, float* att, float* y, cons
     PROFX(20);
     k_attn_softmax<<<(unsigned)(((long)B * nh * 32 + 255) / 256), 256>>>(att, start, end, B, K, nh, M->allow, M->allow_nt,
                                                                           qkv, D.age ? M->P + M->off[WPE] : nullptr, d,
-                                                                          scale, D.ntok);
+                                                                          scale, D.ntok,
+                                                                          M->has_mask ? (const uint8_t*)M->kmask.p : nullptr);
     PROFX(23);
     gemm_heads(M, false, false, K, hs, K, 1.f, att, nh * K, K, sa, qkv + 2 * d, 3 * d, hs, sq, 0.f, y, d, hs, sy, nh, ns);
 }
@@ -1445,6 +1455,7 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
     alloc_batch(M, B);
     M->S = S; M->T = T; M->B = B;
     M->has_in = false;
+    M->has_mask = false;
     std::vector<int> start(B), pos(B), valid(B);
     for (int s = 0; s < S; s++)
         for (int t = 0; t < T; t++) {
@@ -1522,6 +1533,28 @@ int vmc_set_uni_inputs(void* h, int S, const uint8_t* images, const float* drive
     CK(cudaMemcpy(M->iimg, images, (size_t)B * D.img * D.iw * 3, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(M->idrv, drives, B * 2 * sizeof(float), cudaMemcpyHostToDevice));
     M->has_in = true;
+    return 0;
+}
+
+// Task 00089: which steps of the uploaded batch this transformer saw, mask [S, T] (1 seen, 0 missed). A missed step is
+// no key for the seen steps and carries no loss; its own rows attend as before and nothing reads them, so no gradient
+// reaches them. Every step seen: no mask at all, the batch exactly as without. Cleared by the next batch. The universal
+// model with the age key (its attention always takes the masked softmax).
+int vmc_set_step_mask(void* h, int S, const uint8_t* mask) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.uni || !D.age || !M->B || S != M->S || !mask) return -1;
+    const int nt = D.ntok, rows = M->B * nt;
+    std::vector<uint8_t> km(rows);
+    bool all = true;
+    for (int b = 0; b < M->B; b++) {
+        for (int k = 0; k < nt; k++) km[(size_t)b * nt + k] = mask[b] ? 1 : 0;
+        all = all && mask[b];
+    }
+    M->has_mask = !all;
+    if (all) return 0;
+    uint8_t* p = (uint8_t*)M->kmask.get(((size_t)rows + 3) / 4);
+    CK(cudaMemcpy(p, km.data(), rows, cudaMemcpyHostToDevice));
     return 0;
 }
 
@@ -1848,12 +1881,13 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
 // patch). A token whose next token is a summary (task 00047) has no target: gradient 0, not counted. Launch with
 // UNI_LOSS_THREADS threads (a multiple of 32).
 #define UNI_LOSS_THREADS 256
+// Task 00089 (km, NULL = none): a row of a missed step (0) has no target.
 __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc,
-                           float* tok_ce, const int* sl, const float* bo, int cv) {
+                           float* tok_ce, const int* sl, const float* bo, int cv, const uint8_t* km) {
     __shared__ double sh[2][UNI_LOSS_THREADS / 32];
     const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
     const int u = k == nt - 1 ? 2 : uni_used_(k + 1, V, sl), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
-    if (u == 0) {   // no target
+    if (u == 0 || (km && !km[r])) {   // no target
         for (long i = threadIdx.x; i < (long)V * K; i += blockDim.x) lg[(long)r * V * K + i] = 0.f;
         if (threadIdx.x == 0) tok_ce[r] = 0.f;
         return;
@@ -1897,8 +1931,9 @@ __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V,
 // lo[r]..hi[r]-1 of one layer's qkv [rows, 3d] (the window's earlier tokens) and to itself. One warp per (row, head):
 // each lane runs an online softmax over every 32nd key, then the lanes' partial results are merged (head size <= 64).
 // With the age key (E, task 00062): a key's age is (hi[r] - j) / nt, hi[r] being the last token of the reader's step.
+// Task 00089 (the ring): sn [2 ctx] per slot of a body's buffer of cap rows, 1 = a step computed; NULL = every key.
 __global__ void k_attn_decode(const float* qc, const float* qkv, const int* lo, const int* hi, float* out, int R, int d,
-                              int nh, const float* E, int nt) {
+                              int nh, const float* E, int nt, const int* sn, int cap) {
     const int i = (blockIdx.x * blockDim.x + threadIdx.x) / 32, lane = threadIdx.x & 31;
     if (i >= R * nh) return;
     const int r = i / nh, h = i % nh, hs = d / nh, d3 = 3 * d;
@@ -1908,6 +1943,7 @@ __global__ void k_attn_decode(const float* qc, const float* qkv, const int* lo, 
     for (int c = 0; c < hs; c++) acc[c] = 0.f;
     float m = -1e30f, l = 0.f;
     for (int j = lo[r] + lane; j <= hi[r]; j += 32) {   // hi[r]: the candidate itself
+        if (sn && j < hi[r] && !sn[(j % cap) / nt]) continue;
         const float* kv = j < hi[r] ? qkv + (long)j * d3 : qc + (long)r * d3;
         float s = 0.f;
         for (int c = 0; c < hs; c++) s += q[c] * kv[d + h * hs + c];
@@ -2183,7 +2219,8 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     CK(cudaMemsetAsync(M->acc, 0, ACC_N * sizeof(double)));
     for (int i = 0; i < 8; i++) M->coef[i] = 0.f;
     k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, 1.0f / ((float)B * (nt - D.nnot)), M->acc,
-                                           M->u_ce.get(rows), M->uslot, P + off[UOB], D.cv);   // the mean over the tokens with a target
+                                           M->u_ce.get(rows), M->uslot, P + off[UOB], D.cv,
+                                           M->has_mask ? (const uint8_t*)M->kmask.p : nullptr);   // the mean over the tokens with a target (task 00089: over all of them)
     M->ce_S = M->S;
     M->ce_T = T;
     PROF(6);
@@ -2528,11 +2565,13 @@ static int uni_cand_core(Model* M, int Mc, const float* cand, float* hunger, boo
     }
     float* cin = M->c_in.get((size_t)R * V);
     CK(cudaMemcpy(cin, in.data(), in.size() * sizeof(float), cudaMemcpyHostToDevice));
-    int* ip = (int*)M->c_val.get((size_t)R * 3 + (size_t)R * V);   // the int arrays, then the values
+    const int ns = 2 * D.K;   // task 00089: the ring's seen flags, after the int arrays
+    int* ip = (int*)M->c_val.get((size_t)R * 3 + ns + (size_t)R * V);   // the int arrays, then the values
     CK(cudaMemcpy(ip, lo.data(), R * sizeof(int), cudaMemcpyHostToDevice));
     CK(cudaMemcpy(ip + R, hi.data(), R * sizeof(int), cudaMemcpyHostToDevice));
     CK(cudaMemcpy(ip + 2 * R, pos.data(), R * sizeof(int), cudaMemcpyHostToDevice));
-    float* val = (float*)(ip + 3 * R);
+    if (ring) CK(cudaMemcpy(ip + 3 * R, M->r_seen.data(), ns * sizeof(int), cudaMemcpyHostToDevice));
+    float* val = (float*)(ip + 3 * R + ns);
     float* x = M->c_x.get((size_t)R * d);
     float* ln = M->c_ln.get((size_t)R * d);
     float* lnm = M->c_lnm.get(R);
@@ -2557,7 +2596,7 @@ static int uni_cand_core(Model* M, int Mc, const float* cand, float* hunger, boo
         linear(M, qc, ln, P + off[QKVW] + (size_t)l * 3 * d * d, P + off[QKVB] + l * 3 * d, R, d, 3 * d, 0);
         const float* keys = (ring ? M->r_kv.p : M->qkv.p) + (size_t)l * rows * 3 * d;
         k_attn_decode<<<(R * D.nh * 32 + 127) / 128, 128>>>(qc, keys, ip, ip + R, att, R, d, D.nh,
-                                                            D.age ? P + off[WPE] : nullptr, nt);
+                                                            D.age ? P + off[WPE] : nullptr, nt, ring ? ip + 3 * R : nullptr, cap);
         if (store)
             CK(cudaMemcpy2DAsync(M->r_kv.p + (size_t)l * rows * 3 * d + ((size_t)M->r_wp * nt + nt - 1) * 3 * d,
                                  (size_t)cap * 3 * d * sizeof(float), qc, 3 * d * sizeof(float),
@@ -2594,6 +2633,40 @@ int vmc_uni_ring_reset(void* h, int N) {
     CK(cudaMemset(M->r_kv.get(n), 0, n * sizeof(float)));
     M->r_N = N; M->r_wp = -1;
     M->r_start.assign(N, 0);
+    M->r_seen.assign(2 * D.K, 0);
+    M->r_last = false;
+    return 0;
+}
+
+// The ring's write position one step on; at the buffer's end the last ctx - 1 steps (keys, values, starts, seen flags)
+// go back to its start.
+static int ring_advance(Model* M) {
+    const Dims& D = M->D;
+    const int N = M->r_N, T = D.K, nt = D.ntok, L = D.L;
+    const long d3 = 3 * D.d, cap = 2 * T * nt, layer = (long)N * cap * d3;
+    if (++M->r_wp == 2 * T) {
+        for (int l = 0; l < L; l++) {
+            float* base = M->r_kv.p + l * layer;
+            CK(cudaMemcpy2DAsync(base, (size_t)cap * d3 * sizeof(float), base + (long)(T + 1) * nt * d3,
+                                 (size_t)cap * d3 * sizeof(float), (size_t)(T - 1) * nt * d3 * sizeof(float), N,
+                                 cudaMemcpyDeviceToDevice));
+        }
+        M->r_wp = T - 1;
+        for (int& s : M->r_start) s = std::max(0, s - (T + 1));
+        for (int i = 0; i < 2 * T; i++) M->r_seen[i] = i < T - 1 ? M->r_seen[i + T + 1] : 0;
+    }
+    return 0;
+}
+
+// Task 00089: n ticks this transformer missed. The write position moves on and their slots stay unseen: nothing is
+// computed, and a step before them keeps its age in ticks. Past ctx ticks the window is all unseen: at most ctx slots.
+int vmc_uni_ring_skip(void* h, int n) {
+    Model* M = (Model*)h;
+    if (!M->r_N || n < 0) return -1;
+    for (int i = 0; i < std::min(n, M->D.K); i++) {
+        if (ring_advance(M)) return -1;
+        M->r_seen[M->r_wp] = 0;
+    }
     M->r_last = false;
     return 0;
 }
@@ -2609,30 +2682,23 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
     const long d3 = 3 * d, layer = (long)N * cap * d3;
     const float* P = M->P;
     const long* off = M->off;
-    if (++M->r_wp == 2 * T) {   // the buffer's end: the last ctx - 1 steps back to its start
-        for (int l = 0; l < L; l++) {
-            float* base = M->r_kv.p + l * layer;
-            CK(cudaMemcpy2DAsync(base, (size_t)cap * d3 * sizeof(float), base + (long)(T + 1) * nt * d3,
-                                 (size_t)cap * d3 * sizeof(float), (size_t)(T - 1) * nt * d3 * sizeof(float), N,
-                                 cudaMemcpyDeviceToDevice));
-        }
-        M->r_wp = T - 1;
-        for (int& s : M->r_start) s = std::max(0, s - (T + 1));
-    }
+    if (ring_advance(M)) return -1;
     const int wp = M->r_wp, ws = std::max(0, wp - T + 1), cur = wp - ws;
-    std::vector<int> lo(N);
+    M->r_seen[wp] = 1;
+    std::vector<int> lo(N + T, 0);   // each body's first key step, then the window's seen flags (task 00089)
     for (int b = 0; b < N; b++) {
         if (ep_start && ep_start[b]) M->r_start[b] = wp;
         lo[b] = std::max(M->r_start[b], ws) - ws;
     }
+    for (int g = 0; g <= cur; g++) lo[N + g] = M->r_seen[ws + g];
     uint8_t* img = (uint8_t*)M->r_img.get(((size_t)N * S * D.iw * 3 + 3) / 4);
     float* drv = M->r_drv.get((size_t)N * 2);
     float* act = M->r_act.get((size_t)N * 3);
-    int* ilo = (int*)M->r_lo.get(N);
+    int* ilo = (int*)M->r_lo.get(N + T);
     CK(cudaMemcpy(img, images, (size_t)N * S * D.iw * 3, cudaMemcpyHostToDevice));
     CK(cudaMemcpy(drv, drives, (size_t)N * 2 * sizeof(float), cudaMemcpyHostToDevice));
     CK(cudaMemset(act, 0, (size_t)N * 3 * sizeof(float)));
-    CK(cudaMemcpy(ilo, lo.data(), N * sizeof(int), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(ilo, lo.data(), (N + T) * sizeof(int), cudaMemcpyHostToDevice));
     float* in = M->r_in.get((size_t)R * V);
     k_uni_tokens<<<GRID((long)R * V)>>>(img, drv, img, drv, act, nullptr, in, nullptr, N, nt, V, S, D.patch, D.gp, D.ch,
                                         M->uslot, D.iw);
@@ -2663,7 +2729,8 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
         const float* win = base + (long)ws * nt * d3;
         gemm_heads(M, false, true, nt, Kw, hs, scale, q3, 3 * d, hs, sq, win + d, 3 * d, hs, sk, 0.f, att, nh * Kw, Kw, sa, nh,
                    N);
-        k_ring_softmax<<<(unsigned)(((long)R * nh * 32 + 255) / 256), 256>>>(att, q3, E, ilo, R, Kw, nh, nt, d, cur, scale);
+        k_ring_softmax<<<(unsigned)(((long)R * nh * 32 + 255) / 256), 256>>>(att, q3, E, ilo, R, Kw, nh, nt, d, cur, scale,
+                                                                             ilo + N);
         gemm_heads(M, false, false, nt, hs, Kw, 1.f, att, nh * Kw, Kw, sa, win + 2 * d, 3 * d, hs, sk, 0.f, y, d, hs,
                    (long)nt * d, nh, N);
         gemm(M, false, true, R, d, d, y, d, P + off[APW] + (size_t)l * d * d, d, 0.f, res, d);

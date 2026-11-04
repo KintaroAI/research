@@ -19,6 +19,9 @@ largest of its tokens' cross-entropies in the update that trained on it (as the 
 slot's recent mean (GatedMemory.note_tokens). It is read on the next tick, after acting, when the GPU is idle.
 
 Clogged acting (online.clog_act = 1, task 00086): each transformer also acts on its own damaged view; the world and memory stay clean.
+Outage (online.off = q, task 00089): each transformer is off q of the time, its own two-state chain with off spells of online.off_span ticks on average;
+an off transformer makes no move and takes no update, and its ring skips the ticks it missed (no compute, gaps in its context, ages in ticks). Memory
+keeps which transformers were on at each tick; in an update, a transformer's missed steps are no keys and carry no loss.
 Input noise (online.noise_in = q, task 00088): the model acts and trains on frames noised as env.noise does, one draw for all transformers; the world, memory and targets stay clean.
 Clogged channels (online.clog = p, task 00085): about p of the patches of each step are damaged in each transformer's input, its own damage, drawn fresh each time a
 window is used, some for the whole window and some for one step, black or speckled, while the target stays clean. Memory and acting stay clean.
@@ -284,6 +287,15 @@ def main():
     q_in = on["noise_in"]                     # task 00088: noise on the model's input only, the world, memory and targets clean
     if q_in and (not uni or on["device"] != "cuda" or on["sf_windows"] or clog or not on["ring"]):
         raise ValueError("online.noise_in needs the universal model on the GPU with the ring, without self-forcing or online.clog")
+    q_off = on["off"]                         # task 00089: transformers switched off at random
+    if q_off and (S < 2 or not uni or on["device"] != "cuda" or not on["ring"] or on["sf_windows"] or on["tie_tables"]
+                  or not 0 < q_off < 1 or on["off_span"] < 1):
+        raise ValueError("online.off needs 0 < off < 1, several pieces, the universal model on the GPU with the ring, "
+                         "without self-forcing or tied tables")
+    off_rng = np.random.default_rng([args.seed, 0x0FF])   # its own: off = 0 draws nothing
+    is_off, missed = np.zeros(S, bool), np.zeros(S, int)
+    p_back = 1.0 / on["off_span"]
+    p_down = q_off / ((1.0 - q_off) * on["off_span"]) if q_off else 0.0
     if goal_k and not agent.config["use_prev_reward"]:
         raise ValueError("online.goal=1 needs model.use_prev_reward=1 (the scalar token slot carries the goal)")
     ppo = dict(agent_lib.DEFAULT_PPO)
@@ -304,7 +316,7 @@ def main():
         ac = agent.config
         views = [ClogStream(np.random.default_rng([args.seed, 0xC107, k]), N0, ac["img"], ac.get("img_w") or ac["img"], ac["patch"], clog, on["clog_long"]) for k in range(S)]
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
-    kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"])
+    kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off))
     gate_on = dict(on, goal_mode="future") if future_k else on
     gms = [GatedMemory(gate_on, L, env_cfg.size, label_k, args.seed, tokens=tok_sur, **kept)]
     gms += [GatedMemory(gate_on, L, env_cfg.size, label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
@@ -370,13 +382,21 @@ def main():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(),
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
-                    smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0)
+                    smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
+                    on_k=np.zeros(S))
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
         N = bodies_at(on, tick)
         h = obs["drives"][:N, 0]
         cmd = (h if goal_k else np.zeros(N)).astype(np.float32)
+        if q_off:   # task 00089: each transformer's chain; if all would be off, the lowest stays on
+            r_ = off_rng.random(S)
+            is_off = np.where(is_off, r_ >= p_back, r_ < p_down)
+            if is_off.all():
+                is_off[0] = False
+        live = np.flatnonzero(~is_off)
+        win["on_k"] += ~is_off
         # 1. act: each body's move, predicted from its own last L real states (this one included)
         k = min(gms[0].stm.n, L - 1)
         idx = [gm.stm.last(k) for gm in gms[:N]]
@@ -394,15 +414,20 @@ def main():
         if q_in:   # task 00088: one noisy view for every transformer; the ring holds it, memory gets the clean frame
             win_in[0] = noise_frames(win_in[0], act_rng, q_in)
         if uni:   # the universal model: its own move prediction, and the instinct; pieces: each its own, the mean made
-            props = [uni_act(um, view(win_in[0][:, 0])[:, None] if view else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
+            for k in live:   # task 00089: back from an outage: the ticks it missed, nothing computed
+                if missed[k]:
+                    gpus[k].uni_ring_skip(missed[k])
+                    missed[k] = 0
+            props = [uni_act(umodels[k], views[k](win_in[0][:, 0])[:, None] if views[k] else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
                              on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
-                     for um, view in zip(umodels, views)]
-            a, won = pieces_move(umodels, props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
+                     for k in live]
+            a, won = pieces_move([umodels[k] for k in live], props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
+            won = np.where(won >= 0, live[np.maximum(won, 0)], won)   # the pieces' own numbers
             win["override"] += np.mean([p[1] for p in props]) * N
             win["gain"] += np.mean([p[2] for p in props]) * N
             if S > 1:
-                for k, p in enumerate(props):
+                for k, p in zip(live, props):
                     win["prop"][k] += np.abs(p[0][:, :2]).sum(0)
                     win["agree"][k] += cosine(p[0][:, :2], a[:, :2]).sum()
                     win["won"][k] += (won == k).sum(0)
@@ -418,8 +443,9 @@ def main():
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
             a = np.where(bab[:, None], nb, a).astype(np.float32)
         if on["ring"]:
-            for g in gpus:
-                g.uni_ring_move(a)
+            for k in live:
+                gpus[k].uni_ring_move(a)
+        missed[is_off] += 1
         win["t_act"] += time.time() - t_
         t_ = time.time()
         if tick > 1:   # scoring only: how straight the path is
@@ -432,10 +458,11 @@ def main():
         obs, rew, done, inf = env.step(full)
         win["t_world"] += time.time() - t_
         t_ = time.time()
+        on_bits = dict(on=np.uint64(sum(1 << int(k) for k in live))) if q_off else {}   # task 00089
         for b in range(N):
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
                            pa=prev_a[b], pr=prev_r[b], es=ep_start[b], act=a[b], rew=rew[b], done=done[b],
-                           hit=inf["success"][b], cmd=cmd[b])
+                           hit=inf["success"][b], cmd=cmd[b], **on_bits)
         if thinking:   # the window ending in the new step: the world's new half, the old thought; moves up to now
             t_think = time.time()
             ix = [gm.stm.last(min(gm.stm.n, L - 1)) for gm in gms[:N]]
@@ -493,11 +520,16 @@ def main():
             win["t_batch"] += time.time() - t_
             t_ = time.time()
             if S > 1:   # every piece its own gradient step on the same rows (task 00059)
-                stats = []
+                stats, who = [], []   # who: the piece of each stats entry (task 00089: off pieces take no update)
                 shared = noised(rows)   # task 00088: one noisy input for all pieces, fresh each update
                 for k, (g, ag) in enumerate(zip(gpus, agents)):
+                    if is_off[k]:   # task 00089: an off transformer does not learn
+                        continue
                     if g:   # a GPU rollout holds only the data: one for all pieces
-                        stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0, inputs=shared if q_in else damaged(rows)))
+                        sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
+                        stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
+                                                      inputs=shared if q_in else damaged(rows), step_mask=sm))
+                        who.append(k)
                     else:   # a C++ rollout belongs to its agent
                         rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
                         if k:
@@ -511,7 +543,7 @@ def main():
                 if stats[0] is not None:
                     win["stats"].append({key: float(np.mean([s_[key] for s_ in stats])) for key in stats[0]
                                          if isinstance(stats[0][key], (int, float))})
-                    for k, s_ in enumerate(stats):
+                    for k, s_ in zip(who, stats):
                         win["stats_k"][k].append(s_)
             elif gpu:
                 inputs = noised(rows) if q_in else damaged(rows)
@@ -562,6 +594,9 @@ def main():
                     row["prop_dx_p%d" % k], row["prop_dy_p%d" % k] = (win["prop"][k] / bs).tolist()
                     row["agree_p%d" % k] = float(win["agree"][k] / bs)
                     row["won_x_p%d" % k], row["won_y_p%d" % k] = (win["won"][k] / bs).tolist()   # max, gain
+            if q_off:   # task 00089: the share of ticks each piece was on
+                row["off_share"] = 1.0 - float(win["on_k"].mean()) / le
+                row.update({"on_p%d" % k: float(win["on_k"][k]) / le for k in range(S)})
             if "tie_gap" in win:
                 row["tie_gap"] = win.pop("tie_gap")
             row.update(gate_metrics(gms))

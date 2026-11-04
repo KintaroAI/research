@@ -86,6 +86,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       clog_act=0,
                       # task 00088: the model's input noised as env.noise does (acting and training, one draw for all transformers), the world, memory and targets clean
                       noise_in=0.0,
+                      # task 00089: each transformer off this share of the time, its own two-state chain with off spells of off_span
+                      # ticks on average: no forward pass, no move, no update; memory keeps which transformers were on
+                      off=0.0, off_span=32,
                       # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
                       # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",
@@ -118,7 +121,7 @@ class Replay:
     only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0):
+    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
         self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
@@ -135,6 +138,9 @@ class Replay:
         self.done = np.zeros(cap, np.uint8)
         self.hit = np.zeros(cap, np.uint8)
         self.cmd = np.zeros(cap, np.float32)      # self actor with goal: the hunger command used when acting
+        if pieces:   # task 00089: which transformers were on at each step, a bit each
+            self.on = np.zeros(cap, np.uint64)
+            self.fields = self.fields + ("on",)
 
     def add(self, **kw):
         i = self.w
@@ -324,7 +330,8 @@ class GatedMemory:
     slot's mean over the last surprise_window steps.
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
-    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True, img_w=0):
+    def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True, img_w=0,
+                 pieces=False):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
@@ -332,7 +339,7 @@ class GatedMemory:
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
-        self.stm = Replay(on["stm"], img, ch, next_frames, img_w)
+        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces)
         self.store = store or ChunkStore(on, L, self.stm)          # long-term memory (shared between bodies or not)
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part

@@ -598,9 +598,10 @@ def uni_thumbs(cfg, images):
     return np.stack(out, 2)
 
 
-def forward_uni(P, cfg, images, drives, actions, ep_start):
+def forward_uni(P, cfg, images, drives, actions, ep_start, step_mask=None):
     """The universal model (as seq_fwd_uni in C++). Returns h (token outputs [S, T*ntok, d]) and logits
-    [S, T*ntok, V, K]: every token's prediction of the next token's values."""
+    [S, T*ntok, V, K]: every token's prediction of the next token's values. step_mask [S, T] bool (task 00089): a token
+    of a seen step reads only seen steps; a missed step's tokens read as before."""
     dt = P["uni_in_w"].dtype
     S, T = images.shape[:2]
     nt, V, K = uni_dims(cfg)
@@ -632,6 +633,9 @@ def forward_uni(P, cfg, images, drives, actions, ep_start):
     allow = attn_allow(cfg)
     if allow is not None:   # attention regions (task 00044): by the slots of query and key
         mask = mask & allow[idx[:, None] % nt, idx[None, :] % nt][None]
+    if step_mask is not None:
+        seen = np.repeat(np.asarray(step_mask, bool), nt, axis=1)                   # [S, T nt]
+        mask = mask & (~seen[:, :, None] | seen[:, None, :])
     hz = transformer(P, cfg, h, torch.tensor(mask)[:, None], uni_ages(cfg, T, nt))
     logits = F.linear(hz, P["uni_out_w"], P["uni_out_b"])
     if cfg.get("uni_chan", 0):   # each row's V values from the channel of the token it predicts
@@ -666,10 +670,11 @@ def uni_loss(P, cfg, batch):
     """The universal model's loss: every token predicts the next token's values (the move token: the drives after its
     step); two-hot cross-entropy, the mean over the target's used values, the mean over tokens. Optional
     batch["input_images"] / ["input_drives"] (self-forcing, task 00039): the tokens' inputs, the targets still from
-    batch["images"] / ["drives"]."""
+    batch["images"] / ["drives"]. Optional batch["step_mask"] [S, T] (task 00089)."""
     dt = P["uni_in_w"].dtype
+    sm = batch.get("step_mask")   # task 00089: a missed step is no key for the seen ones and has no loss
     out = forward_uni(P, cfg, batch.get("input_images", batch["images"]), batch.get("input_drives", batch["drives"]),
-                      batch["action"], batch["ep_start"])
+                      batch["action"], batch["ep_start"], sm)
     S, T = batch["images"].shape[:2]
     nt, V, K = uni_dims(cfg)
     v, used = uni_values(cfg, batch["images"], batch["drives"], batch["action"])
@@ -681,6 +686,8 @@ def uni_loss(P, cfg, batch):
     logp = out["logits"].log_softmax(-1).reshape(S, T, nt, V, K)
     ce = -(torch.tensor(two_hot(tgt, K), dtype=dt) * logp).sum(-1)                # [S, T, nt, V]
     per_tok = (ce * torch.tensor(m, dtype=dt)).sum(-1) / torch.tensor(np.maximum(tu, 1), dtype=dt)
+    if sm is not None:   # the mean stays over every token: a window with missed steps gives less, not more per token
+        per_tok = per_tok * torch.tensor(np.asarray(sm, bool)[:, :, None], dtype=dt)
     has = tu > 0                                                                   # a summary next: no target
     return per_tok[:, :, has].mean(), dict(per_token=per_tok, logp=logp, tgt=tgt, used=tu)
 

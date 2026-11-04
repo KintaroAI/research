@@ -42,6 +42,9 @@ int vmc_set_batch(void* h, int S, const uint8_t* images, const float* drives, co
 // The universal model (task 00039, self-forcing): the token inputs' frames and bodies of the current batch (S sequences
 // as in vmc_set_batch), used instead of the batch's own; the targets stay the batch's. Cleared by the next batch.
 int vmc_set_uni_inputs(void* h, int S, const uint8_t* images, const float* drives);
+// Task 00089: which steps of the uploaded batch this transformer saw, mask [S, ctx] (1 seen, 0 missed): a missed step is no
+// key for the seen steps and has no loss. Cleared by the next batch.
+int vmc_set_step_mask(void* h, int S, const uint8_t* mask);
 // Loss and gradients of the current batch (gradients stay on the device; vmc_grads copies them out).
 int vmc_loss_and_grads(void* h, const PPOConfig* pc);
 // loss_and_grads, the gradient-norm clip and an AdamW step.
@@ -64,6 +67,8 @@ int vmc_uni_candidates(void* h, int Mc, const float* cand, float* hunger);
 int vmc_uni_ring_reset(void* h, int N);
 int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const uint8_t* ep_start, float* move_probs);
 int vmc_uni_ring_move(void* h, const float* moves);
+// Task 00089: n ticks missed: the write position moves on, their slots unseen, nothing computed.
+int vmc_uni_ring_skip(void* h, int n);
 // As vmc_forward_uni, but returning only step t's values, values_t [S, ntok, V] (mode = 0: the expected values; 1: the
 // most probable bin's centre; 2: the most probable bin and its more probable neighbour, weighted: task 00038), and the expected next bodies [S, T, 2] (the instinct's lookahead, task 00029).
 int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,

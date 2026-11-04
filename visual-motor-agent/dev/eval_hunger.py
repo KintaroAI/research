@@ -54,7 +54,7 @@ class Scored:
 class Life:
     """A run's frozen pieces, one body per world, and one tick of its acting."""
 
-    def __init__(self, path, bodies, seed, clog=0.0):
+    def __init__(self, path, bodies, seed, clog=0.0, off=0.0):
         import agent_lib
         import cuda_lib
         from lifetime import ckpt_name
@@ -78,6 +78,16 @@ class Life:
 
             c = agents[0].config
             self.clogs = [ClogStream(np.random.default_rng([seed, k]), bodies, c["img"], c.get("img_w") or c["img"], c["patch"], clog) for k in range(self.S)]
+        # task 00089: pieces off at random, as lifetime.py's online.off, whatever the run lived with (its off_span)
+        self.off, self.is_off, self.missed = off, np.zeros(self.S, bool), np.zeros(self.S, int)
+        self.off_rng = np.random.default_rng([seed, 0x0FF])
+        span = self.on.get("off_span", 32)
+        self.p_back, self.p_down = 1.0 / span, (off / ((1.0 - off) * span) if off else 0.0)
+        self.live = np.arange(self.S)
+
+    @staticmethod
+    def pieces(path):
+        return int(json.load(open(os.path.join(path, "info.json"))).get("pieces", 1))
 
     def act(self, obs, tol=None, told=None):
         from lifetime import pieces_move
@@ -89,11 +99,24 @@ class Life:
             drv[:, 0] = told
         act = np.zeros((self.bodies, 1, 3), np.float32)
         tol = on["instinct_tol"] if tol is None else tol
+        if self.off:   # task 00089: each piece's chain; the ticks it missed are skipped in its ring when it is back
+            r = self.off_rng.random(self.S)
+            self.is_off = np.where(self.is_off, r >= self.p_back, r < self.p_down)
+            if self.is_off.all():
+                self.is_off[0] = False
+        self.live = np.flatnonzero(~self.is_off)
+        for k in self.live:
+            if self.missed[k]:
+                self.models[k].uni_ring_skip(self.missed[k])
+                self.missed[k] = 0
+        models = [self.models[k] for k in self.live]
+        clogs = [self.clogs[k] for k in self.live]
         props = [uni_act(m, (c(obs["image"]) if c else obs["image"])[:, None], drv[:, None], act, self.es[:, None], self.bins, self.rng, on["instinct_m"], tol,
-                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first="sample", ring=True) for m, c in zip(self.models, self.clogs)]
-        a, _ = pieces_move(self.models, props, on["piece_rule"], self.rng, prev=None)
-        for m in self.models:
+                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first="sample", ring=True) for m, c in zip(models, clogs)]
+        a, _ = pieces_move(models, props, on["piece_rule"], self.rng, prev=None)
+        for m in models:
             m.uni_ring_move(a)
+        self.missed[self.is_off] += 1
         return a
 
     def close(self):
@@ -202,12 +225,12 @@ def told(path, ticks, bodies, seed):
         yield dict(mode="told", run=os.path.basename(path), arm=arm, food=food * k, poison=poison * k, size=float(np.mean(size)), cos_near=float(np.mean(near)))
 
 
-def chain(path, ticks, bodies, seed, clog=0.0, noise=None):
+def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0):
     from eval_pieces import relative
     from lifetime import cosine
     from world import make_world
 
-    life = Life(path, bodies, seed, clog)
+    life = Life(path, bodies, seed, clog, off)
     if noise is not None:   # task 00087: tested at a level of white noise, whatever it was raised on
         life.cfg = dataclasses.replace(life.cfg, noise=noise)
     env, blind, grab = (make_world(bodies, life.cfg, seed=seed + k) for k in range(3))
@@ -238,7 +261,7 @@ def chain(path, ticks, bodies, seed, clog=0.0, noise=None):
             poison[name] += int(i["gt_hazard_click"].sum())
     life.close()
     k = 1000.0 / (ticks * bodies)
-    yield dict(mode="chain", run=os.path.basename(path), noise=life.cfg.noise, food={q: v * k for q, v in food.items()}, poison={q: v * k for q, v in poison.items()},
+    yield dict(mode="chain", run=os.path.basename(path), noise=life.cfg.noise, off=life.off, food={q: v * k for q, v in food.items()}, poison={q: v * k for q, v in poison.items()},
                smooth=float(np.mean(smooth)), share=(count["seen"] / count["seen"].sum()).tolist(),
                cos_seen=(aim["seen"] / np.maximum(count["seen"], 1)).tolist(), cos_blind=(aim["blind"] / np.maximum(count["blind"], 1)).tolist())
 
