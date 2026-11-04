@@ -166,7 +166,7 @@ def main():
         for n, js in by_len.items():
             x = torch.tensor([prompts[j] for j in js], device=dev)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                out[js] = model(x)[:, -1].float()
+                out[js] = (model.hidden(x)[:, -1] @ model.wte.weight.T).float()
         return out
 
     @torch.no_grad()
@@ -186,7 +186,7 @@ def main():
                 jj = js[c:c + 2048]
                 x = torch.tensor([prompts[j] for j in jj], device=dev)
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    lg = model(x)[:, -1].float()
+                    lg = (model.hidden(x)[:, -1] @ model.wte.weight.T).float()
                 prob = lg.softmax(-1)
                 lg = lg - base
                 ci = torch.tensor([int(cities[city_of[ids[j]]]) for j in jj], device=dev)

@@ -7,7 +7,8 @@
 #
 # Usage:
 #   make stage1 — S and M, seeds 1 and 2, all on the RTX 3090 (beside the visual-motor runs, about 2 GB each)
-#   make stage2 — L, X and G, seeds 1 and 2: seed 1 on the RTX 4090, seed 2 on the RTX 3090 (after the visual-motor queue)
+#   make stage2 — L, X and G, seeds 1 and 2: seed 1 on the RTX 4090, seed 2 on the RTX 3090 (after the visual-motor queue); and S seed 1 again,
+#                 whose stage-1 run ran out of memory in a probe
 #   make show — the tables (facts/analyze.py)
 
 DEV = ../dev
@@ -30,6 +31,7 @@ stage1:
 	$(call sizes,S M,0,0)
 
 stage2:
+	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(PY) facts/train.py --size S --steps $(STEPS) --seed 1 --out $(OUT)/S_s1 > $(OUT)/S_s1.log 2>&1 &
 	$(call sizes,L X G,1,0)
 
 show:

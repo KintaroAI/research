@@ -1,7 +1,7 @@
 # 00020: Fact Memorization, Forgetting and Relearning
 
 **Date:** 2026-11-03
-**Status:** Running: stage 1 (S, M) since 21:34; stage 2 (L, X, G) queued after the visual-motor runs
+**Status:** Running: stage 1 (S seed 2, M) since 21:34; stage 2 (L, X, G, and S seed 1 again) queued after the visual-motor runs
 **Source:** `dev/facts/` (not yet tagged)
 **Outputs:** `~/data/research/llm-fundamentals/exp_00020/`
 **Task plan:** [`../tasks/00007-fact-memorization.md`](../tasks/00007-fact-memorization.md)
@@ -30,3 +30,8 @@ How often must a GPT see a fact to recall it, how fast does it forget under a st
   - facts shown 32 times recalled .127 at the end, shown once .000;
   - relearning took a median of 8 showings, against 18 for fresh facts learned at the same step;
   - those savings were nearly gone at 4 times the delay.
+
+## Notes on the runs
+
+- **S seed 1 ran out of GPU memory in a probe, about 2,500 steps in, on the 3090 beside the visual-motor runs.** The probe computed full-vocabulary logits at every position of up to 2,048 prompts and used only the last. It now computes the last position only, with the same logits. The run is redone in stage 2; its log is kept as `S_s1.crashed.log`. The other stage-1 runs keep the first version of the probe, which gives the same numbers.
+- **Stage 1 slowed vm-00080's 3090 lives** from 3.7 to 2.4 ticks/s.
