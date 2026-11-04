@@ -1,7 +1,7 @@
 # Task 00007: How a GPT Memorizes Facts, Forgets Them and Relearns Them (experiment 00020)
 
 **Date:** 2026-11-03
-**Status:** Planned
+**Status:** In progress: stage 1 running
 
 ## Context
 
@@ -32,7 +32,7 @@
   - **exact:** the training sentence cut before the city;
   - **paraphrase:** "Where was Zorvan Kelt born? In";
   - **reverse:** "Who was born in Mirelith? It was" (only for cities given to a single person).
-- **A probe's score:** the correct city's probability among the 256, and whether it ranks first. **Recalled** means it ranks first on the exact probe.
+- **A probe's score:** the correct city's probability, and its rank among the 256 by its logit minus its mean logit for 8 never-shown names in the same form. **Recalled** means it ranks first on the exact probe. (The baseline was added after a trial: a city just seen becomes likely after any name, which is not recall.)
 
 ### The stream
 
@@ -42,7 +42,7 @@
 
 ### Models
 
-- GPT-2 shapes from `create_model.py`, trained from scratch: about 1M, 4M and 16M parameters (stage 1), then 64M and GPT-2 small, 124M (stage 2).
+- GPT-2 shapes trained from scratch, sized by non-embedding parameters: S 0.40M, M 3.2M (stage 1), then L 10.6M, X 25M and G 85M, GPT-2 small (stage 2); two seeds each.
 - The same tokenizer, context 256, batch and learning rate per size as `create_model.py`'s TinyStories settings.
 
 ### Part A, scheduled exposures: how often, how long
@@ -90,12 +90,11 @@ Probes in parts A and C are forward passes only: no gradient, and they never ent
 
 ## Implementation
 
-- [ ] `dev/facts/make_facts.py`: names, cities, sentences, probe forms; a check that no name is in TinyStories
-- [ ] `dev/facts/stream.py`: TinyStories windows with inserted facts, scheduled (parts A and B) and adaptive (part C, driven by probes)
-- [ ] `dev/facts/train.py`: GPT-2 from `create_model.py`'s configurations, constant learning rate, probes every N steps, results as rows of JSON
-- [ ] `dev/facts/analyze.py`: the curves, capacity, savings
-- [ ] Stage 1 (1M, 4M, 16M), then stage 2 (64M, 124M) when a GPU is free of the visual-motor runs
-- [ ] `00020-fact-memorization/`: README, Makefile
+- [x] `dev/facts/facts_lib.py`: names, cities, sentences, probe forms; no name is in TinyStories
+- [x] `dev/facts/train.py`: the model (GPT-2 shapes, tied embeddings), the stream with scheduled and adaptive insertion, probes against a neutral baseline, the loss in chunks
+- [x] `dev/facts/analyze.py`: the curves, capacity, savings
+- [ ] Stage 1 (S, M) beside the visual-motor runs; stage 2 (L, X, G) after them. L was moved to stage 2: the 3090 was at 23.5 of 24 GB with it
+- [x] `00020-fact-memorization/`: README, Makefile
 
 ## Verification
 
