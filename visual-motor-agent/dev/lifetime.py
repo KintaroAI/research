@@ -24,6 +24,8 @@ input and the present, tiled, the target (online.delay_targets).
 Outage (online.off = q, task 00089): each transformer is off q of the time, its own two-state chain with off spells of online.off_span ticks on average;
 an off transformer makes no move and takes no update, and its ring skips the ticks it missed (no compute, gaps in its context, ages in ticks). Memory
 keeps which transformers were on at each tick; in an update, a transformer's missed steps are no keys and carry no loss.
+World schedule (online.env_sched, task 00094): world settings changed at given ticks, {"key": [[tick, value], ...]}, through
+env.reconfigure, before that tick's move; only keys the world lists in RUNTIME (CircleWorld: food_show). The metrics carry env_<key>.
 Input noise (online.noise_in = q, task 00088): the model acts and trains on frames noised as env.noise does, one draw for all transformers; the world, memory and targets stay clean.
 Clogged channels (online.clog = p, task 00085): about p of the patches of each step are damaged in each transformer's input, its own damage, drawn fresh each time a
 window is used, some for the whole window and some for one step, black or speckled, while the target stays clean. Memory and acting stay clean.
@@ -207,6 +209,26 @@ def bodies_at(on, tick):
     return max(1, n0 >> ((tick - hold - 1) // halve + 1))
 
 
+def env_schedule(env, env_cfg, spec, steps):
+    """online.env_sched (task 00094): {"key": [[tick, value], ...]} -> {tick: {key: value}}. Refused unless the world can
+    change each key mid-life (env.RUNTIME), each tick is a whole number in 1..steps, increasing per key, and the world's
+    config accepts every value."""
+    if not spec:
+        return {}
+    keys = getattr(env, "RUNTIME", ())
+    if not isinstance(spec, dict) or not hasattr(env, "reconfigure") or any(k not in keys for k in spec):
+        raise ValueError(f"online.env_sched: {{key: [[tick, value], ...]}} with keys this world can change mid-life ({keys}), got {spec!r}")
+    out = {}
+    for k, pts in spec.items():
+        ticks = [p[0] for p in pts]
+        if not pts or any(len(p) != 2 or int(p[0]) != p[0] or not 1 <= p[0] <= steps for p in pts) or ticks != sorted(set(ticks)):
+            raise ValueError(f"online.env_sched[{k!r}]: [[tick, value], ...], whole ticks in 1..{steps}, increasing, got {pts!r}")
+        for t, v in pts:
+            dataclasses.replace(env_cfg, **{k: v}).validate()
+            out.setdefault(int(t), {})[k] = v
+    return out
+
+
 def eps_at(on, tick):
     e0, e1, k = on["explore_eps"], on["explore_eps_end"], on["explore_decay"]
     if e1 is None or k <= 0:
@@ -297,6 +319,7 @@ def main():
     delayed = bool(getattr(env_cfg, "delays", ()))   # task 00091: inputs the composite, targets the present tiled
     if delayed and (not uni or on["device"] != "cuda" or on["sf_windows"] or clog or q_in or q_off):
         raise ValueError("env.delays needs the universal model on the GPU, without self-forcing, online.clog, online.noise_in or online.off")
+    sched = env_schedule(env, env_cfg, on.get("env_sched"), on["steps"])   # task 00094: {tick: {key: value}}
     off_rng = np.random.default_rng([args.seed, 0x0FF])   # its own: off = 0 draws nothing
     is_off, missed = np.zeros(S, bool), np.zeros(S, int)
     p_back = 1.0 / on["off_span"]
@@ -392,6 +415,8 @@ def main():
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
+        if tick in sched:   # task 00094: before this tick's move, so the frame the world draws next follows the new setting
+            env.reconfigure(**sched[tick])
         N = bodies_at(on, tick)
         h = obs["drives"][:N, 0]
         cmd = (h if goal_k else np.zeros(N)).astype(np.float32)
@@ -603,6 +628,8 @@ def main():
                     row["prop_dx_p%d" % k], row["prop_dy_p%d" % k] = (win["prop"][k] / bs).tolist()
                     row["agree_p%d" % k] = float(win["agree"][k] / bs)
                     row["won_x_p%d" % k], row["won_y_p%d" % k] = (win["won"][k] / bs).tolist()   # max, gain
+            for k_ in (on.get("env_sched") or {}):   # task 00094: the scheduled settings as they stand
+                row["env_" + k_] = getattr(env.config, k_)
             if q_off:   # task 00089: the share of ticks each piece was on
                 row["off_share"] = 1.0 - float(win["on_k"].mean()) / le
                 row.update({"on_p%d" % k: float(win["on_k"][k]) / le for k in range(S)})

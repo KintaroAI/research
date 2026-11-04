@@ -38,7 +38,7 @@ copies:
 
 frozen:
 	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { \
-	  h="$$(for v in 16 4 1; do for s in 1 2 3 4 5 6; do echo $(OUT)/H$${v}_s$$s; done; done)"; k="$$(for s in 1 2 3 4 5 6; do echo $(CTRL)/K4_s$$s; done)"; \
+	  h="$$(for v in 16 4 1; do for s in 1 2 3 4 5 6; do echo $(OUT)/H$${v}_s$$s; done; done)"; k="$$(for s in 1 2 3 4 5 6; do echo $(CTRL)/K4_s$$s; done | tr "\n" " ")"; \
 	  CUDA_VISIBLE_DEVICES=1 $(PY) eval_hidden.py aim $$h > $(OUT)/aim.jsonl & \
 	  CUDA_VISIBLE_DEVICES=0 sh -c "for v in 16 4 1; do $(PY) eval_hidden.py aim $$k --show \$$v; done" > $(OUT)/aim_k4.jsonl & \
 	  $(PY) eval_hidden.py walk configs/U_default.json --shows 16 4 1 > $(OUT)/walk.jsonl & \

@@ -89,6 +89,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00089: each transformer off this share of the time, its own two-state chain with off spells of off_span
                       # ticks on average: no forward pass, no move, no update; memory keeps which transformers were on
                       off=0.0, off_span=32,
+                      # task 00094: world settings changed at given ticks, {"key": [[tick, value], ...]}, through env.reconfigure
+                      # (only the keys the world lists in RUNTIME); None: the world as configured all life
+                      env_sched=None,
                       # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
                       # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",

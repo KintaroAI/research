@@ -1,7 +1,7 @@
 # Task 00091: Delayed Copies of the View, All Predicting the Present (experiment vm-00080)
 
 **Date:** 2026-11-03
-**Status:** In progress
+**Status:** Complete (vm-00080)
 
 ## Context
 
@@ -65,4 +65,4 @@
 - [x] `eval_hunger.Life(view=...)`; `eval_delay.py`: error, chain with blanking, show
 - [x] `tests/test_delay.py`
 - [x] `00080-delayed-copies/`: README, Makefile; six seeds, all 18 lives at once (the first minutes are the timing)
-- [ ] Runs, frozen tests, write-up
+- [x] Runs, frozen tests, write-up

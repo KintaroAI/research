@@ -671,6 +671,15 @@ class CircleWorld:
         self._reset_envs(idx)
         return self.observe()
 
+    RUNTIME = ("food_show",)   # task 00094: the settings reconfigure() may change mid-life (each read afresh every frame)
+
+    def reconfigure(self, **kw) -> None:
+        """Change settings listed in RUNTIME mid-life (online.env_sched, task 00094); the rest of the state is untouched."""
+        bad = sorted(set(kw) - set(self.RUNTIME))
+        if bad:
+            raise ValueError(f"reconfigure: {bad} cannot change mid-life (CircleWorld.RUNTIME = {self.RUNTIME})")
+        self.config = dataclasses.replace(self.config, **kw).validate()
+
     def set_radius_range(self, radius_min: float, radius_max: float) -> None:
         """Change the target radius range used by future resets (curriculum)."""
         self.config = dataclasses.replace(

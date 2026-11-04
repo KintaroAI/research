@@ -29,7 +29,7 @@ runs:
 
 frozen:
 	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { \
-	  r="$$(for c in $(CTXS); do for s in 1 2 3 4 5 6; do echo $(OUT)/C$${c}_s$$s; done; done)"; \
+	  r="$$(for c in $(CTXS); do for s in 1 2 3 4 5 6; do echo $(OUT)/C$${c}_s$$s; done; done | tr "\n" " ")"; \
 	  CUDA_VISIBLE_DEVICES=1 $(PY) eval_hunger.py chain $$r > $(OUT)/chain.jsonl & \
 	  CUDA_VISIBLE_DEVICES=0 sh -c "for v in 4 1; do $(PY) eval_hidden.py aim $$r --show \$$v; done" > $(OUT)/hidden.jsonl & \
 	  wait; }

@@ -55,4 +55,4 @@
 - [x] `tests/test_hidden_food.py`
 - [x] `eval_hidden.py`: aim, walk, show
 - [x] `00081-hidden-food/`: README, Makefile; runs queued after vm-00080's frozen tests
-- [ ] Runs, frozen tests, write-up
+- [ ] Runs (done), frozen tests (to rerun: out of memory beside vm-00082), write-up (interim)
