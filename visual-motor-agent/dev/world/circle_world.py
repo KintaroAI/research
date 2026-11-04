@@ -163,6 +163,7 @@ class EnvConfig:
                                         # inside the circle is a success; inside a hazard it applies hazard_click /
                                         # hazard_click_add and that hazard is replaced by a new one away from the cursor
     noise: float = 0.0                  # (task 00087) white noise in the world: each pixel of each frame replaced by a random brightness with this probability
+    food_show: int = 0                  # (task 00092) hidden food: the food is drawn only in its first food_show frames after it appears (0 = always); touching it still feeds
     delays: tuple = ()                  # (task 00091) four delays in ticks: the frame becomes a 2 x 2 composite of the view now (delays[0] = 0) and that many ticks ago (world/delay_world.py)
     foods: int = 1                      # (task 00083) food circles; above 1 needs wrap, respawn and still food. target is always the nearest
     no_overlap: bool = False            # (task 00060, needs wrap and round hazards) no two circles overlap: a new one is
@@ -195,6 +196,8 @@ class EnvConfig:
                 raise ValueError(f"{name} must be finite, got {getattr(self, name)!r}")
         if not 0.0 <= self.noise <= 1.0:
             raise ValueError(f"noise must be in [0, 1], got {self.noise!r}")
+        if int(self.food_show) != self.food_show or self.food_show < 0 or (self.food_show and self.foods != 1):
+            raise ValueError(f"food_show: a whole number of ticks >= 0, with one food, got {self.food_show!r}")
         if self.delays and (len(self.delays) != 4 or self.delays[0] != 0 or any(int(d) != d or d < 0 for d in self.delays)):
             raise ValueError(f"delays: four whole ticks, the first 0, got {self.delays!r}")
         if not self.max_step_px > 0:
@@ -649,6 +652,7 @@ class CircleWorld:
         self.hz_rad = np.zeros((self.num_envs, h))
         self.ep_hits = np.zeros(self.num_envs, np.int64)
         self.last_move = np.zeros((self.num_envs, 2))
+        self.food_age = np.zeros(self.num_envs, np.int64)   # task 00092: ticks since the food appeared
         self._reset_envs(np.arange(self.num_envs))
 
     # ------------------------------------------------------------------ resets
@@ -711,6 +715,7 @@ class CircleWorld:
         self.target[idx] = np.stack((cx, cy), axis=1)
         self.radius[idx] = r
         self.target_alive[idx] = True
+        self.food_age[idx] = 0
         self.hunger[idx] = hunger
         self.restlessness[idx] = restless
         self.init_dist[idx] = np.maximum(0.0, dist - r)
@@ -859,6 +864,7 @@ class CircleWorld:
                     break
             self.target[i] = (cx, cy)
             self.radius[i] = r
+            self.food_age[i] = 0
             if cfg.target_speed > 0:
                 ang = 2.0 * np.pi * g.random()
                 self.target_vel[i] = cfg.target_speed * np.array([np.cos(ang), np.sin(ang)])
@@ -905,11 +911,16 @@ class CircleWorld:
         """The frame without noise: scoring only, never model input."""
         sw = getattr(self, "swap", None)   # task 00065: the food drawn as the poison
         if idx is None:
-            return render_state(self.cursor, self.target, self.radius, self.target_alive, self.config,
+            return render_state(self.cursor, self.target, self.radius, self.drawn(), self.config,
                                 (self.dot_pos, self.dot_val), (self.hz_pos, self.hz_rad), swap=sw, more=(self.fx_pos, self.fx_rad))
         return render_state(self.cursor[idx], self.target[idx], self.radius[idx],
-                            self.target_alive[idx], self.config, (self.dot_pos[idx], self.dot_val[idx]),
+                            self.drawn()[idx], self.config, (self.dot_pos[idx], self.dot_val[idx]),
                             (self.hz_pos[idx], self.hz_rad[idx]), swap=None if sw is None else sw[idx], more=(self.fx_pos[idx], self.fx_rad[idx]))
+
+    def drawn(self) -> np.ndarray:
+        """(N,) bool: the food is alive and, with food_show (task 00092), still within its first food_show frames."""
+        k = self.config.food_show
+        return self.target_alive & (self.food_age < k) if k else self.target_alive
 
     def _settle(self, success, poison) -> None:
         """After the touches of a step, before its frame: nothing here (CueWorld, task 00065)."""
@@ -948,6 +959,7 @@ class CircleWorld:
         if move.shape[0] != n:
             raise ValueError(f"expected actions of shape ({n}, 3), got {np.shape(actions)}")
 
+        self.food_age += 1   # task 00092: a respawn below sets it back to 0, so a new food is drawn in its first frame
         # 1. Move; displacement is the actual (clamped) motion.
         old = self.cursor
         if cfg.wrap:   # a torus: no walls
@@ -1091,6 +1103,8 @@ class CircleWorld:
             "gt_inside": inside,
             "gt_drives": np.stack((self.hunger, self.restlessness), axis=1),
         }
+        if cfg.food_show:   # task 00092: the food is drawn in this frame (scoring only)
+            info["gt_food_seen"] = self.drawn()
         if cfg.distractors:
             info["gt_dots"] = self.dot_pos.copy()
         if cfg.respawn:
@@ -1129,7 +1143,8 @@ class CircleWorld:
         for name, on in (("target_vel", self.config.target_speed > 0), ("hz_pos", self.config.hazards),
                          ("hz_vel", self.config.hazards), ("hz_rad", self.config.hazards),
                          ("ep_hits", self.config.respawn), ("last_move", self.config.turn_cost > 0),
-                         ("fx_pos", self.config.foods > 1), ("fx_rad", self.config.foods > 1)):
+                         ("fx_pos", self.config.foods > 1), ("fx_rad", self.config.foods > 1),
+                         ("food_age", self.config.food_show > 0)):
             if on:
                 state[name] = getattr(self, name).copy()
         if self._spawn_rngs:
@@ -1172,7 +1187,7 @@ class CircleWorld:
                 for gen, row in zip(gens, np.asarray(value, dtype=np.uint64)):
                     gen.bit_generator.state = _decode_rng(row)
                 continue
-            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits", "last_move", "fx_pos", "fx_rad"):
+            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits", "last_move", "fx_pos", "fx_rad", "food_age"):
                 arr = np.array(value, dtype=getattr(self, key).dtype)
                 if arr.shape != getattr(self, key).shape:
                     raise ValueError(f"state[{key!r}] must have shape {getattr(self, key).shape}")
