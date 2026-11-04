@@ -1,7 +1,7 @@
 # Task 00092: Hidden Food, How Long Can the Agent Remember? (experiment vm-00081)
 
 **Date:** 2026-11-03
-**Status:** In progress
+**Status:** Complete (vm-00081)
 
 ## Context
 
@@ -55,4 +55,4 @@
 - [x] `tests/test_hidden_food.py`
 - [x] `eval_hidden.py`: aim, walk, show
 - [x] `00081-hidden-food/`: README, Makefile; runs queued after vm-00080's frozen tests
-- [ ] Runs (done), frozen tests (to rerun: out of memory beside vm-00082), write-up (interim)
+- [x] Runs, frozen tests (rerun after running out of memory beside vm-00082), write-up

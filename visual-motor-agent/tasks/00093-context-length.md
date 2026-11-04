@@ -1,7 +1,7 @@
 # Task 00093: One Transformer, Context 8 to 32 Ticks (experiment vm-00082)
 
 **Date:** 2026-11-03
-**Status:** In progress
+**Status:** Complete (vm-00082)
 
 ## Context
 
@@ -37,4 +37,4 @@
 
 - [x] No code change; a short life at ctx 8 and 32
 - [x] `00082-context-length/`: README, Makefile; runs queued after vm-00081's lives (GPU memory: the 30 lives need about 15 GB a card)
-- [ ] Runs, frozen tests, write-up
+- [x] Runs, frozen tests, write-up

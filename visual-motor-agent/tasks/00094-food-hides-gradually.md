@@ -1,7 +1,7 @@
 # Task 00094: The Food Hides Gradually (experiment vm-00083)
 
 **Date:** 2026-11-04
-**Status:** In progress
+**Status:** Complete (vm-00083)
 
 ## Context
 
@@ -53,4 +53,4 @@
 - [x] `online.env_sched` (default none), its checks and the metric in `lifetime.py`; a 300-tick life switched at 101 and 201 logs 0, 0, 8, 8, 2, 2
 - [x] `tests/test_env_sched.py` (7 tests)
 - [x] `00083-food-hides-gradually/`: README, Makefile; queued after vm-00081's frozen tests, before the fact experiment's stage 2
-- [ ] Runs, frozen tests, write-up
+- [x] Runs, frozen tests, write-up

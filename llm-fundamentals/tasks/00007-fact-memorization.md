@@ -1,7 +1,7 @@
 # Task 00007: How a GPT Memorizes Facts, Forgets Them and Relearns Them (experiment 00020)
 
 **Date:** 2026-11-03
-**Status:** In progress: stage 1 running
+**Status:** Complete (00020)
 
 ## Context
 
@@ -93,7 +93,7 @@ Probes in parts A and C are forward passes only: no gradient, and they never ent
 - [x] `dev/facts/facts_lib.py`: names, cities, sentences, probe forms; no name is in TinyStories
 - [x] `dev/facts/train.py`: the model (GPT-2 shapes, tied embeddings), the stream with scheduled and adaptive insertion, probes against a neutral baseline, the loss in chunks
 - [x] `dev/facts/analyze.py`: the curves, capacity, savings
-- [ ] Stage 1 (S, M) beside the visual-motor runs; stage 2 (L, X, G) after them. L was moved to stage 2: the 3090 was at 23.5 of 24 GB with it
+- [x] Stage 1 (S, M) beside the visual-motor runs; stage 2 (L, X, G) after them. L was moved to stage 2: the 3090 was at 23.5 of 24 GB with it
 - [x] `00020-fact-memorization/`: README, Makefile
 
 ## Verification
