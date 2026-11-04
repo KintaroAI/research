@@ -70,7 +70,7 @@ R1 − R0, seed by seed: food −.07 ± 35.1 at off 0, +.17 ± 36.6 at .25, +.11
 
 ### R3. Alone
 
-`eval_outage.py alone`: each transformer foraging by itself, the other 15 off, against all 16 together, the same 8 worlds, 600 ticks. Seed 1 of each arm here; the other seeds were still running at the time of writing and are reported with vm-00079.
+`eval_outage.py alone`: each transformer foraging by itself, the other 15 off, against all 16 together, the same 8 worlds, 600 ticks. Seed 1 of each arm here; all six seeds (R0 .75, R1 .82 of the team's food on average, range .54 to .97) are in [vm-00079's addendum](../00079-outage-four/README.md#addendum-to-vm-00078-alone-all-six-seeds).
 
 | Seed 1 | All 16: food (poison) | Each alone: mean food | Range over the 16 | Share of all | Poison alone, mean (range) |
 |---|---|---|---|---|---|
