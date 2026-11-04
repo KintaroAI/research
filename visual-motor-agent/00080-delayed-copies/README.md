@@ -1,8 +1,8 @@
 # vm-00080: Delayed Copies
 
 **Date:** 2026-11-03
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00080` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00080/`
 **Task plan:** [`../tasks/00091-delayed-copies.md`](../tasks/00091-delayed-copies.md)
 
