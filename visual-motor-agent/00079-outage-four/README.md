@@ -1,8 +1,8 @@
 # vm-00079: Outage With Four Transformers
 
 **Date:** 2026-11-03
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00079` (code: `visual-motor-agent/dev/`, the same as `exp/vm-00078`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00079/`
 **Task plan:** [`../tasks/00090-outage-four.md`](../tasks/00090-outage-four.md)
 
