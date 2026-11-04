@@ -390,7 +390,7 @@ The model predicts well, in pixels, text and a camera. What it does not yet show
 **Acting and learning on different GPUs** (the owner, 2026-11-03). One GPU runs only the forward passes of a life. Others train copies of its transformers on the memory it sends, and send updated weights back, transformer by transformer.
 - **The lineage:** actor–learner systems in reinforcement learning (IMPALA, Ape-X, SEED RL), and today's LLM training with separate inference engines and trainers that sync weights.
 - **Why it fits here:**
-  - The update is most of a tick: 6 of 11 ms with 4 transformers alone on the 4090, 19 of 33 with 16. So acting alone could run 2 to 3 times as fast, and the learner could use larger batches.
+  - The update is about half of a tick: 6 of 13 ms with 4 transformers alone on the 4090, 19 of 35 with 16. So acting alone could run about twice as fast, and the learner could use larger batches.
   - A transformer's weights are about 1M numbers, 4 MB: a sync costs almost nothing.
   - A transformer can be off while its new weights load, which the outage showed the body tolerates.
 - **The costs:**
