@@ -1,8 +1,8 @@
 # vm-00081: Hidden Food
 
 **Date:** 2026-11-03
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00081` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00081/`
 **Task plan:** [`../tasks/00092-hidden-food.md`](../tasks/00092-hidden-food.md)
 

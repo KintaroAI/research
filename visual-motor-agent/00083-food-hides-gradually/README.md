@@ -1,8 +1,8 @@
 # vm-00083: The Food Hides Gradually
 
 **Date:** 2026-11-04
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00083` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00083/`
 **Task plan:** [`../tasks/00094-food-hides-gradually.md`](../tasks/00094-food-hides-gradually.md)
 

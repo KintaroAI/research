@@ -1,8 +1,8 @@
 # 00020: Fact Memorization, Forgetting and Relearning
 
 **Date:** 2026-11-03
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/00020` (code: `llm-fundamentals/dev/facts/`)
 **Outputs:** `~/data/research/llm-fundamentals/exp_00020/`
 **Task plan:** [`../tasks/00007-fact-memorization.md`](../tasks/00007-fact-memorization.md)
 

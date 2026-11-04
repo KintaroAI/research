@@ -1,8 +1,8 @@
 # vm-00082: Context Length
 
 **Date:** 2026-11-03
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00082` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00082/`
 **Task plan:** [`../tasks/00093-context-length.md`](../tasks/00093-context-length.md)
 
