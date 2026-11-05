@@ -9,6 +9,9 @@ vm-00069's lives. Rows of JSON on stdout, one per run or arm; `show` reads them 
            is above 0, since a path that nears a food is more often moving toward it).
     poison what a touch really costs (vm-00071): the mean of the next 1, 4 and 16 hungers after a touch, against ticks with no touch or food that start at the
            same hunger, how soon the next meal comes, and the mean hunger of the run.
+    value  does the label the model predicts for the move it takes match what follows (task 00096)? Each tick's predicted label of the move taken (the
+           transformer that made it) against the realized one: with online.value_gamma, the discounted mean of the hungers after it, cut where gamma^i < 1e-3
+           and renormalized; else the mean of the next future_k (1 if 0). Bias, mean absolute error, correlation; and the spread of the instinct's candidates.
 
 Ground truth (the world's cursor, food and poison) is for scoring only and never reaches the model.
 
@@ -115,7 +118,9 @@ class Life:
         clogs = [self.clogs[k] for k in self.live]
         props = [uni_act(m, (c(obs["image"]) if c else obs["image"])[:, None], drv[:, None], act, self.es[:, None], self.bins, self.rng, on["instinct_m"], tol,
                          on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first="sample", ring=True) for m, c in zip(models, clogs)]
-        a, _ = pieces_move(models, props, on["piece_rule"], self.rng, prev=None)
+        a, won = pieces_move(models, props, on["piece_rule"], self.rng, prev=None)
+        hp = np.stack([p[3] for p in props])   # task 00096: the predicted label of the move taken (as lifetime.py stores it)
+        self.vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(len(a))], hp.mean(0))
         for m in models:
             m.uni_ring_move(a)
         self.missed[self.is_off] += 1
@@ -303,6 +308,41 @@ def poison(path, ticks, bodies, seed):
     yield row
 
 
+def value(path, ticks, bodies, seed):
+    from world import make_world
+
+    life = Life(path, bodies, seed)
+    env = make_world(bodies, life.cfg, seed=seed)
+    obs = env.observe()
+    on = life.on
+    gamma = float(on.get("value_gamma") or 0.0)
+    k = max(1, int(on.get("future_k") or 0))
+    if gamma:
+        M = int(np.ceil(np.log(1e-3) / np.log(gamma)))
+        w = (1 - gamma) * gamma ** np.arange(M)
+    else:
+        M, w = k, np.full(k, 1.0 / k)
+    w = w / w.sum()
+    V, H, F, P, spread = [], [], [], [], []
+    for t in range(ticks):
+        a = life.act(obs)
+        V.append(life.vh.astype(np.float64).copy())
+        spread += [float(np.median(m.pred.max(1) - m.pred.min(1))) for m in life.models if m.pred is not None]
+        obs, _, done, inf = env.step(a)
+        life.es = done.astype(np.uint8)
+        H.append(inf["terminal_drives"][:, 0].astype(np.float64).copy())
+        F.append(np.asarray(inf["success"], bool).copy())
+        P.append(np.asarray(inf["gt_hazard_click"], bool).copy())
+    life.close()
+    V, H = np.array(V), np.array(H)
+    T = ticks - M
+    R = np.stack([(w[:, None] * H[t:t + M]).sum(0) for t in range(T)])
+    v, r = V[:T].ravel(), R.ravel()
+    yield dict(mode="value", run=os.path.basename(path), gamma=gamma, k=k, horizon=M, pred=float(v.mean()), real=float(r.mean()), bias=float((v - r).mean()),
+               mae=float(np.abs(v - r).mean()), corr=float(np.corrcoef(v, r)[0, 1]), spread=float(np.median(spread)) if spread else None,
+               food=np.sum(F) * 1000.0 / np.size(F), poison=np.sum(P) * 1000.0 / np.size(P))
+
+
 def interval(x):
     """The t 95% half-interval of the mean of up to 8 seeds."""
     x = np.asarray(x, float)
@@ -342,6 +382,12 @@ def show(paths):
         A = [r for r in R if r["mode"] == "poison"]
         if A:
             print(f"{arm}: {len(A)} seeds. " + ", ".join("%s %.3f" % (k, np.mean([r[k] for r in A])) for k in ("hunger", "median", "rise1", "rise4", "rise16", "to_food", "fed_16")))
+        A = [r for r in R if r["mode"] == "value"]
+        if A:
+            print(f"{arm}: {len(A)} seeds, gamma {A[0]['gamma']}, k {A[0]['k']}, horizon {A[0]['horizon']}. Predicted label of the move taken against the realized one")
+            for r in A:
+                print("  %-8s pred %.3f real %.3f bias %+.3f mae %.3f corr %.3f spread %.4f food %.1f poison %.2f" % (
+                    r["run"], r["pred"], r["real"], r["bias"], r["mae"], r["corr"], r["spread"] or float("nan"), r["food"], r["poison"]))
         A = [r for r in R if r["mode"] == "chain"]
         if A:
             get = lambda f, k: np.array([r[f][k] for r in A])                                             # noqa: E731
@@ -447,7 +493,7 @@ def plot_aim(paths, out):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=("reach", "told", "chain", "poison", "show", "compare"))
+    ap.add_argument("what", choices=("reach", "told", "chain", "poison", "value", "show", "compare"))
     ap.add_argument("runs", nargs="+", help="run directories (show: the rows printed)")
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
@@ -466,6 +512,6 @@ if __name__ == "__main__":
             plot_aim(args.runs, args.plot)
     else:
         for run in args.runs:
-            how = dict(reach=reach, told=told, chain=lambda *a: chain(*a, args.clog), poison=poison)[args.what]
+            how = dict(reach=reach, told=told, chain=lambda *a: chain(*a, args.clog), poison=poison, value=value)[args.what]
             for row in how(run, args.ticks, args.bodies, args.seed):
                 print(json.dumps(row, default=float), flush=True)

@@ -8,6 +8,11 @@ kind of fact as it learns. One run covers the three parts of the task:
              lose it, counted from the loss) shown again until recalled (Y showings). Each relearning starts a fresh fact's
              first learning at the same step, the control.
     reverse  32 facts, each with its own city, shown 16 times 100 steps apart: "Who was born in X? It was" against 32 names
+    plus     (task 00008, --plus 1) one new fact a step, in five conditions in turn, each shown 8 times: all in one step, 10, 100 or
+             1,000 steps apart in the one wording ("space"), or 100 steps apart in four wordings in turn ("word"). Appended after
+             all the other facts, from their own generator, so that --plus 0 is task 00007's stream exactly.
+
+--lr-sched const (task 00007) or cos: after the warmup, the learning rate falls from --lr to --lr-min along a cosine.
 
 A fact is recalled when its city ranks first among the cities of its kind on the exact probe. Probes are forward passes only.
 Outputs (in --out): meta.json, train.jsonl (losses), probe_STEP.npz (base, sampled stream and reverse facts), test.jsonl
@@ -99,6 +104,10 @@ def main():
     ap.add_argument("--lr", type=float, default=6e-4)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--probe-every", type=int, default=500)
+    ap.add_argument("--plus", type=int, default=0, help="task 00008's spacing and wording facts (1) or not (0)")
+    ap.add_argument("--lr-sched", choices=("const", "cos"), default="const")
+    ap.add_argument("--lr-min", type=float, default=6e-5)
+    ap.add_argument("--log-shows", type=int, default=0, help="write every showing to shows.jsonl (a check)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -112,11 +121,15 @@ def main():
     n_base, n_test, n_rev = 500, 300, 32
     n_stream = 3 * steps
     n_neutral = 8                                                                # never shown: the probes' baseline
-    n_all = n_base + n_stream + 2 * n_test + n_rev + n_neutral
+    n_old = n_base + n_stream + 2 * n_test + n_rev + n_neutral
+    n_plus = steps if a.plus else 0
+    n_all = n_old + n_plus
     cities, names = make(1234, n_all, os.path.join(DATA, "TinyStories_val.bin"))     # the same facts in every run
     frng = np.random.default_rng(1234)
-    city_of = frng.integers(0, 256, n_all)
-    kind = np.array(["base"] * n_base + ["stream"] * n_stream + ["test"] * n_test + ["fresh"] * n_test + ["reverse"] * n_rev + ["neutral"] * n_neutral)
+    city_of = np.concatenate([frng.integers(0, 256, n_old), np.random.default_rng(4321).integers(0, 256, n_plus)])
+    PLUS = (("space", 0), ("space", 10), ("space", 100), ("space", 1000), ("word", 100))
+    kind = np.array(["base"] * n_base + ["stream"] * n_stream + ["test"] * n_test + ["fresh"] * n_test + ["reverse"] * n_rev + ["neutral"] * n_neutral
+                    + [PLUS[j % 5][0] for j in range(n_plus)])
     rev = np.flatnonzero(kind == "reverse")
     neutral = np.flatnonzero(kind == "neutral")
     city_of[rev] = 256 + np.arange(n_rev)
@@ -140,7 +153,13 @@ def main():
         for k in range(16):
             if 1000 + j + 100 * k < steps:
                 show[1000 + j + 100 * k].append(i)
-    probe_ids = np.concatenate([np.arange(n_base), st[st % 5 == 0], rev])          # probed every probe_every steps
+    for j in range(n_plus):                                                      # plus: one a step, 8 showings, five conditions in turn
+        i, (kd, gap) = n_old + j, PLUS[j % 5]
+        n_of[i], g_of[i], arrive[i] = 8, gap, j
+        for k in range(8):
+            if j + k * gap < steps:
+                show[j + k * gap].append((i, k % 4) if kd == "word" else i)
+    probe_ids = np.concatenate([np.arange(n_base), st[st % 5 == 0], rev, n_old + np.arange(0, n_plus, 2)])   # probed every probe_every steps
     tests = [Test(i, int(s), int(k)) for i, s, k in zip(np.flatnonzero(kind == "test"), frng.integers(int(0.1 * steps), int(0.6 * steps), n_test),
                                                         frng.choice([1, 2, 4], n_test))]
     fresh = list(np.flatnonzero(kind == "fresh"))
@@ -155,6 +174,7 @@ def main():
     cand_plain, cand_rev = torch.tensor(cities[:256], device=dev), torch.tensor(cities[256:], device=dev)
     log = open(os.path.join(a.out, "train.jsonl"), "w")
     tlog = open(os.path.join(a.out, "test.jsonl"), "w")
+    slog = open(os.path.join(a.out, "shows.jsonl"), "w") if a.log_shows else None
     print("size %s: %d layers, d %d, %d non-embedding parameters, %d facts" % (a.size, L, d, non_emb, n_all), flush=True)
 
     @torch.no_grad()
@@ -223,7 +243,10 @@ def main():
         due = show[t] + extra
         per = [[] for _ in range(a.batch)]
         for i in due:
-            per[rng.integers(a.batch)].append(facts.sentence[i])
+            per[rng.integers(a.batch)].append(facts.sentence_k(*i) if isinstance(i, tuple) else facts.sentence[i])
+        if a.log_shows:
+            for i in due:
+                slog.write(json.dumps(dict(t=t, fact=int(i[0] if isinstance(i, tuple) else i), k=int(i[1]) if isinstance(i, tuple) else 0)) + "\n")
         rows = []
         for fs in per:
             n_text = T + 1 - sum(len(f) for f in fs)
@@ -244,6 +267,8 @@ def main():
     t0 = time.time()
     for t in range(steps):
         lr = a.lr * min(1.0, (t + 1) / 500)
+        if a.lr_sched == "cos" and t >= 500:
+            lr = a.lr_min + (a.lr - a.lr_min) * 0.5 * (1 + math.cos(math.pi * (t - 500) / max(1, steps - 500)))
         for gr in opt.param_groups:
             gr["lr"] = lr
         extra = []
@@ -301,7 +326,8 @@ def main():
                     vl.append(float(model.loss(v[:, :-1], v[:, 1:])))
                 model.train()
             log.write(json.dumps(dict(step=t, val=float(np.mean(vl)))) + "\n")
-            print("step %6d  loss %.3f  val %.3f  %.1f steps/s" % (t + 1, float(loss.detach()), np.mean(vl), (t + 1) / (time.time() - t0)), flush=True)
+            print("step %6d  loss %.3f  val %.3f  %.1f steps/s  lr %.2e  peak %.2f GB" % (t + 1, float(loss.detach()), np.mean(vl), (t + 1) / (time.time() - t0),
+                                                                                 lr, torch.cuda.max_memory_allocated() / 2**30), flush=True)
         if t % a.probe_every == a.probe_every - 1 or t == steps - 1:
             ids = probe_ids[arrive[probe_ids] <= t]
             pe, re_ = probe(ids, "exact")
@@ -313,6 +339,8 @@ def main():
             q.ev["phase_at_end"] = q.phase
             tlog.write(json.dumps(q.ev, default=lambda o: o.item()) + "\n")
     tlog.close()
+    if slog:
+        slog.close()
     log.close()
     torch.save(model.state_dict(), os.path.join(a.out, "model.pt"))
 

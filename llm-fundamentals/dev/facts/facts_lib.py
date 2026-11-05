@@ -11,6 +11,7 @@ import tiktoken
 
 ENC = tiktoken.get_encoding("gpt2")
 EOT = ENC.eot_token
+WORDINGS = ("{n} was born in", "The birthplace of {n} is", "{n} is a native of", "{n}'s home town is")   # task 00008: each ends before the city
 SYL = ("zor van kel mir eth qua lis dor fen gal hux ith jor kam lun mos nev ory pax rin sul tam ugo vex wyn yal zed bro "
        "cra dri fla gro pli sko tri vor xan").split()
 
@@ -48,6 +49,16 @@ class Facts:
         self.exact = [[EOT] + ENC.encode(f"{n} was born in") for n in names]
         self.para = [[EOT] + ENC.encode(f"Where was {n} born? In") for n in names]
         self.name_tokens = [ENC.encode(" " + n) for n in names]
+        self._alt = {}
+
+    def sentence_k(self, i, k):
+        """Fact i in training wording k (WORDINGS, task 00008); k = 0 is the ordinary sentence."""
+        if k == 0:
+            return self.sentence[i]
+        if (i, k) not in self._alt:
+            pre = ENC.encode(WORDINGS[k].format(n=self.names[i]))
+            self._alt[i, k] = [EOT] + pre + [int(self.cities[self.city_of[i]])] + ENC.encode(".")
+        return self._alt[i, k]
 
     def reverse_prompt(self, i):
         return [EOT] + ENC.encode("Who was born in") + [int(self.cities[self.city_of[i]])] + ENC.encode("? It was")

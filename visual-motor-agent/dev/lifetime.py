@@ -32,6 +32,9 @@ window is used, some for the whole window and some for one step, black or speckl
 
 Hunger ahead (online.future_k = k, task 00082): the hunger the move token learns to predict, and the instinct reads, is
 the mean over the next k ticks, labelled in hindsight from real futures (the newest window ends k - 1 ticks back).
+A bootstrapped value (online.value_gamma = g, task 00096): in place of that mean, (1 - g) sum_{i<n} g^i h_{j+i} + g^n vh_{j+n}, n =
+online.value_n (default future_k) real ticks and then the model's own predicted label of the move taken at tick j + n (the
+transformer that made the move; the mean of all if the rule mixes them), stored while acting; the newest window ends n ticks back.
 
 Command (online.goal=1): online.goal_mode = "relief" (vm-00006: its hunger if a hit follows within goal_k steps, else
 0) or "delta" (the change of hunger over the next goal_k steps: relief positive, hazards and time negative). When
@@ -303,6 +306,10 @@ def main():
     future_k = on["future_k"]                 # task 00082: the hunger predicted is the mean over the next future_k ticks
     if future_k and (not uni or on["sf_windows"]):
         raise ValueError("online.future_k needs the universal model, without self-forcing")
+    gamma = float(on["value_gamma"] or 0.0)   # task 00096: a bootstrapped value
+    value_n = int(on["value_n"] or future_k) if gamma else 0
+    if gamma and not (0.0 < gamma < 1.0 and future_k >= 1 and value_n >= 1 and on["instinct_m"] > 1):
+        raise ValueError("online.value_gamma needs 0 < gamma < 1, online.future_k >= 1, online.value_n >= 1 and the instinct (online.instinct_m > 1)")
     clog = on["clog"]                         # task 00085: each transformer's inputs damaged, the targets clean
     if clog and (not uni or on["device"] != "cuda" or on["sf_windows"]):
         raise ValueError("online.clog needs the universal model on the GPU, without self-forcing")
@@ -332,7 +339,7 @@ def main():
     if ppo["use_ppo"] or not env_cfg.drives:
         raise ValueError("lifetime.py is reward-free: needs ppo.use_ppo=0 and env.drives=true")
     L, B = agent.config["ctx"], on["batch"]
-    label_k = goal_k or future_k              # the steps a hindsight label looks ahead
+    label_k = goal_k or (value_n + 1 if gamma else future_k)   # the steps a hindsight label looks ahead (value: n real, then the tail)
     lag = label_k - 1 if label_k else 0       # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
     clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
@@ -345,7 +352,7 @@ def main():
         views = [ClogStream(np.random.default_rng([args.seed, 0xC107, k]), N0, ac["img"], ac.get("img_w") or ac["img"], ac["patch"], clog, on["clog_long"]) for k in range(S)]
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off))
-    gate_on = dict(on, goal_mode="future") if future_k else on
+    gate_on = dict(on, goal_mode="value" if gamma else "future") if future_k else on
     gms = [GatedMemory(gate_on, L, agent.config["img"], label_k, args.seed, tokens=tok_sur, **kept)]   # the model's frame (task 00091: not the world's size)
     gms += [GatedMemory(gate_on, L, agent.config["img"], label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
             for b in range(1, N0)]
@@ -408,7 +415,7 @@ def main():
 
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
-                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(),
+                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(), vh=0.0, vlab=0.0, vlab_n=0,
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
                     smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
                     on_k=np.zeros(S))
@@ -453,6 +460,10 @@ def main():
                              on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
                      for k in live]
             a, won = pieces_move([umodels[k] for k in live], props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
+            if gamma:   # task 00096: the predicted label of the move taken, by the transformer that made it (a mixed move: their mean)
+                hp = np.stack([p[3] for p in props])                                    # [live, N]
+                vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(N)], hp.mean(0)).astype(np.float32)
+                win["vh"] += float(vh.sum())
             won = np.where(won >= 0, live[np.maximum(won, 0)], won)   # the pieces' own numbers
             win["override"] += np.mean([p[1] for p in props]) * N
             win["gain"] += np.mean([p[2] for p in props]) * N
@@ -490,9 +501,10 @@ def main():
         t_ = time.time()
         on_bits = dict(on=np.uint64(sum(1 << int(k) for k in live))) if q_off else {}   # task 00089
         for b in range(N):
+            vb = dict(vh=vh[b]) if gamma else {}                                       # task 00096
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
                            pa=prev_a[b], pr=prev_r[b], es=ep_start[b], act=a[b], rew=rew[b], done=done[b],
-                           hit=inf["success"][b], cmd=cmd[b], **on_bits)
+                           hit=inf["success"][b], cmd=cmd[b], **on_bits, **vb)
         if thinking:   # the window ending in the new step: the world's new half, the old thought; moves up to now
             t_think = time.time()
             ix = [gm.stm.last(min(gm.stm.n, L - 1)) for gm in gms[:N]]
@@ -541,6 +553,9 @@ def main():
                 else:
                     parts.append(gms[0]._from_stm(gms[0].stm.starts(L, B, rng, lag)[1:], lag))
                 rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].stm.fields}
+            if gamma:
+                win["vlab"] += float(rows["pr"].sum())
+                win["vlab_n"] += rows["pr"].size
             if future_k:   # the next body's hunger is only a target: the inputs keep the hunger of each step
                 rows["ndrv"] = rows["ndrv"].copy()
                 rows["ndrv"][..., 0] = rows["pr"]
@@ -616,6 +631,8 @@ def main():
                        all_poison_per_1k=1000.0 * win["all_poison"] / bs, instinct_override=win["override"] / bs,
                        instinct_gain=win["gain"] / bs, sf_dreamed=win["sf"], smooth=win["smooth"] / bs,
                        **{k: 1000.0 * win[k] / le for k in win if k.startswith("t_") and k != "t"})
+            if gamma:   # task 00096: the mean predicted label of the moves taken, and the mean label trained on
+                row.update(value_pred=win["vh"] / bs, value_label=win["vlab"] / max(1, win["vlab_n"]))
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

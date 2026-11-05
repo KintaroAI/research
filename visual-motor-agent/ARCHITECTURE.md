@@ -338,6 +338,8 @@ The model predicts well, in pixels, text and a camera. What it does not yet show
 
 **Context length (vm-00082).** One transformer over the whole world at ctx 8 to 32: no difference in food (all 16–25 per 1k, against 70 for 4 quarter transformers), more poison at 32, no memory at any length. The split of the view is worth far more than the context.
 
+**Model size (vm-00084).** The same one transformer at ctx 8, deeper (4 and 8 layers) or wider (d_model 256 and 512, up to 8.8 times the parameters). Width lowers every prediction's error (move cross-entropy six-fold) but not foraging, and the widest eats about twice the poison. Eight layers forage about 40% better than two in all six seeds (29 against 21 food per 1k; not a pre-set reading); four do not. No size makes a chain of moves or remembers a vanished food: the 4-tick label, not the capacity, sets the reach.
+
 **Log summaries (vm-00073, the default since 2026-11-02, the owner).** `model.band_win = 1`: a transformer reads a summary only within 1 cell of itself at that level, sharp near and coarse far. With transformers of a fixed size that is O(log N) summaries each. Quadrupling the area and the transformers costs 5.2 and 5.7 times per tick, against 10.5 and 26 with every summary. At 64 x 64 no loss could be seen in food, poison, reach or hunger, a mild test (7 of 21 summaries) with wide intervals. Not measured yet: quality at 128 and above, and with 16 or 64 transformers.
 
 **Tests.** A ladder of tasks a reactive agent provably cannot solve, each with a blind control: the delayed cue (`env.cue`), then a rule that changes silently in mid-life, a place visited once and needed later, a two-step errand.
@@ -382,6 +384,75 @@ The model predicts well, in pixels, text and a camera. What it does not yet show
   - Hidden food lived, with and without F.
   - A higher learning rate with and without F: does F let it be raised without collapse?
   - A world that changes mid-life and changes back, for example food and poison swapping looks (the cue world's `swap`): how fast does each adapt, and how much of the first world is kept?
+
+**The value and the flexible layer are one idea in two directions** (the owner, 2026-11-04, after the value of vm-00085, task 00096).
+- **The same math:** both are exponential weightings with a time scale of about 1 / (1 − rate).
+
+  | | Value (γ) | Flexible layer (λ) |
+  |---|---|---|
+  | Formula | V_t = (1 − γ) Σ γ^i h_{t+i} | F_t = Σ λ^k Δ_{t−k} |
+  | Weighs | the future seen from now | the past seen from now |
+  | What fades | how much a distant outcome counts in a decision | how much a past lesson still shapes the weights |
+  | What it is | anticipation | memory |
+  | Time scale | γ .97: about 33 ticks | λ .99: about 100 ticks (half-life 70) |
+
+- **The bridge, eligibility traces** (TD(λ)'s backward view):
+  - every recently active weight keeps a trace that decays each tick, as F does;
+  - when a surprise arrives (hunger lower or higher than the value predicted), every weight is changed in proportion to its trace, so the last few dozen ticks share the credit, the recent ones more;
+  - Sutton showed this gives the same result as the forward λ-return. Looking ahead with a discount and keeping a decaying trace of the past are two views of one computation.
+- **The brain's version:**
+  - a synapse that was just active carries a tag that decays over seconds to minutes;
+  - the change becomes lasting only if a neuromodulator, dopamine as a reward-prediction error, arrives while the tag is alive;
+  - this is synaptic tagging and capture (Frey and Morris, 1997), called three-factor learning.
+- **What it suggests for W = S + F:**
+  - F is the trace: trained fast every tick, decaying by λ, as above.
+  - Consolidation is driven by the value's surprise. In place of a constant share η moving into S every tick, F moves into S in proportion to the TD error, the gap between what the value predicted and what followed.
+  - When something goes better or worse than expected, the recent trace is written into the fundamental layer. Routine leaves S alone and F simply fades.
+  - This answers the risk above that what decays may never be consolidated: the lessons that mattered are the ones that are kept.
+- **On hidden food the two cover each other:**
+  - the value gives a reason to keep heading somewhere after the food vanishes, since food beyond 4 ticks now counts;
+  - F, or the context, has to hold where it was.
+  - vm-00081 and vm-00083 had neither. If vm-00085's value does not bring pursuit of hidden food, the missing part is the memory, and F is the next test.
+- **The order:**
+  1. vm-00085: does a value work at all?
+  2. F with a fixed η: the simple two-layer form, on hidden food and in a world that changes mid-life.
+  3. η driven by the value's TD error: lasting memory from consolidation that the value gates.
+
+**TD on the whole frame: a discounted future frame** (the owner, 2026-11-04; an idea to explore later, after vm-00085).
+- **The idea:** bootstrap every token, not only hunger. The target of a step is (1 − λ) × the real next token + λ × the model's own discounted prediction one step later.
+  - The (1 − λ) keeps the target in 0–1; without it the values grow to 1 / (1 − λ) times the range.
+  - With two-hot bins the natural target is a mixture of distributions: (1 − λ) × the real token's two-hot + λ × the predicted distribution (distributional TD, as C51). Each value is then predicted as its distribution at a random future time about 1 / (1 − λ) ticks ahead.
+- **Its lineage:** the successor representation (Dayan, 1993), successor features (Barreto and others, 2017), γ-models (Janner and others, 2020), and many predictions at many time scales in one network, Horde (Sutton and others, 2011). The value is the special case on one channel, hunger, so vm-00085 is its cheapest feasibility test.
+- **What each token would come to predict:**
+
+  | Token | One-step target (now) | Discounted target (λ about .9) |
+  |---|---|---|
+  | hunger | the next hunger | the value (vm-00085's label) |
+  | move | the next move | the mean direction of the moves ahead: where the agent is heading |
+  | patches, egocentric | the next view | where things drift in view: food sliding to the centre (soon eaten), food fading (eaten or respawned) |
+  | static background | unchanged | unchanged |
+
+- **The estimate, as a replacement for the one-step frame: mostly harm.**
+  - The world model is lost: no next frame, only a time-blurred mean.
+  - The instinct's lookahead with H > 1, self-forcing and dreams all break, and patch cross-entropy stops being comparable.
+  - Imagined frames turn to ghosts: a pixel's most likely value at a random future time is mostly background.
+  - Foraging with H = 1 may not drop much, since that instinct reads only the predicted hunger. But the core of the universal model is given up.
+- **The estimate, as an addition beside the one-step frame: a plausible modest help.**
+  - Predicting further ahead as an auxiliary target tends to speed up RL (CPC; SPR on Atari 100k; successor features). The features would have to carry what a moment leads to, not only what comes next, which could help the value and the chain of moves.
+  - Jumpy imagination, the bigger prize: a γ-model can be sampled, one sample a plausible state about 10 ticks ahead in one step. Planning far without rolling forward tick by tick, the weak point of every pixel world model.
+- **The risks:**
+  - The prediction is of the future under the current habits, so it moves as the agent learns.
+  - It learns slowly at high λ: at λ .97 the real frame is 3% of the target, and each update moves information about one tick.
+  - Bootstrapping thousands of pixel values from one's own predictions is where TD drifts (function approximation, bootstrapping and replay together). The real frame anchors it, weakly at high λ.
+  - Pixels drawn each from its own distribution are noise, not a frame. A true γ-model needs coherent samples.
+  - Cost:
+    - Soft mixture targets need a change to the CUDA loss kernel.
+    - The bootstrap needs the model's predictions one step later, from an extra forward pass (about +50%) or from stale predictions stored in memory.
+- **Related here:** the column project's multi-timescale cells (`column/00014-multiscale-temporal`). No single decay captures both fast and slow patterns, but fast and slow cells together do. Here that means predicting at several λ at once: 0 (the next frame, as now), .9 and .97.
+- **The order, if vm-00085's value holds:**
+  1. Keep the one-step frame and add one discounted prediction (λ .9) beside it, as an auxiliary target. Read the value's accuracy, the chain of moves and lived food against vm-00085.
+  2. Several λ at once.
+  3. Sampling the discounted prediction for jumpy lookahead in the instinct.
 
 **Learning while off** (the owner, 2026-11-03). Turn the outage around: a transformer taken out of acting is the one that learns. Pick one at random, stop its inference, train it for a few ticks, several updates in a row from memory, and turn it back on.
 - **The ground:** with 16 transformers an outage of a quarter cost nothing (vm-00078), and with 4 a tenth of the food at half off (vm-00079).

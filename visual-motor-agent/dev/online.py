@@ -79,6 +79,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00082: the hunger the move token predicts, and the instinct reads, is the mean over the next
                       # future_k ticks (0: the next tick; 1 is the same thing, through the hindsight labels)
                       future_k=0,
+                      # task 00096: a bootstrapped value in place of the k-tick mean: the label of step j is (1 - g) sum_{i<n} g^i h_{j+i}
+                      # + g^n vh_{j+n}, h the hunger after a step, vh the model's own predicted label of the move taken at that step
+                      # (stored while acting); the exponentially weighted mean of all future hunger. 0: off. value_n: real
+                      # ticks before the tail (None: future_k)
+                      value_gamma=0.0, value_n=None,
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
@@ -124,7 +129,7 @@ class Replay:
     only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False):
+    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
         self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
@@ -144,6 +149,9 @@ class Replay:
         if pieces:   # task 00089: which transformers were on at each step, a bit each
             self.on = np.zeros(cap, np.uint64)
             self.fields = self.fields + ("on",)
+        if value:    # task 00096: the model's predicted label of the move taken at each step, the bootstrap's tail
+            self.vh = np.zeros(cap, np.float32)
+            self.fields = self.fields + ("vh",)
 
     def add(self, **kw):
         i = self.w
@@ -250,15 +258,40 @@ def future_labels(ndrv0, done, k):
     return out
 
 
-def goal_labels(m, idx, k, mode):
-    """The hindsight labels of the steps idx (consecutive, physical indices into memory fields m) of form mode."""
+def value_labels(ndrv0, vh, done, gamma, n):
+    """For each step j of a stretch of consecutive steps (task 00096): (1 - gamma) sum_{i<n} gamma^i ndrv0[j+i] +
+    gamma^n vh[j+n], the exponentially weighted mean of the hunger after step j and all later ones, its tail after n real
+    ticks the model's own prediction made at step j+n (vh: the predicted label of the move taken there). If j's episode
+    ends within the n ticks, or the stretch does, the real part alone, its weights renormalized to sum to 1. Labels
+    near the end of the stretch need the n steps after it to be included."""
+    m = len(ndrv0)
+    out = np.zeros(m, np.float32)
+    w = (1.0 - gamma) * gamma ** np.arange(n)
+    end = m - 1                   # the last step of j's episode in the stretch
+    for j in range(m - 1, -1, -1):
+        if done[j]:
+            end = j
+        last = min(j + n - 1, end)
+        if last == j + n - 1 and j + n <= end:   # all n real ticks and the step after them in j's episode
+            out[j] = (w * ndrv0[j:j + n]).sum() + gamma ** n * vh[j + n]
+        else:
+            ww = w[:last - j + 1]
+            out[j] = (ww * ndrv0[j:last + 1]).sum() / ww.sum()
+    return out
+
+
+def goal_labels(m, idx, k, mode, gamma=0.0):
+    """The hindsight labels of the steps idx (consecutive, physical indices into memory fields m) of form mode
+    (value: k - 1 real ticks, then the bootstrap; task 00096)."""
     if mode == "relief":
         return hindsight_labels(m.hit[idx], m.done[idx], m.drv[idx, 0], k)
     if mode == "delta":
         return delta_labels(m.drv[idx, 0], m.ndrv[idx, 0], m.done[idx], k)
     if mode == "future":
         return future_labels(m.ndrv[idx, 0], m.done[idx], k)
-    raise ValueError("online.goal_mode must be 'relief', 'delta' or 'future'")
+    if mode == "value":
+        return value_labels(m.ndrv[idx, 0], m.vh[idx], m.done[idx], gamma, k - 1)
+    raise ValueError("online.goal_mode must be 'relief', 'delta', 'future' or 'value'")
 
 
 def downsample_u8(img, f):
@@ -337,12 +370,13 @@ class GatedMemory:
                  pieces=False):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
+        self.gamma = float(on.get("value_gamma") or 0.0)            # task 00096 (goal_mode value)
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
         # least one step after it ends (task 00053)
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
-        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces)
+        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value")
         self.store = store or ChunkStore(on, L, self.stm)          # long-term memory (shared between bodies or not)
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part
@@ -429,7 +463,7 @@ class GatedMemory:
         for k in s.fields:
             st.ltm[k][w] = getattr(s, k)[idx]
         if self.goal_k:
-            st.ltm["lbl"][w] = goal_labels(s, ext, self.goal_k, self.goal_mode)[:L]
+            st.ltm["lbl"][w] = goal_labels(s, ext, self.goal_k, self.goal_mode, self.gamma)[:L]
         st.reason[w], st.relief[w], st.end[w] = reason, relief, end
         if st.n < st.cap or st.evict == "oldest":
             st.w = (w + 1) % st.cap
@@ -442,7 +476,7 @@ class GatedMemory:
         r["img"] = as_frames(r["img"])
         if self.goal_k:
             ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
-            r["pr"] = np.stack([goal_labels(s, e, self.goal_k, self.goal_mode)[:L] for e in ext])
+            r["pr"] = np.stack([goal_labels(s, e, self.goal_k, self.goal_mode, self.gamma)[:L] for e in ext])
         return r
 
     def newest(self, lag):

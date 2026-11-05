@@ -336,6 +336,103 @@ Still missing are P2, P4, P6, P8 and P9, plus AUROC and confidence intervals.
 - **P8. Model-only control.** With no policy learning, pick actions by random shooting or CEM over imagined rollouts (re-encoding predicted frames) that maximize predicted hunger relief. The 1→3→5-step curriculum [14] helps, and beware of exploits [43]. Compare success and steps against the random policy and PPO.
 - **P9. Contingency remapping.** Rotate or flip the action→motion mapping per episode (0°, 90°, 180°, or swapped axes). Plot P1 and P3 against steps since reset. A memory model should adapt within a few steps and a Markov model cannot. This tests O'Regan & Noë's "mastery" [71] and is the cleanest justification for the transformer [79].
 
+## 11. Game-playing RL from scratch, and where this agent sits (2026-11-04)
+
+Written for the owner's question of how reinforcement-learning agents learn games from scratch. **[recollection]**: the systems and years below are from memory and were not re-checked against the papers, unlike sections 1–10.
+
+### The common skeleton
+
+1. **Interface:** pixels in, an action out, and a number called the reward (usually the change in game score).
+2. **Encoder:** a CNN, or lately a transformer, that turns the frames into a state. DQN stacked the last 4 frames at 84×84 pixels so it could see motion.
+3. **Two heads on that state:**
+   - a **policy**, π(a | s): which action to take;
+   - a **value**, V(s) or Q(s, a): how much future reward is expected from here, each step further ahead counting a little less, by a discount γ ≈ 0.99.
+4. **The learning signal is bootstrapping,** temporal-difference (TD) learning. The value of a state is trained toward `r + γ·V(next state)`, its own estimate one step later.
+   - This is what makes chains of moves possible.
+   - A state 10 moves from food becomes valuable because the state 9 moves away already is, and so on back.
+   - Reward spreads backward through time without anything ever planning 10 moves ahead.
+5. **The policy is trained to pick actions with higher value than expected** (the advantage; GAE in PPO), or the action is simply the one with the highest Q (DQN).
+6. **Exploration:**
+   - random actions (ε-greedy), or an entropy bonus;
+   - for hard games, intrinsic curiosity rewards: ICM (2017) rewards prediction error; RND (2018) did the same and cracked *Montezuma's Revenge*.
+7. **Data:**
+   - a replay buffer, used off-policy (DQN);
+   - or many parallel actors feeding fresh experience, used on-policy (A3C, PPO).
+
+### Milestones, in that frame
+
+| System | Year | What was new |
+|---|---|---|
+| DQN | 2013–15 | Q-learning plus a replay buffer plus a target network; 49 Atari games from pixels |
+| A3C / PPO | 2016–17 | policy and value heads, many parallel actors |
+| AlphaZero | 2017 | MCTS search on the true rules; the policy head is trained to imitate the search's choices, the value head to predict the outcome |
+| MuZero | 2019–20 | the same, but it learns the model itself, and the model predicts only reward, value and policy, never pixels |
+| Agent57 | 2020 | above the human baseline on all 57 Atari games (curiosity plus a learned choice of horizon) |
+| Dreamer V1–V3 | 2019–23 | learns a world model, then trains the policy entirely in imagined rollouts; V3 collects diamonds in Minecraft from scratch |
+| EfficientZero | 2021 | MuZero tuned to learn Atari from 2 hours of gameplay |
+
+The field split into two families:
+- **Model-free** (DQN, PPO): value and policy are learned directly from experience.
+- **Model-based** (MuZero, Dreamer): a model of the world is learned, then the agent plans with it or dreams with it.
+
+### How credit spreads back: Monte Carlo against TD
+
+There are two ways to credit the moves before a meal.
+
+- **Monte Carlo (K4 is this):**
+  - After the meal, each earlier tick is labelled with what actually followed.
+  - K4 does this 4 ticks back; a move made 6 ticks before the food gets no credit.
+  - A longer window (K16) lets in the noise of every later touch.
+- **TD, bootstrapping:**
+  - There is no backward sweep. Each tick only asks one step ahead, `my value = what happens now + γ × my own estimate at the next tick`.
+  - The value seeps back one tick per round of training. With γ = 0.9 and food worth 1:
+
+    | Rounds of replay | V(T−1) | V(T−2) | V(T−3) | V(T−4) |
+    |---|---|---|---|---|
+    | start | 0 | 0 | 0 | 0 |
+    | 1 | ≈1 | 0 | 0 | 0 |
+    | 2 | 1 | ≈0.9 | 0 | 0 |
+    | 3 | 1 | 0.9 | ≈0.81 | 0 |
+    | 4 | 1 | 0.9 | 0.81 | ≈0.73 |
+
+  - The value is a network, not a table. It learns patterns ("food 12 px to the right is worth about 0.8"), so a state need not be revisited for its value to rise.
+
+| | Monte Carlo (K4) | TD (one step) |
+|---|---|---|
+| target | real hunger over the next k ticks | real now + γ·own estimate of next |
+| reach | fixed, k ticks | unlimited, about 1 / (1 − γ) ticks |
+| noise | high for long k | low |
+| bias | none (what really happened) | the estimate can be wrong, early on it is |
+| risk | blind beyond k | can feed on its own errors and diverge |
+
+In practice the two are mixed: n-step returns (n real ticks, then the estimate) and λ-returns (a weighted blend of all n). Eligibility traces, TD(λ)'s backward view, are the same computation run backward, and are ARCHITECTURE.md §13's bridge to the two layers of weights.
+
+### Where this agent sits
+
+It is already model-based in this sense:
+- **World model:** the universal model's next-token prediction, of pixels, body and move.
+- **Reward model:** predicted hunger. It is a drive rather than a game score, but plays the same role.
+- **Planner:** the instinct. It samples 16 candidate moves and picks the one with the lowest predicted hunger.
+- **Policy learned from the planner:** the move prediction learns to predict what the instinct chose. That is AlphaZero's loop (expert iteration), with a 1-move search in place of MCTS. In vm-00084 bigger models absorb it far better (move cross-entropy about .09–.12 in C8, .009–.022 in W4).
+
+**What was missing is item 4, a bootstrapped value.**
+- K4 is a 4-step Monte Carlo return with nothing beyond it.
+- K16 tried to reach further and stopped seeing poison: the classic problem of long Monte Carlo returns.
+- That explains several earlier results:
+  - **No chain of moves** at any context length (vm-00082) or, in the first look, at any size (vm-00084): nothing makes a state three moves from food better than any other.
+  - **Hidden food is not pursued** (vm-00081, vm-00083): once the food vanishes, nothing within 4 ticks shows its value.
+  - **Much of the food is a walk plus a last grab** (vm-00069, vm-00071).
+- A bigger model or a longer context cannot fix this, since neither changes what the target says.
+
+**The value, as built for vm-00085** (task 00096):
+- It is K4's label with a bootstrapped tail, `(1 − γ) Σ_{i<4} γ^i h_{t+i} + γ^4 V̂_{t+4}`, the exponentially weighted mean of all future hunger, in 0–1.
+- It sits in K4's slot (the move token predicts it, the instinct reads it). No new token, nothing specific to a world.
+- The tail is the model's own prediction stored while acting. For replayed memory it is as old as the chunk, which plays the part of DQN's target network, unevenly aged.
+- Known risks:
+  - **instability:** bootstrapping from one's own prediction can diverge; DQN needed a target network;
+  - **the choice of γ:** 0.9 sees about 10 ticks ahead, 0.97 about 30;
+  - **optimism:** the gain rule stores the lowest of the transformers' predictions, as Q-learning's max overestimates.
+
 ## References
 
 1. Shi, Karpathy, Fan, Hernandez, Liang (2017). World of Bits: An Open-Domain Platform for Web-Based Agents. ICML, PMLR 70:3135–3144. https://proceedings.mlr.press/v70/shi17a.html
