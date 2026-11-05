@@ -1,8 +1,8 @@
 # vm-00084: One Transformer, Bigger Instead of Longer
 
 **Date:** 2026-11-04
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00084` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00084/`
 **Task plan:** [`../tasks/00095-model-size-one-transformer.md`](../tasks/00095-model-size-one-transformer.md)
 
