@@ -1,8 +1,8 @@
 # vm-00088: The Fresh Value at Eight Layers, Twelve Seeds
 
 **Date:** 2026-11-12
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00088`)
+**Status:** Complete
+**Source:** `exp/vm-00088` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00088/`
 **Task plan:** [`../tasks/00099-value-refresh-depth.md`](../tasks/00099-value-refresh-depth.md)
 
