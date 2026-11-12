@@ -1,7 +1,7 @@
 # Task 00097: Eight Layers in Each Quadrant, With and Without the Value (experiment vm-00086)
 
 **Date:** 2026-11-11
-**Status:** In progress (queued 2026-11-11 23:00)
+**Status:** Complete (runs 2026-11-12 01:08 to 03:32; written up 2026-11-12)
 
 ## Context
 
@@ -50,7 +50,7 @@ As vm-00085:
 - [x] Plumbing lives: 600 ticks of K4D8 and V90D8 beside a 2-layer K4, on the 4090 shared with 00021: 2,159,138 parameters per transformer (969,506 at 2 layers), V90D8's label and prediction .33–.39, no NaN. Speed not measurable: 00021 held the card at 100% (1.5–1.9 ticks/s for every arm).
 - [x] `00086-value-depth/`: README, Makefile (`runs`, `frozen`, `show`).
 - [x] The queue (2026-11-11 23:00): wait for 00021's seed-1 runs to end, then the 12 lives (under MPS if its daemon is up), then the frozen tests.
-- [ ] Runs, frozen tests, write-up.
+- [x] Runs, frozen tests, write-up.
 
 ## Verification
 

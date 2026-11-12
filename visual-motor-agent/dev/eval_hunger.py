@@ -344,9 +344,9 @@ def value(path, ticks, bodies, seed):
 
 
 def interval(x):
-    """The t 95% half-interval of the mean of up to 8 seeds."""
+    """The t 95% half-interval of the mean of up to 12 seeds."""
     x = np.asarray(x, float)
-    t = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571, 7: 2.447, 8: 2.365}[len(x)]
+    t = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571, 7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262, 11: 2.228, 12: 2.201}[len(x)]
     return t * x.std(ddof=1) / np.sqrt(len(x))
 
 

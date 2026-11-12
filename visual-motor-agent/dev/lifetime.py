@@ -35,6 +35,8 @@ the mean over the next k ticks, labelled in hindsight from real futures (the new
 A bootstrapped value (online.value_gamma = g, task 00096): in place of that mean, (1 - g) sum_{i<n} g^i h_{j+i} + g^n vh_{j+n}, n =
 online.value_n (default future_k) real ticks and then the model's own predicted label of the move taken at tick j + n (the
 transformer that made the move; the mean of all if the rule mixes them), stored while acting; the newest window ends n ticks back.
+online.value_refresh = 1 (task 00098): the tail is made fresh at every update instead, the mean over every transformer of its
+predicted label of the move made at tick j + n (a forward pass without gradient over the windows that start n ticks later).
 
 Command (online.goal=1): online.goal_mode = "relief" (vm-00006: its hunger if a hit follows within goal_k steps, else
 0) or "delta" (the change of hunger over the next goal_k steps: relief positive, hazards and time negative). When
@@ -74,7 +76,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
 from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, delay_targets, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
-                    thought_dream, uni_act)
+                    UNI_CHUNK, thought_dream, uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
 from world import make_config, make_world  # noqa: E402
@@ -150,6 +152,20 @@ def table_gap(models, ranges):
     x = np.stack([np.concatenate([q[o:o + n] for o, n in ranges]) for q in p])
     mean = x.mean(0)
     return float(np.sqrt(((x - mean) ** 2).sum(1).mean() / (mean ** 2).sum()))
+
+
+def boot_values(models, rows):
+    """Task 00098: each window's fresh bootstrap tails [B, L], the mean over models of the move token's predicted
+    label (the next body's hunger slot) of the move made at each step of the bootstrap windows (b_img, b_drv, b_act,
+    b_es: the L steps that start n steps after each training window). No gradient: forward passes only."""
+    B = len(rows["b_img"])
+    out = []
+    for m in models:
+        out.append(np.concatenate([m.forward_uni(rows["b_img"][i:i + UNI_CHUNK], rows["b_drv"][i:i + UNI_CHUNK],
+                                                 rows["b_act"][i:i + UNI_CHUNK], rows["b_es"][i:i + UNI_CHUNK],
+                                                 values=False, move_probs=False, next_body=True)["next_body"][..., 0]
+                                   for i in range(0, B, UNI_CHUNK)]))
+    return np.mean(out, 0).astype(np.float32)
 
 
 def pieces_move(models, props, rule, rng, prev=None, lam=1.0, temp=0.01):
@@ -326,6 +342,10 @@ def main():
     delayed = bool(getattr(env_cfg, "delays", ()))   # task 00091: inputs the composite, targets the present tiled
     if delayed and (not uni or on["device"] != "cuda" or on["sf_windows"] or clog or q_in or q_off):
         raise ValueError("env.delays needs the universal model on the GPU, without self-forcing, online.clog, online.noise_in or online.off")
+    refresh = bool(on["value_refresh"])      # task 00098: the value's tail fresh at every update, the mean of the transformers
+    if refresh and not (gamma and uni and on["device"] == "cuda" and not (clog or q_in or q_off or delayed)):
+        raise ValueError("online.value_refresh needs online.value_gamma and the universal model on the GPU, "
+                         "without online.clog, online.noise_in, online.off or env.delays")
     sched = env_schedule(env, env_cfg, on.get("env_sched"), on["steps"])   # task 00094: {tick: {key: value}}
     off_rng = np.random.default_rng([args.seed, 0x0FF])   # its own: off = 0 draws nothing
     is_off, missed = np.zeros(S, bool), np.zeros(S, int)
@@ -415,7 +435,7 @@ def main():
 
     def new_window():
         return dict(eps=[], stats=[], step_hits=0, hazard=0, hazard_felt=0, capped=0, all_hits=0, all_hazard=0,
-                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(), vh=0.0, vlab=0.0, vlab_n=0,
+                    body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(), vh=0.0, vlab=0.0, vlab_n=0, vboot=0.0, vboot_n=0,
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
                     smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
                     on_k=np.zeros(S))
@@ -552,7 +572,12 @@ def main():
                     parts.append(gms[0].replayed(B - 1, rng))
                 else:
                     parts.append(gms[0]._from_stm(gms[0].stm.starts(L, B, rng, lag)[1:], lag))
-                rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].stm.fields}
+                rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].keys}
+            if refresh:   # task 00098: the tails from the current transformers, their mean prediction of the move made
+                vb = boot_values(gpus, rows)
+                rows["pr"] = rows["pr_real"] + rows["tw"] * vb
+                win["vboot"] += float(vb.sum())
+                win["vboot_n"] += vb.size
             if gamma:
                 win["vlab"] += float(rows["pr"].sum())
                 win["vlab_n"] += rows["pr"].size
@@ -633,6 +658,8 @@ def main():
                        **{k: 1000.0 * win[k] / le for k in win if k.startswith("t_") and k != "t"})
             if gamma:   # task 00096: the mean predicted label of the moves taken, and the mean label trained on
                 row.update(value_pred=win["vh"] / bs, value_label=win["vlab"] / max(1, win["vlab_n"]))
+            if refresh:   # task 00098: the mean fresh tail
+                row.update(value_boot=win["vboot"] / max(1, win["vboot_n"]))
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

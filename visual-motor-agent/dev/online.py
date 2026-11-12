@@ -84,6 +84,10 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # (stored while acting); the exponentially weighted mean of all future hunger. 0: off. value_n: real
                       # ticks before the tail (None: future_k)
                       value_gamma=0.0, value_n=None,
+                      # task 00098: the value's tail made fresh at every update, the mean of every transformer's predicted label of the
+                      # move made n steps later (a forward pass without gradient over the windows that start n steps later), in place
+                      # of the stored winner's prediction; long-term memory then keeps n steps past each chunk. 0: off
+                      value_refresh=0,
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
@@ -264,8 +268,18 @@ def value_labels(ndrv0, vh, done, gamma, n):
     ticks the model's own prediction made at step j+n (vh: the predicted label of the move taken there). If j's episode
     ends within the n ticks, or the stretch does, the real part alone, its weights renormalized to sum to 1. Labels
     near the end of the stretch need the n steps after it to be included."""
+    real, tw = value_parts(ndrv0, done, gamma, n)
     m = len(ndrv0)
-    out = np.zeros(m, np.float32)
+    tail = vh[np.minimum(np.arange(m) + n, m - 1)]
+    return (real + tw * tail).astype(np.float32)
+
+
+def value_parts(ndrv0, done, gamma, n):
+    """value_labels split (task 00098): the real part [m] and the tail's weight [m] (gamma^n where step j + n is in j's
+    episode and in the stretch, else 0, the real part then renormalized), so that the label of step j is
+    real[j] + tw[j] * vh[j + n] for any tail vh, stored or fresh."""
+    m = len(ndrv0)
+    real, tw = np.zeros(m, np.float64), np.zeros(m, np.float64)
     w = (1.0 - gamma) * gamma ** np.arange(n)
     end = m - 1                   # the last step of j's episode in the stretch
     for j in range(m - 1, -1, -1):
@@ -273,11 +287,11 @@ def value_labels(ndrv0, vh, done, gamma, n):
             end = j
         last = min(j + n - 1, end)
         if last == j + n - 1 and j + n <= end:   # all n real ticks and the step after them in j's episode
-            out[j] = (w * ndrv0[j:j + n]).sum() + gamma ** n * vh[j + n]
+            real[j], tw[j] = (w * ndrv0[j:j + n]).sum(), gamma ** n
         else:
             ww = w[:last - j + 1]
-            out[j] = (ww * ndrv0[j:last + 1]).sum() / ww.sum()
-    return out
+            real[j] = (ww * ndrv0[j:last + 1]).sum() / ww.sum()
+    return real.astype(np.float32), tw.astype(np.float32)
 
 
 def goal_labels(m, idx, k, mode, gamma=0.0):
@@ -327,14 +341,19 @@ class ChunkStore:
       reservoir  a random stored chunk, and only with probability cap / k for the k-th stored chunk (reservoir
                  sampling: the memory stays a uniform sample of every chunk the gate ever stored, the oldest included)."""
 
-    def __init__(self, on, L, fields_like):
+    def __init__(self, on, L, fields_like, extra=0):
+        """extra (task 00098): each chunk also keeps the extra steps after it (the bootstrap windows of a refreshed value),
+        and in place of its labels their real parts (lbl) and tail weights (tw)."""
         if on.get("ltm_evict", "oldest") not in ("oldest", "reservoir"):
             raise ValueError("online.ltm_evict must be 'oldest' or 'reservoir'")
         self.evict = on.get("ltm_evict", "oldest")
         self.cap = on["replay"] // L
-        self.ltm = {k: np.zeros((self.cap, L) + getattr(fields_like, k).shape[1:], getattr(fields_like, k).dtype)
+        self.extra = extra
+        self.ltm = {k: np.zeros((self.cap, L + extra) + getattr(fields_like, k).shape[1:], getattr(fields_like, k).dtype)
                     for k in fields_like.fields}
         self.ltm["lbl"] = np.zeros((self.cap, L), np.float32)     # hindsight labels (goal), fixed at writing
+        if extra:
+            self.ltm["tw"] = np.zeros((self.cap, L), np.float32)  # task 00098: the tails' weights (lbl: the real parts)
         self.reason = np.zeros(self.cap, np.uint8)
         self.relief = np.zeros(self.cap, bool)                     # leads to relief, whatever the reason it was stored
         self.end = np.zeros(self.cap, np.int64)                    # the step each chunk ended
@@ -371,13 +390,18 @@ class GatedMemory:
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
         self.gamma = float(on.get("value_gamma") or 0.0)            # task 00096 (goal_mode value)
+        # task 00098: the value's tail recomputed at every update; windows carry the real part, the tail weight and the
+        # bootstrap window (the L steps from n = goal_k - 1 steps later), long-term memory keeps n steps past each chunk
+        self.refresh = bool(on.get("value_refresh")) and self.goal_mode == "value"
+        self.vn = goal_k - 1 if self.refresh else 0
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
         # least one step after it ends (task 00053)
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
         self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value")
-        self.store = store or ChunkStore(on, L, self.stm)          # long-term memory (shared between bodies or not)
+        self.store = store or ChunkStore(on, L, self.stm, extra=self.vn)   # long-term memory (shared between bodies or not)
+        self.keys = self.stm.fields + (("pr_real", "tw", "b_img", "b_drv", "b_act", "b_es") if self.refresh else ())
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part
         self.recent = [collections.deque(maxlen=on["surprise_window"]) for _ in SURPRISE_PARTS]
@@ -461,8 +485,10 @@ class GatedMemory:
             self.counts["evicted_new"] += 1
             return
         for k in s.fields:
-            st.ltm[k][w] = getattr(s, k)[idx]
-        if self.goal_k:
+            st.ltm[k][w] = getattr(s, k)[ext[:L + st.extra]]
+        if self.refresh:   # task 00098: the real parts and tail weights; the tails are made fresh at each replay
+            st.ltm["lbl"][w], st.ltm["tw"][w] = (x[:L] for x in value_parts(s.ndrv[ext, 0], s.done[ext], self.gamma, self.vn))
+        elif self.goal_k:
             st.ltm["lbl"][w] = goal_labels(s, ext, self.goal_k, self.goal_mode, self.gamma)[:L]
         st.reason[w], st.relief[w], st.end[w] = reason, relief, end
         if st.n < st.cap or st.evict == "oldest":
@@ -477,7 +503,20 @@ class GatedMemory:
         if self.goal_k:
             ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
             r["pr"] = np.stack([goal_labels(s, e, self.goal_k, self.goal_mode, self.gamma)[:L] for e in ext])
+        if self.refresh:   # task 00098
+            n = self.vn
+            if lag < n:
+                raise ValueError("a refreshed value needs windows ending at least n steps back")
+            parts = [value_parts(s.ndrv[e, 0], s.done[e], self.gamma, n) for e in ext]
+            r["pr_real"] = np.stack([p[0][:L] for p in parts])
+            r["tw"] = np.stack([p[1][:L] for p in parts])
+            self._boot(r, {k: getattr(s, k)[ext[:, n:n + L]] for k in ("img", "drv", "act", "es")})
         return r
+
+    @staticmethod
+    def _boot(r, b):
+        """The bootstrap windows (task 00098), from fields b of the L steps that start n steps after each window."""
+        r["b_img"], r["b_drv"], r["b_act"], r["b_es"] = as_frames(b["img"]), b["drv"], b["act"], b["es"]
 
     def newest(self, lag):
         """The newest training sequence of this memory's stream (ending lag steps back), [1, L, ...]."""
@@ -487,9 +526,14 @@ class GatedMemory:
         """n chunks drawn uniformly from long-term memory, [n, L, ...]."""
         st = self.store
         ci = rng.integers(0, st.n, n)
-        old = {k: st.ltm[k][ci] for k in self.stm.fields}
+        L, n = self.L, self.vn
+        old = {k: st.ltm[k][ci, :L] for k in self.stm.fields}
         old["img"] = as_frames(old["img"])
-        if self.goal_k:
+        if self.refresh:   # task 00098: the stored tails for pr; the caller replaces them with fresh ones
+            old["pr_real"], old["tw"] = st.ltm["lbl"][ci], st.ltm["tw"][ci]
+            old["pr"] = old["pr_real"] + old["tw"] * st.ltm["vh"][ci, n:n + L]
+            self._boot(old, {k: st.ltm[k][ci, n:n + L] for k in ("img", "drv", "act", "es")})
+        elif self.goal_k:
             old["pr"] = st.ltm["lbl"][ci]
         return old
 
@@ -500,7 +544,7 @@ class GatedMemory:
         if not self.store.n:
             return self._from_stm(s.starts(self.L, B, rng, lag), lag)
         new, old = self.newest(lag), self.replayed(B - 1, rng)
-        return {k: np.concatenate([new[k], old[k]]) for k in self.stm.fields}
+        return {k: np.concatenate([new[k], old[k]]) for k in self.keys}
 
     def metrics(self):
         """Gate counts since the last call, and the state of long-term memory."""

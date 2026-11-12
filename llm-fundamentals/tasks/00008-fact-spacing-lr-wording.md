@@ -1,7 +1,7 @@
 # Task 00008: What Keeps a Fact: Spacing, Learning Rate, Wordings (experiment 00021)
 
 **Date:** 2026-11-04
-**Status:** Running (started 2026-11-11 22:15)
+**Status:** Complete (runs 2026-11-11 22:15 to 2026-11-12 03:18; written up 2026-11-12)
 
 ## Context
 
@@ -88,7 +88,7 @@ One new fact a step, in five conditions taken in turn, every one shown 8 times:
 - [x] `analyze.py`: runs grouped by size and arm; spacing and wordings tables
 - [x] Checks: a stub run's schedule, `--plus 0` equal to 00020's stream, peak memory of L and G
 - [x] `00021-fact-retention/`: README, Makefile
-- [ ] Runs (first start stopped for vm-00084, then deferred by the owner), write-up
+- [x] Runs (first start stopped for vm-00084, then deferred by the owner; run 2026-11-11/12), write-up
 
 ## Verification
 

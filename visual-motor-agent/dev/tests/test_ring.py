@@ -160,3 +160,30 @@ def test_refused_without_the_age_key():
         m.uni_ring_reset(2)
     m.close()
     agent.close()
+
+
+@pytest.mark.parametrize("cfg", [UNI, BAND], ids=["plain", "piece"])
+def test_a_forward_pass_between_ticks_leaves_the_ring_alone(cfg):
+    """Task 00098: the refreshed value's forward passes (other windows, another batch size, next_body) run between
+    ticks; the ring's moves and candidates are the same with and without them."""
+    N, T, B = 2, 2 * cfg["ctx"] + 3, 5
+    x, d, a = ticks(T, N)
+    bx, bd, ba = ticks(cfg["ctx"], B, seed=9)
+    cand = np.random.default_rng(1).uniform(-1, 1, (N, 4, 3)).astype(np.float32)
+    es = np.zeros((N, T), np.uint8)
+    out = []
+    for extra in (False, True):
+        agent = agent_lib.Agent(cfg, seed=2)
+        m = cuda_lib.CudaModel(agent)
+        m.uni_ring_reset(N)
+        got = []
+        for t in range(T):
+            got.append((m.uni_ring_step(x[:, t], d[:, t], es[:, t]), m.uni_candidates(cand)))
+            m.uni_ring_move(a[:, t])
+            if extra:
+                m.forward_uni(bx, bd, ba, np.zeros((B, cfg["ctx"]), np.uint8), values=False, move_probs=False, next_body=True)
+        out.append(got)
+        m.close()
+    for t, ((p0, h0), (p1, h1)) in enumerate(zip(*out)):
+        np.testing.assert_array_equal(p0, p1, err_msg="tick %d" % t)
+        np.testing.assert_array_equal(h0, h1, err_msg="tick %d" % t)

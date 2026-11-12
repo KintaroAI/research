@@ -1,5 +1,6 @@
 """The bootstrapped value labels (task 00096, online.value_gamma): the direct sum, an episode end, and the labels a gated
-memory hands to training (newest window, chunks written to long-term memory) against the same sum on the stream."""
+memory hands to training (newest window, chunks written to long-term memory) against the same sum on the stream. Task 00098
+(online.value_refresh): the real part and tail weight, and the bootstrap windows the memory hands out with them."""
 import os
 import sys
 
@@ -7,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from online import DEFAULT_ONLINE, GatedMemory, future_labels, goal_labels, value_labels  # noqa: E402
+from online import DEFAULT_ONLINE, GatedMemory, future_labels, goal_labels, value_labels, value_parts  # noqa: E402
 
 
 def discounted(h, gamma, tail=0.5):
@@ -81,3 +82,63 @@ def test_gated_memory_labels():
     for c in range(st.n):
         end = st.end[c]                       # the step (counted from 1) the chunk ended
         assert np.allclose(st.ltm["lbl"][c], full[end - L:end], atol=1e-6)
+
+
+def test_value_parts():
+    """real + tw * vh[j + n] is value_labels, episode ends included, and tw is gamma^n or 0."""
+    rng = np.random.default_rng(3)
+    h, vh = rng.random(50).astype(np.float32), rng.random(50).astype(np.float32)
+    done = np.zeros(50, np.uint8)
+    done[[7, 8, 30]] = 1
+    g, n = 0.9, 4
+    real, tw = value_parts(h, done, g, n)
+    tail = vh[np.minimum(np.arange(50) + n, 49)]
+    assert np.allclose(real + tw * tail, value_labels(h, vh, done, g, n), atol=1e-6)
+    assert np.all(np.isclose(tw, 0) | np.isclose(tw, g ** n))
+    assert tw[5] == 0 and tw[2] > 0          # 5's tail would be step 9, past the end at 7; 2's is step 6, inside
+
+
+def stream(on, T, L, n, seed=2):
+    """A gated memory fed T steps whose act[0] is the step's index / 1000 (so a window's steps can be read back)."""
+    gm = GatedMemory(on, L, 8, n + 1, seed=1)
+    rng = np.random.default_rng(seed)
+    h, vh = rng.random(T).astype(np.float32), rng.random(T).astype(np.float32)
+    for t in range(T):
+        gm.stm.add(img=np.full((8, 8, 3), t % 256, np.uint8), drv=np.array([h[t - 1] if t else 0, 0], np.float32),
+                   ndrv=np.array([h[t], 0], np.float32), pa=np.zeros(3, np.float32), pr=0.0, es=0,
+                   act=np.array([t / 1000, 0, 0], np.float32), rew=0.0, done=0, hit=0, cmd=0.0, vh=vh[t])
+        gm.note(np.zeros(3))
+        gm.decide(t + 1)
+    return gm, h, vh
+
+
+def test_refresh_windows():
+    """With value_refresh, every window (the newest, from short-term memory; the replayed, from long-term) carries its
+    real part and tail weight and the bootstrap window n steps later; real + tw * (vh over the bootstrap window) is the
+    label on the whole stream, and the stored-tail label pr is the same."""
+    L, n, gamma, T = 8, 4, 0.9, 400
+    on = dict(DEFAULT_ONLINE, memory="gated", goal_mode="value", value_gamma=gamma, value_refresh=1, stm=256,
+              replay=1600, store_warmup=10_000)
+    gm, h, vh = stream(on, T, L, n)
+    full = value_labels(h, vh, np.zeros(T, np.uint8), gamma, n)
+    assert gm.store.ltm["act"].shape[1] == L + n and gm.store.n > 10
+    rows = gm.rows(16, np.random.default_rng(4), n)
+    assert set(gm.keys) <= set(rows)
+    steps = np.rint(rows["act"][..., 0] * 1000).astype(int)          # [B, L] the stream step of each window step
+    bsteps = np.rint(rows["b_act"][..., 0] * 1000).astype(int)
+    assert np.array_equal(bsteps, steps + n)
+    assert np.array_equal(rows["b_img"][..., 0, 0, 0], (steps + n) % 256)
+    assert steps[0, -1] == T - 1 - n                                  # the newest window ends n steps back
+    fresh = rows["pr_real"] + rows["tw"] * vh[bsteps]
+    assert np.allclose(fresh, full[steps], atol=1e-6)
+    assert np.allclose(rows["pr"], full[steps], atol=1e-6)
+
+
+def test_refresh_off_unchanged():
+    """Without value_refresh, long-term memory keeps chunks of L steps and the windows carry no refresh fields."""
+    L, n = 8, 4
+    on = dict(DEFAULT_ONLINE, memory="gated", goal_mode="value", value_gamma=0.9, stm=256, replay=1600,
+              store_warmup=10_000)
+    gm, _, _ = stream(on, 200, L, n)
+    assert gm.store.ltm["act"].shape[1] == L and "tw" not in gm.store.ltm
+    assert "b_img" not in gm.rows(4, np.random.default_rng(0), n)
