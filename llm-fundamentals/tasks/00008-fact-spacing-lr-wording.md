@@ -1,7 +1,7 @@
 # Task 00008: What Keeps a Fact: Spacing, Learning Rate, Wordings (experiment 00021)
 
 **Date:** 2026-11-04
-**Status:** Deferred (implemented and checked; runs later, the owner)
+**Status:** Running (started 2026-11-11 22:15)
 
 ## Context
 

@@ -387,7 +387,7 @@ def show(paths):
             print(f"{arm}: {len(A)} seeds, gamma {A[0]['gamma']}, k {A[0]['k']}, horizon {A[0]['horizon']}. Predicted label of the move taken against the realized one")
             for r in A:
                 print("  %-8s pred %.3f real %.3f bias %+.3f mae %.3f corr %.3f spread %.4f food %.1f poison %.2f" % (
-                    r["run"], r["pred"], r["real"], r["bias"], r["mae"], r["corr"], r["spread"] or float("nan"), r["food"], r["poison"]))
+                    r["run"], r["pred"], r["real"], r["bias"], r["mae"], r["corr"], float("nan") if r["spread"] is None else r["spread"], r["food"], r["poison"]))
         A = [r for r in R if r["mode"] == "chain"]
         if A:
             get = lambda f, k: np.array([r[f][k] for r in A])                                             # noqa: E731

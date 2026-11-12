@@ -1,7 +1,7 @@
 # 00021: What Keeps a Fact: Spacing, Learning Rate, Wordings
 
 **Date:** 2026-11-04
-**Status:** Deferred (the owner, 2026-11-04: to run later; code and checks done, no runs)
+**Status:** Running (started 2026-11-11 22:15, the owner's go-ahead; deferred since 2026-11-04)
 **Source:** `dev/facts/` (not yet tagged)
 **Outputs:** `~/data/research/llm-fundamentals/exp_00021/`
 **Task plan:** [`../tasks/00008-fact-spacing-lr-wording.md`](../tasks/00008-fact-spacing-lr-wording.md)

@@ -1,7 +1,7 @@
 # Task 00096: A Value That Reaches Past Four Ticks (experiment vm-00085)
 
 **Date:** 2026-11-04
-**Status:** In progress (running since 2026-11-04 22:25)
+**Status:** Complete (runs 2026-11-04 22:25 to 2026-11-05 00:44; written up 2026-11-11)
 
 ## Context
 
@@ -106,7 +106,7 @@ The default model in every arm: four quadrant transformers, the gain rule, log s
 - [x] `eval_hunger.py value`: frozen calibration.
 - [x] Plumbing lives (600 ticks per arm, beside vm-00084's lives): the label and prediction within 0–1, the same speed as K4.
 - [x] `00085-value-bootstrap/`: README, Makefile (`runs`, `frozen`, `show`).
-- [ ] Runs, frozen tests, write-up.
+- [x] Runs, frozen tests, write-up (readings 1, 3 for V90 and 6 met; 2, 4 and 5 not met: see the README).
 
 ## Verification
 
