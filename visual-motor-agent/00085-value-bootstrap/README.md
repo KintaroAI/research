@@ -1,8 +1,8 @@
 # vm-00085: A Value That Reaches Past Four Ticks
 
 **Date:** 2026-11-04
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00085` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00085/`
 **Task plan:** [`../tasks/00096-value-bootstrap.md`](../tasks/00096-value-bootstrap.md)
 
