@@ -1,7 +1,7 @@
 # Task 00099: The Fresh Value at Eight Layers, Twelve Seeds (experiment vm-00088)
 
 **Date:** 2026-11-12
-**Status:** In progress (started 2026-11-12)
+**Status:** Complete (runs 2026-11-12 06:51 to 11:47; written up 2026-11-12)
 
 ## Context
 
@@ -55,7 +55,7 @@ If reading 5 fails while 2 holds, the value is right but does not pay at this ho
 
 - [x] `eval_hunger.py`: the t table up to 12 seeds.
 - [x] `00088-value-refresh-depth/` (README, Makefile); the queue (scratchpad `q88.sh`).
-- [ ] Runs, frozen tests, write-up.
+- [x] Runs, frozen tests, write-up.
 
 ## Verification
 
