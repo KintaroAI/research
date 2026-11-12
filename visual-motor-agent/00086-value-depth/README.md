@@ -1,8 +1,8 @@
 # vm-00086: Eight Layers in Each Quadrant, With and Without the Value
 
 **Date:** 2026-11-11
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00086` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00086/`
 **Task plan:** [`../tasks/00097-value-depth.md`](../tasks/00097-value-depth.md)
 

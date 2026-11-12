@@ -1,8 +1,8 @@
 # vm-00087: A Value Whose Tail Is Fresh and Shared
 
 **Date:** 2026-11-11
-**Status:** Complete (pending tag)
-**Source:** `dev/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/vm-00087` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00087/`
 **Task plan:** [`../tasks/00098-value-refresh.md`](../tasks/00098-value-refresh.md)
 

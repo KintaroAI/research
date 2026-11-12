@@ -1,8 +1,8 @@
 # 00021: What Keeps a Fact: Spacing, Learning Rate, Wordings
 
 **Date:** 2026-11-04
-**Status:** Complete (pending tag)
-**Source:** `dev/facts/` (not yet tagged)
+**Status:** Complete
+**Source:** `exp/00021` (code: `llm-fundamentals/dev/facts/`)
 **Outputs:** `~/data/research/llm-fundamentals/exp_00021/`
 **Task plan:** [`../tasks/00008-fact-spacing-lr-wording.md`](../tasks/00008-fact-spacing-lr-wording.md)
 
