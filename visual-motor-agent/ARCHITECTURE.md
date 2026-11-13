@@ -154,6 +154,8 @@ every tick:
 
 ## 9. To Do Later
 
+- **Candidate defaults, not applied yet (the owner, 2026-11-12):** `model.n_layer = 8` (vm-00084, vm-00086, vm-00088: K4D8 89.1 ± 8.2 food over 12 seeds) and `online.instinct_tol = 0.002` (vm-00089: K4D8T 137.3 ± 15.8, +48 ± 21 over K4D8). `dev/configs/U_default.json` still has 2 layers and 0.005; until it changes, experiments set both with `--set`. The best tolerance (0.001, 0, or one that follows the scale) is not yet measured.
+
 - **Learned embedding selection, as in a text LLM** (the user's idea, 2026-10-25): in an LLM a token id selects a row of
   a randomly initialized, trainable embedding table, so the token and its embedding are decoupled. Here: a table of E
   learned embeddings (random at birth) and a small trainable network that reads a token's values and chooses among
@@ -347,6 +349,8 @@ The model predicts well, in pixels, text and a camera. What it does not yet show
 **A fresh, shared tail (vm-00087).** `online.value_refresh`: before every update, each transformer predicts, without gradient, the label of the move actually made n ticks later in every replayed window; their mean is the tail. Long-term memory keeps the n steps past each chunk, and its real parts and tail weights instead of fixed labels. This removes the optimism: abs bias .0043 against V90's .0127 (all six seeds), about −20% of the realized label like K4. The agent aims further than K4, learns faster early and touches less poison than V90, but eats no more by more than the noise of six seeds, and builds no chain of moves. About 11% slower per tick.
 
 **The fresh value at eight layers (vm-00088).** V90RD8 (`online.value_refresh = 1`, `model.n_layer = 8`) against K4D8 over twelve seeds, each seed pair on one card. The fresh tail stays calibrated at depth (about −26% of the realized label, like K4D8's −25%; the stored tail at 8 layers was −43% and its candidates collapsed), and the agent aims further, but it eats no more: +4.2 ± 12.4 food per 1k, poison equal, no chain of moves. K4D8, 89.1 ± 8.2 food over 12 seeds, is the reference. The value is right but its candidates differ by about .001, so the next step is the label's scale.
+
+**The instinct's tolerance (vm-00089).** The instinct keeps the model's first sampled move unless another candidate's predicted label is lower by more than `online.instinct_tol`. Lowered from 0.005 (set in task 00023 without a measurement) to 0.002, at 8 layers and 12 seeds: K4D8 eats 137.3 ± 15.8 food per 1k against 89.1 (+48 ± 21, 11 of 12 seeds), the fresh value 129.3 against 93.3, poison no higher in either. The gain is in seeing (lead over a blind walk with a perfect grab +104 against +65) and grows with learning. A calm agent's predicted drop for a food move one step away is .001–.007, mostly below 0.005, so the old tolerance silenced most food moves. The value gains no more than K4 (−8 ± 17 at 0.002), with a little less poison.
 
 **Log summaries (vm-00073, the default since 2026-11-02, the owner).** `model.band_win = 1`: a transformer reads a summary only within 1 cell of itself at that level, sharp near and coarse far. With transformers of a fixed size that is O(log N) summaries each. Quadrupling the area and the transformers costs 5.2 and 5.7 times per tick, against 10.5 and 26 with every summary. At 64 x 64 no loss could be seen in food, poison, reach or hunger, a mild test (7 of 21 summaries) with wide intervals. Not measured yet: quality at 128 and above, and with 16 or 64 transformers.
 
