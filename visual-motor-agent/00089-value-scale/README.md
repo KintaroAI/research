@@ -1,8 +1,8 @@
 # vm-00089: The Instinct's Tolerance at the Value's Scale
 
 **Date:** 2026-11-12
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00089`)
+**Status:** Complete
+**Source:** `exp/vm-00089` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00089/`
 **Task plan:** [`../tasks/00100-value-scale.md`](../tasks/00100-value-scale.md)
 
