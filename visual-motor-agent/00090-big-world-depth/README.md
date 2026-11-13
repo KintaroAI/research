@@ -1,8 +1,8 @@
 # vm-00090: The Value and K4 at Eight Layers in the Big World
 
 **Date:** 2026-11-13
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00090`)
+**Status:** Complete
+**Source:** `exp/vm-00090` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00090/`
 **Task plan:** [`../tasks/00101-big-world-depth.md`](../tasks/00101-big-world-depth.md)
 
