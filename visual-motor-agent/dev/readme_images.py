@@ -37,7 +37,7 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
             "00084": [("00082", ("C8",))], "00086": [("00085", ("K4", "V90"))],
             "00087": [("00085", ("K4", "V90"))], "00088": [("00086", ("K4D8",))],
-            "00089": [("00086", ("K4D8",)), ("00088", ("K4D8", "V90RD8"))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00089": [("00086", ("K4D8",)), ("00088", ("K4D8", "V90RD8"))], "00090": [("00072", ("K4",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
 
