@@ -97,6 +97,10 @@ def run(args, path):
                 else "empty" if inf["click"][0] and not cfg.touch else None)
         rec.append(dict(img=obs["image"][0].copy(), cursor=inf["gt_cursor"][0].copy(), kind=kind, hunger=float(inf["gt_drives"][0, 0]),
                         food=int(food[0]), poison=int(poison[0]), won=won))
+        if cfg.view and cfg.view < cfg.size:   # task 00102: the whole world too, for the viewer only
+            c0, env.config = env.config, dataclasses.replace(env.config, view=0)
+            rec[-1]["full"] = env.clean_frame(np.array([0]))[0]
+            env.config = c0
         hist = (hist + [cur])[-(L - 1):] if L > 1 else []
         prev_a = executed_action(a)
         es = np.zeros(n, np.uint8)
@@ -104,8 +108,11 @@ def run(args, path):
     how = ("the instinct off" if not m else "the 1-step instinct" if ion["instinct_h"] == 1
            else "a %d-step lookahead (%s)" % (ion["instinct_h"], ion["instinct_decode"]))
     mc = agent.config
+    side = cfg.view or cfg.size   # task 00102: the frame is a window on a larger world
     meta = dict(touch=cfg.touch, ego=cfg.egocentric, verb="touches" if cfg.touch else "clicks",
-                sub="frozen, %s%s; the agent's own %dx%d view" % (how, ", egocentric" if cfg.egocentric else "", cfg.size, cfg.size), size=cfg.size,
+                sub=("frozen, %s; a %dx%d window on a %dx%d world" % (how, side, side, cfg.size, cfg.size) if side < cfg.size else
+                     "frozen, %s%s; the agent's own %dx%d view" % (how, ", egocentric" if cfg.egocentric else "", side, side)),
+                size=side, world=cfg.size,
                 piece_side=int(round(S ** 0.5)) if S > 1 and mc["band_cols"] == 2 else 0,
                 poison_add=cfg.hazard_click_add, split=split_lines(mc))
     return rec, food, poison, meta
@@ -126,8 +133,8 @@ def frame(rec, t, title, meta):
     size = meta.get("size", 64)
     sc = 64 * SCALE / size            # screen pixels per world pixel: any world fills the same square
     draw_split(d, meta, VX, VY, sc, size)
-    trail(d, rec, t, VX, VY, sc, ref, size=size)
-    rings(d, rec, t, VX, VY, sc, ref, size=size)
+    trail(d, rec, t, VX, VY, sc, ref, size=size, world=meta.get("world"))
+    rings(d, rec, t, VX, VY, sc, ref, size=size, world=meta.get("world"))
     if meta.get("piece_side") and rec[t]["won"] >= 0:   # the piece that made this move
         s, k = meta["piece_side"], rec[t]["won"]
         side = 64 * SCALE // s
@@ -209,28 +216,29 @@ def draw_split(d, meta, x0, y0, sc, size=64):
             d.line(seg, fill=(120, 170, 255), width=2)
 
 
-def in_view(p, ref, size=64):
+def in_view(p, ref, size=64, world=None):
     """A world position in the view: as is, or (egocentric, ref = the current cursor) relative to the cursor drawn at
-    the center, wrapped."""
-    return p if ref is None else np.mod(p - ref + size / 2.0, float(size))
+    the center, wrapped. world > size (task 00102): the view is the size x size window at the center of the world."""
+    w = float(world or size)
+    return p if ref is None else np.mod(p - ref + w / 2.0, w) - (w - size) / 2.0
 
 
-def trail(d, rec, t, x0, y0, sc, ref=None, n=30, width=2, size=64):
-    """The cursor's last n positions (wrapping world: break the line where it jumps across an edge)."""
-    pts = [in_view(r["cursor"], ref, size) for r in rec[max(0, t - n):t + 1]]
+def trail(d, rec, t, x0, y0, sc, ref=None, n=30, width=2, size=64, world=None):
+    """The cursor's last n positions (wrapping world: break the line where it jumps across an edge; outside a window: not drawn)."""
+    pts = [in_view(r["cursor"], ref, size, world) for r in rec[max(0, t - n):t + 1]]
     for p, q in zip(pts, pts[1:]):
-        if np.abs(p - q).max() < 20:
+        if np.abs(p - q).max() < 20 and min(p.min(), q.min()) >= 0 and max(p.max(), q.max()) <= size:
             d.line([(x0 + p[0] * sc, y0 + p[1] * sc), (x0 + q[0] * sc, y0 + q[1] * sc)], fill=TRAIL, width=width)
 
 
-def rings(d, rec, t, x0, y0, sc, ref=None, size=64):
+def rings(d, rec, t, x0, y0, sc, ref=None, size=64, world=None):
     """Each touch or click as a ring at the cursor, fading over 8 steps."""
     for k in range(max(0, t - 8), t + 1):
         r = rec[k]
         if r["kind"]:
             c = dict(food=FOOD, poison=POISON, empty=EMPTY)[r["kind"]]
             rad = 14 + 3 * (t - k)
-            x, y = x0 + in_view(r["cursor"], ref, size)[0] * sc, y0 + in_view(r["cursor"], ref, size)[1] * sc
+            x, y = x0 + in_view(r["cursor"], ref, size, world)[0] * sc, y0 + in_view(r["cursor"], ref, size, world)[1] * sc
             d.ellipse([x - rad, y - rad, x + rad, y + rad], outline=c, width=3 if t - k < 4 else 1)
 
 

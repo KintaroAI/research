@@ -31,7 +31,8 @@ SURFACE, INK, MUTED_INK, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e6e5e1"
 FONT = matplotlib.font_manager.findfont("DejaVu Sans")
 
 VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "videos/grey_fix_s3.mp4", "00059": "videos/car_s3.mp4",
-          "00060": "videos/car_D_s1.mp4", "00061": "videos/car_SD_s1.mp4", "00062": "videos/car_FD_s1.mp4"}
+          "00060": "videos/car_D_s1.mp4", "00061": "videos/car_SD_s1.mp4", "00062": "videos/car_FD_s1.mp4",
+          "00091": "../videos/vm91_s5/compare.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -359,6 +360,9 @@ def one(d, write_readme):
         cap = SHEET_TEXT["video"].capitalize() + "."
         if e == "00059":
             cap += " The tilted horizon and the dark floor are the bug described in the correction above: the car had tipped over."
+        if e == "00091":
+            cap += (" Seed 5 at 60k, frozen, KW and VW from the same start. Each arm's 64 x 64 view (the blue square: the quarter transformer whose move it was),"
+                    " and beside it the whole world, centered on the cursor the same way, with the window outlined: plain circles are food, checkered ones poison.")
         figs.append(("sheet.png", "Stills from a video", cap))
     else:
         p, kind = existing_sheet(e)

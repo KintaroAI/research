@@ -170,6 +170,8 @@ class EnvConfig:
                                         # placed clear of the others; moving ones bounce off each other and off food
     turn_cost: float = 0.0              # (task 00061) hunger per step += turn_cost * |move - previous move|^2 / 8: a full
                                         # reversal on both axes costs turn_cost; a steady move is free
+    view: int = 0                       # (task 00102, needs egocentric) the frame is a view x view window centered on the
+                                        # cursor, the center of the full frame; 0: the whole world. Only the frame changes
 
     def __post_init__(self) -> None:
         # Colors loaded from JSON arrive as lists; store tuples (hashable, comparable).
@@ -235,6 +237,10 @@ class EnvConfig:
             raise ValueError(f"hazards must be an integer >= 0, got {self.hazards!r}")
         if self.egocentric and not self.wrap:
             raise ValueError("egocentric needs wrap")
+        if self.view and (int(self.view) != self.view or not self.egocentric or not 0 < self.view <= self.size or self.view % 2
+                          or (self.size - self.view) // 2 % (2 * self.hazard_checker_cell)):
+            raise ValueError(f"view: an even width in 1..size with egocentric, the margin (size - view) / 2 a multiple of "
+                             f"2 * hazard_checker_cell, got {self.view!r}")
         if self.touch and not self.respawn:
             raise ValueError("touch needs respawn")
         if self.turn_cost < 0:
@@ -493,6 +499,10 @@ def _render_wrap(cursor_xy, target_xy, radius, target_alive, config, dots=None, 
     if dots is not None and dots[0].shape[1] > 0:
         _draw_dots(image, np.mod(dots[0] + shift[:, None], S), dots[1], int(config.dot_size), _rgb(config.bg_color))
     _draw_cursor(image, np.mod(cursor + shift, S), _rgb(config.cursor_outline), _rgb(config.cursor_color))
+    v = int(getattr(config, "view", 0))
+    if v and v < size:   # task 00102: the window centered on the cursor
+        m = (size - v) // 2
+        image = np.ascontiguousarray(image[:, m:m + v, m:m + v])
     return image
 
 
@@ -925,6 +935,24 @@ class CircleWorld:
         return render_state(self.cursor[idx], self.target[idx], self.radius[idx],
                             self.drawn()[idx], self.config, (self.dot_pos[idx], self.dot_val[idx]),
                             (self.hz_pos[idx], self.hz_rad[idx]), swap=None if sw is None else sw[idx], more=(self.fx_pos[idx], self.fx_rad[idx]))
+
+    def foods_in_view(self) -> np.ndarray:
+        """(N, F) bool (task 00102): which foods, the target first, have a pixel inside the window (env.view; 0: the whole
+        world). A pixel is drawn where its center is inside the circle. Scoring only."""
+        cfg = self.config
+        S = int(cfg.size)
+        xy = np.concatenate((self.target[:, None], self.fx_pos), 1)
+        rad = np.concatenate((self.radius[:, None], self.fx_rad), 1)
+        alive = np.concatenate((self.drawn()[:, None], np.ones(self.fx_rad.shape, bool)), 1)
+        if not cfg.view or cfg.view >= S:
+            return alive.copy()
+        m = (S - int(cfg.view)) // 2
+        c = np.arange(m, m + int(cfg.view), dtype=np.float64) + 0.5                       # the window's pixel centers, view coords
+        v = np.mod(xy - self.cursor[:, None] + 0.5 * S, float(S))                         # food centers in view coordinates
+        dx = wrap_delta(c[None, None, :], v[..., 0, None], float(S))                      # (N, F, view)
+        dy = wrap_delta(c[None, None, :], v[..., 1, None], float(S))
+        ax, ay = np.abs(dx).min(-1), np.abs(dy).min(-1)                                  # the nearest pixel center on each axis
+        return alive & (ax * ax + ay * ay <= rad * rad)
 
     def drawn(self) -> np.ndarray:
         """(N,) bool: the food is alive and, with food_show (task 00092), still within its first food_show frames."""

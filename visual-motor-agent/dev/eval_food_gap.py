@@ -7,7 +7,8 @@ within reach (0: never, a blind walk; 1000: always, a perfect chase). It moves a
     python eval_food_gap.py configs/U_default.json configs/U_big.json [--bodies 32] [--ticks 6000] [--seed 1]
 
 Prints a row per world and reach: food per 1,000 ticks with its 95% interval across bodies, the gap to the nearest food right after a bite, and the share
-of ticks with food within 16 and within 24 pixels.
+of ticks with food within 16 and within 24 pixels. With a window (the config's env.view, task 00102, or --view V) the walker turns only to food in the
+window, the shares count only food in it, and the last column is the share of ticks with no food in view.
 """
 import argparse
 import json
@@ -36,9 +37,11 @@ def walk(cfg_env, reach, bodies, ticks, seed):
     rng = np.random.default_rng([seed, reach])
     heading = rng.uniform(0, 2 * np.pi, bodies)
     food = np.zeros(bodies)
-    after, near16, near24 = [], 0, 0
+    after, near16, near24, none = [], 0, 0, 0
     for t in range(ticks):
         dx, dy, gap = gaps(env)
+        if getattr(env.config, "view", 0):   # task 00102: only what is in the window
+            gap = np.where(env.foods_in_view(), gap, np.inf)
         best = gap.argmin(1)
         i = np.arange(bodies)
         g = gap[i, best]
@@ -54,6 +57,7 @@ def walk(cfg_env, reach, bodies, ticks, seed):
         food += hit
         near16 += (g <= 16).mean()
         near24 += (g <= 24).mean()
+        none += np.isinf(g).mean()
         if hit.any():
             after.append(gaps(env)[2].min(1)[hit])
     n = ticks - SKIP
@@ -61,7 +65,7 @@ def walk(cfg_env, reach, bodies, ticks, seed):
     after = np.concatenate(after) if after else np.zeros(1)
     half = 1.96 * rate.std(ddof=1) / np.sqrt(bodies)
     return dict(reach=reach, food=float(rate.mean()), half=float(half), after=float(after.mean()), after_far=float((after > 24).mean()),
-                near16=near16 / n, near24=near24 / n)
+                near16=near16 / n, near24=near24 / n, none=none / n)
 
 
 def main():
@@ -70,13 +74,18 @@ def main():
     ap.add_argument("--bodies", type=int, default=32)
     ap.add_argument("--ticks", type=int, default=6000)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--view", type=int, help="env.view for every config (task 00102); default: each config's own")
+    ap.add_argument("--reaches", type=int, nargs="+", default=REACHES)
     args = ap.parse_args()
-    print("world reach | food per 1k | gap after a bite, share beyond 24 | ticks with food within 16, 24")
+    print("world view reach | food per 1k | gap after a bite, share beyond 24 | ticks with food within 16, 24 | no food in view")
     for path in args.configs:
         env = json.load(open(path))["env"]
-        for reach in REACHES:
+        if args.view is not None:
+            env = dict(env, view=args.view)
+        for reach in args.reaches:
             r = walk(env, reach, args.bodies, args.ticks, args.seed)
-            print(f"{env.get('size', 64):4d} {reach:5d} | {r['food']:6.1f} +- {r['half']:4.1f} | {r['after']:5.1f}, {r['after_far']:.2f} | {r['near16']:.2f}, {r['near24']:.2f}", flush=True)
+            print(f"{env.get('size', 64):4d} {env.get('view', 0):4d} {reach:5d} | {r['food']:6.1f} +- {r['half']:4.1f} | {r['after']:5.1f}, {r['after_far']:.2f} | "
+                  f"{r['near16']:.2f}, {r['near24']:.2f} | {r['none']:.2f}", flush=True)
 
 
 if __name__ == "__main__":
