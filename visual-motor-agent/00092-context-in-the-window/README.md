@@ -1,8 +1,8 @@
 # vm-00092: A Longer Context in a World Larger Than the View
 
 **Date:** 2026-11-14
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00092`)
+**Status:** Complete
+**Source:** `exp/vm-00092` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00092/`
 **Task plan:** [`../tasks/00103-context-in-the-window.md`](../tasks/00103-context-in-the-window.md)
 
