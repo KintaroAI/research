@@ -20,6 +20,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
 - **The picture is in the codes, not in their layout.** Drawn where each code looks, V2 is a blurred copy of the scene (0.51), and V3 is blurrier (0.45).
 - **No interleaved copies:** codes carrying the same one of the 4 numbers do not group together.
 - **Learning is what makes the layers.** With encoders frozen at their random start, 42% of the codes are silent and only one weak layer forms above V1.
+- **A wider bottleneck does not help** (F8, 8 numbers per window): 22% of its codes go silent, and the rest are blurrier.
 
 ## Method
 
@@ -38,6 +39,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
 | F0 | encoders frozen at their random start (`--column-lr 0`) | does the picture come from learning or from the wiring? |
 | FP | positive correlations only (new `--corr-sign pos`) | the predicted split by the arbitrary sign of a code |
 | F512 | 512 windows (`--cluster-neurons-per 12`) | does depth grow with the number of windows? |
+| F8 | 8 code numbers per window (levels 8,5,5,5 twice; `--cluster-neurons-per 24` keeps 256 windows) | does a wider bottleneck help? (added after the first write-up, at the owner's request; no readings were set for it) |
 
 - **Rendering (`dev/render_layers.py`, new):**
   - Each run's final state is replayed for 4,000 ticks with learning off. The eye restarts at a random place every 100 ticks, so receptive fields are local.
@@ -49,7 +51,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
     - *at RF centres:* each code drawn where in the crop it looks. This is what the codes carry.
     - Both views are sign-corrected and correlated with the crop shrunk to the layer's grid.
   - **Topography:** Spearman correlation between pairwise distances on the plane and between field centres. Shuffled codes give about 0.
-- **Reproduce:** `make runs` (F and F0 on GPU 1, FP and F512 on `GPU_B`, default GPU 0), then `make render`. `make test` runs `dev/test_fsq_column.py` (7 tests).
+- **Reproduce:** `make runs` (F and F0 on GPU 1, FP and F512 on `GPU_B`, default GPU 0), then `make render`; `make f8` runs and renders F8 on GPU 1. `make test` runs `dev/test_fsq_column.py` (7 tests).
 
 ## Results
 
@@ -120,7 +122,35 @@ The four code numbers are mixed throughout. No sub-map per number forms.
 
 **F512:**
 - **Its V2 is the most map-like:** a 2-D ring-shaped sheet with topography 0.43, and its sorted view starts to carry the scene (0.16).
-- **It is the only run with a third column depth,** but only 7 live columns there and 24 weak V4 codes (field peak 0.12).
+- **It is the only one of the four runs with a third column depth,** but only 7 live columns there and 24 weak V4 codes (field peak 0.12).
+
+### F8: a wider bottleneck (8 numbers per window)
+
+Run after the four above (2026-11-14, 4090, single seed). Everything matches F except the bottleneck: 8 numbers instead of 4, so 1,000,000 states per window instead of 1,000. The windows stay at 256, and the code neurons double to 2,048.
+
+| Measure | F (4 numbers) | F8 (8 numbers) |
+|---|---|---|
+| V1 within 3 px | 98.8% | 96.0% |
+| Live codes | 99.9% | 78.2% (447 of 2,048 silent) |
+| Columns using 3+ levels in every number (replay / training at 100k) | 99% / 88% | 59% / 52% |
+| V2 codes: topography / sorted vs crop / at RF centres | 735: 0.33 / 0.12 / 0.51 | 1,265: 0.36 / 0.14 / 0.39 |
+| V3 codes: topography / at RF centres | 288: 0.44 / 0.45 | 326: 0.30 / 0.37 |
+| V4 | none | 10 weak codes (field peak 0.10) |
+| Column depths (live) | 184, 72 | 161, 58, 2 |
+| Field size V2 / V3 | 222 / 335 px | 239 / 525 px |
+| Same-number neighbours (chance) | 0.24 (0.25) | 0.14 (0.125) |
+| Loss / no-information baseline / copy-last at 100k | 0.158 / 0.253 / 0.208 | 0.087 / 0.122 / 0.092 |
+
+![F8: 8 numbers per window](images/f8_plane.png)
+
+- **The wider bottleneck does not help.** Much of the extra capacity goes unused.
+  - The numbers visit fewer of their levels than in F (about 4 of 5 and 6.3 of 8 in the replay).
+  - 22% of the codes never become live. They are the dark grey strip beside the code area in the whole-plane view.
+- **The live codes are blurrier.** More V2 fields are scattered texture rather than clean spots, and V2 at its field centres matches the scene less well (0.39 against 0.51).
+- **The layout is the same kind:** a folded, topographic sheet, not a picture, with no sub-map per number. A third column depth appears, but with 2 columns.
+- **The losses are not comparable across the two runs,** because with twice the code neurons the windows read a different mix of inputs.
+  - Against its own baselines F8 does less well: 0.71 of the no-information baseline (F 0.62) and 0.94 of copy-last (F 0.76).
+- **Likely reading** (one seed): with 48 inputs over 4 ticks, a window has only about 4 numbers' worth of predictable structure. The extra numbers go silent or duplicate each other.
 
 ## The readings (set in the task plan before the runs)
 
@@ -156,3 +186,5 @@ These are not run:
 - **More windows** (1,024 or more): does the code sheet become a picture, and does V4 form?
 - **A fair random control** whose encoders span the levels (F0's random start barely varies), to separate learned codes from any graded code.
 - **Whether FP's two sign groups form two mirror maps** (a topography measured within each group).
+- **A narrower bottleneck** (2 numbers per window): if about 4 is the right size, as F8 suggests, 2 numbers should be fully used.
+- **A second seed of F,** to know how much single-run measures such as topography vary (all runs here are one seed).

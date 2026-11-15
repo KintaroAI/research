@@ -151,6 +151,7 @@ Not a result, a check of the plumbing and the renders. The main runs are 100k ti
 
 - **Readings:** 2, 4 ("something else"), 5, 6 and 7 (as sign grouping) met; 1 a narrow miss for F (87.9% of columns with 3+ levels at tick 100k, bar 90%; loss bar met); 3 fails (2 column depths; F512 has 7 live columns at depth 3).
 - **What the layers show:** codes form their own area; V2 and V3 there are folded sheets of spot detectors, topographic (0.33 and 0.44 in F) but not a picture (sorted view 0.12, while V1 itself scores 0.29 on that measure); drawn at field centres they are a blurred copy (0.51, 0.45); no sub-map per code number (0.24).
+- **F8 (added after the write-up, the owner's request, no readings set):** 8 numbers per window, 256 windows kept (`--cluster-neurons-per 24`). It does not help: 22% of codes silent, V2 at field centres 0.39 against F's 0.51, layout the same kind; `make f8`.
 - **Deviations from the plan:** topography is Spearman of distances, not Procrustes disparity; reading 4's views refined after the pilot; silent codes excluded after F0.
 
 ## Verification

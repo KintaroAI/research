@@ -21,7 +21,7 @@ RUN = $(PY) main.py word2vec --mode correlation -W 64 -H 64 --signal-source gard
 
 RUNS = 002_F 003_F0 004_FP 005_F512
 
-.PHONY: all runs runs_a runs_b render test
+.PHONY: all runs runs_a runs_b f8 render test
 
 all: runs render
 
@@ -44,6 +44,13 @@ runs_b:
 	  $(G) CUDA_VISIBLE_DEVICES=$(GPU_B) $(RUN) --cluster-neurons-per 20 --corr-sign pos -o $(OUT)/004_FP > $(OUT)/004_FP.log 2>&1 & \
 	  $(G) CUDA_VISIBLE_DEVICES=$(GPU_B) $(RUN) --cluster-neurons-per 12 -o $(OUT)/005_F512 > $(OUT)/005_F512.log 2>&1 & \
 	  wait; }
+
+# F8: F with an 8-number bottleneck (levels 8,5,5,5 twice); neurons-per 24 keeps 256 windows (4096 // (24 - 8))
+f8:
+	mkdir -p $(OUT)
+	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(subst --column-outputs 4,--column-outputs 8,$(RUN)) \
+	  --column-fsq-levels 8,5,5,5,8,5,5,5 --cluster-neurons-per 24 -o $(OUT)/006_F8 > $(OUT)/006_F8.log 2>&1
+	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(PY) render_layers.py $(OUT)/006_F8 > $(OUT)/006_F8.render.log 2>&1
 
 render:
 	cd $(DEV) && for r in $(RUNS); do \
