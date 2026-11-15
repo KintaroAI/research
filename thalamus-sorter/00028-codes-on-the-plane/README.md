@@ -20,7 +20,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
 - **The picture is in the codes, not in their layout.** Drawn where each code looks, V2 is a blurred copy of the scene (0.51), and V3 is blurrier (0.45).
 - **No interleaved copies:** codes carrying the same one of the 4 numbers do not group together.
 - **Learning is what makes the layers.** With encoders frozen at their random start, 42% of the codes are silent and only one weak layer forms above V1.
-- **A wider bottleneck does not help** (F8, 8 numbers per window): 22% of its codes go silent, and the rest are blurrier.
+- **A wider bottleneck does not help** (F8, 8 numbers per window): 22% of its codes go silent (28% after twice the training), and the rest are blurrier.
 
 ## Method
 
@@ -126,22 +126,24 @@ The four code numbers are mixed throughout. No sub-map per number forms.
 
 ### F8: a wider bottleneck (8 numbers per window)
 
-Run after the four above (2026-11-14, 4090, single seed). Everything matches F except the bottleneck: 8 numbers instead of 4, so 1,000,000 states per window instead of 1,000. The windows stay at 256, and the code neurons double to 2,048.
+Run after the four above (2026-11-14, 4090, single seed), then again for 200k ticks from the start (`007_F8_200k`, `make f8 F8_TICKS=200000 F8_NAME=007_F8_200k`). Everything matches F except the bottleneck: 8 numbers instead of 4, so 1,000,000 states per window instead of 1,000. The windows stay at 256, and the code neurons double to 2,048.
 
-| Measure | F (4 numbers) | F8 (8 numbers) |
-|---|---|---|
-| V1 within 3 px | 98.8% | 96.0% |
-| Live codes | 99.9% | 78.2% (447 of 2,048 silent) |
-| Columns using 3+ levels in every number (replay / training at 100k) | 99% / 88% | 59% / 52% |
-| V2 codes: topography / sorted vs crop / at RF centres | 735: 0.33 / 0.12 / 0.51 | 1,265: 0.36 / 0.14 / 0.39 |
-| V3 codes: topography / at RF centres | 288: 0.44 / 0.45 | 326: 0.30 / 0.37 |
-| V4 | none | 10 weak codes (field peak 0.10) |
-| Column depths (live) | 184, 72 | 161, 58, 2 |
-| Field size V2 / V3 | 222 / 335 px | 239 / 525 px |
-| Same-number neighbours (chance) | 0.24 (0.25) | 0.14 (0.125) |
-| Loss / no-information baseline / copy-last at 100k | 0.158 / 0.253 / 0.208 | 0.087 / 0.122 / 0.092 |
+| Measure | F (4 numbers) | F8 (8 numbers) | F8, 200k ticks |
+|---|---|---|---|
+| V1 within 3 px | 98.8% | 96.0% | 99.4% |
+| Live codes | 99.9% | 78.2% (447 of 2,048 silent) | 72.4% (566 silent) |
+| Columns using 3+ levels in every number (replay / training at 100k) | 99% / 88% | 59% / 52% | 50% / 45% (at 200k) |
+| V2 codes: topography / sorted vs crop / at RF centres | 735: 0.33 / 0.12 / 0.51 | 1,265: 0.36 / 0.14 / 0.39 | 1,183: 0.39 / 0.12 / 0.36 |
+| V3 codes: topography / at RF centres | 288: 0.44 / 0.45 | 326: 0.30 / 0.37 | 291: 0.39 / 0.37 |
+| V4 | none | 10 weak codes (field peak 0.10) | 8 weak codes (field peak 0.16) |
+| Column depths (live) | 184, 72 | 161, 58, 2 | 155, 56, 1 |
+| Field size V2 / V3 | 222 / 335 px | 239 / 525 px | 213 / 405 px |
+| Same-number neighbours (chance) | 0.24 (0.25) | 0.14 (0.125) | 0.13 (0.125) |
+| Loss / no-information baseline / copy-last at the end | 0.158 / 0.253 / 0.208 | 0.087 / 0.122 / 0.092 | 0.106 / 0.141 / 0.142 |
 
-![F8: 8 numbers per window](images/f8_plane.png)
+![F8: 8 numbers per window, 100k ticks](images/f8_plane.png)
+
+![F8 at 200k ticks: the silent codes form their own island](images/f8_200k_plane.png)
 
 - **The wider bottleneck does not help.** Much of the extra capacity goes unused.
   - The numbers visit fewer of their levels than in F (about 4 of 5 and 6.3 of 8 in the replay).
@@ -150,7 +152,13 @@ Run after the four above (2026-11-14, 4090, single seed). Everything matches F e
 - **The layout is the same kind:** a folded, topographic sheet, not a picture, with no sub-map per number. A third column depth appears, but with 2 columns.
 - **The losses are not comparable across the two runs,** because with twice the code neurons the windows read a different mix of inputs.
   - Against its own baselines F8 does less well: 0.71 of the no-information baseline (F 0.62) and 0.94 of copy-last (F 0.76).
-- **Likely reading** (one seed): with 48 inputs over 4 ticks, a window has only about 4 numbers' worth of predictable structure. The extra numbers go silent or duplicate each other.
+- **Twice the training does not revive the codes** (200k ticks):
+  - More codes go silent (28%). They now form an island of their own beside the code area.
+  - Level use is flat from 100k to 200k: about 5 of 8 and 3.5 of 5 levels in training, and about 45% of columns with 3+ levels in every number.
+  - The loss stays at 0.63–0.75 of the no-information baseline at 50k, 100k, 150k and 200k.
+  - V2 at field centres stays below F's (0.36). The layout is the same folded sheet, with topography 0.39.
+- **The two F8 runs differ at 100k even with the same seed** (45% against 52% of columns with 3+ levels in training; V1 96.0% at 100k in one, 99.4% at 200k in the other). The GPU runs are not bit-for-bit repeatable, so small differences between single runs here mean little.
+- **Likely reading** (F8 twice, F once): with 48 inputs over 4 ticks, a window has only about 4 numbers' worth of predictable structure. The extra numbers go silent or duplicate each other.
 
 ## The readings (set in the task plan before the runs)
 

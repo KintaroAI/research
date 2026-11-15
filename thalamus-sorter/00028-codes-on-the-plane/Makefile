@@ -46,11 +46,14 @@ runs_b:
 	  wait; }
 
 # F8: F with an 8-number bottleneck (levels 8,5,5,5 twice); neurons-per 24 keeps 256 windows (4096 // (24 - 8))
+# F8_200k: the same for 200k ticks (make f8 F8_TICKS=200000 F8_NAME=007_F8_200k)
+F8_TICKS ?= 100000
+F8_NAME ?= 006_F8
 f8:
 	mkdir -p $(OUT)
-	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(subst --column-outputs 4,--column-outputs 8,$(RUN)) \
-	  --column-fsq-levels 8,5,5,5,8,5,5,5 --cluster-neurons-per 24 -o $(OUT)/006_F8 > $(OUT)/006_F8.log 2>&1
-	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(PY) render_layers.py $(OUT)/006_F8 > $(OUT)/006_F8.render.log 2>&1
+	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(subst -f 100000,-f $(F8_TICKS),$(subst --column-outputs 4,--column-outputs 8,$(RUN))) \
+	  --column-fsq-levels 8,5,5,5,8,5,5,5 --cluster-neurons-per 24 -o $(OUT)/$(F8_NAME) > $(OUT)/$(F8_NAME).log 2>&1
+	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(PY) render_layers.py $(OUT)/$(F8_NAME) > $(OUT)/$(F8_NAME).render.log 2>&1
 
 render:
 	cd $(DEV) && for r in $(RUNS); do \
