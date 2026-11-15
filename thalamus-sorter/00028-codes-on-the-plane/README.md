@@ -20,7 +20,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
 - **The picture is in the codes, not in their layout.** Drawn where each code looks, V2 is a blurred copy of the scene (0.51), and V3 is blurrier (0.45).
 - **No interleaved copies:** codes carrying the same one of the 4 numbers do not group together.
 - **Learning is what makes the layers.** With encoders frozen at their random start, 42% of the codes are silent and only one weak layer forms above V1.
-- **A wider bottleneck does not help** (F8, 8 numbers per window): 22% of its codes go silent (28% after twice the training), and the rest are blurrier.
+- **A wider bottleneck does not help, even with the window's model scaled to match.** With 8 numbers per window (F8), 22% of the codes go silent (28% after twice the training). With 16 (F16), 42% do. The live codes get blurrier with each doubling.
 
 ## Method
 
@@ -40,6 +40,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
 | FP | positive correlations only (new `--corr-sign pos`) | the predicted split by the arbitrary sign of a code |
 | F512 | 512 windows (`--cluster-neurons-per 12`) | does depth grow with the number of windows? |
 | F8 | 8 code numbers per window (levels 8,5,5,5 twice; `--cluster-neurons-per 24` keeps 256 windows) | does a wider bottleneck help? (added after the first write-up, at the owner's request; no readings were set for it) |
+| F16 | 16 code numbers per window, the window's model scaled to keep F's proportions (32 neurons per window, input cap 80, hidden width 256, 320 sort candidates) | does a wider bottleneck help when the model grows with it? (the owner's request; no readings set) |
 
 - **Rendering (`dev/render_layers.py`, new):**
   - Each run's final state is replayed for 4,000 ticks with learning off. The eye restarts at a random place every 100 ticks, so receptive fields are local.
@@ -51,7 +52,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
     - *at RF centres:* each code drawn where in the crop it looks. This is what the codes carry.
     - Both views are sign-corrected and correlated with the crop shrunk to the layer's grid.
   - **Topography:** Spearman correlation between pairwise distances on the plane and between field centres. Shuffled codes give about 0.
-- **Reproduce:** `make runs` (F and F0 on GPU 1, FP and F512 on `GPU_B`, default GPU 0), then `make render`; `make f8` runs and renders F8 on GPU 1. `make test` runs `dev/test_fsq_column.py` (7 tests).
+- **Reproduce:** `make runs` (F and F0 on GPU 1, FP and F512 on `GPU_B`, default GPU 0), then `make render`; `make f8` and `make f16` run and render F8 and F16 on GPU 1. `make test` runs `dev/test_fsq_column.py` (7 tests).
 
 ## Results
 
@@ -160,6 +161,47 @@ Run after the four above (2026-11-14, 4090, single seed), then again for 200k ti
 - **The two F8 runs differ at 100k even with the same seed** (45% against 52% of columns with 3+ levels in training; V1 96.0% at 100k in one, 99.4% at 200k in the other). The GPU runs are not bit-for-bit repeatable, so small differences between single runs here mean little.
 - **Likely reading** (F8 twice, F once): with 48 inputs over 4 ticks, a window has only about 4 numbers' worth of predictable structure. The extra numbers go silent or duplicate each other.
 
+### F16: 16 numbers per window, the model scaled with them
+
+Run at the owner's request on 2026-11-14 (23:00–23:20, 4090, one run, `008_F16`, `make f16`). The owner asked for the model to grow with the bottleneck. So, unlike F8, every part of the window keeps F's proportions:
+
+| Part | F | F8 | F16 | Rule |
+|---|---|---|---|---|
+| Numbers per window | 4 | 8 | 16 | levels 8,5,5,5 repeated |
+| Neurons per window | 20 | 24 | 32 | keeps 256 windows |
+| Input cap per window | 48 | 48 | 80 | 1.6 times the inputs available, like the window |
+| Hidden width of encoder and decoder | 64 | 64 | 256 | 16 per number |
+| Candidates per neuron in the sort (`--k-sample`) | 200 | 200 | 320 | 3.9% of the neurons (8,192 instead of 5,120) |
+
+With 16 numbers per window, there are as many code neurons as pixels (4,096).
+
+| Measure | F | F8 | F16 |
+|---|---|---|---|
+| V1 within 3 px | 98.8% | 96.0% | 99.0% |
+| Live codes | 99.9% | 78.2% | 58.4% (1,705 of 4,096 silent) |
+| Windows without a live code | 0 | 35 | 65 |
+| Columns using 3+ levels in every number (replay / training at 100k) | 99% / 88% | 59% / 52% | 32% / 20% |
+| V2 codes: topography / sorted vs crop / at RF centres | 735: 0.33 / 0.12 / 0.51 | 1,265: 0.36 / 0.14 / 0.39 | 1,890: 0.51 / 0.10 / 0.31 |
+| V3 codes: topography / at RF centres | 288: 0.44 / 0.45 | 326: 0.30 / 0.37 | 492: 0.46 / 0.27 |
+| V4 | none | 10 weak codes | 9 weak codes (field peak 0.25) |
+| Column depths (live) | 184, 72 | 161, 58, 2 | 124, 65, 2 |
+| V2 field size / peak | 222 px / 0.55 | 239 px / 0.45 | 278 px / 0.38 |
+| Same-number neighbours (chance) | 0.24 (0.25) | 0.14 (0.125) | 0.07 (0.06) |
+| Loss against copy-last / no-information baseline (mean of the last 10 reports) | 0.80 / 0.62 | 1.03 / 0.66 | 1.04 / 0.72 |
+
+![F16: 16 numbers per window, the model scaled with them](images/f16_plane.png)
+
+- **Scaling the model with the bottleneck does not rescue it.** F8's pattern continues:
+  - 42% of the codes never become live, and 65 of the 256 windows have no live code at all. They are the dark grey part of the code area on the layer map.
+  - Only a third of the columns use 3+ levels in every number.
+  - The live codes are weaker (V2 field peak 0.38 against F's 0.55), and V2 drawn at its field centres is fainter (0.31 against 0.51).
+  - Prediction is no better than copying the last input, as in F8. F's is 20% better.
+- **V2's layout is the most topographic of any run** (0.51; F512 0.43, F 0.33), but it is still not a picture (sorted view 0.10). More V2 codes may give the sorter more overlapping evidence, as in F512; not tested.
+- **V1 sorts as well (99.0% within 3 px) but twists into a bow-tie.** Its topography is 0.42 against F's 0.62: right locally, folded as a whole.
+- **No new depth:** still two levels of columns, plus 2 columns at depth 3 and 9 weak V4 codes.
+- **Caveat:** F16 differs from F8 in four settings (by design), so the step from F8 to F16 is not the bottleneck alone; F16 against F keeps every proportion. One run of each.
+- **F, F8 and F16 together:** each doubling of the bottleneck silences a larger share of codes (0.1%, 22%, 42%) and fades the copy at field centres (0.51, 0.39, 0.31). The number of live codes still grows (1,023, 1,601, 2,391), but each carries less. This fits the reading above, presumed and not tested: a window has about 4 numbers' worth of predictable structure, and a larger model around the bottleneck does not create more.
+
 ## The readings (set in the task plan before the runs)
 
 | Reading | Result |
@@ -194,5 +236,5 @@ These are not run:
 - **More windows** (1,024 or more): does the code sheet become a picture, and does V4 form?
 - **A fair random control** whose encoders span the levels (F0's random start barely varies), to separate learned codes from any graded code.
 - **Whether FP's two sign groups form two mirror maps** (a topography measured within each group).
-- **A narrower bottleneck** (2 numbers per window): if about 4 is the right size, as F8 suggests, 2 numbers should be fully used.
+- **A narrower bottleneck** (2 numbers per window): if about 4 is the right size, as F8 and F16 suggest, 2 numbers should be fully used.
 - **A second seed of F,** to know how much single-run measures such as topography vary (all runs here are one seed).

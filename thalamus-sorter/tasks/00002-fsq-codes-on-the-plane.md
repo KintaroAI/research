@@ -152,7 +152,26 @@ Not a result, a check of the plumbing and the renders. The main runs are 100k ti
 - **Readings:** 2, 4 ("something else"), 5, 6 and 7 (as sign grouping) met; 1 a narrow miss for F (87.9% of columns with 3+ levels at tick 100k, bar 90%; loss bar met); 3 fails (2 column depths; F512 has 7 live columns at depth 3).
 - **What the layers show:** codes form their own area; V2 and V3 there are folded sheets of spot detectors, topographic (0.33 and 0.44 in F) but not a picture (sorted view 0.12, while V1 itself scores 0.29 on that measure); drawn at field centres they are a blurred copy (0.51, 0.45); no sub-map per code number (0.24).
 - **F8 (added after the write-up, the owner's request, no readings set):** 8 numbers per window, 256 windows kept (`--cluster-neurons-per 24`). It does not help: 22% of codes silent, V2 at field centres 0.39 against F's 0.51, layout the same kind; `make f8`. At 200k ticks (`007_F8_200k`) more codes are silent (28%) and level use is flat from 100k on: not a training-length problem.
+- **F16 (the owner's request, no readings set):** 16 numbers per window with the model scaled to keep F's proportions (section below). 42% of codes silent, V2 fainter at field centres (0.31) but the most topographic layout yet (0.51); `make f16`.
 - **Deviations from the plan:** topography is Spearman of distances, not Procrustes disparity; reading 4's views refined after the pilot; silent codes excluded after F0.
+
+## F16: 16 numbers per window, the column scaled with them (planned 2026-11-14, the owner's request)
+
+- **The owner:** "lets have not 8 but 16 parameters in bottleneck - scale model appropriately - and lets repeat f8 but as F16 with 16 parameters".
+- **Settings:** F's, for 100k ticks on the 4090, except as below. Each part keeps F's proportions:
+
+| Part | F | F8 | F16 | Rule |
+|---|---|---|---|---|
+| Numbers per window (`--column-outputs`, levels 8,5,5,5 repeated) | 4 | 8 | 16 | the request |
+| Neurons per window (`--cluster-neurons-per`) | 20 | 24 | 32 | keeps 256 windows: 4,096 // (32 − 16) |
+| Input cap per column (`--column-max-inputs`) | 48 | 48 | 80 | F wires 36 inputs per column on average under a cap of 48 (9% at the cap); a 32-neuron window has 1.6 times as many ring members, so the cap rises by the same factor (77, rounded up) |
+| Hidden width, encoder and decoder (`--column-fsq-hidden`) | 64 | 64 | 256 | F's 16 hidden units per number |
+| Candidates per neuron (`--k-sample`) | 200 | 200 | 320 | 8,192 neurons instead of 5,120; F's 3.9% (k-sample scales with n) |
+
+- **F8 kept F's cap, hidden width and k-sample,** so F16 against F8 differs in the column's size as well as in the number of codes; F16 against F keeps every proportion.
+- **No readings set (as for F8).** Compared with F and F8: live codes and level use, V1 within 3 px, codes per layer, V2 and V3 topography, the sorted and field-centre views, field sizes, same-number neighbours.
+- **Run:** `make f16` (`exp_00028/008_F16`, then `render_layers.py`).
+- **Result (2026-11-14 23:00–23:20, the 4090):** scaling the model does not rescue the wider bottleneck. 58% of codes live (65 of 256 windows with none), 32% of columns with 3+ levels in every number in the replay, loss about equal to copy-last (1.04 over the last 10 reports; F 0.80). V2 has 1,890 codes, the most topographic layout of any run (0.51), but is fainter at field centres (0.31 against F's 0.51; field peak 0.38). V3 has 492 codes; depths 124, 65, 2. V1 99.0% within 3 px but folded into a bow-tie (topography 0.42). Details in the README's F16 section.
 
 ## Verification
 

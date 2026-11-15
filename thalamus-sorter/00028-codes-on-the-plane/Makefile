@@ -21,7 +21,7 @@ RUN = $(PY) main.py word2vec --mode correlation -W 64 -H 64 --signal-source gard
 
 RUNS = 002_F 003_F0 004_FP 005_F512
 
-.PHONY: all runs runs_a runs_b f8 render test
+.PHONY: all runs runs_a runs_b f8 f16 render test
 
 all: runs render
 
@@ -54,6 +54,19 @@ f8:
 	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(subst -f 100000,-f $(F8_TICKS),$(subst --column-outputs 4,--column-outputs 8,$(RUN))) \
 	  --column-fsq-levels 8,5,5,5,8,5,5,5 --cluster-neurons-per 24 -o $(OUT)/$(F8_NAME) > $(OUT)/$(F8_NAME).log 2>&1
 	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(PY) render_layers.py $(OUT)/$(F8_NAME) > $(OUT)/$(F8_NAME).render.log 2>&1
+
+# F16: F with a 16-number bottleneck (levels 8,5,5,5 four times) and the column scaled with it, keeping F's proportions:
+# neurons-per 32 keeps 256 windows (4096 // (32 - 16)); input cap 48 -> 80 (1.6x the ring members per window);
+# hidden width 64 -> 256 (16 per number); k-sample 200 -> 320 (3.9% of 8,192 neurons)
+F16_TICKS ?= 100000
+F16_NAME ?= 008_F16
+F16_RUN = $(subst --k-sample 200,--k-sample 320,$(subst --column-max-inputs 48,--column-max-inputs 80,$(subst \
+  -f 100000,-f $(F16_TICKS),$(subst --column-outputs 4,--column-outputs 16,$(RUN)))))
+f16:
+	mkdir -p $(OUT)
+	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(F16_RUN) --column-fsq-levels 8,5,5,5,8,5,5,5,8,5,5,5,8,5,5,5 \
+	  --column-fsq-hidden 256 --cluster-neurons-per 32 -o $(OUT)/$(F16_NAME) > $(OUT)/$(F16_NAME).log 2>&1
+	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(PY) render_layers.py $(OUT)/$(F16_NAME) > $(OUT)/$(F16_NAME).render.log 2>&1
 
 render:
 	cd $(DEV) && for r in $(RUNS); do \
