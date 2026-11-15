@@ -32,8 +32,8 @@ EDGES = (0.0, 0.005, 0.01, 0.02, 0.04, 0.1, 1.01)                 # real hunger
 LEVELS = ("0-.005", ".005-.01", ".01-.02", ".02-.04", ".04-.1", ".1+")
 GAPS = (-1e9, 0.0, 4.0, 8.0, 12.0, 16.0, 24.0, 1e9)               # pixels from the cursor to the food's edge
 GAP_NAMES = ("in", "0-4", "4-8", "8-12", "12-16", "16-24", "24+")
-SINCE = (1, 9, 33, 10 ** 9)                                         # task 00102: ticks since any food was last in the window
-SINCE_NAMES = ("1-8", "9-32", "33+")
+SINCE = (1, 9, 17, 33, 65, 10 ** 9)                                 # task 00102: ticks since any food was last in the window
+SINCE_NAMES = ("1-8", "9-16", "17-32", "33-64", "65+")              # task 00103: finer, for contexts of 16 and 32 (vm-00091 used 1-8, 9-32, 33+)
 TOLD = (("real", None, None), ("tol0", None, 0.0), ("told0", 0.0, None), ("told.05", 0.05, None), ("told.5", 0.5, None))
 
 
@@ -298,7 +298,7 @@ def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0, view=None):
                        cos_out=(out_aim["seen"] / np.maximum(out_n["seen"], 1)).tolist(),
                        cos_out_blind=(out_aim["blind"] / np.maximum(out_n["blind"], 1)).tolist(),
                        out_n_nomeal=nm_n["seen"].tolist(), cos_out_nomeal=(nm_aim["seen"] / np.maximum(nm_n["seen"], 1)).tolist(),
-                       cos_out_nomeal_blind=(nm_aim["blind"] / np.maximum(nm_n["blind"], 1)).tolist()) if window else {}))
+                       cos_out_nomeal_blind=(nm_aim["blind"] / np.maximum(nm_n["blind"], 1)).tolist(), since_names=list(SINCE_NAMES)) if window else {}))
 
 
 def poison(path, ticks, bodies, seed):
@@ -431,14 +431,15 @@ def show(paths):
                 o = np.array([r["out_share"] for r in A])
                 print("  no food in view: share of ticks %.3f +- %.3f. Aim at the unseen nearest food by ticks since food was last in view: share of ticks, seen, blind, "
                       "seen - blind over seeds" % (o.mean(), interval(o)))
-                for j, name in enumerate(SINCE_NAMES):
+                names = A[0].get("since_names", ("1-8", "9-32", "33+"))   # rows of vm-00091 carry no names
+                for j, name in enumerate(names):
                     n = np.array([r["out_n"][j] / sum(r["out_n"]) * r["out_share"] for r in A])
                     x, y = np.array([r["cos_out"][j] for r in A]), np.array([r["cos_out_blind"][j] for r in A])
                     print("  %-6s %.3f %+.3f %+.3f  %+.3f +- %.3f, positive %d of %d" % (name, n.mean(), x.mean(), y.mean(), (x - y).mean(), interval(x - y),
                                                                                     (x > y).sum(), len(A)))
                 if "cos_out_nomeal" in A[0]:
                     print("  the same without the ticks after a meal (no food eaten since food was last in view): share of the out-of-view ticks, seen, blind, seen - blind")
-                    for j, name in enumerate(SINCE_NAMES):
+                    for j, name in enumerate(names):
                         n = np.array([r["out_n_nomeal"][j] / max(r["out_n"][j], 1) for r in A])
                         x, y = np.array([r["cos_out_nomeal"][j] for r in A]), np.array([r["cos_out_nomeal_blind"][j] for r in A])
                         print("  %-6s %.3f %+.3f %+.3f  %+.3f +- %.3f, positive %d of %d" % (name, n.mean(), x.mean(), y.mean(), (x - y).mean(), interval(x - y),
@@ -463,7 +464,12 @@ def versus(paths, base):
     for arm in sorted(set(A) - {base}):
         seeds = sorted(set(A[arm]) & set(A[base]))
         print(f"{arm} - {base}, {len(seeds)} seeds")
-        for name, f in (("aim 12-24", far), ("aim 12-24, blind", near), ("lead over grab", lead), ("food", lambda r: r["food"]["seen"]), ("poison", lambda r: r["poison"]["seen"])):
+        tests = [("aim 12-24", far), ("aim 12-24, blind", near), ("lead over grab", lead), ("food", lambda r: r["food"]["seen"]), ("poison", lambda r: r["poison"]["seen"])]
+        r0 = A[arm][seeds[0]]
+        if "cos_out_nomeal" in r0 and len(r0["cos_out_nomeal"]) == len(A[base][seeds[0]]["cos_out_nomeal"]):   # task 00103: memory, same bins only
+            for j, nm in enumerate(r0.get("since_names", ("1-8", "9-32", "33+"))):
+                tests.append(("unseen %s" % nm, lambda r, j=j: r["cos_out_nomeal"][j] - r["cos_out_nomeal_blind"][j]))
+        for name, f in tests:
             d = np.array([f(A[arm][s]) - f(A[base][s]) for s in seeds])
             print("  %-17s %+.3f +- %.3f, seeds %s" % (name, d.mean(), interval(d), np.round(d, 3).tolist()))
 
