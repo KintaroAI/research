@@ -1813,3 +1813,216 @@ class ConsciencePredictiveColumn(TransformerColumn):
                 for k, v in opt_state.items():
                     if torch.is_tensor(v):
                         opt_state[k] = v.to(self._device)
+
+
+# ---------------------------------------------------------------------------
+# FSQColumn — per-window MLP autoencoder with a finite scalar quantization
+# bottleneck, trained to predict its inputs k ticks ahead (ts-00028)
+# ---------------------------------------------------------------------------
+
+class FSQColumn(ColumnBase):
+    """Predictive bottleneck per column; the codes are the outputs.
+
+    Each column has its own weights (batched over m). The encoder reads the
+    last `enc_window` ticks of the column's input slots and squeezes them to
+    n_outputs numbers, each tanh-bounded and rounded to a fixed number of
+    levels (FSQ, straight-through gradient). The decoder sees only those
+    numbers and predicts the column's inputs `predict_k` ticks after the
+    newest input tick. Outputs are the code values in [-1, 1].
+
+    The column asks the caller for a longer window (`self.window`) than it
+    encodes, so each update trains on `n_samples` past windows whose targets
+    are already in the buffer:
+        signal_window[:, 0] is tick t (newest).
+        sample b: input = columns [k+b, k+b+w), target = column b.
+        current code: input = columns [0, w).
+    No gradient leaves the column: what other columns read is a plain number.
+    """
+
+    def __init__(self, m, n_outputs=4, max_inputs=48, window=4, lr=1e-3,
+                 levels=(8, 5, 5, 5), predict_k=2, hidden=64, n_samples=4,
+                 train_every=1, report_every=1000, seed=0, **kwargs):
+        levels = tuple(int(v) for v in levels)
+        assert len(levels) == n_outputs, \
+            f"FSQ levels {levels} must have n_outputs={n_outputs} entries"
+        assert min(levels) >= 2
+        self.enc_window = int(window)
+        self.predict_k = int(predict_k)
+        self.n_samples = int(n_samples)
+        super().__init__(m, n_outputs, max_inputs,
+                         self.enc_window + self.predict_k + self.n_samples - 1, lr)
+        self.levels = levels
+        self.hidden = int(hidden)
+        self.train_every = max(1, int(train_every))
+        self.report_every = int(report_every)
+        self._tick_count = 0
+
+        self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dev = self._device
+        g = torch.Generator().manual_seed(seed)
+        I, w, H, d = max_inputs, self.enc_window, self.hidden, n_outputs
+
+        def init(*shape, fan_in):
+            return torch.nn.Parameter(
+                (torch.randn(*shape, generator=g) * fan_in ** -0.5).to(dev))
+
+        def zeros(*shape):
+            return torch.nn.Parameter(torch.zeros(*shape, device=dev))
+
+        self.W1 = init(m, I * w, H, fan_in=I * w)
+        self.b1 = zeros(m, H)
+        self.W2 = init(m, H, d, fan_in=H)
+        self.b2 = zeros(m, d)
+        self.D1 = init(m, d, H, fan_in=d)
+        self.c1 = zeros(m, H)
+        self.D2 = init(m, H, I, fan_in=H)
+        self.c2 = zeros(m, I)
+        self._param_names = ['W1', 'b1', 'W2', 'b2', 'D1', 'c1', 'D2', 'c2']
+        self._params = [getattr(self, n) for n in self._param_names]
+        self._optimizer = torch.optim.Adam(self._params, lr=lr) if lr > 0 else None
+
+        L = torch.tensor(levels, dtype=torch.float32, device=dev)
+        self._L = L
+        self._half_l = (L - 1) * (1 - 1e-3) / 2
+        self._offset = torch.where(L % 2 == 0, torch.full_like(L, 0.5), torch.zeros_like(L))
+        self._shift = torch.atanh(self._offset / self._half_l)
+        self._half_width = torch.floor(L / 2)
+
+        # Diagnostics: level counts since the last report, loss EMAs
+        self.level_counts = np.zeros((m, d, max(levels)), dtype=np.int64)
+        self.loss_ema = {'model': None, 'copy': None, 'mean': None, 'slot': None}
+        self.history = []   # (tick, model, copy, mean, alive share, slot)
+        # Long-run mean of each slot (EMA): the no-information baseline
+        self._slot_mean = None
+
+    # --- FSQ ---
+    def fsq(self, z):
+        """z (..., d) -> (codes in [-1, 1], integer level index 0..L-1)."""
+        bounded = torch.tanh(z + self._shift) * self._half_l - self._offset
+        rounded = torch.round(bounded)
+        q = bounded + (rounded - bounded).detach()
+        idx = (rounded + self._half_width).long()
+        return q / self._half_width, idx
+
+    def encode(self, x):
+        """x (m, B, I*w) -> codes (m, B, d), level idx (m, B, d)."""
+        h = F.gelu(torch.bmm(x, self.W1) + self.b1.unsqueeze(1))
+        z = torch.bmm(h, self.W2) + self.b2.unsqueeze(1)
+        return self.fsq(z)
+
+    def decode(self, codes):
+        """codes (m, B, d) -> prediction (m, B, I)."""
+        h = F.gelu(torch.bmm(codes, self.D1) + self.c1.unsqueeze(1))
+        return torch.bmm(h, self.D2) + self.c2.unsqueeze(1)
+
+    def _windows(self, X, offsets):
+        """X (m, I, W) numpy -> (m, len(offsets), I*w) tensor of windows
+        starting at each offset (column offset = newest tick of the window)."""
+        w = self.enc_window
+        xs = np.stack([X[:, :, o:o + w] for o in offsets], axis=1)  # (m, B, I, w)
+        m, B = xs.shape[:2]
+        return torch.from_numpy(
+            np.ascontiguousarray(xs.reshape(m, B, -1), dtype=np.float32)).to(self._device)
+
+    def tick(self, signal_window, knn2=None):
+        X = self._gather_input(signal_window)          # (m, I, W), col 0 newest
+        dev = self._device
+        k, B = self.predict_k, self.n_samples
+        valid = torch.from_numpy((self.slot_map >= 0).astype(np.float32)).to(dev)
+        n_valid = valid.sum(dim=1).clamp(min=1.0)       # (m,)
+
+        if self._tick_count % self.train_every == 0:
+            x = self._windows(X, [k + b for b in range(B)])
+            target = torch.from_numpy(np.ascontiguousarray(
+                X[:, :, :B].transpose(0, 2, 1), dtype=np.float32)).to(dev)  # (m, B, I)
+            if self._optimizer is not None:
+                codes, _ = self.encode(x)
+                pred = self.decode(codes)
+            else:
+                with torch.no_grad():
+                    codes, _ = self.encode(x)
+                    pred = self.decode(codes)
+
+            def masked_mse(p):
+                return (((p - target) ** 2) * valid.unsqueeze(1)).sum(dim=2).div(
+                    n_valid.unsqueeze(1)).mean()
+
+            loss = masked_mse(pred)
+            if self._optimizer is not None:
+                self._optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self._params, 1.0)
+                self._optimizer.step()
+            with torch.no_grad():
+                Xt = torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32)).to(dev)
+                copy = torch.stack([Xt[:, :, k + b] for b in range(B)], dim=1)
+                mean = torch.stack([Xt[:, :, k + b:k + b + self.enc_window].mean(dim=2)
+                                    for b in range(B)], dim=1)
+                if self._slot_mean is None:
+                    self._slot_mean = Xt[:, :, 0].clone()
+                slot = self._slot_mean.unsqueeze(1).expand_as(target)
+                vals = {'model': float(loss), 'copy': float(masked_mse(copy)),
+                        'mean': float(masked_mse(mean)), 'slot': float(masked_mse(slot))}
+                self._slot_mean.mul_(0.999).add_(0.001 * Xt[:, :, 0])
+            for key, v in vals.items():
+                e = self.loss_ema[key]
+                self.loss_ema[key] = v if e is None else 0.99 * e + 0.01 * v
+
+        with torch.no_grad():
+            codes, idx = self.encode(self._windows(X, [0]))
+        self._outputs = codes[:, 0, :].cpu().numpy().astype(np.float32)
+        idx = idx[:, 0, :].cpu().numpy()
+        mi, di = np.meshgrid(np.arange(self.m), np.arange(self.n_outputs), indexing='ij')
+        np.add.at(self.level_counts, (mi, di, idx), 1)
+
+        self._tick_count += 1
+        if self.report_every and self._tick_count % self.report_every == 0:
+            self.report()
+
+    def levels_used(self, min_share=0.01):
+        """(m, d) number of levels each code dimension used since the last
+        report, counting a level if it took at least min_share of ticks."""
+        tot = self.level_counts.sum(axis=2, keepdims=True).clip(min=1)
+        return (self.level_counts / tot >= min_share).sum(axis=2)
+
+    def report(self):
+        used = self.levels_used()
+        alive = float((used.min(axis=1) >= 3).mean())
+        e = self.loss_ema
+        self.history.append((self._tick_count, e['model'], e['copy'], e['mean'], alive,
+                             e['slot']))
+        print(f"  fsq tick {self._tick_count}: loss {e['model']:.5f} "
+              f"(slot long-run mean {e['slot']:.5f}; copy-last {e['copy']:.5f}, "
+              f"window mean {e['mean']:.5f}), "
+              f"levels used per dim {used.mean(axis=0).round(2).tolist()}, "
+              f"columns with every dim >=3 levels {alive:.3f}", flush=True)
+        self.level_counts[:] = 0
+
+    def save(self, output_dir):
+        np.save(os.path.join(output_dir, "column_slot_map.npy"), self.slot_map)
+        state = {
+            'type': 'fsq', 'tick_count': self._tick_count,
+            'm': self.m, 'n_outputs': self.n_outputs,
+            'max_inputs': self.max_inputs, 'enc_window': self.enc_window,
+            'predict_k': self.predict_k, 'n_samples': self.n_samples,
+            'hidden': self.hidden, 'levels': list(self.levels), 'lr': self.lr,
+            '_reserved_mask': torch.from_numpy(self._reserved_mask.astype(np.uint8)),
+            'history': torch.tensor([[float('nan') if v is None else v for v in h]
+                                     for h in self.history], dtype=torch.float64),
+        }
+        for name, p in zip(self._param_names, self._params):
+            state[name] = p.detach().cpu()
+        if self._optimizer is not None:
+            state['optimizer_state'] = self._optimizer.state_dict()
+        torch.save(state, os.path.join(output_dir, "column_states.pt"))
+        print(f"  fsq column state saved to {output_dir}")
+
+    def load_state(self, state, slot_map):
+        self.slot_map = slot_map
+        if state.get('_reserved_mask') is not None:
+            self._reserved_mask = state['_reserved_mask'].numpy().astype(bool)
+        self._tick_count = int(state.get('tick_count', 0))
+        for name, p in zip(self._param_names, self._params):
+            p.data.copy_(state[name].to(self._device))
+        if self._optimizer is not None and 'optimizer_state' in state:
+            self._optimizer.load_state_dict(state['optimizer_state'])

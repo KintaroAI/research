@@ -364,11 +364,36 @@ def run_word2vec(args):
                 use_raw = args.use_mse or args.use_deriv_corr
                 walk_dy = np.random.randint(0, max_dy + 1)
                 walk_dx = np.random.randint(0, max_dx + 1)
+                momentum = getattr(args, 'saccade_momentum', 0.0)
+                jump_prob = getattr(args, 'saccade_jump', 0.0)
+                jump_step = getattr(args, 'saccade_jump_step', 50)
+                walk_v = [0, 0]   # (vy, vx), used only with momentum
+
+                def saccade_step_draw(wy, wx):
+                    """Next step (dy, dx). Without momentum: a fresh random
+                    step each tick (the original walk). With momentum p: keep
+                    the velocity with probability p, else redraw it; reverse a
+                    component that would leave the image."""
+                    if jump_prob > 0 and np.random.random() < jump_prob:
+                        walk_v[0] = walk_v[1] = 0
+                        return (np.random.randint(-jump_step, jump_step + 1),
+                                np.random.randint(-jump_step, jump_step + 1))
+                    if momentum <= 0:
+                        return (np.random.randint(-saccade_step, saccade_step + 1),
+                                np.random.randint(-saccade_step, saccade_step + 1))
+                    if np.random.random() >= momentum or walk_v == [0, 0]:
+                        walk_v[0] = np.random.randint(-saccade_step, saccade_step + 1)
+                        walk_v[1] = np.random.randint(-saccade_step, saccade_step + 1)
+                    if not 0 <= wy + walk_v[0] <= max_dy:
+                        walk_v[0] = -walk_v[0]
+                    if not 0 <= wx + walk_v[1] <= max_dx:
+                        walk_v[1] = -walk_v[1]
+                    return walk_v[0], walk_v[1]
+
                 for t in range(T):
-                    walk_dy = np.clip(walk_dy + np.random.randint(-saccade_step, saccade_step + 1),
-                                      0, max_dy)
-                    walk_dx = np.clip(walk_dx + np.random.randint(-saccade_step, saccade_step + 1),
-                                      0, max_dx)
+                    step_dy, step_dx = saccade_step_draw(walk_dy, walk_dx)
+                    walk_dy = np.clip(walk_dy + step_dy, 0, max_dy)
+                    walk_dx = np.clip(walk_dx + step_dx, 0, max_dx)
                     crop = source[walk_dy:walk_dy+crop_h, walk_dx:walk_dx+crop_w].ravel()
                     if use_raw:
                         signals_np[:n_sensory, t] = crop
@@ -444,8 +469,7 @@ def run_word2vec(args):
                                               float(motor_dx), float(motor_dy),
                                               out.tolist()))
                     old_dx, old_dy = walk_dx, walk_dy
-                    rand_dy = np.random.randint(-saccade_step, saccade_step + 1)
-                    rand_dx = np.random.randint(-saccade_step, saccade_step + 1)
+                    rand_dy, rand_dx = saccade_step_draw(walk_dy, walk_dx)
                     # Motor confidence suppresses random walk
                     if motor_proprio:
                         motor_mag = np.sqrt(motor_dx**2 + motor_dy**2)
@@ -491,6 +515,7 @@ def run_word2vec(args):
                     use_covariance=args.use_covariance,
                     use_mse=args.use_mse,
                     use_deriv_corr=args.use_deriv_corr,
+                    corr_sign=getattr(args, 'corr_sign', 'auto'),
                     max_hit_ratio=args.max_hit_ratio,
                     batch_size=args.batch_size,
                     anchor_sample=anchor_sample,
@@ -518,7 +543,13 @@ def run_word2vec(args):
                 'n_outputs': column_outputs,
                 'max_inputs': getattr(args, 'column_max_inputs', 20),
                 'window': getattr(args, 'column_window', 4),
-                'lr': getattr(args, 'column_lr', None) or (0.001 if getattr(args, 'column_type', 'default') in ('predictive', 'recon') else 0.05),
+                'lr': (getattr(args, 'column_lr', None) if getattr(args, 'column_lr', None) is not None
+                       else (0.001 if getattr(args, 'column_type', 'default') in ('predictive', 'recon', 'fsq') else 0.05)),
+                'fsq_levels': tuple(int(v) for v in getattr(args, 'column_fsq_levels', '8,5,5,5').split(',')),
+                'predict_k': getattr(args, 'column_predict_k', 2),
+                'fsq_hidden': getattr(args, 'column_fsq_hidden', 64),
+                'fsq_samples': getattr(args, 'column_fsq_samples', 4),
+                'fsq_train_every': getattr(args, 'column_fsq_train_every', 1),
                 'temperature': getattr(args, 'column_temperature', 0.5),
                 'alpha': getattr(args, 'column_alpha', 0.01),
                 'reseed_after': getattr(args, 'column_reseed_after', 1000),
@@ -807,6 +838,17 @@ def main():
                        help="Pearson correlation on temporal derivatives. "
                             "Dead neurons get score=0 (no variance gate needed). "
                             "Threshold ~0.3-0.5 (higher=more similar).")
+    p_w2v.add_argument("--corr-sign", choices=["auto", "pos", "abs"], default="auto",
+                       help="Pearson neighbour rule: 'auto' (original: positive only with "
+                            "--use-deriv-corr, absolute otherwise), 'pos', or 'abs'")
+    p_w2v.add_argument("--saccade-jump", type=float, default=0.0,
+                       help="Probability per tick of a jump of up to --saccade-jump-step pixels "
+                            "(between jumps the walk drifts by --saccade-step, with momentum)")
+    p_w2v.add_argument("--saccade-jump-step", type=int, default=50,
+                       help="Max pixels per jump (default: 50)")
+    p_w2v.add_argument("--saccade-momentum", type=float, default=0.0,
+                       help="Probability the saccade keeps its velocity each tick (0 = a fresh random "
+                            "step every tick, the original walk); velocity reverses at the edges")
     p_w2v.add_argument("--max-hit-ratio", type=float, default=None,
                        help="Discard anchors where neighbors/k_sample exceeds this ratio (e.g. 0.1). "
                             "Filters out global signals — if a neuron correlates with everyone, skip it.")
@@ -1005,6 +1047,16 @@ def main():
                        help="Output tiredness per win (0=disabled, 0.001=tired in ~1k ticks)")
     p_w2v.add_argument("--column-tiredness-recovery", type=float, default=0.0,
                        help="Output tiredness recovery per non-win (0=disabled, 0.00045=rest in ~2k ticks)")
+    p_w2v.add_argument("--column-fsq-levels", type=str, default="8,5,5,5",
+                       help="FSQ column: levels per code dimension, one per output (default: 8,5,5,5)")
+    p_w2v.add_argument("--column-predict-k", type=int, default=2,
+                       help="FSQ column: predict inputs this many ticks after the newest input tick (default: 2)")
+    p_w2v.add_argument("--column-fsq-hidden", type=int, default=64,
+                       help="FSQ column: hidden width of encoder and decoder MLPs (default: 64)")
+    p_w2v.add_argument("--column-fsq-samples", type=int, default=4,
+                       help="FSQ column: past windows per update (default: 4)")
+    p_w2v.add_argument("--column-fsq-train-every", type=int, default=1,
+                       help="FSQ column: update every N ticks (default: 1)")
     p_w2v.add_argument("--column-feedback", action="store_true",
                        help="Feed column outputs back as signal for feedback neurons")
     p_w2v.add_argument("--column-lateral", action="store_true",

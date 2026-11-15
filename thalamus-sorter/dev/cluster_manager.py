@@ -135,6 +135,19 @@ def create_column(column_type, column_config):
             wta_mode=column_config.get('wta_mode', 'none'),
             lateral_inputs=column_config.get('lateral_inputs', False),
             lateral_input_k=column_config.get('lateral_input_k', 4))
+    elif column_type == 'fsq':
+        from column_manager import FSQColumn
+        return FSQColumn(
+            m,
+            n_outputs=column_config.get('n_outputs', 4),
+            max_inputs=column_config.get('max_inputs', 48),
+            window=column_config.get('window', 4),
+            lr=column_config.get('lr', 1e-3),
+            levels=column_config.get('fsq_levels', (8, 5, 5, 5)),
+            predict_k=column_config.get('predict_k', 2),
+            hidden=column_config.get('fsq_hidden', 64),
+            n_samples=column_config.get('fsq_samples', 4),
+            train_every=column_config.get('fsq_train_every', 1))
     elif column_type == 'predictive':
         from column_manager import PredictiveColumn
         return PredictiveColumn(

@@ -84,13 +84,23 @@ class DriftSolver:
         else:
             self.knn_lists = None
 
+    @staticmethod
+    def _corr_mask(score, threshold, corr_sign, use_deriv_corr):
+        positive = corr_sign == 'pos' or (corr_sign == 'auto' and use_deriv_corr)
+        return (score if positive else score.abs()) > threshold
+
     def tick_correlation(self, signals, k_sample=50, threshold=0.5, window=5,
                          anchor_only=False, use_covariance=False,
                          use_mse=False, use_deriv_corr=False,
-                         max_hit_ratio=None, batch_size=256,
+                         corr_sign='auto', max_hit_ratio=None, batch_size=256,
                          anchor_sample=256, fp16=False,
                          matmul_corr=True, predictive_shift=0):
         """Skip-gram from correlation-based neighbor discovery.
+
+        corr_sign: which correlations count as neighbours in the Pearson
+        paths. 'auto' (default, the original rule): positive only with
+        use_deriv_corr, absolute value otherwise. 'pos': positive only.
+        'abs': absolute value.
 
         Instead of precomputed top-K, each tick:
         1. Pick anchor neurons (all n split into anchor_batches chunks)
@@ -195,10 +205,7 @@ class DriftSolver:
                 else:
                     score_all = anchor_normed @ sig_normed.T
                     score = score_all.gather(1, candidates).float()
-                    if use_deriv_corr:
-                        mask = score > threshold
-                    else:
-                        mask = score.abs() > threshold
+                    mask = self._corr_mask(score, threshold, corr_sign, use_deriv_corr)
             else:
                 anchor_sig = signals[anchors]
                 cand_sig = signals[candidates]
@@ -215,7 +222,7 @@ class DriftSolver:
                     c_norm = cand_dc.norm(dim=2, keepdim=True).clamp(min=1e-8)
                     score = (anchor_dc.unsqueeze(1) / a_norm.unsqueeze(1) *
                              cand_dc / c_norm).sum(dim=2).float()
-                    mask = score > threshold
+                    mask = self._corr_mask(score, threshold, corr_sign, use_deriv_corr)
                 elif use_mse:
                     diff = anchor_sig.unsqueeze(1) - cand_sig
                     score = (diff * diff).mean(dim=2).float()
@@ -233,7 +240,7 @@ class DriftSolver:
                     c_norm = cand_centered.norm(dim=2, keepdim=True).clamp(min=1e-8)
                     score = ((anchor_centered / a_norm).unsqueeze(1) *
                              (cand_centered / c_norm)).sum(dim=2).float()
-                    mask = score.abs() > threshold
+                    mask = self._corr_mask(score, threshold, corr_sign, use_deriv_corr)
 
             # Exclude self-matches (anchor correlated with itself)
             self_match = candidates == anchors.unsqueeze(1)
