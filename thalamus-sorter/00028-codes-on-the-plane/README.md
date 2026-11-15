@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-14
 **Status:** Complete
-**Source:** `exp/ts-00028`
+**Source:** `exp/ts-00028` (`c201d58`)
 **Outputs:** `~/data/research/thalamus-sorter/exp_00028/`
 **Task plan:** [`../tasks/00002-fsq-codes-on-the-plane.md`](../tasks/00002-fsq-codes-on-the-plane.md)
 **Depends on:** ts-00021 (feedback neurons), ts-00023 (layers by BFS on the feedback graph)
