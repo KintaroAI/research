@@ -149,8 +149,8 @@ Not a result, a check of the plumbing and the renders. The main runs are 100k ti
 
 ## Results (summary; full report in the experiment README)
 
-- **Readings:** 2, 4 ("something else"), 5, 6 and 7 (as sign grouping) met; 1 a narrow miss for F (87.9% of columns with 3+ levels at tick 100k, bar 90%; loss bar met); 3 fails (2 column depths; F512 has 7 live columns at depth 3).
-- **What the layers show:** codes form their own area; V2 and V3 there are folded sheets of spot detectors, topographic (0.33 and 0.44 in F) but not a picture (sorted view 0.12, while V1 itself scores 0.29 on that measure); drawn at field centres they are a blurred copy (0.51, 0.45); no sub-map per code number (0.24).
+- **Readings:** 2, 4 ("something else"), 5, 6 (on prediction; its topography half is within run-to-run noise) and 7 (as sign grouping) met; 1 a narrow miss for F (87.9% of columns with 3+ levels at tick 100k, bar 90%; loss bar met; F's second run passes at 90.2%); 3 fails (2 column depths; F512 has 7 live columns at depth 3).
+- **What the layers show:** codes form their own area; V2 and V3 there are folded sheets of spot detectors, topographic (0.33 and 0.44 in F; 0.22 and 0.24 in F's second run, so the layout varies between runs) but not a picture (sorted view 0.12, while V1 itself scores 0.29 on that measure); drawn at field centres they are a blurred copy (0.51, 0.45); no sub-map per code number (0.24).
 - **F8 (added after the write-up, the owner's request, no readings set):** 8 numbers per window, 256 windows kept (`--cluster-neurons-per 24`). It does not help: 22% of codes silent, V2 at field centres 0.39 against F's 0.51, layout the same kind; `make f8`. At 200k ticks (`007_F8_200k`) more codes are silent (28%) and level use is flat from 100k on: not a training-length problem.
 - **F16 (the owner's request, no readings set):** 16 numbers per window with the model scaled to keep F's proportions (section below). 42% of codes silent, V2 fainter at field centres (0.31) but the most topographic layout yet (0.51); `make f16`.
 - **Deviations from the plan:** topography is Spearman of distances, not Procrustes disparity; reading 4's views refined after the pilot; silent codes excluded after F0.
@@ -172,6 +172,32 @@ Not a result, a check of the plumbing and the renders. The main runs are 100k ti
 - **No readings set (as for F8).** Compared with F and F8: live codes and level use, V1 within 3 px, codes per layer, V2 and V3 topography, the sorted and field-centre views, field sizes, same-number neighbours.
 - **Run:** `make f16` (`exp_00028/008_F16`, then `render_layers.py`).
 - **Result (2026-11-14 23:00–23:20, the 4090):** scaling the model does not rescue the wider bottleneck. 58% of codes live (65 of 256 windows with none), 32% of columns with 3+ levels in every number in the replay, loss about equal to copy-last (1.04 over the last 10 reports; F 0.80). V2 has 1,890 codes, the most topographic layout of any run (0.51), but is fainter at field centres (0.31 against F's 0.51; field peak 0.38). V3 has 492 codes; depths 124, 65, 2. V1 99.0% within 3 px but folded into a bow-tie (topography 0.42). Details in the README's F16 section.
+
+## F2 and a second run of F (planned 2026-11-15, the owner's OK)
+
+- **The owner:** "yes, write the task file and run both checks" (the two cheap checks from the README's Next list, while the GPUs are idle).
+- **F2, a narrower bottleneck:** 2 numbers per window at levels (8, 5), the first two of F's. Only the numbers change, as in F8: `--cluster-neurons-per 18` keeps 256 windows (4,096 // (18 − 2)); input cap 48, hidden width 64 and k-sample 200 as in F.
+  - **The question:** F8 and F16 suggest a window holds about 4 numbers' worth of predictable structure. If so, F2's two numbers should both be fully used: nearly all codes live, nearly all columns at 3+ levels in both numbers.
+  - **Expected cost of fewer numbers, if any:** fewer codes (512), so a smaller V2 and perhaps no V3; a coarser copy at field centres.
+- **F again (`010_F_rerun`):** F's exact command. numpy's draws are not seeded (the eye's path, the embedding's start), so the run differs from F; the columns' starting weights are the same (the cluster manager's `RandomState(42)`), and GPU runs do not repeat anyway.
+  - **The question:** how much do the single-run measures vary? Every comparison in this experiment is one run against one run. The F8 pair (100k vs 200k) already differed (45% against 52% of columns at 3+ levels).
+- **No readings set.** Compared with F (and F8, F16): live codes, level use, V1 within 3 px, codes per layer, column depths, V2 and V3 topography, the sorted and field-centre views, field sizes and peaks, same-number neighbours, loss against copy-last and the no-information baseline (mean of the last 10 reports).
+- **Run:** `make checks`: both at once on the 4090 (100k ticks, as F and F0 ran), then `render_layers.py` on each (`exp_00028/009_F2`, `010_F_rerun`).
+- **Result (2026-11-15 23:28–23:46, the 4090):**
+  - **F again:** what the codes carry repeats, the layout does not.
+    - These repeat closely: live codes 99.8% (F 99.9%); 99% of columns at 3+ levels; V2 at field centres 0.49 (0.51); field peak 0.54 (0.55); V2 sorted view 0.10 (0.12); V1 98.3% within 3 px (98.8%); loss 0.64 of the no-information baseline (0.62); two column depths (195, 61 against 184, 72).
+    - The layout does not repeat: V2 topography 0.22 (F 0.33) and V3 topography 0.24 (0.44).
+    - The loss is below copy-last in only 46 of the 57 reports after 43k, against all 57 in F.
+    - So single-run differences in topography of 0.1–0.2 (F0 0.23, FP 0.20) are within F's own spread.
+  - **F2:** both numbers are fully used. 100% of codes are live, every column uses all 8 and all 5 levels, and the loss is 0.65 of the no-information baseline.
+    - The codes are the sharpest of any run: V2 field peak 0.71, size 187 px, and V2 drawn at field centres matches the crop at 0.68, against F's 0.49–0.51.
+    - With half the codes, V2 has 436 and V3 76 (38 depth-2 columns), and V2 topography is 0.39.
+    - No sub-maps: same-number neighbours 0.49 (chance 0.5).
+  - **The series 2 → 4 → 8 → 16 numbers:**
+    - live codes 100% → 99.9% → 78% → 58%;
+    - V2 at field centres 0.68 → 0.49–0.51 → 0.39 → 0.31;
+    - V2 field peak 0.71 → 0.55 → 0.45 → 0.38.
+    - Fewer numbers make fewer, sharper codes. All are used up to 4, and beyond that the extra numbers go silent.
 
 ## Verification
 

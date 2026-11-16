@@ -21,7 +21,7 @@ RUN = $(PY) main.py word2vec --mode correlation -W 64 -H 64 --signal-source gard
 
 RUNS = 002_F 003_F0 004_FP 005_F512
 
-.PHONY: all runs runs_a runs_b f8 f16 render test
+.PHONY: all runs runs_a runs_b f8 f16 checks render test
 
 all: runs render
 
@@ -67,6 +67,19 @@ f16:
 	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(F16_RUN) --column-fsq-levels 8,5,5,5,8,5,5,5,8,5,5,5,8,5,5,5 \
 	  --column-fsq-hidden 256 --cluster-neurons-per 32 -o $(OUT)/$(F16_NAME) > $(OUT)/$(F16_NAME).log 2>&1
 	cd $(DEV) && $(G) CUDA_VISIBLE_DEVICES=1 $(PY) render_layers.py $(OUT)/$(F16_NAME) > $(OUT)/$(F16_NAME).render.log 2>&1
+
+# checks (2026-11-15): F2 = F with a 2-number bottleneck (levels 8,5), only the numbers change as in F8, neurons-per 18 keeps
+# 256 windows (4096 // (18 - 2)); F_rerun = F's exact command again (numpy's draws are unseeded, the columns start from the
+# same weights). Both at once on GPU 1, then rendered.
+checks:
+	mkdir -p $(OUT)
+	cd $(DEV) && { \
+	  $(G) CUDA_VISIBLE_DEVICES=1 $(subst --column-outputs 4,--column-outputs 2,$(RUN)) --column-fsq-levels 8,5 \
+	    --cluster-neurons-per 18 -o $(OUT)/009_F2 > $(OUT)/009_F2.log 2>&1 & \
+	  $(G) CUDA_VISIBLE_DEVICES=1 $(RUN) --cluster-neurons-per 20 -o $(OUT)/010_F_rerun > $(OUT)/010_F_rerun.log 2>&1 & \
+	  wait; }
+	cd $(DEV) && for r in 009_F2 010_F_rerun; do \
+	  $(G) CUDA_VISIBLE_DEVICES=1 $(PY) render_layers.py $(OUT)/$$r > $(OUT)/$$r.render.log 2>&1 || exit 1; done
 
 render:
 	cd $(DEV) && for r in $(RUNS); do \

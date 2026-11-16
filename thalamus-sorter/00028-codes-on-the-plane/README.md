@@ -16,11 +16,15 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
 **Something else.**
 - **The codes form an area of their own,** apart from the pixels.
 - **On that area, V2 and V3 are folded sheets of spot detectors.** Each code responds to a bright or dark blob of about 15 px, usually with an opposite-sign flank.
-- **The sheets are roughly topographic:** codes placed near each other look at nearby parts of the crop. They are not laid out as a picture, though.
+- **The sheets are roughly topographic:** codes placed near each other look at nearby parts of the crop. They are not laid out as a picture, though, and how topographic they are varies a lot from run to run (below).
 - **The picture is in the codes, not in their layout.** Drawn where each code looks, V2 is a blurred copy of the scene (0.51), and V3 is blurrier (0.45).
 - **No interleaved copies:** codes carrying the same one of the 4 numbers do not group together.
 - **Learning is what makes the layers.** With encoders frozen at their random start, 42% of the codes are silent and only one weak layer forms above V1.
-- **A wider bottleneck does not help, even with the window's model scaled to match.** With 8 numbers per window (F8), 22% of the codes go silent (28% after twice the training). With 16 (F16), 42% do. The live codes get blurrier with each doubling.
+- **The bottleneck's width trades the number of codes against their sharpness.**
+  - With 2 numbers per window (F2), every code is used, and V2 drawn at its field centres is the clearest copy of the scene (0.68). But there are only 436 V2 codes and 76 V3.
+  - With 4 (F), nearly every code is used (copy 0.49–0.51).
+  - A wider bottleneck does not help, even with the window's model scaled to match. With 8 numbers (F8), 22% of the codes go silent (28% after twice the training); with 16 (F16), 42%. The live codes get blurrier with each doubling.
+- **What the codes carry repeats from run to run; the layout does not.** A second run of F matches the first in live codes, level use and the copy at field centres (0.49 against 0.51), but not in topography (V2 0.22 against 0.33, V3 0.24 against 0.44). Differences in topography of 0.1–0.2 between single runs are noise.
 
 ## Method
 
@@ -41,6 +45,8 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
 | F512 | 512 windows (`--cluster-neurons-per 12`) | does depth grow with the number of windows? |
 | F8 | 8 code numbers per window (levels 8,5,5,5 twice; `--cluster-neurons-per 24` keeps 256 windows) | does a wider bottleneck help? (added after the first write-up, at the owner's request; no readings were set for it) |
 | F16 | 16 code numbers per window, the window's model scaled to keep F's proportions (32 neurons per window, input cap 80, hidden width 256, 320 sort candidates) | does a wider bottleneck help when the model grows with it? (the owner's request; no readings set) |
+| F2 | 2 code numbers per window (levels 8,5; `--cluster-neurons-per 18` keeps 256 windows), otherwise F | is every code of a narrower bottleneck used? (2026-11-15, with the owner's OK; no readings set) |
+| F, second run | F's command again | how much single-run measures vary: numpy's draws are not seeded, so the eye's path and the sort differ, while the windows' models start from the same weights |
 
 - **Rendering (`dev/render_layers.py`, new):**
   - Each run's final state is replayed for 4,000 ticks with learning off. The eye restarts at a random place every 100 ticks, so receptive fields are local.
@@ -52,7 +58,7 @@ Every window of the sorted map gets a small model with a finite scalar quantizat
     - *at RF centres:* each code drawn where in the crop it looks. This is what the codes carry.
     - Both views are sign-corrected and correlated with the crop shrunk to the layer's grid.
   - **Topography:** Spearman correlation between pairwise distances on the plane and between field centres. Shuffled codes give about 0.
-- **Reproduce:** `make runs` (F and F0 on GPU 1, FP and F512 on `GPU_B`, default GPU 0), then `make render`; `make f8` and `make f16` run and render F8 and F16 on GPU 1. `make test` runs `dev/test_fsq_column.py` (7 tests).
+- **Reproduce:** `make runs` (F and F0 on GPU 1, FP and F512 on `GPU_B`, default GPU 0), then `make render`; `make f8` and `make f16` run and render F8 and F16 on GPU 1, and `make checks` runs and renders F2 and F's second run there together. `make test` runs `dev/test_fsq_column.py` (7 tests).
 
 ## Results
 
@@ -83,6 +89,7 @@ The four code numbers are mixed throughout. No sub-map per number forms.
 | Run | V1 within 3 px | Live codes | V2 / V3 / V4 codes | Column depths (live) | V2 topography | V3 topography |
 |---|---|---|---|---|---|---|
 | F | 98.8% | 99.9% | 735 / 288 / 0 | 184, 72 | 0.33 | 0.44 |
+| F, second run | 98.3% | 99.8% | 780 / 242 / 0 | 195, 61 | 0.22 | 0.24 |
 | F0 | 99.5% | 57.6% | 580 / 10 / 0 | 151, 10 | 0.23 | 0.13 |
 | FP | 99.7% | 99.6% | 712 / 308 / 0 | 178, 78 | 0.20 | 0.21 |
 | F512 | 99.0% | 98.1% | 1372 / 614 / 24 | 343, 158, 7 | 0.43 | 0.46 |
@@ -90,6 +97,7 @@ The four code numbers are mixed throughout. No sub-map per number forms.
 | Run | V2 sorted vs crop | V2 at RF centres vs crop | V3 at RF centres vs crop | RF size V2 / V3 (px) | Same-number neighbours (chance 0.25) | Same-sign neighbours (chance 0.50) |
 |---|---|---|---|---|---|---|
 | F | 0.12 | 0.51 | 0.45 | 222 / 335 | 0.24 | 0.50 |
+| F, second run | 0.10 | 0.49 | 0.41 | 213 / 434 | 0.26 | 0.49 |
 | F0 | 0.02 | 0.16 | not measured | 318 / 894 | 0.27 | 0.59 |
 | FP | 0.01 | 0.49 | 0.39 | 223 / 471 | 0.26 | 0.75 |
 | F512 | 0.16 | 0.46 | 0.39 | 246 / 449 | 0.27 | 0.49 |
@@ -98,17 +106,22 @@ The four code numbers are mixed throughout. No sub-map per number forms.
 - **V3's windows read only codes:** they have no pixel inputs. V2's windows read almost only pixels (99%).
   - So the stack is a real hierarchy: V3 is built from V2.
 - **The sorted-view measure is harsh.** V1 itself, which plainly shows the image, scores only 0.25–0.29 on it, because the sheet is sheared and the alignment only rotates and flips. V2's 0.12 (F) and 0.16 (F512) are therefore about half of V1's score, not nothing.
+- **F's second run** (`010_F_rerun`, 2026-11-15) shows how much a single run says.
+  - What the codes carry repeats closely: live codes, level use, the copy at field centres (0.49 against 0.51), the sorted view (0.10 against 0.12), field size and peak.
+  - The layout does not: V2 topography 0.22 against 0.33, V3 0.24 against 0.44.
+  - So single-run differences in topography of 0.1–0.2, such as F0's 0.23 or FP's 0.20, are within F's own spread.
 
 ### Prediction (training log at tick 100k)
 
 | Run | Loss | No-information baseline (slot long-run mean) | Copy-last | Columns with every number at 3+ levels |
 |---|---|---|---|---|
 | F | 0.158 | 0.253 | 0.208 | 87.9% |
+| F, second run | 0.127 | 0.181 | 0.149 | 90.2% |
 | F0 | 0.0148 | 0.0145 | 0.0136 | 0% |
 | FP | 0.161 | 0.233 | 0.177 | 91.0% |
 | F512 | 0.142 | 0.199 | 0.184 | 85.5% |
 
-- **The learned columns predict well.** They beat the no-information baseline throughout, and beat copy-last at every report after 43k ticks (F; copy-last sees all 48 inputs, the decoder only 4 numbers).
+- **The learned columns predict well.** They beat the no-information baseline throughout. They also beat copy-last at every report after 43k ticks in F, and at 46 of those 57 reports in F's second run (copy-last sees all 48 inputs, the decoder only 4 numbers).
 - **F0's codes barely move:** about 1.2 levels in three of its four numbers. It predicts no better than the baseline.
 - **The losses rise over the run in every learned run,** together with the baseline. The fed-back codes become inputs to other windows and are harder to predict than pixels, so the inputs get harder as the codes come alive.
 - **Levels in training versus replay:** the training count is over 1,000 ticks of smooth drift. Over the replay's 4,000 ticks with restarts, 95–99% of columns in the learned runs use 3+ levels in every number.
@@ -122,7 +135,7 @@ The four code numbers are mixed throughout. No sub-map per number forms.
 ![F512: 512 windows](images/f512_plane.png)
 
 **F512:**
-- **Its V2 is the most map-like:** a 2-D ring-shaped sheet with topography 0.43, and its sorted view starts to carry the scene (0.16).
+- **Its V2 is the most map-like:** a 2-D ring-shaped sheet with topography 0.43, and its sorted view starts to carry the scene (0.16). This is one run; F's two runs give 0.22 and 0.33.
 - **It is the only one of the four runs with a third column depth,** but only 7 live columns there and 24 weak V4 codes (field peak 0.12).
 
 ### F8: a wider bottleneck (8 numbers per window)
@@ -196,23 +209,52 @@ With 16 numbers per window, there are as many code neurons as pixels (4,096).
   - Only a third of the columns use 3+ levels in every number.
   - The live codes are weaker (V2 field peak 0.38 against F's 0.55), and V2 drawn at its field centres is fainter (0.31 against 0.51).
   - Prediction is no better than copying the last input, as in F8. F's is 20% better.
-- **V2's layout is the most topographic of any run** (0.51; F512 0.43, F 0.33), but it is still not a picture (sorted view 0.10). More V2 codes may give the sorter more overlapping evidence, as in F512; not tested.
+- **V2's layout is the most topographic of any run** (0.51; F512 0.43, F's two runs 0.22 and 0.33), but this is one run, and it is still not a picture (sorted view 0.10). More V2 codes may give the sorter more overlapping evidence, as in F512; not tested.
 - **V1 sorts as well (99.0% within 3 px) but twists into a bow-tie.** Its topography is 0.42 against F's 0.62: right locally, folded as a whole.
 - **No new depth:** still two levels of columns, plus 2 columns at depth 3 and 9 weak V4 codes.
 - **Caveat:** F16 differs from F8 in four settings (by design), so the step from F8 to F16 is not the bottleneck alone; F16 against F keeps every proportion. One run of each.
 - **F, F8 and F16 together:** each doubling of the bottleneck silences a larger share of codes (0.1%, 22%, 42%) and fades the copy at field centres (0.51, 0.39, 0.31). The number of live codes still grows (1,023, 1,601, 2,391), but each carries less. This fits the reading above, presumed and not tested: a window has about 4 numbers' worth of predictable structure, and a larger model around the bottleneck does not create more.
 
+### F2: a narrower bottleneck (2 numbers per window)
+
+Run on 2026-11-15 (23:28–23:46, beside F's second run on the 4090, `009_F2`, `make checks`). Only the numbers change, as in F8: 2 numbers at levels (8, 5), the first two of F's. `--cluster-neurons-per 18` keeps 256 windows, and the input cap, hidden width and sort candidates are F's.
+
+| Measure | F2 (2 numbers) | F (4), two runs | F8 (8) | F16 (16, scaled) |
+|---|---|---|---|---|
+| Live codes | 100% of 512 | 99.9%, 99.8% of 1,024 | 78% of 2,048 | 58% of 4,096 |
+| Columns using 3+ levels in every number (replay) | 100% | 99%, 99% | 59% | 32% |
+| V2 / V3 codes | 436 / 76 | 735 / 288, 780 / 242 | 1,265 / 326 | 1,890 / 492 |
+| Column depths (live) | 218, 38 | 184, 72; 195, 61 | 161, 58, 2 | 124, 65, 2 |
+| V2 at RF centres vs crop | 0.68 | 0.51, 0.49 | 0.39 | 0.31 |
+| V3 at RF centres vs crop | 0.51 | 0.45, 0.41 | 0.37 | 0.27 |
+| V2 field peak / size | 0.71 / 187 px | 0.55 / 222 px, 0.54 / 213 px | 0.45 / 239 px | 0.38 / 278 px |
+| V2 topography / sorted vs crop | 0.39 / 0.11 | 0.33 / 0.12, 0.22 / 0.10 | 0.36 / 0.14 | 0.51 / 0.10 |
+| Loss against the no-information baseline (mean of the last 10 reports) | 0.65 | 0.62, 0.64 | 0.66 | 0.72 |
+| Same-number neighbours (chance) | 0.49 (0.5) | 0.24, 0.26 (0.25) | 0.14 (0.125) | 0.07 (0.06) |
+
+![F2: 2 numbers per window](images/f2_plane.png)
+
+- **Both numbers are fully used.** Every code is live, and every column uses all 8 and all 5 levels in the replay (and 3+ levels in both numbers in training). Prediction against the no-information baseline is as good as F's (0.65 against 0.62 and 0.64).
+- **The codes are the sharpest of any run.** V2 fields peak at 0.71 and cover 187 px. V2 drawn at its field centres is the clearest copy of the scene: 0.68 against F's 0.49–0.51, well outside F's run-to-run spread.
+- **The cost is fewer codes:** 436 in V2 and 76 in V3, with 38 depth-2 windows against F's 61–72. No V4.
+- **No sub-maps:** same-number neighbours 0.49, at chance 0.5.
+- **The series from 2 to 16 numbers:** fewer numbers per window make fewer, sharper codes. Up to 4 numbers every code is used; beyond 4 the extra numbers go silent. So the reading above becomes: a window fully uses 2 or 4 numbers, and its codes are sharper the fewer there are.
+
+![F's second run](images/f_rerun_plane.png)
+
+*F's second run, for comparison with F's plane at the top: the same kind of picture, with a differently folded V2.*
+
 ## The readings (set in the task plan before the runs)
 
 | Reading | Result |
 |---|---|
-| 1 Plumbing: 100k ticks; 90% of columns use 3+ levels in every number; loss below the slot-mean baseline | **Narrow miss for F:** 87.9% at tick 100k (98% at 50k, 99% in the replay); the loss bar is met. FP passes at 91.0%; F512 is at 85.5%. |
-| 2 V1 is the image: K10 within 3 px at least 90% | **Met** in all four runs (98.8–99.7%). |
+| 1 Plumbing: 100k ticks; 90% of columns use 3+ levels in every number; loss below the slot-mean baseline | **Narrow miss for F:** 87.9% at tick 100k (98% at 50k, 99% in the replay); the loss bar is met. FP passes at 91.0%; F512 is at 85.5%. F's second run passes at 90.2%, so the miss is within run-to-run noise. |
+| 2 V1 is the image: K10 within 3 px at least 90% | **Met** in every run (96.0–99.7%). |
 | 3 Layers: 3 or more depths with 10 or more columns each | **Fails.** F and FP have 2 depths. F512 reaches depth 3 with 7 live columns. |
 | 4 What V2 shows: copy if sorted view above 0.5; sub-maps if same-number neighbours above 0.5 | **"Something else":** sorted 0.12, same-number 0.24. Described above as folded sheets of spot detectors. |
 | 5 Fields grow: V2 at least 1.5 times V1 | **Met:** from 1 px to 222 px, and V3 is 1.5 times V2 (335 px). |
-| 6 Learning matters: F more topographic than F0, or better at predicting | **Met on both:** V2 topography 0.33 against 0.23, and the loss beats the baseline (F0 does not). F0 also has 42% silent codes and almost no V3. |
-| 7 Sign: FP splits codes by sign; F does not | **Met as grouping:** FP's same-sign neighbours 0.75 against F's 0.50 (chance 0.50). Not tested: whether the two groups form two separate mirror maps. FP's topography falls to 0.20. |
+| 6 Learning matters: F more topographic than F0, or better at predicting | **Met on prediction:** F's loss beats the baseline and F0's does not; F0 also has 42% silent codes and almost no V3. The topography half does not hold: F's 0.33 against F0's 0.23 looked like a gain, but F's second run scores 0.22. |
+| 7 Sign: FP splits codes by sign; F does not | **Met as grouping:** FP's same-sign neighbours 0.75 against F's 0.50 (chance 0.50). Not tested: whether the two groups form two separate mirror maps. FP's topography of 0.20 is within F's own spread (0.22 and 0.33). |
 
 **Changes after the plan was set (stated openly):**
 - **Topography** is a Spearman correlation of distances, not the Procrustes disparity in the plan.
@@ -223,11 +265,12 @@ With 16 numbers per window, there are as many code neurons as pixels (4,096).
 
 - **The codes keep to themselves.** The design discussion worried that codes arriving one tick late under smooth drift would join the pixel map next to their source patch. They don't: no code's 10 nearest neighbours include a pixel. Presumably a code mixes about 20 pixels non-linearly and correlates more with other codes than with any one pixel, even though the rule accepts negative pairs. This was not measured directly.
 - **Why there is no picture in the sort:**
-  - A V2 code correlates with its own window's other codes, and with codes of overlapping windows, more than with codes far away. That is what gives a topography of 0.3–0.4.
+  - A V2 code correlates with its own window's other codes, and with codes of overlapping windows, more than with codes far away. That is what gives a topography of 0.2–0.4 (0.22 and 0.33 in two runs of F).
   - Likely, though not measured: the sorter's correlations among codes are also driven by what the codes encode (on or off, spot or flank, brightness level). Four numbers per window, with arbitrary signs and meanings, do not pull into a single smooth sheet as pixels do.
   - The result is a map with folds: locally ordered, globally not a picture.
-  - With more windows (F512) the sheet is smoother and more image-like. That suggests the folding is partly a sampling effect: more codes per area give the sorter more overlapping evidence.
-- **The sign matters for the layout.** Allowing negative correlations (F) keeps on and off codes mixed and gives better topography. Keeping positive correlations only (FP) groups codes by sign at the cost of position, as the design discussion predicted.
+  - With more windows (F512) the sheet is smoother and more image-like. That suggests the folding is partly a sampling effect: more codes per area give the sorter more overlapping evidence. This rests on one run of F512, whose topography (0.43) is above both runs of F.
+- **The sign matters for grouping.** Allowing negative correlations (F) keeps on and off codes mixed. Keeping positive correlations only (FP) groups codes by sign (0.75 same-sign neighbours against 0.50), as the design discussion predicted. FP's lower topography (0.20) is within F's run-to-run spread, so a cost in position is not shown.
+- **Fewer numbers, sharper codes.** Each window's numbers seem to share out what its inputs hold. With 2 numbers each one carries a large, clean part of it, so the fields are strong and the copy at field centres is clear. With 8 or 16, the predictable part runs out and the rest go silent or blur. This was not measured directly.
 - **Depth stops at two levels of codes.** Depth-2 windows read only V2 codes. For a depth-3 window, a window must be wired mostly to V3 codes, and there are too few (288 in F) for the clustering to give them their own windows. Twice the windows give 7 such columns. Deeper stacks probably need many more windows, or wiring that reserves windows for codes.
 
 ## Next
@@ -236,5 +279,5 @@ These are not run:
 - **More windows** (1,024 or more): does the code sheet become a picture, and does V4 form?
 - **A fair random control** whose encoders span the levels (F0's random start barely varies), to separate learned codes from any graded code.
 - **Whether FP's two sign groups form two mirror maps** (a topography measured within each group).
-- **A narrower bottleneck** (2 numbers per window): if about 4 is the right size, as F8 and F16 suggest, 2 numbers should be fully used.
-- **A second seed of F,** to know how much single-run measures such as topography vary (all runs here are one seed).
+- **Several runs per arm** before reading any difference in layout. Topography varies by 0.1–0.2 between two runs of F.
+- **F2 with more windows** (512 or 1,024): sharp codes in larger numbers. Does a deeper stack form?
