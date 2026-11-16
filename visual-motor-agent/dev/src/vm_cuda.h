@@ -89,6 +89,16 @@ int vmc_params(void* h, float* out);   // device -> host copies of n_params floa
 int vmc_grads(void* h, float* out);
 int vmc_set_params(void* h, const float* params);   // host -> device (resets nothing else)
 int vmc_sync(void* h);
+// Task 00104, the state (model.state): the reads of the next pass [n, V] (n its frames S T, or the ring's bodies; else
+// blank, 0.5); the writes' expected values of the last forward pass or ring step [n, V]; for a carry across two windows:
+// the next update pass's gradient at its writes [n, V], its options (loss scale, accumulate onto the last pass, keep the
+// gradient at its reads), that gradient [n, V]; and the clip and AdamW step on the gradients as they are.
+int vmc_set_uni_state(void* h, int n, const float* st);
+int vmc_uni_writes(void* h, int n, float* out);
+int vmc_set_uni_carry(void* h, int n, const float* cg);
+int vmc_set_uni_train(void* h, float scale, int accumulate, int read_grads);
+int vmc_uni_read_grads(void* h, int n, float* out);
+int vmc_apply_update(void* h, const PPOConfig* pcp);
 int vmc_tie(void** hs, int n, long off, long len, int mean);   // task 00076: one table for n models
 
 #ifdef __cplusplus

@@ -1,7 +1,7 @@
 # Task 00104: A State Carried Across Windows (experiment vm-00093)
 
 **Date:** 2026-11-15
-**Status:** Proposed. The owner approves the design before any code is written.
+**Status:** In progress (approved 2026-11-16, the owner: "yes - lets do this - utilize both gpus for model run")
 
 ## Context
 
@@ -116,9 +116,27 @@
 
 ## Implementation
 
-- [ ] The owner approves this design.
+- [x] The owner approves this design (2026-11-16).
+- **As built (2026-11-16):**
+  - **The slots:** the body, then the write, then the read. The move stays last and the token before it still predicts it, so no kernel that finds tokens by position changes.
+    - The body's prediction (of the write) and the write's (of the read) carry no loss; the read predicts the first patch, as the body did.
+    - The write sees the step's body and every earlier step, but not its own frame. A frame reaches the state one tick later, through the next step's write.
+  - **The GPU:**
+    - `vmc_set_uni_state` (the reads of the next pass or ring step; none: blank, 0.5);
+    - `vmc_uni_writes` (the writes' expected values);
+    - for the pairs: `vmc_set_uni_train` (loss scale 0.5, accumulate, keep the gradient at the reads), `vmc_uni_read_grads`, `vmc_set_uni_carry` (the gradient at the first window's writes, through dE/dlogit = p (c − E) in `k_uni_loss`) and `vmc_apply_update` (clip and AdamW on the accumulated gradients).
+    - `cuda_lib.CudaModel.update_pairs` runs a forward pass of the first windows for their writes, the second windows' pass, then the first windows' pass with the carry. It costs about one extra half-batch forward pass over C8.
+  - **The C++ model** reads a blank state (it has no way to be given one); the GPU without a state given is the same model.
+  - **The queue of writes** lives in `CudaModel` (`uni_ring_reset`, `uni_ring_step`; `last_read` for memory; `state_blank` for the ablation).
+  - **Memory:** the field `st` (half precision, transformers × 64 per tick), chunks of 16 steps, `b_st` for the refreshed value's bootstrap windows (`boot_values` reads them, a context at a time). `lifetime.py` refuses the state with self-forcing, clog, input noise, outages, delays, the thought world or surprise gating.
+  - **Metrics:** `state_spread` (body 0's reads, their standard deviation over the log window, the mean over transformers and values). `eval_hunger.py chain` reports the same over its test; `--state blank` names the rows ARM-blank_sN.
+- **The copy task (tests/test_state.py):**
+  - With 32 bins, as the runs use, SB learned it by update 750 in 3 of 3 seeds.
+  - With 8 bins it sat on a plateau, and learned within 3,000 updates in only half the runs.
+  - Detached (SA), the writes are never trained, but the reader still learns to decode what they happen to carry: error 0.04 against 0.083 at chance, against SB's 0.0001.
+  - So SA is not a model without memory. Reading 3 measures what training the writes adds.
 - [ ] Code 1–5, with the tests (6) passing; `model.state = 0` byte-identical.
-- [ ] Timing (7); the cards and the schedule follow from it.
+- [x] Timing (7), 2026-11-16 14:40, 600-tick lives of both arms under MPS, 14 on the 4090 and 10 on the 3090: 3.58 and 2.60 ticks/s per life (C8 in vm-00091: 4.8 and 3.3), about 0.8 GB per life. The state costs about a fifth of the speed. Balanced: seeds 1–8 of both arms on the 4090 (16 lives), 9–12 on the 3090 (8), about 5.3 h each.
 - [ ] `00093-state-across-windows/` (README, Makefile); the runs; frozen tests (C8 included, linked); write-up and videos.
 
 ## Verification

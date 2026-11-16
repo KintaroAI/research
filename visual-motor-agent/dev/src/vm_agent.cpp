@@ -1350,6 +1350,11 @@ static int uni_values(const Model* M, const SeqView& sv, int t, int k, float* v)
     const int V = D.V, ps = D.patch, S = D.iw;   // a frame's rows are its width
     for (int i = 0; i < V; i++) v[i] = 0.f;
     const int kind = M->uslot[k].kind, p = M->uslot[k].idx;
+    if (kind == 5) return 0;   // task 00104: the write has no values
+    if (kind == 4) {           // the read: the state comes from outside the model; on the CPU always blank (0.5)
+        for (int i = 0; i < V; i++) v[i] = 0.5f;
+        return V;
+    }
     if (kind == 2) {   // a summary token: no values, or its block box-averaged to one patch (task 00049)
         if (!M->cfg.sum_thumb) return 0;
         int by0, bx0, fy, fx;
@@ -1401,9 +1406,9 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
             float* in = W->u_in.data() + (size_t)i * D.VI;
             float* val = D.ib ? W->u_row.data() : in;
             const int u = uni_values(M, sv, t, k, val);
-            if (k > 0) {   // this token is the target of the one before it (in the same step)
+            if (k > 0) {   // this token is the target of the one before it (in the same step); the read is no target (task 00104)
                 memcpy(W->u_tgt.data() + (size_t)(i - 1) * V, val, sizeof(float) * V);
-                W->u_use[i - 1] = u;
+                W->u_use[i - 1] = M->uslot[k].kind == 4 ? 0 : u;
             }
             if (D.ib) uni_twohot(val, u, uni_chan_of(D, M->uslot[k].kind), D.VI, D.nbin, in);
             else for (int j = 0; j < u; j++) in[j] -= 0.5f;
@@ -2596,6 +2601,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[58] = c.age_key;
     h[59] = c.img_w;
     h[60] = c.uni_chan;
+    h[61] = c.state;   // task 00104
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2633,6 +2639,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.age_key = h[58];
     c.img_w = h[59];
     c.uni_chan = h[60];
+    c.state = h[61];
 }
 
 // =====================================================================================

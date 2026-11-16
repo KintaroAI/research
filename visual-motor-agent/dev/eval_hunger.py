@@ -56,8 +56,12 @@ class Scored:
         return scored
 
 
+STATE_BLANK = False   # task 00104: --state blank, every read of the state blank (0.5): the frozen ablation
+
+
 class Life:
-    """A run's frozen pieces, one body per world, and one tick of its acting."""
+    """A run's frozen pieces, one body per world, and one tick of its acting. With the state (task 00104) each piece keeps
+    its queue of writes in its ring (cuda_lib), and Life the reads' spread over ticks."""
 
     def __init__(self, path, bodies, seed, clog=0.0, off=0.0, view=None):
         import agent_lib
@@ -72,6 +76,11 @@ class Life:
         agents = [agent_lib.Agent.load(os.path.join(path, ckpt_name("final", k, self.S))) for k in range(self.S)]
         self.bins = agents[0].config["bins"]
         self.models = [Scored(cuda_lib.CudaModel(a)) for a in agents]
+        self.state = bool(agents[0].config.get("state"))   # task 00104
+        for m in self.models:
+            m.model.state_blank = STATE_BLANK
+        self.st1 = self.st2 = None
+        self.st_n = 0
         self.cfg = make_config(info["config"]["env"], auto_reset=True)
         self.bodies, self.rng = bodies, np.random.default_rng(seed)
         for m in self.models:
@@ -126,7 +135,19 @@ class Life:
         for m in models:
             m.uni_ring_move(a)
         self.missed[self.is_off] += 1
+        if self.state:   # task 00104: the reads, for their spread over ticks
+            r = np.stack([m.model.last_read for m in models], 1).astype(np.float64)   # [bodies, pieces, V]
+            self.st1 = r if self.st1 is None else self.st1 + r
+            self.st2 = r * r if self.st2 is None else self.st2 + r * r
+            self.st_n += 1
         return a
+
+    def state_spread(self):
+        """Task 00104: the reads' standard deviation over the ticks so far, the mean over bodies, pieces and values."""
+        if not self.st_n:
+            return None
+        mu = self.st1 / self.st_n
+        return float(np.sqrt(np.maximum(self.st2 / self.st_n - mu * mu, 0.0)).mean())
 
     def close(self):
         for m in self.models:
@@ -289,9 +310,11 @@ def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0, view=None):
             if name in fed:
                 fed[name] |= np.asarray(i["success"], bool)
             poison[name] += int(i["gt_hazard_click"].sum())
+    spread = life.state_spread()   # task 00104
     life.close()
     k = 1000.0 / (ticks * bodies)
     yield dict(mode="chain", run=os.path.basename(path), noise=life.cfg.noise, off=life.off, food={q: v * k for q, v in food.items()}, poison={q: v * k for q, v in poison.items()},
+               **({} if spread is None else dict(state_spread=spread)),
                smooth=float(np.mean(smooth)), share=(count["seen"] / count["seen"].sum()).tolist(),
                cos_seen=(aim["seen"] / np.maximum(count["seen"], 1)).tolist(), cos_blind=(aim["blind"] / np.maximum(count["blind"], 1)).tolist(),
                **(dict(out_share=float(out_n["seen"].sum() / (ticks * bodies)), out_n=out_n["seen"].tolist(), out_n_blind=out_n["blind"].tolist(),
@@ -551,7 +574,10 @@ if __name__ == "__main__":
     ap.add_argument("--clog", type=float, default=0.0, help="chain: each piece acts on a view with this share of its patches damaged (task 00085)")
     ap.add_argument("--base", help="show: the arm the others are read against, paired by seed")
     ap.add_argument("--plot", help="show: where to write the plot of aim by gap")
+    ap.add_argument("--state", choices=("live", "blank"), default="live",
+                    help="task 00104: blank: every read of the state blank (0.5); rows named ARM-blank_sN, to pair with ARM_sN")
     args = ap.parse_args()
+    STATE_BLANK = args.state == "blank"
     if args.what == "compare":
         compare(*args.runs)
     elif args.what == "show":
@@ -564,4 +590,7 @@ if __name__ == "__main__":
         for run in args.runs:
             how = dict(reach=reach, told=told, chain=lambda *a: chain(*a, args.clog), poison=poison, value=value)[args.what]
             for row in how(run, args.ticks, args.bodies, args.seed):
+                if STATE_BLANK and "run" in row:
+                    arm, _, seed = row["run"].rpartition("_s")
+                    row["run"] = "%s-blank_s%s" % (arm, seed) if arm else row["run"] + "-blank"
                 print(json.dumps(row, default=float), flush=True)

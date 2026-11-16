@@ -70,6 +70,12 @@ def lib():
             "vmc_encode": (i32, [vp, i32, u8p, fp]),
             "vmc_imagine": (i32, [vp, i32, i32, fp, fp, fp, fp, fp, fp]),
             "vmc_decode": (i32, [vp, i32, fp, fp]),
+            "vmc_set_uni_state": (i32, [vp, i32, fp]),          # task 00104: the state
+            "vmc_uni_writes": (i32, [vp, i32, fp]),
+            "vmc_set_uni_carry": (i32, [vp, i32, fp]),
+            "vmc_set_uni_train": (i32, [vp, C.c_float, i32, i32]),
+            "vmc_uni_read_grads": (i32, [vp, i32, fp]),
+            "vmc_apply_update": (i32, [vp, C.POINTER(PPOConfig)]),
         }
         for name, (res, args) in sig.items():
             if not hasattr(_lib, name):   # an older build without this function (e.g. one a running job loaded)
@@ -157,6 +163,12 @@ class CudaModel:
         self.ctx = agent.config["ctx"]
         self.config = dict(agent.config)
         self.logstd_off = {name: o for name, o, _ in layout}["logstd"]
+        # task 00104: the state. While acting on the ring, each body's writes of the last ctx ticks (st_q [ctx, N, V],
+        # the oldest at st_i); a step reads the oldest and writes in its place. last_read: the reads of the last step [N, V],
+        # for memory. state_blank: every read blank (0.5), the frozen ablation.
+        self.state = bool(agent.config.get("state"))
+        self.V = agent.config["patch"] ** 2 * (1 if agent.config.get("gray") else 3) if agent.config.get("universal") else 0
+        self.st_q, self.st_i, self.last_read, self.state_blank = None, 0, None, False
 
     def set_batch(self, images, drives, prev_action, prev_reward, ep_start, action, next_small, next_drives):
         """next_small: [S, ctx, pred_img, pred_img, 3], or the full-size next frames (downsampled on the GPU)."""
@@ -286,9 +298,13 @@ class CudaModel:
                                  opt(out.get("pred_drives"), C.c_float)), "forward")
         return out
 
-    def forward_uni(self, images, drives, actions, ep_start=None, values=True, move_probs=True, next_body=False):
-        """agent_lib.Agent.forward_uni on the GPU (the universal model)."""
+    def forward_uni(self, images, drives, actions, ep_start=None, values=True, move_probs=True, next_body=False, state=None,
+                    writes=False):
+        """agent_lib.Agent.forward_uni on the GPU (the universal model). Task 00104: state [S, T, V], the reads (None: blank);
+        writes: also out["writes"] [S, T, V], the state each step writes."""
         img = np.ascontiguousarray(images, np.uint8)
+        if state is not None:
+            self.set_uni_state(np.asarray(state, np.float32).reshape(-1, self.V))
         S, T = img.shape[:2]
         c = self.config
         nt, V, K = agent_lib.uni_layout(c)["nt"], c["patch"] ** 2 * (1 if c.get("gray") else 3), c["bins"]
@@ -306,7 +322,53 @@ class CudaModel:
                                      opt(es, C.c_uint8), opt(out.get("values"), C.c_float),
                                      opt(out.get("move_probs"), C.c_float), opt(out.get("next_body"), C.c_float)),
                "forward_uni")
+        if writes:
+            out["writes"] = self.uni_writes(S * T).reshape(S, T, self.V)
         return out
+
+    # ---- task 00104: the state ----
+    def set_uni_state(self, st):
+        """The reads [n, V] of the next pass (forward_uni, an update, or a ring step)."""
+        a = np.ascontiguousarray(st, np.float32)
+        self._st = a
+        _check(lib().vmc_set_uni_state(self.handle, a.shape[0], _p(a, C.c_float)), "set_uni_state")
+
+    def uni_writes(self, n):
+        """The writes' expected values [n, V] of the last forward pass or ring step."""
+        out = np.empty((n, self.V), np.float32)
+        _check(lib().vmc_uni_writes(self.handle, n, _p(out, C.c_float)), "uni_writes")
+        return out
+
+    def update_pairs(self, ro1, ro2, reads1, ppo_cfg, grad=True, stats=True, apply=True):
+        """One update on pairs of consecutive windows (task 00104): ro1 the first windows, ro2 the next ones (each
+        [ctx, S] rollouts), reads1 [S, ctx, V] the first windows' reads (stored while acting). The first windows' writes
+        are computed (a forward pass), and the next windows read them: step k of a next window reads step k of its first.
+        The loss is the mean over both windows' tokens. grad (online.state_grad): the next windows' loss also trains the
+        first windows through those writes (the gradient at the reads, carried to the writes' expected values); else the
+        writes are read as given. Then one clip and AdamW step (apply=False: none, the gradients stay for grads()).
+        Returns the stats of both passes."""
+        b1 = ro1.batch()
+        S, T, V = b1[0].shape[0], b1[0].shape[1], self.V
+        r1 = np.ascontiguousarray(reads1, np.float32).reshape(S * T, V)
+        w1 = self.forward_uni(b1[0], b1[1], b1[5], b1[4], values=False, move_probs=False, state=r1, writes=True)["writes"]
+        pc = C.byref(self._pc(ppo_cfg))
+        self.set_batch(*ro2.batch())
+        self.set_uni_state(w1.reshape(S * T, V))
+        _check(lib().vmc_set_uni_train(self.handle, 0.5, 0, int(grad)), "set_uni_train")
+        _check(lib().vmc_loss_and_grads(self.handle, pc), "loss_and_grads")
+        if grad:
+            rg = np.empty((S * T, V), np.float32)
+            _check(lib().vmc_uni_read_grads(self.handle, S * T, _p(rg, C.c_float)), "uni_read_grads")
+        self.set_batch(*b1)
+        self.set_uni_state(r1)
+        if grad:
+            self._cg = rg
+            _check(lib().vmc_set_uni_carry(self.handle, S * T, _p(rg, C.c_float)), "set_uni_carry")
+        _check(lib().vmc_set_uni_train(self.handle, 0.5, 1, 0), "set_uni_train")
+        _check(lib().vmc_loss_and_grads(self.handle, pc), "loss_and_grads")
+        if apply:
+            _check(lib().vmc_apply_update(self.handle, pc), "apply_update")
+        return self.stats() if stats else None
 
     def forward_uni_step(self, images, drives, actions, ep_start, t, mode=False):
         """forward_uni's values of step t only, values_t [S, ntok, V], and next_body [S, T, 2] (task 00029). mode: 0
@@ -342,8 +404,10 @@ class CudaModel:
         return run
 
     def uni_ring_reset(self, N):
-        """The ring (task 00062, model.age_key) for N bodies, empty."""
+        """The ring (task 00062, model.age_key) for N bodies, empty. With the state (task 00104): every write blank."""
         _check(lib().vmc_uni_ring_reset(self.handle, N), "uni_ring_reset")
+        if self.state:
+            self.st_q, self.st_i, self.last_read = np.full((self.ctx, N, self.V), 0.5, np.float32), 0, None
 
     def uni_ring_step(self, images, drives, ep_start=None):
         """One new step [N, ...] of every body: only its tokens are computed. Move probabilities [N, 3, bins], as the
@@ -352,8 +416,17 @@ class CudaModel:
         drv = np.ascontiguousarray(drives, np.float32)
         es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
         out = np.empty((img.shape[0], 3, self.config["bins"]), np.float32)
+        if self.state:   # task 00104: this step reads the state written ctx ticks ago (an episode start: blank)
+            if es is not None and es.any():
+                self.st_q[:, es.astype(bool)] = 0.5
+            read = np.full_like(self.st_q[0], 0.5) if self.state_blank else self.st_q[self.st_i].copy()
+            self.set_uni_state(read)
         _check(lib().vmc_uni_ring_step(self.handle, _p(img, C.c_uint8), _p(drv, C.c_float),
                                        None if es is None else _p(es, C.c_uint8), _p(out, C.c_float)), "uni_ring_step")
+        if self.state:
+            self.st_q[self.st_i] = self.uni_writes(img.shape[0])
+            self.st_i = (self.st_i + 1) % self.ctx
+            self.last_read = read
         return out
 
     def uni_ring_move(self, moves):
@@ -363,6 +436,8 @@ class CudaModel:
 
     def uni_ring_skip(self, n):
         """Task 00089: n ticks this model missed; their slots stay unseen, nothing is computed."""
+        if self.state:
+            raise ValueError("model.state runs without outages (task 00104)")
         _check(lib().vmc_uni_ring_skip(self.handle, int(n)), "uni_ring_skip")
 
     def uni_token_ce(self, S0):

@@ -28,7 +28,8 @@ class VMConfig(C.Structure):
                  ("attn_overlap", C.c_int), ("attn_pred_global", C.c_int), ("attn_cols", C.c_int),
                  ("attn_checker", C.c_int), ("attn_win", C.c_int), ("uni_sum", C.c_int),
                  ("uni_pyr", C.c_int), ("sum_thumb", C.c_int), ("sum_only", C.c_int),
-                 ("band_n", C.c_int), ("band_k", C.c_int), ("band_cols", C.c_int), ("band_win", C.c_int), ("age_key", C.c_int), ("img_w", C.c_int), ("uni_chan", C.c_int)]
+                 ("band_n", C.c_int), ("band_k", C.c_int), ("band_cols", C.c_int), ("band_win", C.c_int), ("age_key", C.c_int), ("img_w", C.c_int), ("uni_chan", C.c_int),
+                 ("state", C.c_int)]   # task 00104
 
 
 class PPOConfig(C.Structure):
@@ -61,7 +62,7 @@ DEFAULT_MODEL = dict(img=64, c1=16, c2=32, c3=32, feat=128, d_model=128, n_layer
                      pred_residual=0, pred_skip=0, inv_hidden=0, dyn_hidden=0, one_frame=0, pi_hidden=0, patch=0,
                      act_token=0, universal=0, bins=32, gray=0, in_bins=0, attn_split=0, attn_overlap=0, attn_pred_global=0, attn_cols=0,
                      attn_checker=0, attn_win=0, uni_sum=0,
-                     uni_pyr=0, sum_thumb=0, sum_only=0, band_n=0, band_k=0, band_cols=0, band_win=0, age_key=0, img_w=0, uni_chan=0)
+                     uni_pyr=0, sum_thumb=0, sum_only=0, band_n=0, band_k=0, band_cols=0, band_win=0, age_key=0, img_w=0, uni_chan=0, state=0)
 
 DEFAULT_PPO = dict(gamma=0.99, lam=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01, pred_coef=0.0, drive_coef=0.0,
                    pred_backbone_scale=1.0, max_grad_norm=0.5, lr=2.5e-4, beta1=0.9, beta2=0.999, adam_eps=1e-5,
@@ -114,12 +115,13 @@ def has_sum(cfg, lv, r, c):
 
 def uni_layout(cfg):
     """The universal model's slots per step (task 00047; vm_uni_slot in vm_agent.h): dict(nt, kind [nt] (0 the body,
-    1 a patch, 2 a summary, 3 the move), patch [np] (the slot of each patch, row-major), summary [nsum] (their slots),
-    move (nt - 1)). The patches go row by row, each summary token right after the last patch of its block (uni_sum: a
-    band of rows; uni_pyr: a 2^l x 2^l block at level l, finer levels first, task 00048)."""
+    1 a patch, 2 a summary, 3 the move, 4 the read, 5 the write), patch [np] (the slot of each patch, row-major), summary
+    [nsum] (their slots), move (nt - 1)). The patches go row by row, each summary token right after the last patch of its
+    block (uni_sum: a band of rows; uni_pyr: a 2^l x 2^l block at level l, finer levels first, task 00048). With
+    model.state (task 00104) the write (slot 1) and the read (slot 2) follow the body."""
     g, R, L = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0), cfg.get("uni_pyr", 0)
     gw = grid_w(cfg)
-    kind = [0]
+    kind = [0] + ([5, 4] if cfg.get("state", 0) else [])
     for r in range(g):
         for c in range(gw):
             kind += [1] if has_patch(cfg, r, c) else []   # not with sum_only (task 00054); band_n: one band

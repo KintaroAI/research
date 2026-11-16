@@ -87,13 +87,17 @@ typedef struct {
     int img_w;          // universal: > 0 = frames img high and img_w wide (task 00064); 0 = square
     int uni_chan;       // universal, in_bins: 1 = a channel per value (task 00075): W_in and W_out get V + 5 value positions, the body's
                         //     2 and the move's 3 after the patch's V, so that no position has two meanings; 0 = all share 0..V-1
+    int state;          // universal: 1 = a state carried across windows (task 00104): two more tokens per step right after the
+                        //     body, a write (no values, no target: its expected output values are the state) and a read (its
+                        //     values: the state written ctx steps earlier, from outside the model; no target); 0 = off
 } VMConfig;
 #define VM_UNI_EXTRA 5   // uni_chan: the value positions after a patch's: the body's 2, the move's 3 (task 00075)
 
-// The universal model's slots per step (tasks 00047, 00048): 0 the body; then the patches row by row, each summary
-// token right after the last patch of its block (uni_sum: a band of R rows; uni_pyr: a 2^l x 2^l block at level l, finer
-// levels first); nt - 1 the move. A slot: kind (0 body, 1 patch, 2 summary, 3 move), index (the patch, row-major, or
-// the summary), level (patches 0) and position on its level's grid (row, column; uni_sum's summaries: band, 0).
+// The universal model's slots per step (tasks 00047, 00048): 0 the body; with state (task 00104) 1 the write and 2 the
+// read; then the patches row by row, each summary token right after the last patch of its block (uni_sum: a band of R
+// rows; uni_pyr: a 2^l x 2^l block at level l, finer levels first); nt - 1 the move. A slot: kind (0 body, 1 patch, 2
+// summary, 3 move, 4 read, 5 write), index (the patch, row-major, or the summary), level (patches 0) and position on its
+// level's grid (row, column; uni_sum's summaries: band, 0).
 typedef struct { int kind, idx, lev, r, c; } VMSlot;
 // The patch grid's width (task 00064: a frame may be wider than high); its height is img / patch
 static inline int vm_grid_w(const VMConfig* c) { return (c->img_w > 0 ? c->img_w : c->img) / c->patch; }
@@ -147,6 +151,7 @@ static inline int vm_uni_layout(const VMConfig* c, VMSlot* s) {
     int n = 0, ns = 0;
 #define VM_SLOT_(K, I, L, R, C) do { if (s) { s[n].kind = K; s[n].idx = I; s[n].lev = L; s[n].r = R; s[n].c = C; } n++; } while (0)
     VM_SLOT_(0, 0, 0, 0, 0);
+    if (c->state) { VM_SLOT_(5, 0, 0, 0, 0); VM_SLOT_(4, 0, 0, 0, 0); }   // task 00104: the write, then the read
     for (int r = 0; r < g; r++)
         for (int q = 0; q < gw; q++) {
             if (vm_uni_has_patch(c, r, q)) VM_SLOT_(1, r * gw + q, 0, r, q);   // not with sum_only (task 00054); band_n: one band
@@ -179,8 +184,9 @@ static inline int vm_uni_center(const VMConfig* c, const VMSlot* s, float* y, fl
     *y = (s->r + 0.5f) * b - 0.5f; *x = (s->c + 0.5f) * b - 0.5f;
     return 1;
 }
-// Tokens per step without a target: the summaries, unless they carry thumbnails (task 00049)
-static inline int vm_uni_untargeted(const VMConfig* c) { return c->sum_thumb ? 0 : vm_uni_nsum(c); }
+// Tokens per step without a target: the summaries, unless they carry thumbnails (task 00049); with state (task 00104)
+// the body (it precedes the write) and the write (it precedes the read)
+static inline int vm_uni_untargeted(const VMConfig* c) { return (c->sum_thumb ? 0 : vm_uni_nsum(c)) + (c->state ? 2 : 0); }
 // The kind of slot k and its index (as vm_uni_layout; slow: for one-off use)
 static inline int vm_uni_slot(const VMConfig* c, int k, int* idx) {
     VMSlot* s = (VMSlot*)malloc(sizeof(VMSlot) * vm_uni_nt(c));
@@ -273,6 +279,7 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->sum_only < 0 || c->sum_only > 1) return 0;
     if (c->sum_only && (!c->uni_pyr || !c->sum_thumb || c->attn_win || c->uni_sum || c->attn_split > 1)) return 0;
     if (c->age_key < 0 || c->age_key > 1 || (c->age_key && !c->universal)) return 0;
+    if (c->state < 0 || c->state > 1 || (c->state && (!c->universal || c->attn_split > 1 || c->attn_win > 0))) return 0;   // task 00104
     if (c->img_w < 0) return 0;
     if (c->uni_chan < 0 || c->uni_chan > 1 || (c->uni_chan && (!c->universal || !c->in_bins))) return 0;
     if (c->img_w > 0 && (!c->universal || c->patch <= 0 || c->img_w % c->patch || c->attn_split > 1 || c->attn_win ||

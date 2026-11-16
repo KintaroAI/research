@@ -154,17 +154,23 @@ def table_gap(models, ranges):
     return float(np.sqrt(((x - mean) ** 2).sum(1).mean() / (mean ** 2).sum()))
 
 
-def boot_values(models, rows):
+def boot_values(models, rows, ctx=None):
     """Task 00098: each window's fresh bootstrap tails [B, L], the mean over models of the move token's predicted
     label (the next body's hunger slot) of the move made at each step of the bootstrap windows (b_img, b_drv, b_act,
-    b_es: the L steps that start n steps after each training window). No gradient: forward passes only."""
-    B = len(rows["b_img"])
+    b_es: the L steps that start n steps after each training window). No gradient: forward passes only. Task 00104
+    (b_st, the reads stored while acting, [B, L, models, V]): each model reads its own, and windows longer than the
+    context (pairs) go in pieces of ctx steps."""
+    B, L = rows["b_img"].shape[:2]
+    w = ctx or L
     out = []
-    for m in models:
-        out.append(np.concatenate([m.forward_uni(rows["b_img"][i:i + UNI_CHUNK], rows["b_drv"][i:i + UNI_CHUNK],
-                                                 rows["b_act"][i:i + UNI_CHUNK], rows["b_es"][i:i + UNI_CHUNK],
-                                                 values=False, move_probs=False, next_body=True)["next_body"][..., 0]
-                                   for i in range(0, B, UNI_CHUNK)]))
+    for k, m in enumerate(models):
+        st = rows.get("b_st")
+        out.append(np.concatenate([np.concatenate([
+            m.forward_uni(rows["b_img"][i:i + UNI_CHUNK, t:t + w], rows["b_drv"][i:i + UNI_CHUNK, t:t + w],
+                          rows["b_act"][i:i + UNI_CHUNK, t:t + w], rows["b_es"][i:i + UNI_CHUNK, t:t + w], values=False,
+                          move_probs=False, next_body=True,
+                          state=None if st is None else st[i:i + UNI_CHUNK, t:t + w, k].astype(np.float32))["next_body"][..., 0]
+            for t in range(0, L, w)], 1) for i in range(0, B, UNI_CHUNK)]))
     return np.mean(out, 0).astype(np.float32)
 
 
@@ -346,6 +352,11 @@ def main():
     if refresh and not (gamma and uni and on["device"] == "cuda" and not (clog or q_in or q_off or delayed)):
         raise ValueError("online.value_refresh needs online.value_gamma and the universal model on the GPU, "
                          "without online.clog, online.noise_in, online.off or env.delays")
+    state = bool(agent.config.get("state")) and uni   # task 00104: a state carried across windows; updates on pairs of them
+    if state and not (on["device"] == "cuda" and on["ring"] and on["batch"] >= 2 and on["batch"] % 2 == 0 and
+                      not (on["sf_windows"] or clog or q_in or q_off or delayed or tok_sur or hasattr(env, "think"))):
+        raise ValueError("model.state needs the GPU and the ring, an even online.batch, and none of self-forcing, online.clog, "
+                         "online.noise_in, online.off, env.delays, env.thought or surprise gating")
     sched = env_schedule(env, env_cfg, on.get("env_sched"), on["steps"])   # task 00094: {tick: {key: value}}
     off_rng = np.random.default_rng([args.seed, 0x0FF])   # its own: off = 0 draws nothing
     is_off, missed = np.zeros(S, bool), np.zeros(S, int)
@@ -359,6 +370,7 @@ def main():
     if ppo["use_ppo"] or not env_cfg.drives:
         raise ValueError("lifetime.py is reward-free: needs ppo.use_ppo=0 and env.drives=true")
     L, B = agent.config["ctx"], on["batch"]
+    Lm, Bm = (2 * L, B // 2) if state else (L, B)   # task 00104: memory's chunks are pairs of windows, Bm of them per update
     label_k = goal_k or (value_n + 1 if gamma else future_k)   # the steps a hindsight label looks ahead (value: n real, then the tail)
     lag = label_k - 1 if label_k else 0       # the newest window whose hindsight labels are complete
     rng = np.random.default_rng(args.seed)
@@ -371,10 +383,11 @@ def main():
         ac = agent.config
         views = [ClogStream(np.random.default_rng([args.seed, 0xC107, k]), N0, ac["img"], ac.get("img_w") or ac["img"], ac["patch"], clog, on["clog_long"]) for k in range(S)]
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
-    kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off))
+    kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off),
+                state=(S, agent.config["patch"] ** 2 * (1 if agent.config["gray"] else 3)) if state else None)
     gate_on = dict(on, goal_mode="value" if gamma else "future") if future_k else on
-    gms = [GatedMemory(gate_on, L, agent.config["img"], label_k, args.seed, tokens=tok_sur, **kept)]   # the model's frame (task 00091: not the world's size)
-    gms += [GatedMemory(gate_on, L, agent.config["img"], label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
+    gms = [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, tokens=tok_sur, **kept)]   # the model's frame (task 00091: not the world's size)
+    gms += [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
             for b in range(1, N0)]
     store = gms[0].store
     gpu, fwd, gpus = None, agent.forward, [None] * S
@@ -408,6 +421,12 @@ def main():
                 rollouts[n] = cuda_lib.Rollout(L, n, agent.config["img"], next_frames=nf, img_w=agent.config["img_w"])
         return rollouts[n]
 
+    def pair_rollouts(n):   # task 00104: the first and the next windows of n pairs
+        if ("pair", n) not in rollouts:
+            rollouts[("pair", n)] = tuple(cuda_lib.Rollout(L, n, agent.config["img"], next_frames=False,
+                                                           img_w=agent.config["img_w"]) for _ in range(2))
+        return rollouts[("pair", n)]
+
     def piece_rollout(k, n):   # pieces on the CPU (task 00059): piece k's own C++ rollout
         if (k, n) not in rollouts:
             rollouts[(k, n)] = agents[k].new_rollout(L, n)
@@ -419,8 +438,9 @@ def main():
                 script="lifetime.py")
     with open(os.path.join(out_dir, "info.json"), "w") as f:
         json.dump(info, f, indent=2)
-    print("out: %s\nparams: %d  threads: %d  batch: bodies + %d replayed x %d steps  replay: %d  bodies: %d" % (
-        out_dir, agent.num_params, agent_lib.get_threads(), B - 1, L, on["replay"], N0), flush=True)
+    print("out: %s\nparams: %d  threads: %d  batch: bodies + %d replayed x %d steps%s  replay: %d  bodies: %d" % (
+        out_dir, agent.num_params, agent_lib.get_threads(), Bm - 1, Lm, " (pairs of windows: task 00104)" if state else "",
+        on["replay"], N0), flush=True)
     for k, a in enumerate(agents):
         a.save(os.path.join(out_dir, ckpt_name(0, k, S)), with_optimizer=False)
 
@@ -438,7 +458,7 @@ def main():
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(), vh=0.0, vlab=0.0, vlab_n=0, vboot=0.0, vboot_n=0,
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
                     smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
-                    on_k=np.zeros(S))
+                    on_k=np.zeros(S), st_n=0, st_sum=0.0, st_sq=0.0)
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -520,8 +540,15 @@ def main():
         win["t_world"] += time.time() - t_
         t_ = time.time()
         on_bits = dict(on=np.uint64(sum(1 << int(k) for k in live))) if q_off else {}   # task 00089
+        if state:   # task 00104: each transformer's reads this tick, for memory; body 0's for the state's spread
+            reads = np.stack([gpus[k].last_read for k in range(S)], 1)                # [N, S, V]
+            win["st_n"] += 1
+            win["st_sum"] = win["st_sum"] + reads[0].astype(np.float64)
+            win["st_sq"] = win["st_sq"] + reads[0].astype(np.float64) ** 2
         for b in range(N):
             vb = dict(vh=vh[b]) if gamma else {}                                       # task 00096
+            if state:
+                vb["st"] = reads[b].astype(np.float16)
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
                            pa=prev_a[b], pr=prev_r[b], es=ep_start[b], act=a[b], rew=rew[b], done=done[b],
                            hit=inf["success"][b], cmd=cmd[b], **on_bits, **vb)
@@ -562,19 +589,19 @@ def main():
         ce_n, prev_N = 0, N
         win["t_memory"] += time.time() - t_
         t_ = time.time()
-        if gms[0].stm.n >= L + lag:
+        if gms[0].stm.n >= Lm + lag:
             ce_n = N
             if N == 1:
-                rows = gms[0].rows(B, rng, lag)
+                rows = gms[0].rows(Bm, rng, lag)
             else:
                 parts = [gm.newest(lag) for gm in gms[:N]]
                 if store.n:
-                    parts.append(gms[0].replayed(B - 1, rng))
+                    parts.append(gms[0].replayed(Bm - 1, rng))
                 else:
-                    parts.append(gms[0]._from_stm(gms[0].stm.starts(L, B, rng, lag)[1:], lag))
+                    parts.append(gms[0]._from_stm(gms[0].stm.starts(Lm, Bm, rng, lag)[1:], lag))
                 rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].keys}
             if refresh:   # task 00098: the tails from the current transformers, their mean prediction of the move made
-                vb = boot_values(gpus, rows)
+                vb = boot_values(gpus, rows, L if state else None)
                 rows["pr"] = rows["pr_real"] + rows["tw"] * vb
                 win["vboot"] += float(vb.sum())
                 win["vboot_n"] += vb.size
@@ -588,12 +615,31 @@ def main():
             if delayed:   # task 00091: the composite as the input, the present tiled as the target
                 seen_in = (rows["img"], rows["drv"])
                 rows = dict(rows, img=delay_targets(rows["img"]))
-            ro = rollout(len(rows["img"]))
-            fill_rollout(ro, rows, L)
+            if state:   # task 00104: the pairs' first and next windows
+                ro1, ro2 = pair_rollouts(len(rows["img"]))
+                fill_rollout(ro1, {k: v[:, :L] for k, v in rows.items()}, L)
+                fill_rollout(ro2, {k: v[:, L:] for k, v in rows.items()}, L)
+                reads1 = rows["st"][:, :L].astype(np.float32)                         # [pairs, L, S, V]
+            else:
+                ro = rollout(len(rows["img"]))
+                fill_rollout(ro, rows, L)
             zeros = np.zeros(len(rows["img"]), np.float32)
             win["t_batch"] += time.time() - t_
             t_ = time.time()
-            if S > 1:   # every piece its own gradient step on the same rows (task 00059)
+            if state:   # task 00104: every piece its own update on the same pairs, from its own reads
+                stats, who = [], []
+                for k, g in enumerate(gpus):
+                    stats.append(g.update_pairs(ro1, ro2, reads1[:, :, k], ppo, grad=bool(on["state_grad"]),
+                                                stats=tick % on["stats_every"] == 0))
+                    who.append(k)
+                if stats[0] is not None:
+                    win["stats"].append({key: float(np.mean([s_[key] for s_ in stats])) for key in stats[0]
+                                         if isinstance(stats[0][key], (int, float))})
+                    if S > 1:
+                        for k, s_ in zip(who, stats):
+                            win["stats_k"][k].append(s_)
+                st = None
+            elif S > 1:   # every piece its own gradient step on the same rows (task 00059)
                 stats, who = [], []   # who: the piece of each stats entry (task 00089: off pieces take no update)
                 shared = noised(rows)   # task 00088: one noisy input for all pieces, fresh each update
                 for k, (g, ag) in enumerate(zip(gpus, agents)):
@@ -660,6 +706,9 @@ def main():
                 row.update(value_pred=win["vh"] / bs, value_label=win["vlab"] / max(1, win["vlab_n"]))
             if refresh:   # task 00098: the mean fresh tail
                 row.update(value_boot=win["vboot"] / max(1, win["vboot_n"]))
+            if state and win["st_n"]:   # task 00104: how much body 0's reads vary over the window, mean over pieces and values
+                mu = win["st_sum"] / win["st_n"]
+                row["state_spread"] = float(np.sqrt(np.maximum(win["st_sq"] / win["st_n"] - mu ** 2, 0.0)).mean())
             if win["stats"]:
                 row.update({k: float(np.mean([s[k] for s in win["stats"]])) for k in LIFE_STATS
                             if k in win["stats"][0]})

@@ -124,7 +124,10 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00064 (env.thought): Jacobi iterations of the thought transformer's dream of its next frame
                       thought_jacobi=2,
                       # task 00065: how a dream becomes the next thought: pair (snaps to a bin) or mean (the grey fix)
-                      thought_decode="pair")
+                      thought_decode="pair",
+                      # task 00104 (model.state, lifetime.py on the GPU): updates on pairs of consecutive windows, the second reading
+                      # the first's writes; state_grad 1: the second window's loss trains the first through them, 0: read as given
+                      state_grad=1)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 
@@ -133,7 +136,7 @@ class Replay:
     only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False):
+    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
         self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
@@ -156,6 +159,9 @@ class Replay:
         if value:    # task 00096: the model's predicted label of the move taken at each step, the bootstrap's tail
             self.vh = np.zeros(cap, np.float32)
             self.fields = self.fields + ("vh",)
+        if state:    # task 00104: each transformer's read at each step, state = (transformers, values); half precision
+            self.st = np.full((cap,) + tuple(state), 0.5, np.float16)
+            self.fields = self.fields + ("st",)
 
     def add(self, **kw):
         i = self.w
@@ -386,7 +392,7 @@ class GatedMemory:
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
     def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True, img_w=0,
-                 pieces=False):
+                 pieces=False, state=None):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
         self.gamma = float(on.get("value_gamma") or 0.0)            # task 00096 (goal_mode value)
@@ -399,9 +405,10 @@ class GatedMemory:
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
-        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value")
+        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state)
         self.store = store or ChunkStore(on, L, self.stm, extra=self.vn)   # long-term memory (shared between bodies or not)
-        self.keys = self.stm.fields + (("pr_real", "tw", "b_img", "b_drv", "b_act", "b_es") if self.refresh else ())
+        self.boot = ("img", "drv", "act", "es") + (("st",) if state else ())   # task 00104: the bootstrap windows' reads too
+        self.keys = self.stm.fields + (tuple("b_" + k for k in self.boot) + ("pr_real", "tw") if self.refresh else ())
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part
         self.recent = [collections.deque(maxlen=on["surprise_window"]) for _ in SURPRISE_PARTS]
@@ -510,13 +517,15 @@ class GatedMemory:
             parts = [value_parts(s.ndrv[e, 0], s.done[e], self.gamma, n) for e in ext]
             r["pr_real"] = np.stack([p[0][:L] for p in parts])
             r["tw"] = np.stack([p[1][:L] for p in parts])
-            self._boot(r, {k: getattr(s, k)[ext[:, n:n + L]] for k in ("img", "drv", "act", "es")})
+            self._boot(r, {k: getattr(s, k)[ext[:, n:n + L]] for k in self.boot})
         return r
 
     @staticmethod
     def _boot(r, b):
         """The bootstrap windows (task 00098), from fields b of the L steps that start n steps after each window."""
         r["b_img"], r["b_drv"], r["b_act"], r["b_es"] = as_frames(b["img"]), b["drv"], b["act"], b["es"]
+        if "st" in b:   # task 00104
+            r["b_st"] = b["st"]
 
     def newest(self, lag):
         """The newest training sequence of this memory's stream (ending lag steps back), [1, L, ...]."""
@@ -532,7 +541,7 @@ class GatedMemory:
         if self.refresh:   # task 00098: the stored tails for pr; the caller replaces them with fresh ones
             old["pr_real"], old["tw"] = st.ltm["lbl"][ci], st.ltm["tw"][ci]
             old["pr"] = old["pr_real"] + old["tw"] * st.ltm["vh"][ci, n:n + L]
-            self._boot(old, {k: st.ltm[k][ci, n:n + L] for k in ("img", "drv", "act", "es")})
+            self._boot(old, {k: st.ltm[k][ci, n:n + L] for k in self.boot})
         elif self.goal_k:
             old["pr"] = st.ltm["lbl"][ci]
         return old

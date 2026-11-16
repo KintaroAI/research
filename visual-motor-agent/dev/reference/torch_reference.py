@@ -117,13 +117,14 @@ def uni_has_sum(cfg, lv, r, c):
 
 
 def uni_slot_table(cfg):
-    """The slots of a step (tasks 00047, 00048): arrays [nt] kind (0 the body, 1 a patch, 2 a summary, 3 the move),
+    """The slots of a step (tasks 00047, 00048): arrays [nt] kind (0 the body, 1 a patch, 2 a summary, 3 the move; task
+    00104, model.state: 4 the read and 5 the write, the write then the read right after the body),
     index (the patch, row-major, or the summary), level (patches 0) and r, c (the position on its level's grid; uni_sum's
     summaries: band, 0). The patches go row by row; each summary right after the last patch of its block (uni_sum: a band
     of rows; uni_pyr: a 2^l x 2^l block at level l = 1..uni_pyr, finer levels first)."""
     g, R, L = cfg["img"] // cfg["patch"], cfg.get("uni_sum", 0), cfg.get("uni_pyr", 0)
     gw = uni_grid_w(cfg)
-    rows = [(0, 0, 0, 0, 0)]
+    rows = [(0, 0, 0, 0, 0)] + ([(5, 0, 0, 0, 0), (4, 0, 0, 0, 0)] if cfg.get("state", 0) else [])
     ns = 0
     for r in range(g):
         for c in range(gw):
@@ -548,9 +549,10 @@ def gae(reward, value, done, last_value, gamma, lam, reward_scale):
     return adv, adv + value
 
 
-def uni_values(cfg, images, drives, actions):
+def uni_values(cfg, images, drives, actions, state=None):
     """Token values [S, T, ntok, V] in [0, 1] and the used counts [ntok]: body (hunger, restlessness), the patches row
-    by row ((y, x, c) within a patch, pixels / 255), the move ((dx+1)/2, (dy+1)/2, click)."""
+    by row ((y, x, c) within a patch, pixels / 255), the move ((dx+1)/2, (dy+1)/2, click). Task 00104: the read's values
+    the state [S, T, V] (numpy; None: blank, 0.5), the write none."""
     S, T = images.shape[:2]
     nt, V, _ = uni_dims(cfg)
     ps, g, gw = cfg["patch"], cfg["img"] // cfg["patch"], uni_grid_w(cfg)
@@ -569,6 +571,9 @@ def uni_values(cfg, images, drives, actions):
     used = np.full(nt, V)
     used[0], used[nt - 1] = 2, 3
     used[kind == 2] = 0                                                            # summary tokens: no values
+    used[kind == 5] = 0                                                            # task 00104: the write: none
+    if (kind == 4).any():                                                          # the read: the state
+        v[:, :, kind == 4] = 0.5 if state is None or torch.is_tensor(state) else np.asarray(state, np.float64)[:, :, None]
     if cfg.get("sum_thumb", 0):   # task 00049: a summary's block, box-averaged to one patch (a thumbnail)
         v[:, :, kind == 2] = uni_thumbs(cfg, images)
         used[kind == 2] = V
@@ -598,28 +603,48 @@ def uni_thumbs(cfg, images):
     return np.stack(out, 2)
 
 
-def forward_uni(P, cfg, images, drives, actions, ep_start, step_mask=None):
+def two_hot_torch(v, K):
+    """two_hot of a torch tensor, differentiable in v (task 00104): the weights of the bins below and above each value."""
+    pos = v.clamp(0, 1) * (K - 1)
+    lo = pos.detach().floor().clamp(max=K - 2).long()
+    w = pos - lo
+    return (F.one_hot(lo, K) * (1 - w)[..., None] + F.one_hot(lo + 1, K) * w[..., None]).to(v.dtype)
+
+
+def forward_uni(P, cfg, images, drives, actions, ep_start, step_mask=None, state=None):
     """The universal model (as seq_fwd_uni in C++). Returns h (token outputs [S, T*ntok, d]) and logits
     [S, T*ntok, V, K]: every token's prediction of the next token's values. step_mask [S, T] bool (task 00089): a token
-    of a seen step reads only seen steps; a missed step's tokens read as before."""
+    of a seen step reads only seen steps; a missed step's tokens read as before. state [S, T, V] (task 00104): the reads,
+    numpy or a torch tensor (then the input map is differentiable in it); None: blank."""
     dt = P["uni_in_w"].dtype
     S, T = images.shape[:2]
     nt, V, K = uni_dims(cfg)
-    v, used = uni_values(cfg, images, drives, actions)
+    v, used = uni_values(cfg, images, drives, actions, state)
     m = (np.arange(V)[None, :] < used[:, None]).astype(np.float64)               # [nt, V]
+    kind = uni_slot_table(cfg)["kind"]
+    rd = np.flatnonzero(kind == 4)                                                 # task 00104: the read slot
+    tst = torch.is_tensor(state) and len(rd)
     if cfg.get("in_bins", 0):   # bin-embedding input (task 00036): each used value two-hot over the K bins
         hot = two_hot(v, K) * m[..., None]
         if cfg.get("uni_chan", 0):   # task 00075: a token's values start at its channel
-            kind = uni_slot_table(cfg)["kind"]
             x = np.zeros((S, T, nt, V + 5, K))
             for k in range(nt):
                 ch, u = uni_channel(kind[k], V), int(used[k])
                 x[:, :, k, ch:ch + u] = hot[:, :, k, :u]
-            x = torch.tensor(x, dtype=dt).reshape(S, T * nt, (V + 5) * K)
+            x = torch.tensor(x, dtype=dt)
+            if tst:   # the read's channel is the patch's (0)
+                x[:, :, rd[0], :V] = two_hot_torch(state.to(dt), K)
+            x = x.reshape(S, T * nt, (V + 5) * K)
         else:
-            x = torch.tensor(hot, dtype=dt).reshape(S, T * nt, V * K)
+            x = torch.tensor(hot, dtype=dt)
+            if tst:
+                x[:, :, rd[0]] = two_hot_torch(state.to(dt), K)
+            x = x.reshape(S, T * nt, V * K)
     else:
-        x = torch.tensor((v - 0.5) * m, dtype=dt).reshape(S, T * nt, V)
+        x = torch.tensor((v - 0.5) * m, dtype=dt)
+        if tst:
+            x[:, :, rd[0]] = state.to(dt) - 0.5
+        x = x.reshape(S, T * nt, V)
     ss = segment_starts(np.asarray(ep_start, bool))
     pos = np.arange(T)[None, :] - ss
     h = F.linear(x, P["uni_in_w"], P["uni_in_b"]).reshape(S, T, nt, -1) + P["uni_slot"][None, None]
@@ -674,7 +699,7 @@ def uni_loss(P, cfg, batch):
     dt = P["uni_in_w"].dtype
     sm = batch.get("step_mask")   # task 00089: a missed step is no key for the seen ones and has no loss
     out = forward_uni(P, cfg, batch.get("input_images", batch["images"]), batch.get("input_drives", batch["drives"]),
-                      batch["action"], batch["ep_start"], sm)
+                      batch["action"], batch["ep_start"], sm, batch.get("state"))
     S, T = batch["images"].shape[:2]
     nt, V, K = uni_dims(cfg)
     v, used = uni_values(cfg, batch["images"], batch["drives"], batch["action"])
@@ -682,6 +707,7 @@ def uni_loss(P, cfg, batch):
     tgt[:, :, :nt - 1] = v[:, :, 1:]                                               # the next token in the step
     tgt[:, :, nt - 1, :2] = np.asarray(batch["next_drives"], np.float64)           # the move: the next drives
     tu = np.concatenate([used[1:], [2]])                                           # values used by each target
+    tu[:-1][uni_slot_table(cfg)["kind"][1:] == 4] = 0                              # task 00104: the read is no target
     m = (np.arange(V)[None, :] < tu[:, None]).astype(np.float64)                   # [nt, V]
     logp = out["logits"].log_softmax(-1).reshape(S, T, nt, V, K)
     ce = -(torch.tensor(two_hot(tgt, K), dtype=dt) * logp).sum(-1)                # [S, T, nt, V]
@@ -690,6 +716,27 @@ def uni_loss(P, cfg, batch):
         per_tok = per_tok * torch.tensor(np.asarray(sm, bool)[:, :, None], dtype=dt)
     has = tu > 0                                                                   # a summary next: no target
     return per_tok[:, :, has].mean(), dict(per_token=per_tok, logp=logp, tgt=tgt, used=tu)
+
+
+def uni_writes(cfg, logits):
+    """Task 00104: the state each frame writes, [S, T, V]: the write token's expected values (its head's logits at the
+    patch channel, the softmax over the bins' centres), from forward_uni's logits."""
+    nt, V, K = uni_dims(cfg)
+    S = logits.shape[0]
+    w = np.flatnonzero(uni_slot_table(cfg)["kind"] == 5)[0]
+    lg = logits.reshape(S, -1, nt, V, K)[:, :, w]
+    c = torch.arange(K, dtype=lg.dtype) / (K - 1)
+    return (lg.softmax(-1) * c).sum(-1)
+
+
+def uni_pair_loss(P, cfg, b1, b2, reads1, grad=True):
+    """Task 00104: the loss of pairs of consecutive windows b1, b2 (uni_loss batches): b1 reads reads1 [S, T, V]; step k of
+    b2 reads what step k of b1 writes, with the gradient through it (grad) or detached. The mean over both windows' tokens
+    (each window has as many), so 0.5 (loss1 + loss2)."""
+    w1 = uni_writes(cfg, forward_uni(P, cfg, b1["images"], b1["drives"], b1["action"], b1["ep_start"], state=reads1)["logits"])
+    l1, _ = uni_loss(P, cfg, dict(b1, state=reads1))
+    l2, _ = uni_loss(P, cfg, dict(b2, state=w1 if grad else w1.detach()))
+    return 0.5 * (l1 + l2), w1
 
 
 def ppo_loss(P, cfg, pc, batch):
