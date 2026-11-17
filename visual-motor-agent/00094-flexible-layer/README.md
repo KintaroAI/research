@@ -1,8 +1,8 @@
 # vm-00094: The Flexible Layer, W = S + F
 
 **Date:** 2026-11-16
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00094`)
+**Status:** Complete
+**Source:** `exp/vm-00094` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00094/`
 **Task plan:** [`../tasks/00105-flexible-layer.md`](../tasks/00105-flexible-layer.md)
 
