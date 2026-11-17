@@ -202,6 +202,25 @@ every tick:
 - **A faster lookahead:** the imagined steps recompute the whole window for every candidate and pass; the real
   prefix is the same for all of them, so its keys and values could be cached once per tick (as the one-step
   candidates do).
+- **Action repeat: decide every k ticks and hold the move** (the owner, 2026-11-17; from DQN, which held each action
+  for 4 emulator frames, so that every decision was a short course).
+  - **Why:** in the world with inertia (vm-00095) one push moves the body's next position by at most 1 px per axis, so
+    the one-move instinct compares candidates that barely differ and overrides most moves. A push held for 4 ticks moves
+    the body up to 10 px.
+  - **Against the imagined horizon:** vm-00096 (task 00107) holds each candidate for 4 imagined ticks but re-decides
+    every tick, at 2.4–3.6 times the acting cost. Action repeat is the cheap counterpart: real commitments, no
+    imagination, and a decision only every k ticks (1/k of the acting).
+  - **Two forms:**
+    - (a) **The agent repeats** (a new option such as `online.act_every = k`): the world and the model still see every
+      tick and learn from each (the held move is the move token); only the decision, the policy pass and the instinct,
+      comes every k ticks.
+    - (b) **The world skips frames** (DQN's form, an `env` option): one agent step is k world ticks; the model sees
+      every k-th frame, touches and hunger add up over the k ticks, and a context of 8 steps covers 8k ticks. The time
+      scale of prediction changes too.
+  - **The test:** k = 4 (the inertia constant) in the world with inertia from birth, against vm-00096's IR and IH.
+    - If action repeat matches IH, the commitment helped, not the imagination.
+    - If IH wins, imagining the course matters.
+    - Then in the world without inertia: does committing cost the agent its fine aim at food?
 - **Reusing the sliding window while acting** (the owner, 2026-10-30). Each tick now shifts the window by one step and
   recomputes everything: the last 7 raw frames (from the short-term buffer; tokens are never stored) plus the new one,
   a full pass over 8 steps. 7/8 of the input is the same as on the last tick, but the work is not saved.

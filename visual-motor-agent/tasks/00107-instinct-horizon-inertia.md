@@ -58,6 +58,7 @@
 **What follows:**
 - **If 2 holds:** the horizon is what this world needs. Next is its cost (H = 4 in the world without inertia, against C8r), and the switch (IS) with it.
 - **If 2 fails:** a course of 4 ticks is not enough, or the imagination is too poor to score it. Next is the tolerance scaled to the labels (IB with `instinct_tol` .01), the presumed cause from vm-00095, or the value's horizon.
+- **Either way** (added 2026-11-17 during the runs, the owner): **action repeat**, deciding every 4 ticks and holding the move, as DQN did (ARCHITECTURE.md section 9). It separates committing to a course from imagining it: if it matches IH, the commitment helped, not the imagination.
 
 ## Implementation
 
