@@ -19,6 +19,7 @@
 #                  arm (eval_hunger.py poison); one process per card
 #   make show — IS and C8r-inertia4 against IB, paired by seed (frozen)
 #   make videos — compare_video.py, C8r (no inertia), IB and IS of seeds 5 and 12, each view with the whole world beside it
+#   make videos2 — what learning with inertia changed: C8r in its own world and frozen in the inertia world, IS at 30k and at 60k
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -30,7 +31,7 @@ RUN = $(PY) lifetime.py --config configs/U_view.json --set online.future_k=4 --s
 SCHED = {"inertia": [[30000, 4]]}
 SPLIT ?= 8   # vm-00094's split (24 lives of the same agent, with F and the memory measure: 4.4 h)
 
-.PHONY: all runs frozen frozen_a frozen_b frozen2 show videos
+.PHONY: all runs frozen frozen_a frozen_b frozen2 show videos videos2
 
 all: runs
 
@@ -97,6 +98,16 @@ show:
 	cd $(DEV) && $(PY) eval_hunger.py show $(OUT)/chain_a.jsonl $(OUT)/chain_b.jsonl $(OUT)/chain_c_a.jsonl $(OUT)/chain_c_b.jsonl \
 	  $(OUT)/value_a.jsonl $(OUT)/value_b.jsonl --base IB
 	cd $(DEV) && $(PY) eval_hunger.py show $(OUT)/reach_a.jsonl $(OUT)/reach_b.jsonl
+
+# What learning with inertia changed (added after the write-up): C8r in its own world, C8r frozen in the inertia world, IS's
+# checkpoint at 30k (the model at the switch) and IS at 60k, both in the inertia world; seed 5 on GPU 1, seed 12 on GPU 0
+videos2:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { for s in 5 12; do \
+	  if [ $$s = 5 ]; then d=1; else d=0; fi; \
+	  CUDA_VISIBLE_DEVICES=$$d $(PY) compare_video.py $(C8R)/C8r_s$$s:"C8r (no inertia)" $(C8R)/C8r_s$$s+inertia=4:"C8r-in-inertia (raised without)" \
+	    $(OUT)/IS_s$$s@30000:"IS-30k (at the switch)" $(OUT)/IS_s$$s:"IS-60k (after learning)" --steps 1000 --worlds 8 --cols 2 \
+	    -o $(HOME)/data/research/visual-motor-agent/videos/vm95_adapt_s$$s & \
+	done; wait; }
 
 videos:
 	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && for s in 5 12; do \

@@ -1,11 +1,14 @@
 """Frozen agents side by side (task 00059 on): each run, as RUN:LABEL or RUN:LABEL:RULE (RULE overrides the run's
 online.piece_rule), forages from the same start for --steps ticks; writes compare.mp4, a grid of their views with path,
-touches and counts, and ARM.mp4, forage_video.py's video of each.
+touches and counts, and ARM.mp4 (ARM: the label's first word), forage_video.py's video of each. RUN may carry its own
+checkpoint and world settings (task 00106): RUN@30000+inertia=4:LABEL is the checkpoint at tick 30,000 in its world with
+env.inertia 4 (labels must not contain ':').
 
 Usage (from visual-motor-agent/dev):
     CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./venv/bin/python compare_video.py RUN:QG RUN:QN --step 60000 -o OUT
 """
 import argparse
+import json
 import os
 import sys
 import types
@@ -80,7 +83,7 @@ def grid(recs, labels, metas, t, cols=COLS):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("runs", nargs="+", help="RUN:LABEL or RUN:LABEL:RULE")
+    ap.add_argument("runs", nargs="+", help="RUN:LABEL or RUN:LABEL:RULE; RUN may be RUN@STEP+KEY=VALUE (its checkpoint and world settings)")
     ap.add_argument("--step", type=int, default=60000)
     ap.add_argument("--steps", type=int, default=1000)
     ap.add_argument("--worlds", type=int, default=8)
@@ -91,8 +94,18 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     recs, labels, metas = [], [], []
     for r in a.runs:
-        path, label, *rule = r.split(":")
-        args = types.SimpleNamespace(step=a.step, steps=a.steps, worlds=a.worlds, horizon=0, decode="", rule=rule[0] if rule else "", noise=a.noise)
+        spec, label, *rule = r.split(":")
+        path, *sets = spec.split("+")   # task 00106: RUN[@STEP][+KEY=VALUE ...]
+        path, _, at = path.partition("@")
+        env = {}
+        for kv in sets:
+            k, _, v = kv.partition("=")
+            try:
+                env[k] = json.loads(v)
+            except ValueError:
+                env[k] = v
+        args = types.SimpleNamespace(step=int(at) if at else a.step, steps=a.steps, worlds=a.worlds, horizon=0, decode="",
+                                     rule=rule[0] if rule else "", noise=a.noise, env=env)
         rec, food, poison, meta = run(args, path)
         print("%-40s world 0: food %d poison %d; all %d worlds: food %.1f poison %.1f per %d ticks" % (
             label, food[0], poison[0], len(food), food.mean(), poison.mean(), a.steps), flush=True)

@@ -44,6 +44,7 @@ def run(args, path):
             ec[k] = tuple(ec[k])
     if getattr(args, "noise", None) is not None:   # task 00087: test any run at another level of white noise
         ec["noise"] = args.noise
+    ec.update(getattr(args, "env", None) or {})   # task 00106: world settings over the run's own (compare_video RUN+KEY=VALUE)
     S = int(info.get("pieces", 1))
     agents = [agent_lib.Agent.load(os.path.join(path, ckpt_name(args.step, k, S))) for k in range(S)]
     agent = agents[0]
