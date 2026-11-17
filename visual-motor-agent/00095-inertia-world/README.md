@@ -1,8 +1,8 @@
 # vm-00095: A World With Inertia
 
 **Date:** 2026-11-17
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00095`)
+**Status:** Complete
+**Source:** `exp/vm-00095` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00095/`
 **Task plan:** [`../tasks/00106-inertia-world.md`](../tasks/00106-inertia-world.md)
 
