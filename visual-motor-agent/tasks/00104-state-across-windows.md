@@ -134,6 +134,7 @@
   - With 32 bins, as the runs use, SB learned it by update 750 in 3 of 3 seeds.
   - With 8 bins it sat on a plateau, and learned within 3,000 updates in only half the runs.
   - Detached (SA), the writes are never trained, but the reader still learns to decode what they happen to carry: error 0.04 against 0.083 at chance, against SB's 0.0001.
+  - In a later rerun SA learned it fully (error 0.00004): in the toy the detached arm is not reliably worse, and the test now asserts only that the carry learns it.
   - So SA is not a model without memory. Reading 3 measures what training the writes adds.
 - [ ] Code 1–5, with the tests (6) passing; `model.state = 0` byte-identical.
 - [x] Timing (7), 2026-11-16 14:40, 600-tick lives of both arms under MPS, 14 on the 4090 and 10 on the 3090: 3.58 and 2.60 ticks/s per life (C8 in vm-00091: 4.8 and 3.3), about 0.8 GB per life. The state costs about a fifth of the speed. Balanced: seeds 1–8 of both arms on the 4090 (16 lives), 9–12 on the 3090 (8), about 5.3 h each.

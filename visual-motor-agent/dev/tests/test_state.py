@@ -5,7 +5,7 @@ The layout and the parameters it adds, checkpoints, invalid configs; the C++ mod
 PyTorch reference; on the GPU, forward passes with given states (values and writes) against the reference, the blank
 state against the C++ model, an update on pairs of windows (the second reading the first's writes, with and without the
 gradient through them) against the reference's pair loss, the ring with its queue of writes against full passes, and a
-copy task that only the gradient through the carry can learn.
+copy task the gradient through the carry learns.
 
 Requires libvmagent.so and torch (CPU) in the venv; the GPU tests libvmcuda.so and a GPU.
 """
@@ -240,17 +240,18 @@ def test_ring_reads_and_writes_match_full_passes(cfg):
 
 @gpu
 @pytest.mark.parametrize("seed", [11, 12])
-def test_copy_task_needs_the_carry(seed):
+def test_copy_task_learned_through_the_carry(seed):
     """A value shown in the first window (the body's hunger at every step) is the target of the second window's move
-    tokens, whose own bodies and frames are noise. Only the gradient through the carry teaches the writes to keep it.
-    With 32 bins (as the runs) the carry learned it by update 750 in 3 of 3 seeds, the error falling suddenly to about
-    0.001; with 8 bins it sat on a plateau, and learned within 3,000 updates in only half the runs. Detached, the writes
-    are never trained, but the reader still learns to decode what they happen to carry: part of it (an error about half
-    the target's variance, .083)."""
+    tokens, whose own bodies and frames are noise. With the gradient through the carry the writes learn to keep it: with
+    32 bins (as the runs) by update 750 in 3 of 3 seeds, the error falling suddenly to about 0.001; with 8 bins it sat on
+    a plateau, and learned within 3,000 updates in only half the runs.
+    Detached, the writes are never trained, yet the reader can learn to decode what they happen to carry: in one run part
+    of it (error .04, against .083 for a guess), in another all of it (4e-5). So the detached arm is not asserted to fail;
+    this tests the carry."""
     cfg = dict(UNI, d_model=64, n_head=4, d_ff=128, bins=32)
     S, T = 32, cfg["ctx"]
     err = {}
-    for grad in (True, False):
+    for grad in (True,):
         agent = agent_lib.Agent(cfg, seed=seed)
         m = cuda_lib.CudaModel(agent)
         V = m.V
@@ -280,4 +281,4 @@ def test_copy_task_needs_the_carry(seed):
         err[grad] = float(((nb[:, :, 0] - h0[:, None]) ** 2).mean())
         m.close()
         agent.close()
-    assert err[True] < 0.01 and err[True] < 0.1 * err[False], err
+    assert err[True] < 0.01, err
