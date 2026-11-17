@@ -818,6 +818,22 @@ __global__ void k_adamw(float* P, const float* G, float* m, float* v, long n, fl
     }
 }
 
+// Task 00105, the flexible layer: P holds S + F. F <- lam F - step clamp(g / (sqrt(v / bc2) + eps), -1, 1), g the gradient in G
+// (use_grad = 0: none, F only decays), v Adam's second moment of the slow update (read, not written); P changes by F's change,
+// so S = P - F is untouched.
+__global__ void k_fast(float* P, float* F, const float* G, const float* v, long n, float lam, float step, float eps, float bc2,
+                       int use_grad) {
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        float f = lam * F[i];
+        if (use_grad) {
+            const float r = G[i] / (sqrtf(v[i] / bc2) + eps);
+            f -= step * fminf(fmaxf(r, -1.f), 1.f);
+        }
+        P[i] += f - F[i];
+        F[i] = f;
+    }
+}
+
 // ---- latent dynamics (dyn_hidden > 0; as vm_agent.cpp's seq_dyn, dyn_step, dyn_decode) ----
 // Chain step inputs for rows [0, n) of one level: uT = [s, executed a_j], uH = [s, h, executed a_j], where s is v of
 // the chain's start frame (par < 0) or the previous step's latent, and h the true hunger at j (train) or the
@@ -1211,6 +1227,8 @@ struct Model {
     // gradients and accumulators added to the last pass's, the gradient at the reads wanted. Outputs of the last pass:
     // the writes' expected values [wr_n, V] (vmc_uni_writes) and the gradient at the reads [rg_n, V] (vmc_uni_read_grads).
     Buf u_st, u_cg, u_wr, u_rg, u_wz, u_wl;
+    Buf fastF;                   // task 00105: the flexible layer F (P holds S + F), zero until the first vmc_fast_step
+    bool fast_on = false;
     int st_n = 0, cg_n = 0, wr_n = 0, rg_n = 0;
     bool has_st = false, has_cg = false, t_accum = false, t_rg = false;
     float t_scale = 1.f;
@@ -3004,6 +3022,26 @@ int vmc_apply_update(void* h, const PPOConfig* pcp) {
 int vmc_update(void* h, const PPOConfig* pcp) {
     if (vmc_loss_and_grads(h, pcp)) return -1;
     return vmc_apply_update(h, pcp);
+}
+
+// Task 00105: the flexible layer's step on the gradients as they are (vmc_loss_and_grads of the newest window): F <- lam F
+// - k lr clamp(g / sqrt(v_hat), -1, 1), P += F's change. use_grad = 0: F only decays.
+int vmc_fast_step(void* h, float lam, float k, const PPOConfig* pcp, int use_grad) {
+    Model* M = (Model*)h;
+    const PPOConfig& pc = *pcp;
+    float* F = M->fastF.get(M->n_params);
+    if (!M->fast_on) { CK(cudaMemset(F, 0, M->n_params * sizeof(float))); M->fast_on = true; }
+    const float bc2 = 1.0f - powf(pc.beta2, (float)std::max(M->step, 1L));
+    k_fast<<<GRID(M->n_params)>>>(M->P, F, M->G, M->v, M->n_params, lam, k * pc.lr, pc.adam_eps, bc2, use_grad);
+    CK(cudaGetLastError());
+    return 0;
+}
+// which 0: F (zeros before the first step); 1: Adam's second moment v (for tests).
+int vmc_fast_get(void* h, int which, float* out) {
+    Model* M = (Model*)h;
+    if (which == 0 && !M->fast_on) { memset(out, 0, M->n_params * sizeof(float)); return 0; }
+    CK(cudaMemcpy(out, which == 0 ? M->fastF.p : M->v, M->n_params * sizeof(float), cudaMemcpyDeviceToHost));
+    return 0;
 }
 
 int vmc_stats(void* h, VMCStats* out) {

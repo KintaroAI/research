@@ -76,6 +76,8 @@ def lib():
             "vmc_set_uni_train": (i32, [vp, C.c_float, i32, i32]),
             "vmc_uni_read_grads": (i32, [vp, i32, fp]),
             "vmc_apply_update": (i32, [vp, C.POINTER(PPOConfig)]),
+            "vmc_fast_step": (i32, [vp, C.c_float, C.c_float, C.POINTER(PPOConfig), i32]),   # task 00105
+            "vmc_fast_get": (i32, [vp, i32, fp]),
         }
         for name, (res, args) in sig.items():
             if not hasattr(_lib, name):   # an older build without this function (e.g. one a running job loaded)
@@ -325,6 +327,26 @@ class CudaModel:
                "forward_uni")
         if writes:
             out["writes"] = self.uni_writes(S * T).reshape(S, T, self.V)
+        return out
+
+    # ---- task 00105: the flexible layer ----
+    def fast_step(self, lam, k, ppo_cfg, use_grad=True):
+        """F <- lam F - k lr clamp(g / sqrt(v_hat), -1, 1) on the gradients as they are (loss_and_grads of the newest window;
+        use_grad=False: F only decays); the parameters, which hold S + F, change by F's change."""
+        _check(lib().vmc_fast_step(self.handle, float(lam), float(k), C.byref(self._pc(ppo_cfg)), int(use_grad)), "fast_step")
+
+    def newest_fast(self, ro, lam, k, ppo_cfg):
+        """Task 00105: the gradient of the newest window's loss alone (ro: a rollout of that one window), then the fast step on
+        it, without waiting for the GPU."""
+        self.set_batch(*ro.batch())
+        pc = C.byref(self._pc(ppo_cfg))
+        _check(lib().vmc_loss_and_grads(self.handle, pc), "loss_and_grads")
+        _check(lib().vmc_fast_step(self.handle, float(lam), float(k), pc, 1), "fast_step")
+
+    def fast(self, which=0):
+        """F (which 0; zeros before the first step) or Adam's second moment v (1), [n_params]."""
+        out = np.empty(self.n_params, np.float32)
+        _check(lib().vmc_fast_get(self.handle, int(which), _p(out, C.c_float)), "fast_get")
         return out
 
     # ---- task 00104: the state ----

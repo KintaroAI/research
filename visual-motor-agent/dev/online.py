@@ -127,7 +127,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       thought_decode="pair",
                       # task 00104 (model.state, lifetime.py on the GPU): updates on pairs of consecutive windows, the second reading
                       # the first's writes; state_grad 1: the second window's loss trains the first through them, 0: read as given
-                      state_grad=1)
+                      state_grad=1,
+                      # task 00105: the flexible layer, W = S + F: fast = lambda (F's decay per tick; 0: off), fast_k (F's step, from the
+                      # newest window's gradient, in Adam steps); mem_score: the aim at unseen food by ticks since the last sight measured
+                      # in life, against a blind world stepped with the same moves (scoring only)
+                      fast=0.0, fast_k=10.0, mem_score=0)
 EVAL_SEED = 777_000          # the test episodes of train.py / plan.py
 
 

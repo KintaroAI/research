@@ -56,6 +56,41 @@ class Scored:
         return scored
 
 
+class MemoryScore:
+    """Tasks 00102, 00103 (and 00105, in life): one world's aim at the nearest unseen food by ticks since any food was last in
+    its window (the SINCE bins), on all out-of-view ticks and on those with no meal since food was last in view. Each tick:
+    see(env, c) before the world steps (c: each body's cosine of its move to the nearest food), ate(success) after it."""
+
+    def __init__(self, bodies):
+        m = len(SINCE_NAMES)
+        self.since, self.fed = np.full(bodies, SINCE[-1]), np.zeros(bodies, bool)   # fed: a food eaten since food was last in view
+        self.out_aim, self.out_n, self.nm_aim, self.nm_n = np.zeros(m), np.zeros(m), np.zeros(m), np.zeros(m)
+
+    def see(self, env, c):
+        m = len(SINCE_NAMES)
+        inv = env.foods_in_view().any(1)
+        self.since = np.where(inv, 0, np.minimum(self.since + 1, SINCE[-1]))
+        self.fed &= ~inv
+        o = ~inv
+        k = np.minimum(np.digitize(self.since[o], SINCE) - 1, m - 1)
+        np.add.at(self.out_aim, k, c[o])
+        np.add.at(self.out_n, k, 1)
+        o = ~inv & ~self.fed
+        k = np.minimum(np.digitize(self.since[o], SINCE) - 1, m - 1)
+        np.add.at(self.nm_aim, k, c[o])
+        np.add.at(self.nm_n, k, 1)
+
+    def ate(self, success):
+        self.fed |= np.asarray(success, bool)
+
+    def take(self):
+        """The sums and counts since the last take, then zeroed (the ticks since and the meals carry on)."""
+        out = dict(out_aim=self.out_aim.tolist(), out_n=self.out_n.tolist(), nm_aim=self.nm_aim.tolist(), nm_n=self.nm_n.tolist())
+        for a in (self.out_aim, self.out_n, self.nm_aim, self.nm_n):
+            a[:] = 0
+        return out
+
+
 STATE_MODE = "live"   # task 00104: --state blank, every read of the state blank (0.5); shuffle, each body reads another's
 
 
@@ -273,11 +308,7 @@ def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0, view=None):
     aim, count = dict(seen=np.zeros(n), blind=np.zeros(n)), dict(seen=np.zeros(n), blind=np.zeros(n))
     smooth, last = [], None
     window = bool(getattr(life.cfg, "view", 0))   # task 00102: aim at food out of the window, by ticks since food was last in it
-    m = len(SINCE_NAMES)
-    out_aim, out_n = dict(seen=np.zeros(m), blind=np.zeros(m)), dict(seen=np.zeros(m), blind=np.zeros(m))
-    since = dict(seen=np.full(bodies, SINCE[-1]), blind=np.full(bodies, SINCE[-1]))
-    fed = dict(seen=np.zeros(bodies, bool), blind=np.zeros(bodies, bool))   # a food eaten since food was last in view
-    nm_aim, nm_n = dict(seen=np.zeros(m), blind=np.zeros(m)), dict(seen=np.zeros(m), blind=np.zeros(m))
+    mem = dict(seen=MemoryScore(bodies), blind=MemoryScore(bodies))
     for t in range(ticks):
         a = life.act(obs)
         xy = a[:, :2].astype(np.float64)
@@ -288,17 +319,7 @@ def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0, view=None):
             np.add.at(aim[name], g, c)
             np.add.at(count[name], g, 1)
             if window:
-                inv = e.foods_in_view().any(1)
-                since[name] = np.where(inv, 0, np.minimum(since[name] + 1, SINCE[-1]))
-                fed[name] &= ~inv
-                o = ~inv
-                k = np.minimum(np.digitize(since[name][o], SINCE) - 1, m - 1)
-                np.add.at(out_aim[name], k, c[o])
-                np.add.at(out_n[name], k, 1)
-                o = ~inv & ~fed[name]
-                k = np.minimum(np.digitize(since[name][o], SINCE) - 1, m - 1)
-                np.add.at(nm_aim[name], k, c[o])
-                np.add.at(nm_n[name], k, 1)
+                mem[name].see(e, c)
         if last is not None:
             smooth.append(cosine(xy, last).mean())
         last = xy
@@ -310,8 +331,8 @@ def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0, view=None):
         infos = dict(seen=inf, blind=blind.step(a)[3], grab=grab.step(ag)[3])
         for name, i in infos.items():
             food[name] += int(i["success"].sum())
-            if name in fed:
-                fed[name] |= np.asarray(i["success"], bool)
+            if name in mem:
+                mem[name].ate(i["success"])
             poison[name] += int(i["gt_hazard_click"].sum())
     spread = life.state_spread()   # task 00104
     life.close()
@@ -320,11 +341,12 @@ def chain(path, ticks, bodies, seed, clog=0.0, noise=None, off=0.0, view=None):
                **({} if spread is None else dict(state_spread=spread)),
                smooth=float(np.mean(smooth)), share=(count["seen"] / count["seen"].sum()).tolist(),
                cos_seen=(aim["seen"] / np.maximum(count["seen"], 1)).tolist(), cos_blind=(aim["blind"] / np.maximum(count["blind"], 1)).tolist(),
-               **(dict(out_share=float(out_n["seen"].sum() / (ticks * bodies)), out_n=out_n["seen"].tolist(), out_n_blind=out_n["blind"].tolist(),
-                       cos_out=(out_aim["seen"] / np.maximum(out_n["seen"], 1)).tolist(),
-                       cos_out_blind=(out_aim["blind"] / np.maximum(out_n["blind"], 1)).tolist(),
-                       out_n_nomeal=nm_n["seen"].tolist(), cos_out_nomeal=(nm_aim["seen"] / np.maximum(nm_n["seen"], 1)).tolist(),
-                       cos_out_nomeal_blind=(nm_aim["blind"] / np.maximum(nm_n["blind"], 1)).tolist(), since_names=list(SINCE_NAMES)) if window else {}))
+               **(dict(out_share=float(mem["seen"].out_n.sum() / (ticks * bodies)), out_n=mem["seen"].out_n.tolist(),
+                       out_n_blind=mem["blind"].out_n.tolist(),
+                       cos_out=(mem["seen"].out_aim / np.maximum(mem["seen"].out_n, 1)).tolist(),
+                       cos_out_blind=(mem["blind"].out_aim / np.maximum(mem["blind"].out_n, 1)).tolist(),
+                       out_n_nomeal=mem["seen"].nm_n.tolist(), cos_out_nomeal=(mem["seen"].nm_aim / np.maximum(mem["seen"].nm_n, 1)).tolist(),
+                       cos_out_nomeal_blind=(mem["blind"].nm_aim / np.maximum(mem["blind"].nm_n, 1)).tolist(), since_names=list(SINCE_NAMES)) if window else {}))
 
 
 def poison(path, ticks, bodies, seed):

@@ -1,7 +1,7 @@
 # Task 00105: The Flexible Layer, W = S + F (experiment vm-00094)
 
 **Date:** 2026-11-16
-**Status:** Proposed. The owner approves the design before any code is written.
+**Status:** In progress (approved 2026-11-16, the owner: "yes, go ahead with 105 - use both gpus")
 
 ## Context
 
@@ -27,7 +27,14 @@
   - v̂ is S's Adam second moment, so F's step is k times the size of an Adam step, per parameter.
   - P changes by F's change. Replayed windows do not train F, so it holds the recent past, not the life.
 - **No consolidation (η = 0):** S already learns from everything, so F is a pure short-lived trace on top of an agent that learns as C8 does.
-- **Settings:** λ = .99 (half-life 69 ticks), k = 10; all parameters have an F. One arm, so that the comparison with C8 is clean. A second strength (k = 3 or 30) can follow if this one moves anything.
+- **Settings:** λ = .99 (half-life 69 ticks), all parameters have an F. One arm, so that the comparison with C8 is clean.
+  - **k = 1, changed from 10 before the runs** (the owner's choice, 2026-11-16, after a pre-run check). In 2,000-tick lives (seed 1), |F| / |S| over all parameters was:
+    - k = 10: .40, .38, .35, .34 at 0.5k–2k ticks (largest tensor .91 at 2k), with the patch CE at 2k 1.050;
+    - k = 3: .17 at 2k (largest .64), patch CE .978;
+    - k = 1: .135, .092, .086, .066, falling as S grows (largest .29), patch CE .951.
+  - At k = 10 nearly every step is clipped to its full size: the newest window's gradient is larger than the batch's, from which v_hat comes. F then sat at a third of S, against reading 1's bar of .1, and prediction was worse.
+  - At k = 1, F still moves several times faster than S on the newest window (S's Adam steps are mostly well under lr), and fades with the 69-tick half-life.
+  - A second strength can follow if this one moves anything.
 - **Cost:** one pass over one window per tick (about an eighth of an update) and one buffer the size of the parameters.
 
 ### Measuring memory while learning
@@ -44,9 +51,9 @@
 | Arm | Label | Model | F | Seeds |
 |---|---|---|---|---|
 | C8r = vm-00091's VW, rerun | value, γ 0.9, n 4, fresh tail | 4 quarters × 8 layers, tolerance 0.002, context 8 | none | 1–12 |
-| F | the same | the same | λ .99, k 10, from the newest window | 1–12 |
+| F | the same | the same | λ .99, k 1, from the newest window | 1–12 |
 
-- **The world and everything else are C8's:** `--config configs/U_view.json --set online.future_k=4 --set model.n_layer=8 --set online.instinct_tol=0.002 --set online.value_gamma=0.9 --set online.value_refresh=1`, plus `--set online.fast=0.99 --set online.fast_k=10` for F.
+- **The world and everything else are C8's:** `--config configs/U_view.json --set online.future_k=4 --set model.n_layer=8 --set online.instinct_tol=0.002 --set online.value_gamma=0.9 --set online.value_refresh=1 --set online.mem_score=1`, plus `--set online.fast=0.99 --set online.fast_k=1` for F.
 - **Cards:** 24 lives, seeds 1–7 on the 4090 and 8–12 on the 3090 as vm-00091 (about 4–5 h; F's extra pass is about an eighth), to be confirmed by a timing.
 
 ## Code
@@ -81,12 +88,12 @@
 
 **What follows:**
 - **If 2 holds:** fast weights carry the food's place. Next is their reach (λ .995) and the value's surprise as the consolidation, as planned; reading 3 decides whether it is used.
-- **If 2 fails and 4 holds:** a trace of the last ticks in the weights, at this strength, does not hold where the food was. Next is one more strength (k 30) before the idea is set aside; a world that needs memory more (hidden food, vm-00081) is then the place to look.
+- **If 2 fails and 4 holds:** a trace of the last ticks in the weights, at this strength, does not hold where the food was. Next is one more strength (k 3) before the idea is set aside; a world that needs memory more (hidden food, vm-00081) is then the place to look.
 - **If 4 fails:** F's step is too large for this learner. Halve k and rerun before reading 2.
 
 ## Implementation
 
-- [ ] The owner approves this design.
+- [x] The owner approves this design (2026-11-16).
 - [ ] Code 1–3, with the tests (4) passing; `fast = 0` byte-identical.
 - [ ] Timing; then the runs, the frozen tests, the write-up and videos.
 

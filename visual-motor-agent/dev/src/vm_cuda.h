@@ -99,6 +99,10 @@ int vmc_set_uni_carry(void* h, int n, const float* cg);
 int vmc_set_uni_train(void* h, float scale, int accumulate, int read_grads);
 int vmc_uni_read_grads(void* h, int n, float* out);
 int vmc_apply_update(void* h, const PPOConfig* pcp);
+// Task 00105, the flexible layer (P holds S + F): F <- lam F - k lr clamp(G / sqrt(v_hat), -1, 1) on the gradients as they are
+// (use_grad = 0: F only decays), P changed by F's change; and F (which 0) or Adam's second moment (1) out [n_params].
+int vmc_fast_step(void* h, float lam, float k, const PPOConfig* pcp, int use_grad);
+int vmc_fast_get(void* h, int which, float* out);
 int vmc_tie(void** hs, int n, long off, long len, int mean);   // task 00076: one table for n models
 
 #ifdef __cplusplus

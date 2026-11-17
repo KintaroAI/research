@@ -357,6 +357,13 @@ def main():
                       not (on["sf_windows"] or clog or q_in or q_off or delayed or tok_sur or hasattr(env, "think"))):
         raise ValueError("model.state needs the GPU and the ring, an even online.batch, and none of self-forcing, online.clog, "
                          "online.noise_in, online.off, env.delays, env.thought or surprise gating")
+    fast = float(on["fast"] or 0.0)   # task 00105: the flexible layer, W = S + F
+    if fast and not (0.0 < fast < 1.0 and on["device"] == "cuda" and uni and not (state or on["sf_windows"] or clog or q_in or q_off or delayed)):
+        raise ValueError("online.fast needs 0 < fast < 1, the universal model on the GPU, and none of model.state, self-forcing, "
+                         "online.clog, online.noise_in, online.off or env.delays")
+    mem_on = bool(on["mem_score"]) and bool(getattr(env_cfg, "view", 0))   # task 00105: memory measured in life
+    if on["mem_score"] and not mem_on:
+        raise ValueError("online.mem_score needs a world larger than the view (env.view)")
     sched = env_schedule(env, env_cfg, on.get("env_sched"), on["steps"])   # task 00094: {tick: {key: value}}
     off_rng = np.random.default_rng([args.seed, 0x0FF])   # its own: off = 0 draws nothing
     is_off, missed = np.zeros(S, bool), np.zeros(S, int)
@@ -445,6 +452,11 @@ def main():
         a.save(os.path.join(out_dir, ckpt_name(0, k, S)), with_optimizer=False)
 
     mf = open(os.path.join(out_dir, "metrics.jsonl"), "w")
+    if mem_on:   # task 00105: a blind world stepped with the same moves, for scoring only
+        from eval_hunger import MemoryScore
+        from eval_pieces import relative
+        blind = make_world(N0, env_cfg, seed=args.seed + 7777)
+        mscore = dict(seen=MemoryScore(N0), blind=MemoryScore(N0))
     thinking = hasattr(env, "think")   # task 00064: the thought half's next frame is the right piece's dream, and waves
     if thinking and env.cfg.mode == "dream" and (S != 2 or not gpu or agent.config["band_cols"] != 1):
         raise ValueError("a dreaming env.thought needs two pieces, left and right (online.pieces, model.band_cols=1), on the GPU")
@@ -536,7 +548,14 @@ def main():
         full = np.zeros((N0, 3), np.float32)
         full[:N] = a
         img, drv = obs["image"][:N].copy(), obs["drives"][:N].copy()
+        if mem_on:   # task 00105: before the step, as eval_hunger.py chain
+            xy = full[:, :2].astype(np.float64)
+            for name, e in (("seen", env), ("blind", blind)):
+                mscore[name].see(e, cosine(xy, relative(e, e.target)))
         obs, rew, done, inf = env.step(full)
+        if mem_on:
+            mscore["seen"].ate(inf["success"])
+            mscore["blind"].ate(blind.step(full)[3]["success"])
         win["t_world"] += time.time() - t_
         t_ = time.time()
         on_bits = dict(on=np.uint64(sum(1 << int(k) for k in live))) if q_off else {}   # task 00089
@@ -681,6 +700,13 @@ def main():
                 st = agent.update(ro, zeros, ppo)
             if S == 1 and st is not None:
                 win["stats"].append(st)
+            if fast:   # task 00105: each transformer's fast step, from the gradient of the newest window alone
+                if ("new", 1) not in rollouts:
+                    rollouts[("new", 1)] = cuda_lib.Rollout(L, 1, agent.config["img"], next_frames=False, img_w=agent.config["img_w"])
+                ro_new = rollouts[("new", 1)]
+                fill_rollout(ro_new, {k: v[:1] for k, v in rows.items()}, L)
+                for g in gpus:
+                    g.newest_fast(ro_new, fast, on["fast_k"], ppo)
             if on["profile"] and gpu:   # wait for the updates, so that their time is theirs
                 for g in gpus:
                     g.sync()
@@ -706,6 +732,17 @@ def main():
                 row.update(value_pred=win["vh"] / bs, value_label=win["vlab"] / max(1, win["vlab_n"]))
             if refresh:   # task 00098: the mean fresh tail
                 row.update(value_boot=win["vboot"] / max(1, win["vboot_n"]))
+            if fast:   # task 00105: |F| / |S| over all parameters, and the largest by tensor, the mean over transformers
+                rat, worst = [], []
+                lay = agent.param_layout()
+                for g in gpus:
+                    F_, P_ = g.fast(0), g.params()
+                    S_ = P_ - F_
+                    rat.append(float(np.linalg.norm(F_) / max(np.linalg.norm(S_), 1e-12)))
+                    worst.append(max(float(np.linalg.norm(F_[o:o + n]) / max(np.linalg.norm(S_[o:o + n]), 1e-12)) for _, o, n in lay if n))
+                row.update(fast_ratio=float(np.mean(rat)), fast_ratio_max=float(np.mean(worst)))
+            if mem_on:   # task 00105: the memory measure's sums and counts since the last row, by bin
+                row["mem"] = dict(seen=mscore["seen"].take(), blind=mscore["blind"].take())
             if state and win["st_n"]:   # task 00104: how much body 0's reads vary over the window, mean over pieces and values
                 mu = win["st_sum"] / win["st_n"]
                 row["state_spread"] = float(np.sqrt(np.maximum(win["st_sq"] / win["st_n"] - mu ** 2, 0.0)).mean())
@@ -743,6 +780,8 @@ def main():
     for k, (g, ag) in enumerate(zip(gpus, agents)):
         if g:
             g.sync_to(ag)
+            if fast:   # task 00105: F alone, so that S = the checkpoint - F can be recovered
+                np.save(os.path.join(out_dir, ckpt_name("final", k, S).replace(".bin", "_fast.npy")), g.fast(0))
         ag.save(os.path.join(out_dir, ckpt_name("final", k, S)), with_optimizer=g is None)
     mf.close()
 
