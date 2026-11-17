@@ -1,7 +1,7 @@
 # Task 00104: A State Carried Across Windows (experiment vm-00093)
 
 **Date:** 2026-11-15
-**Status:** In progress (approved 2026-11-16, the owner: "yes - lets do this - utilize both gpus for model run")
+**Status:** Complete (2026-11-16; experiment vm-00093, `00093-state-across-windows/`; approved 2026-11-16, the owner: "yes - lets do this - utilize both gpus for model run")
 
 ## Context
 
@@ -137,10 +137,27 @@
   - So SA is not a model without memory. Reading 3 measures what training the writes adds.
 - [ ] Code 1–5, with the tests (6) passing; `model.state = 0` byte-identical.
 - [x] Timing (7), 2026-11-16 14:40, 600-tick lives of both arms under MPS, 14 on the 4090 and 10 on the 3090: 3.58 and 2.60 ticks/s per life (C8 in vm-00091: 4.8 and 3.3), about 0.8 GB per life. The state costs about a fifth of the speed. Balanced: seeds 1–8 of both arms on the 4090 (16 lives), 9–12 on the 3090 (8), about 5.3 h each.
-- [ ] `00093-state-across-windows/` (README, Makefile); the runs; frozen tests (C8 included, linked); write-up and videos.
+- [x] `00093-state-across-windows/` (README, Makefile); the runs (2026-11-16 14:44–20:07); frozen tests (20:07–20:45; C8's rows linked from vm-00092); write-up and videos (`videos/vm93_s5`, `vm93_s12`).
+- [x] Added after the first results (stated in the README): `eval_hunger.py --state shuffle` (each body reads another body's note), and the state's spread without the first ctx ticks of a test (they read blank before the model's own writes come back); `make frozen2`.
+
+## Results (summary; full report in the experiment README)
+
+- **Readings:**
+  1. Plumbing met (tests, 24 lives). SB's state alive **fails**: spread .003 frozen (0 of 12 above .02), .009 lived at 40–60k. As first coded, with the 8 blank start ticks, it read .021 to .032.
+  2. Memory reaches further: **fails.** SB − C8 at 9–16 ticks −.011 ± .022.
+  3. The gradient does it: **fails.** SB − SA −.017 ± .043.
+  4. The memory is in the state: **fails.** Blank +.011 ± .034, another body's note −.010 ± .027. Blanking costs SB 20.9 ± 8.3 food (12 of 12), but another body's note costs nothing (−0.3 ± 1.3): the blank is an unfamiliar input, not lost memory.
+  5. Memory pays: **fails.** Lived food SB − C8 +5.5 ± 7.3 (9 of 12).
+  6. The pairs cost nothing: **met.** SA − C8 +4.4 ± 6.9.
+  7. Further than one link: nothing.
+- **What follows (set above):** reading 2 failed, so next is the flexible layer F (W = S + F).
+- **Also:**
+  - The gradient through the carry collapsed SB's note to a constant in every seed between ticks 5k and 8k. SA's untrained note keeps varying but carries nothing used.
+  - Both state arms forage at least as well as C8 and use the instinct less. They run about a fifth slower.
 
 ## Verification
 
-- Every run's `info.json` has `model.state` 1, `online.state_grad` as its arm, `model.ctx` 8, `env.view` 64, `n_layer` 8, `instinct_tol` 0.002, `value_gamma` 0.9 and `value_refresh` 1.
-- C8's frozen rows repeat vm-00092's exactly.
-- With the state blanked, SA's and SB's frozen food is reported beside their own, so a state the agent relies on for anything shows.
+- [x] Every run's `info.json` has `model.state` 1, `online.state_grad` as its arm, `model.ctx` 8, `env.view` 64, `n_layer` 8, `instinct_tol` 0.002, `value_gamma` 0.9 and `value_refresh` 1 (checked for all 24 runs, and for the 24 timing lives before them).
+- [x] C8's frozen rows are vm-00092's (which repeat vm-00091's exactly), copied by `make link`.
+- [x] With the state blanked, SA's and SB's frozen food is reported beside their own; with another body's note too.
+- [x] The frozen chain repeats exactly (the live rerun of `make frozen2` against the first chain: no field differs).

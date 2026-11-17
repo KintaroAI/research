@@ -13,6 +13,8 @@
 #   make link — vm-00091's VW_sN as C8_sN, and C8's frozen rows from vm-00092
 #   make frozen — eval_hunger.py chain (1,500 ticks), value and reach on SB and SA, then chain with the state blank, without MPS, two
 #                 per card (frozen_a = seeds 1-6 on GPU 1, frozen_b = seeds 7-12 on GPU 0; either can run alone)
+#   make frozen2 — added after the first results: chain with each body reading another body's note (--state shuffle), and chain
+#                 again live for the state's spread without the first ctx (blank) ticks
 #   make show — SB and SA against C8, SB against SA, and each with its state blank against itself, paired by seed
 #   make videos — compare_video.py, C8, SA and SB of seeds 5 and 12, each view with the whole world beside it
 
@@ -26,7 +28,7 @@ RUN = $(PY) lifetime.py --config configs/U_view.json --set online.future_k=4 --s
   --set online.value_gamma=0.9 --set online.value_refresh=1 --set model.state=1
 SPLIT ?= 8   # timing (600-tick lives, 2026-11-16): 3.58 ticks/s per life with 14 on the 4090, 2.60 with 10 on the 3090
 
-.PHONY: all runs link frozen frozen_a frozen_b show videos
+.PHONY: all runs link frozen frozen_a frozen_b frozen2 frozen2_a frozen2_b show videos
 
 all: runs
 
@@ -68,6 +70,23 @@ frozen_b:
 	  wait; \
 	  CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py reach $$b --ticks 1500 > $(OUT)/reach_b.jsonl & \
 	  CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py chain $$b --ticks 1500 --state blank > $(OUT)/blank_b.jsonl & \
+	  wait; }
+
+# frozen2 (added after the first results, 2026-11-16): chain with each body reading another body's note (--state shuffle: the
+# note's values as usual, no information about this body's past), and chain again live (spread without the first ctx blank ticks)
+frozen2:
+	$(MAKE) frozen2_a & $(MAKE) frozen2_b & wait
+
+frozen2_a:
+	$(EVAL) a="$(A)" && { \
+	  CUDA_VISIBLE_DEVICES=1 $(PY) eval_hunger.py chain $$a --ticks 1500 --state shuffle > $(OUT)/shuffle_a.jsonl & \
+	  CUDA_VISIBLE_DEVICES=1 $(PY) eval_hunger.py chain $$a --ticks 1500 > $(OUT)/live_a.jsonl & \
+	  wait; }
+
+frozen2_b:
+	$(EVAL) b="$(B)" && { \
+	  CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py chain $$b --ticks 1500 --state shuffle > $(OUT)/shuffle_b.jsonl & \
+	  CUDA_VISIBLE_DEVICES=0 $(PY) eval_hunger.py chain $$b --ticks 1500 > $(OUT)/live_b.jsonl & \
 	  wait; }
 
 CHAIN = $(OUT)/chain_a.jsonl $(OUT)/chain_b.jsonl

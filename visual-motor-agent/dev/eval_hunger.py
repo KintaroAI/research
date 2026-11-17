@@ -56,7 +56,7 @@ class Scored:
         return scored
 
 
-STATE_BLANK = False   # task 00104: --state blank, every read of the state blank (0.5): the frozen ablation
+STATE_MODE = "live"   # task 00104: --state blank, every read of the state blank (0.5); shuffle, each body reads another's
 
 
 class Life:
@@ -78,9 +78,10 @@ class Life:
         self.models = [Scored(cuda_lib.CudaModel(a)) for a in agents]
         self.state = bool(agents[0].config.get("state"))   # task 00104
         for m in self.models:
-            m.model.state_blank = STATE_BLANK
+            m.model.state_blank, m.model.state_shuffle = STATE_MODE == "blank", STATE_MODE == "shuffle"
         self.st1 = self.st2 = None
-        self.st_n = 0
+        self.st_n = self.t = 0
+        self.ctx = agents[0].config["ctx"]
         self.cfg = make_config(info["config"]["env"], auto_reset=True)
         self.bodies, self.rng = bodies, np.random.default_rng(seed)
         for m in self.models:
@@ -135,7 +136,8 @@ class Life:
         for m in models:
             m.uni_ring_move(a)
         self.missed[self.is_off] += 1
-        if self.state:   # task 00104: the reads, for their spread over ticks
+        self.t += 1
+        if self.state and self.t > self.ctx:   # task 00104: the reads, for their spread over ticks (after the first ctx, which are blank)
             r = np.stack([m.model.last_read for m in models], 1).astype(np.float64)   # [bodies, pieces, V]
             self.st1 = r if self.st1 is None else self.st1 + r
             self.st2 = r * r if self.st2 is None else self.st2 + r * r
@@ -143,7 +145,8 @@ class Life:
         return a
 
     def state_spread(self):
-        """Task 00104: the reads' standard deviation over the ticks so far, the mean over bodies, pieces and values."""
+        """Task 00104: the reads' standard deviation over the ticks so far, the mean over bodies, pieces and values; the first
+        ctx ticks (blank reads, before the model's own writes come back) left out."""
         if not self.st_n:
             return None
         mu = self.st1 / self.st_n
@@ -574,10 +577,11 @@ if __name__ == "__main__":
     ap.add_argument("--clog", type=float, default=0.0, help="chain: each piece acts on a view with this share of its patches damaged (task 00085)")
     ap.add_argument("--base", help="show: the arm the others are read against, paired by seed")
     ap.add_argument("--plot", help="show: where to write the plot of aim by gap")
-    ap.add_argument("--state", choices=("live", "blank"), default="live",
-                    help="task 00104: blank: every read of the state blank (0.5); rows named ARM-blank_sN, to pair with ARM_sN")
+    ap.add_argument("--state", choices=("live", "blank", "shuffle"), default="live",
+                    help="task 00104: blank: every read of the state blank (0.5); shuffle: each body reads another body's note; "
+                         "rows named ARM-blank_sN / ARM-shuffle_sN, to pair with ARM_sN")
     args = ap.parse_args()
-    STATE_BLANK = args.state == "blank"
+    STATE_MODE = args.state
     if args.what == "compare":
         compare(*args.runs)
     elif args.what == "show":
@@ -590,7 +594,7 @@ if __name__ == "__main__":
         for run in args.runs:
             how = dict(reach=reach, told=told, chain=lambda *a: chain(*a, args.clog), poison=poison, value=value)[args.what]
             for row in how(run, args.ticks, args.bodies, args.seed):
-                if STATE_BLANK and "run" in row:
+                if STATE_MODE != "live" and "run" in row:
                     arm, _, seed = row["run"].rpartition("_s")
-                    row["run"] = "%s-blank_s%s" % (arm, seed) if arm else row["run"] + "-blank"
+                    row["run"] = "%s-%s_s%s" % (arm, STATE_MODE, seed) if arm else row["run"] + "-" + STATE_MODE
                 print(json.dumps(row, default=float), flush=True)

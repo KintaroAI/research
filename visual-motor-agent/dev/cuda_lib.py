@@ -165,10 +165,11 @@ class CudaModel:
         self.logstd_off = {name: o for name, o, _ in layout}["logstd"]
         # task 00104: the state. While acting on the ring, each body's writes of the last ctx ticks (st_q [ctx, N, V],
         # the oldest at st_i); a step reads the oldest and writes in its place. last_read: the reads of the last step [N, V],
-        # for memory. state_blank: every read blank (0.5), the frozen ablation.
+        # for memory. Frozen ablations: state_blank, every read blank (0.5); state_shuffle, body b reads body b - 1's write
+        # (another world's note: its values as usual, no information about this body's past).
         self.state = bool(agent.config.get("state"))
         self.V = agent.config["patch"] ** 2 * (1 if agent.config.get("gray") else 3) if agent.config.get("universal") else 0
-        self.st_q, self.st_i, self.last_read, self.state_blank = None, 0, None, False
+        self.st_q, self.st_i, self.last_read, self.state_blank, self.state_shuffle = None, 0, None, False, False
 
     def set_batch(self, images, drives, prev_action, prev_reward, ep_start, action, next_small, next_drives):
         """next_small: [S, ctx, pred_img, pred_img, 3], or the full-size next frames (downsampled on the GPU)."""
@@ -419,7 +420,12 @@ class CudaModel:
         if self.state:   # task 00104: this step reads the state written ctx ticks ago (an episode start: blank)
             if es is not None and es.any():
                 self.st_q[:, es.astype(bool)] = 0.5
-            read = np.full_like(self.st_q[0], 0.5) if self.state_blank else self.st_q[self.st_i].copy()
+            if self.state_blank:
+                read = np.full_like(self.st_q[0], 0.5)
+            elif self.state_shuffle:
+                read = np.roll(self.st_q[self.st_i], 1, axis=0)
+            else:
+                read = self.st_q[self.st_i].copy()
             self.set_uni_state(read)
         _check(lib().vmc_uni_ring_step(self.handle, _p(img, C.c_uint8), _p(drv, C.c_float),
                                        None if es is None else _p(es, C.c_uint8), _p(out, C.c_float)), "uni_ring_step")
