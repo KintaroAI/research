@@ -40,7 +40,7 @@ def relative(env, xy):
 def touches_poison(env, moves):
     """[N] bool: the move [N, 3] would end inside a hazard (as CircleWorld.step: the cursor moves first, the hazards
     stay where they were drawn). For scoring only."""
-    new = np.mod(env.cursor + np.clip(moves[:, :2], -1, 1) * env.config.max_step_px, float(env.config.size))
+    new = np.mod(env.cursor + env.push_of(moves), float(env.config.size))   # task 00106: with inertia, from the velocity kept
     size = float(env.config.size)
     dx = wrap_delta(new[:, None, 0] - env.hz_pos[..., 0], 0.0, size)
     dy = wrap_delta(new[:, None, 1] - env.hz_pos[..., 1], 0.0, size)

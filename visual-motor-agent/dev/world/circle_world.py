@@ -22,6 +22,8 @@ Step order (per env)
 --------------------
 1. Move:   cursor = clip(cursor + [dx, dy] * max_step_px, 0, size - 1e-4);
            disp = actual displacement (0 when pushing into an edge).
+           With inertia = k > 0 (task 00106) the move is a push instead: vel = clip(vel * (1 - inertia_drag)
+           + [dx, dy] * max_step_px / k, +-max_step_px per axis), cursor += vel; with no push the body keeps moving.
 2. Hit:    inside = (x-cx)^2 + (y-cy)^2 <= r^2 at the new position, and the
            target is alive; success = click & inside (touch: inside); empty = click & ~success.
 3. Reward: success_reward * success - step_cost
@@ -172,6 +174,10 @@ class EnvConfig:
                                         # reversal on both axes costs turn_cost; a steady move is free
     view: int = 0                       # (task 00102, needs egocentric) the frame is a view x view window centered on the
                                         # cursor, the center of the full frame; 0: the whole world. Only the frame changes
+    inertia: float = 0.0                # (task 00106) k > 0: the body keeps its velocity and the move pushes it: vel += move *
+                                        # max_step_px / k, at most max_step_px per axis (k ticks of a full push from rest to full
+                                        # speed, 2k to reverse); with no push it keeps moving. 0: the move is the displacement
+    inertia_drag: float = 0.0           # (task 00106, with inertia) the share of the velocity lost each tick (0: none)
 
     def __post_init__(self) -> None:
         # Colors loaded from JSON arrive as lists; store tuples (hashable, comparable).
@@ -192,7 +198,7 @@ class EnvConfig:
                   "b_init_min", "b_init_max", "b_rate", "b_relief", "dot_brightness_min",
                   "dot_brightness_max", "dot_speed_min", "dot_speed_max", "target_speed", "turn_cost",
                   "hazard_radius_min", "hazard_radius_max", "hazard_speed", "hazard_cost", "hazard_click",
-                  "hazard_click_add")
+                  "hazard_click_add", "inertia", "inertia_drag")
         for name in floats:
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite, got {getattr(self, name)!r}")
@@ -245,6 +251,8 @@ class EnvConfig:
             raise ValueError("touch needs respawn")
         if self.turn_cost < 0:
             raise ValueError("turn_cost must be >= 0")
+        if self.inertia < 0 or not 0.0 <= self.inertia_drag < 1.0:
+            raise ValueError("inertia must be >= 0 and inertia_drag in [0, 1)")
         if int(self.foods) != self.foods or self.foods < 1:
             raise ValueError(f"foods must be an integer >= 1, got {self.foods!r}")
         if self.foods > 1 and not (self.wrap and self.respawn and self.target_speed == 0):
@@ -662,6 +670,7 @@ class CircleWorld:
         self.hz_rad = np.zeros((self.num_envs, h))
         self.ep_hits = np.zeros(self.num_envs, np.int64)
         self.last_move = np.zeros((self.num_envs, 2))
+        self.vel = np.zeros((self.num_envs, 2))   # task 00106: the last displacement; with inertia, the velocity the body keeps
         self.food_age = np.zeros(self.num_envs, np.int64)   # task 00092: ticks since the food appeared
         self._reset_envs(np.arange(self.num_envs))
 
@@ -681,7 +690,8 @@ class CircleWorld:
         self._reset_envs(idx)
         return self.observe()
 
-    RUNTIME = ("food_show",)   # task 00094: the settings reconfigure() may change mid-life (each read afresh every frame)
+    RUNTIME = ("food_show", "inertia", "inertia_drag")   # task 00094: the settings reconfigure() may change mid-life (each read
+    # afresh every frame or step; task 00106: inertia switched on keeps the body moving as it last moved)
 
     def reconfigure(self, **kw) -> None:
         """Change settings listed in RUNTIME mid-life (online.env_sched, task 00094); the rest of the state is untouched."""
@@ -689,6 +699,17 @@ class CircleWorld:
         if bad:
             raise ValueError(f"reconfigure: {bad} cannot change mid-life (CircleWorld.RUNTIME = {self.RUNTIME})")
         self.config = dataclasses.replace(self.config, **kw).validate()
+
+    def push_of(self, moves: np.ndarray) -> np.ndarray:
+        """The displacement [N, ..., 2] that moves [N, ..., >=2] (dx, dy first) would make from the current state, before walls:
+        move * max_step_px, or with inertia (task 00106) the velocity kept plus the push, capped per axis. step() moves by it;
+        the scoring tools use it to ask where a move would land."""
+        cfg = self.config
+        m = np.clip(np.nan_to_num(np.asarray(moves, dtype=np.float64)[..., :2]), -1.0, 1.0)
+        if cfg.inertia > 0:
+            v = self.vel.reshape(self.vel.shape[:1] + (1,) * (m.ndim - 2) + (2,))
+            return np.clip(v * (1.0 - cfg.inertia_drag) + m * (cfg.max_step_px / cfg.inertia), -cfg.max_step_px, cfg.max_step_px)
+        return m * cfg.max_step_px
 
     def set_radius_range(self, radius_min: float, radius_max: float) -> None:
         """Change the target radius range used by future resets (curriculum)."""
@@ -752,6 +773,7 @@ class CircleWorld:
                 self.dot_val[i] = cfg.dot_brightness_min + (cfg.dot_brightness_max - cfg.dot_brightness_min) * u[:, 4]
         self.ep_hits[idx] = 0
         self.last_move[idx] = 0.0
+        self.vel[idx] = 0.0
         if cfg.target_speed > 0:
             for i in idx:
                 ang = 2.0 * np.pi * self._spawn_rngs[i].random()
@@ -999,12 +1021,14 @@ class CircleWorld:
         self.food_age += 1   # task 00092: a respawn below sets it back to 0, so a new food is drawn in its first frame
         # 1. Move; displacement is the actual (clamped) motion.
         old = self.cursor
+        push = self.push_of(move)   # task 00106: with inertia the move pushes a body that keeps its velocity
         if cfg.wrap:   # a torus: no walls
-            new = np.mod(old + move * cfg.max_step_px, float(cfg.size))
-            delta = move * cfg.max_step_px
+            new = np.mod(old + push, float(cfg.size))
+            delta = push
         else:
-            new = np.clip(old + move * cfg.max_step_px, 0.0, cfg.size - CURSOR_EDGE_EPS)
+            new = np.clip(old + push, 0.0, cfg.size - CURSOR_EDGE_EPS)
             delta = new - old
+        self.vel = np.array(delta, dtype=np.float64)   # task 00106: the last displacement (at a wall the blocked part is lost)
         disp = np.sqrt(delta[:, 0] * delta[:, 0] + delta[:, 1] * delta[:, 1])
         self.cursor = new
         if cfg.foods > 1:
@@ -1142,6 +1166,8 @@ class CircleWorld:
         }
         if cfg.food_show:   # task 00092: the food is drawn in this frame (scoring only)
             info["gt_food_seen"] = self.drawn()
+        if cfg.inertia > 0:   # task 00106: the body's velocity after this step (scoring only)
+            info["gt_vel"] = self.vel.copy()
         if cfg.distractors:
             info["gt_dots"] = self.dot_pos.copy()
         if cfg.respawn:
@@ -1179,7 +1205,7 @@ class CircleWorld:
             state["dot_rng_state"] = np.array([_encode_rng(g) for g in self._dot_rngs], dtype=np.uint64)
         for name, on in (("target_vel", self.config.target_speed > 0), ("hz_pos", self.config.hazards),
                          ("hz_vel", self.config.hazards), ("hz_rad", self.config.hazards),
-                         ("ep_hits", self.config.respawn), ("last_move", self.config.turn_cost > 0),
+                         ("ep_hits", self.config.respawn), ("last_move", self.config.turn_cost > 0), ("vel", self.config.inertia > 0),
                          ("fx_pos", self.config.foods > 1), ("fx_rad", self.config.foods > 1),
                          ("food_age", self.config.food_show > 0)):
             if on:
@@ -1224,7 +1250,7 @@ class CircleWorld:
                 for gen, row in zip(gens, np.asarray(value, dtype=np.uint64)):
                     gen.bit_generator.state = _decode_rng(row)
                 continue
-            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits", "last_move", "fx_pos", "fx_rad", "food_age"):
+            if key in ("target_vel", "hz_pos", "hz_vel", "hz_rad", "ep_hits", "last_move", "vel", "fx_pos", "fx_rad", "food_age"):
                 arr = np.array(value, dtype=getattr(self, key).dtype)
                 if arr.shape != getattr(self, key).shape:
                     raise ValueError(f"state[{key!r}] must have shape {getattr(self, key).shape}")

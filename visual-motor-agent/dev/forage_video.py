@@ -37,7 +37,8 @@ SCALE, VX, VY = 10, 40, 40          # the agent's 64x64 view, upscaled to 640x64
 def run(args, path):
     with open(os.path.join(path, "info.json")) as f:
         info = json.load(f)
-    ec = dict(info["env_config"])
+    from lifetime import env_at_end
+    ec = env_at_end(dict(info["env_config"]), info["config"]["online"].get("env_sched"))   # task 00106: the world the life ended in
     for k in ("bg_color", "target_color", "cursor_color", "cursor_outline", "hazard_color"):
         if k in ec:
             ec[k] = tuple(ec[k])

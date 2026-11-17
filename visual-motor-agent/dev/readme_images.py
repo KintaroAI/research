@@ -34,13 +34,14 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00060": "videos/car_D_s1.mp4", "00061": "videos/car_SD_s1.mp4", "00062": "videos/car_FD_s1.mp4",
           "00091": "../videos/vm91_s5/compare.mp4", "00092": "../videos/vm92_s5/compare.mp4",
           "00093": "../videos/vm93_s5/compare.mp4",
-          "00094": "../videos/vm94_s5/compare.mp4"}
+          "00094": "../videos/vm94_s5/compare.mp4", "00095": "../videos/vm95_s5/compare.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
             "00084": [("00082", ("C8",))], "00086": [("00085", ("K4", "V90"))],
             "00087": [("00085", ("K4", "V90"))], "00088": [("00086", ("K4D8",))],
-            "00089": [("00086", ("K4D8",)), ("00088", ("K4D8", "V90RD8"))], "00090": [("00072", ("K4",))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00089": [("00086", ("K4D8",)), ("00088", ("K4D8", "V90RD8"))], "00090": [("00072", ("K4",))],
+            "00095": [("00094", ("C8r",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
 
@@ -350,6 +351,8 @@ def one(d, write_readme):
         if c:
             ps, shown, total = c
             cap = "From each run's `metrics.jsonl`, the mean of its seeds by arm, smoothed."
+            if e == "00095":
+                cap += " C8r is vm-00094's control in the world without inertia; IS lives without inertia until tick 30k, then with it."
             if total > shown:
                 cap += " The %d best arms of %d by their last value." % (shown, total)
             figs.append(("curves.png", "; ".join(p[0] for p in ps), cap))
@@ -365,6 +368,11 @@ def one(d, write_readme):
         if e == "00091":
             cap += (" Seed 5 at 60k, frozen, KW and VW from the same start. Each arm's 64 x 64 view (the blue square: the quarter transformer whose move it was),"
                     " and beside it the whole world, centered on the cursor the same way, with the window outlined: plain circles are food, checkered ones poison.")
+        if e == "00095":
+            cap += (" Seed 5 at 60k, frozen, from the same start: C8r in its own world (no inertia), IB and IS in the world with"
+                    " inertia (each arm's world as its life ended). Each arm's 64 x 64 view (the blue square: the quarter transformer"
+                    " whose move it was), and beside it the whole world with the window outlined. Plain circles are food, checkered"
+                    " ones poison.")
         if e == "00094":
             cap += (" Seed 5 at 60k, frozen, C8r and F from the same start, laid out as in vm-00091: each arm's 64 x 64 view (the blue"
                     " square: the quarter transformer whose move it was), and beside it the whole world with the window outlined. Plain"

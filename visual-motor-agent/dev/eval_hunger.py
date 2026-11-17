@@ -12,6 +12,10 @@ vm-00069's lives. Rows of JSON on stdout, one per run or arm; `show` reads them 
     value  does the label the model predicts for the move it takes match what follows (task 00096)? Each tick's predicted label of the move taken (the
            transformer that made it) against the realized one: with online.value_gamma, the discounted mean of the hungers after it, cut where gamma^i < 1e-3
            and renormalized; else the mean of the next future_k (1 if 0). Bias, mean absolute error, correlation; and the spread of the instinct's candidates.
+    move   how the body moves (task 00106, for the inertia world): speed, the share of ticks at top speed, braking (the move against the velocity
+           kept), and by the gap to the nearest food and poison: the speed, the move's and the motion's aim at the food, the motion away from poison.
+
+--env KEY=VALUE (task 00106): test each run in its world with that setting changed (e.g. inertia=4); rows named ARM-inertia4_sN.
 
 Ground truth (the world's cursor, food and poison) is for scoring only and never reaches the model.
 
@@ -92,6 +96,8 @@ class MemoryScore:
 
 
 STATE_MODE = "live"   # task 00104: --state blank, every read of the state blank (0.5); shuffle, each body reads another's
+ENV_SET = {}   # task 00106: --env key=value, world settings put over each run's own (rows named ARM-keyvalue_sN)
+STEP = "final"   # task 00106: --step N tests the checkpoint saved at tick N (rows named ARM-stepN_sN)
 
 
 class Life:
@@ -108,7 +114,7 @@ class Life:
         info = json.load(open(os.path.join(path, "info.json")))
         self.on = dict(DEFAULT_ONLINE, **info["config"]["online"])
         self.S = int(info.get("pieces", 1))
-        agents = [agent_lib.Agent.load(os.path.join(path, ckpt_name("final", k, self.S))) for k in range(self.S)]
+        agents = [agent_lib.Agent.load(os.path.join(path, ckpt_name(STEP, k, self.S))) for k in range(self.S)]
         self.bins = agents[0].config["bins"]
         self.models = [Scored(cuda_lib.CudaModel(a)) for a in agents]
         self.state = bool(agents[0].config.get("state"))   # task 00104
@@ -117,7 +123,9 @@ class Life:
         self.st1 = self.st2 = None
         self.st_n = self.t = 0
         self.ctx = agents[0].config["ctx"]
-        self.cfg = make_config(info["config"]["env"], auto_reset=True)
+        from lifetime import env_at_end
+        self.cfg = make_config(dict(env_at_end(info["config"]["env"], info["config"]["online"].get("env_sched")), **ENV_SET),
+                               auto_reset=True)   # task 00106: the world the life ended in, and --env over it
         self.bodies, self.rng = bodies, np.random.default_rng(seed)
         for m in self.models:
             m.uni_ring_reset(bodies)
@@ -197,7 +205,7 @@ def would_touch(env, cand):
     from world.circle_world import _inside, wrap_delta
 
     c, size = env.config, float(env.config.size)
-    new = np.mod(env.cursor[:, None] + np.clip(cand[..., :2], -1, 1) * c.max_step_px, size)
+    new = np.mod(env.cursor[:, None] + env.push_of(cand), size)   # task 00106: with inertia, from the velocity kept
     dx = wrap_delta(new[..., 0], env.target[:, None, 0], size)
     dy = wrap_delta(new[..., 1], env.target[:, None, 1], size)
     food = (dx * dx + dy * dy <= env.radius[:, None] ** 2) & env.target_alive[:, None]
@@ -215,7 +223,12 @@ def in_reach(env):
     from eval_pieces import relative
 
     d = relative(env, env.target)
-    p = env.config.max_step_px
+    c = env.config
+    p = c.max_step_px
+    if c.inertia > 0:   # task 00106: one push changes the velocity kept by at most p / k per axis, within +-p
+        v, a = env.vel * (1.0 - c.inertia_drag), p / c.inertia
+        q = np.clip(d, np.maximum(v - a, -p), np.minimum(v + a, p))
+        return np.linalg.norm(d - q, axis=1) <= env.radius * 0.98, np.clip((q - v) / a, -1, 1)
     return np.linalg.norm(d - np.clip(d, -p, p), axis=1) <= env.radius * 0.98, np.clip(d / p, -1, 1)
 
 
@@ -494,6 +507,59 @@ def show(paths):
                                                                                         (x > y).sum(), len(A)))
 
 
+MOVE_GAPS = (-1e9, 0.0, 8.0, 16.0, 32.0, 1e9)   # task 00106: pixels from the cursor to the nearest food's or poison's edge
+MOVE_GAP_NAMES = ("in", "0-8", "8-16", "16-32", "32+")
+
+
+def moving_body(path, ticks, bodies, seed):
+    """Task 00106: how the frozen agent's body moves in its world (with inertia: how it handles the velocity it keeps). Speed
+    (pixels a tick), the share of ticks at top speed on an axis, braking (the move against the velocity kept, cosine below -0.5,
+    among ticks at 1 px a tick or more), and by the gap to the nearest food and to the nearest poison: the speed, the move's
+    aim and the motion's aim at the food, and the motion away from the poison."""
+    from eval_pieces import relative
+    from lifetime import cosine
+    from world import make_world
+
+    life = Life(path, bodies, seed)
+    env = make_world(bodies, life.cfg, seed=seed)
+    obs = env.observe()
+    p, size, rows = life.cfg.max_step_px, float(life.cfg.size), np.arange(bodies)
+    acc = {k: np.zeros(len(MOVE_GAP_NAMES)) for k in ("f_n", "f_speed", "f_aim", "f_motion", "p_n", "p_speed", "p_away")}
+    speed, top, brake, moving, food, poisoned = [], [], 0, 0, 0, 0
+    for t in range(ticks):
+        a = life.act(obs)
+        xy = a[:, :2].astype(np.float64)
+        v0 = env.vel.copy()   # the velocity kept (with inertia), else the last displacement
+        d = relative(env, env.target)
+        gf = np.digitize(np.linalg.norm(d, axis=1) - env.radius, MOVE_GAPS) - 1
+        h = (env.hz_pos - env.cursor[:, None] + size / 2) % size - size / 2   # [N, H, 2] the poisons from the cursor
+        hd = np.linalg.norm(h, axis=2) - env.hz_rad
+        j = hd.argmin(1)
+        dh, gp = h[rows, j], np.digitize(hd[rows, j], MOVE_GAPS) - 1
+        obs, _, done, inf = env.step(a)
+        life.es = done.astype(np.uint8)
+        v1 = env.vel   # the displacement this tick made
+        s1 = np.linalg.norm(v1, axis=1)
+        speed.append(s1.mean())
+        top.append((np.abs(v1).max(1) >= p * 0.999).mean())
+        m0 = np.linalg.norm(v0, axis=1) >= 1.0
+        moving += int(m0.sum())
+        brake += int((m0 & (cosine(xy, v0) < -0.5)).sum())
+        for key, g, val in (("f_n", gf, 1.0), ("f_speed", gf, s1), ("f_aim", gf, cosine(xy, d)), ("f_motion", gf, cosine(v1, d)),
+                            ("p_n", gp, 1.0), ("p_speed", gp, s1), ("p_away", gp, -cosine(v1, dh))):
+            np.add.at(acc[key], g, val)
+        food += int(inf["success"].sum())
+        poisoned += int(inf["gt_hazard_click"].sum())
+    life.close()
+    k = 1000.0 / (ticks * bodies)
+    per = lambda x, c: (acc[x] / np.maximum(acc[c], 1)).tolist()   # noqa: E731
+    yield dict(mode="move", run=os.path.basename(path), inertia=float(life.cfg.inertia), food=food * k, poison=poisoned * k,
+               speed=float(np.mean(speed)), top=float(np.mean(top)), brake=brake / max(moving, 1), moving=moving / (ticks * bodies),
+               gaps=list(MOVE_GAP_NAMES), food_share=(acc["f_n"] / acc["f_n"].sum()).tolist(), food_speed=per("f_speed", "f_n"),
+               food_aim=per("f_aim", "f_n"), food_motion=per("f_motion", "f_n"), poison_share=(acc["p_n"] / acc["p_n"].sum()).tolist(),
+               poison_speed=per("p_speed", "p_n"), poison_away=per("p_away", "p_n"))
+
+
 def chain_arms(rows):
     A = {}
     for r in rows:
@@ -591,7 +657,7 @@ def plot_aim(paths, out):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=("reach", "told", "chain", "poison", "value", "show", "compare"))
+    ap.add_argument("what", choices=("reach", "told", "chain", "poison", "value", "move", "show", "compare"))
     ap.add_argument("runs", nargs="+", help="run directories (show: the rows printed)")
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--bodies", type=int, default=16)
@@ -602,8 +668,20 @@ if __name__ == "__main__":
     ap.add_argument("--state", choices=("live", "blank", "shuffle"), default="live",
                     help="task 00104: blank: every read of the state blank (0.5); shuffle: each body reads another body's note; "
                          "rows named ARM-blank_sN / ARM-shuffle_sN, to pair with ARM_sN")
+    ap.add_argument("--step", type=int, help="task 00106: test the checkpoint saved at this tick (default: the final one); rows ARM-stepN_sN")
+    ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                    help="task 00106: test every run in its world with this setting changed (e.g. inertia=4); rows named ARM-inertia4_sN")
     args = ap.parse_args()
     STATE_MODE = args.state
+    for kv in args.env:
+        k_, _, v_ = kv.partition("=")
+        try:
+            ENV_SET[k_] = json.loads(v_)
+        except ValueError:
+            ENV_SET[k_] = v_
+    if args.step is not None:
+        STEP = args.step
+    tags = ([STATE_MODE] if STATE_MODE != "live" else []) + (["step%d" % STEP] if STEP != "final" else []) + ["%s%s" % kv for kv in ENV_SET.items()]
     if args.what == "compare":
         compare(*args.runs)
     elif args.what == "show":
@@ -614,9 +692,10 @@ if __name__ == "__main__":
             plot_aim(args.runs, args.plot)
     else:
         for run in args.runs:
-            how = dict(reach=reach, told=told, chain=lambda *a: chain(*a, args.clog), poison=poison, value=value)[args.what]
+            how = dict(reach=reach, told=told, chain=lambda *a: chain(*a, args.clog), poison=poison, value=value, move=moving_body)[args.what]
             for row in how(run, args.ticks, args.bodies, args.seed):
-                if STATE_MODE != "live" and "run" in row:
+                if tags and "run" in row:
                     arm, _, seed = row["run"].rpartition("_s")
-                    row["run"] = "%s-%s_s%s" % (arm, STATE_MODE, seed) if arm else row["run"] + "-" + STATE_MODE
+                    tag = "-".join(tags)
+                    row["run"] = "%s-%s_s%s" % (arm, tag, seed) if arm else row["run"] + "-" + tag
                 print(json.dumps(row, default=float), flush=True)

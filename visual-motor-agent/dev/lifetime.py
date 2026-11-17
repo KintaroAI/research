@@ -25,7 +25,8 @@ Outage (online.off = q, task 00089): each transformer is off q of the time, its 
 an off transformer makes no move and takes no update, and its ring skips the ticks it missed (no compute, gaps in its context, ages in ticks). Memory
 keeps which transformers were on at each tick; in an update, a transformer's missed steps are no keys and carry no loss.
 World schedule (online.env_sched, task 00094): world settings changed at given ticks, {"key": [[tick, value], ...]}, through
-env.reconfigure, before that tick's move; only keys the world lists in RUNTIME (CircleWorld: food_show). The metrics carry env_<key>.
+env.reconfigure, before that tick's move; only keys the world lists in RUNTIME (CircleWorld: food_show, inertia, inertia_drag). The
+metrics carry env_<key>. The frozen tests and videos take inertia and inertia_drag at their last scheduled value (env_at_end).
 Input noise (online.noise_in = q, task 00088): the model acts and trains on frames noised as env.noise does, one draw for all transformers; the world, memory and targets stay clean.
 Clogged channels (online.clog = p, task 00085): about p of the patches of each step are damaged in each transformer's input, its own damage, drawn fresh each time a
 window is used, some for the whole window and some for one step, black or speckled, while the target stays clean. Memory and acting stay clean.
@@ -254,6 +255,19 @@ def env_schedule(env, env_cfg, spec, steps):
     return out
 
 
+END_KEYS = ("inertia", "inertia_drag")   # task 00106: the scheduled settings a frozen test takes at their last value
+
+
+def env_at_end(env, spec):
+    """Task 00106: a run's world settings as its life ended them, for the frozen tests and videos: each online.env_sched key
+    in END_KEYS at its last scheduled value (others, such as food_show, as the run began, as before)."""
+    out = dict(env)
+    for k, pts in (spec or {}).items():
+        if k in END_KEYS:
+            out[k] = pts[-1][1]
+    return out
+
+
 def eps_at(on, tick):
     e0, e1, k = on["explore_eps"], on["explore_eps_end"], on["explore_decay"]
     if e1 is None or k <= 0:
@@ -476,6 +490,8 @@ def main():
     for tick in range(1, on["steps"] + 1):
         if tick in sched:   # task 00094: before this tick's move, so the frame the world draws next follows the new setting
             env.reconfigure(**sched[tick])
+            if mem_on:   # task 00106: the blind world must move as the real one does
+                blind.reconfigure(**sched[tick])
         N = bodies_at(on, tick)
         h = obs["drives"][:N, 0]
         cmd = (h if goal_k else np.zeros(N)).astype(np.float32)
