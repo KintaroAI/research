@@ -1,8 +1,8 @@
 # vm-00093: A State Carried Across Windows
 
 **Date:** 2026-11-16
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00093`)
+**Status:** Complete
+**Source:** `exp/vm-00093` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00093/`
 **Task plan:** [`../tasks/00104-state-across-windows.md`](../tasks/00104-state-across-windows.md)
 
