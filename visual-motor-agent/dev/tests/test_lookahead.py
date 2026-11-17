@@ -121,6 +121,109 @@ def test_uni_act_with_a_horizon(agent):
     np.testing.assert_array_equal(a1, a0)                             # horizon 1: the instinct as before
 
 
+# task 00107: a quarter piece (band_n 4 in square blocks, summaries with thumbnails, gray), small: the default agent's kind
+PIECE = dict(SMALL_UNI, gray=1, uni_pyr=2, sum_thumb=1, band_n=4, band_cols=2, band_k=3)
+
+
+@pytest.fixture(scope="module")
+def piece():
+    agent_lib.set_threads(4)
+    return agent_lib.Agent(PIECE, seed=5)
+
+
+class Recorder:
+    """An agent whose forward passes keep the frames they were given."""
+
+    def __init__(self, agent):
+        self.agent, self.frames = agent, []
+
+    @property
+    def config(self):
+        return self.agent.config
+
+    def forward_uni(self, img, *a, **k):
+        self.frames.append(np.array(img))
+        return self.agent.forward_uni(img, *a, **k)
+
+
+def test_a_piece_at_one_step_is_the_instincts_reading(piece):
+    img, drv, act, es, cand = windows(piece.config, 2, 8, 3, 6)
+    h = online.uni_lookahead(piece, img, drv, act, es, cand, 1)
+    for j in range(3):
+        a2 = act.copy()
+        a2[:, -1] = cand[:, j]
+        nb = piece.forward_uni(img, drv, a2, es, values=False, move_probs=False, next_body=True)["next_body"]
+        np.testing.assert_allclose(h[:, j], nb[:, -1, 0], atol=1e-6)
+
+
+@pytest.mark.parametrize("H", [2, 4])
+def test_a_pieces_imagined_frames_keep_the_other_blocks(piece, H):
+    """A piece predicts only its own block: each imagined frame is the current frame with that block replaced."""
+    c = piece.config
+    img, drv, act, es, cand = windows(c, 2, 8, 3, 5)
+    rec = Recorder(piece)
+    h = online.uni_lookahead(rec, img, drv, act, es, cand, H, J=2)
+    assert h.shape == (2, 3) and np.isfinite(h).all()
+    r0, r1, c0, c1 = agent_lib.band_piece(c)
+    ps = c["patch"]
+    inside = np.zeros((c["img"], c["img"]), bool)
+    inside[r0 * ps:(r1 + 1) * ps, c0 * ps:(c1 + 1) * ps] = True
+    R = c["ctx"] - (H - 1)
+    now = np.repeat(img[:, -1], 3, axis=0)                              # each candidate's window: its body's current frame
+    final = rec.frames[-1]                                              # the last pass: every imagined step filled in
+    np.testing.assert_array_equal(final[:, :R], np.repeat(img[:, -R:], 3, axis=0))   # the real steps untouched
+    for st in range(R, R + H - 1):
+        np.testing.assert_array_equal(final[:, st][:, ~inside], now[:, ~inside])
+        assert (final[:, st][:, inside] != now[:, inside]).any()        # the block: the piece's own prediction
+
+
+def test_uni_act_with_a_horizon_for_a_piece(piece):
+    img, drv, act, es, _ = windows(piece.config, 3, 8, 1, 7)
+    a, over, gain = online.uni_act(piece, img, drv, act, es, piece.config["bins"], np.random.default_rng(0), 6, 0.005, 4)
+    assert a.shape == (3, 3) and 0 <= over <= 1 and gain >= 0
+
+
+def test_life_without_the_ring_acts_on_windows(monkeypatch):
+    """eval_hunger.Life for a run that lived without the ring (online.ring = 0) hands uni_act the window of its last ctx
+    steps: the frames and bodies as seen, the moves made (the current one zero) and the episode start."""
+    import eval_hunger
+    import lifetime
+
+    seen = []
+
+    def fake_act(m, img, drv, act, es, *a, **k):
+        seen.append((img.copy(), act.copy(), es.copy(), k.get("ring", False)))
+        n = img.shape[0]
+        return np.zeros((n, 3), np.float32), 0.0, 0.0, np.zeros(n), np.zeros(n)
+
+    moves = iter(np.linspace(-0.9, 0.9, 20))
+
+    def fake_move(models, props, rule, rng, prev=None, **k):
+        n = props[0][0].shape[0]
+        return np.full((n, 3), next(moves), np.float32), np.zeros((n, 1), int)
+
+    monkeypatch.setattr(online, "uni_act", fake_act)
+    monkeypatch.setattr(lifetime, "pieces_move", fake_move)
+    B, ctx = 2, 4
+    life = eval_hunger.Life.__new__(eval_hunger.Life)                   # no checkpoint: only the acting's bookkeeping
+    life.on = dict(online.DEFAULT_ONLINE, ring=0, instinct_m=16, instinct_tol=0.002, instinct_h=4)
+    life.S, life.models, life.bins, life.rng = 1, [object()], 8, np.random.default_rng(0)
+    life.ring, life.hist, life.es, life.bodies, life.ctx, life.state, life.t = False, [], np.ones(B, np.uint8), B, ctx, False, 0
+    life.clogs, life.off, life.is_off, life.missed, life.live = [None], 0.0, np.zeros(1, bool), np.zeros(1, int), np.arange(1)
+    made = []
+    for t in range(7):
+        made.append(life.act(dict(image=np.full((B, 8, 8, 3), t, np.uint8), drives=np.full((B, 2), t / 10, np.float32))))
+        life.es = np.zeros(B, np.uint8)
+    for t, (img, act, es, ring) in enumerate(seen):
+        T = min(t + 1, ctx)
+        assert not ring and img.shape[1] == T
+        np.testing.assert_array_equal(img[0, :, 0, 0, 0], np.arange(t + 1 - T, t + 1))   # the last T frames, in order
+        np.testing.assert_array_equal(act[:, -1], 0)                                       # the current move: not made yet
+        for j in range(T - 1):
+            np.testing.assert_array_equal(act[:, j], made[t + 1 - T + j])                  # the moves made
+        np.testing.assert_array_equal(es[:, 0], 1 if t + 1 == T else 0)                   # the episode start, at tick 0 only
+
+
 def test_lifetime_with_a_horizon(tmp_path):
     out = str(tmp_path / "run")
     sets = ["model.img=32", "env.size=32", "model.d_model=16", "model.n_head=2", "model.d_ff=32", "model.bins=8",

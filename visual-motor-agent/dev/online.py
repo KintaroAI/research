@@ -673,13 +673,14 @@ def uni_patches(cfg, img):
     return x.transpose(0, 1, 3, 2, 4, 5).reshape(n, g * g, -1)
 
 
-def uni_frame(cfg, pv):
+def uni_frame(cfg, pv, grid=None):
     """Frames [n, H, W, 3] u8 from patch values [n, patches, V] (uni_patches' inverse; gray: the value in every
-    channel)."""
+    channel). grid (task 00107): (rows, columns) of patches, for a piece's block; default a square."""
     n, ps = pv.shape[0], cfg["patch"]
-    g, ch = int(round((pv.shape[1]) ** 0.5)), 1 if cfg.get("gray") else 3
+    gr, gc = grid if grid else (int(round((pv.shape[1]) ** 0.5)),) * 2
+    ch = 1 if cfg.get("gray") else 3
     x = np.clip(np.rint(np.asarray(pv, np.float64) * 255.0), 0, 255).astype(np.uint8)
-    x = x.reshape(n, g, g, ps, ps, ch).transpose(0, 1, 3, 2, 4, 5).reshape(n, g * ps, g * ps, ch)
+    x = x.reshape(n, gr, gc, ps, ps, ch).transpose(0, 1, 3, 2, 4, 5).reshape(n, gr * ps, gc * ps, ch)
     return np.repeat(x, 3, -1) if ch == 1 else x
 
 
@@ -695,7 +696,8 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
     Jacobi iterations from the current frame (J = patches + 1: exactly sequential decoding). decode: each imagined
     pixel the expected value ("mean"), the most probable bin's centre ("mode", sharp) or the most probable bin and its
     more probable neighbour, weighted ("pair": sharp, but a two-hot value exactly; task 00038); the last two on the GPU
-    only."""
+    only. A piece (band_n >= 2, task 00107) predicts only its own block: its imagined frames are the current frame with that
+    block replaced."""
     if decode not in DECODE:
         raise ValueError("decode must be one of %s" % ", ".join(DECODE))
     if decode != "mean" and not hasattr(model, "forward_uni_step"):
@@ -710,6 +712,11 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
     if R < 1:
         raise ValueError("instinct_h must be at most ctx")
     pp = agent_lib.uni_layout(c)["patch"] - 1   # the tokens that predict the patches (task 00047: summaries between)
+    blk = None
+    if c.get("band_n", 0) >= 2:   # task 00107: a piece's block, in pixels, and its grid of patches
+        r0, r1, c0, c1 = agent_lib.band_piece(c)
+        ps = c["patch"]
+        blk = (slice(r0 * ps, (r1 + 1) * ps), slice(c0 * ps, (c1 + 1) * ps), (r1 - r0 + 1, c1 - c0 + 1))
     rep = lambda x: np.repeat(x[:, T - R:], M, axis=0)   # noqa: E731
     im, dv = rep(img), rep(drv).astype(np.float32)
     im = np.concatenate([im] + [im[:, -1:]] * (H - 1), 1)       # the imagined frames start as the current one
@@ -735,7 +742,10 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
         for _ in range(J):
             out = run(st)
             dv[:, st] = np.clip(out["next_body"][:, st - 1], 0.0, 1.0)
-            im[:, st] = uni_frame(c, out["values_t"][:, pp])
+            if blk is None:
+                im[:, st] = uni_frame(c, out["values_t"][:, pp])
+            else:   # task 00107: the piece's own block; the rest stays the current frame
+                im[:, st, blk[0], blk[1]] = uni_frame(c, out["values_t"][:, pp], blk[2])
     return run(-1)["next_body"][:, -1, 0].reshape(N, M)
 
 

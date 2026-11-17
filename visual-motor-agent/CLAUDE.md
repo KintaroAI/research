@@ -106,7 +106,10 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     windows. `model.in_bins = 1` (task 00036, vm-00030): bin-embedding input, `W_in` d x (V * bins) over each used value's
     two-hot bins (init 0.02), in C++, CUDA and the reference; header slot 43. Set in every universal config since task 00037 (vm-00031: with surprise-gated memory no 500k-tick life was trapped). The corpus is read from `../llm-fundamentals/dev/data/tinyshakespeare/input.txt` (`./venv/bin/python prepare_tinyshakespeare.py` there downloads it). The instinct's horizon (task 00029): `online.instinct_h` (1: one step)
     holds each candidate for H steps, imagined by the model (`online.uni_lookahead`, Jacobi decoding); it costs
-    (H − 1)·J + 1 forward passes per tick. `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
+    (H − 1)·J + 1 forward passes per tick. Task 00107 (vm-00096): with the quarter pieces each imagines only its own block,
+    the rest of the frame kept as the current one; H > 1 needs `online.ring = 0` (the ring refuses it; ring and full windows
+    are not the same, `tests/test_ring.py`), and `eval_hunger.Life` then acts on full windows of the last ctx steps. In the
+    inertia world H = 4 costs 3.6 times H = 1 with J = 2, 2.4 times with J = 1 (one life on the 4090). `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
     bin instead of the mean (its bin centres are not the world's grey levels: use `pair`, task 00038, the most probable
     bin and its more probable neighbour, weighted: sharp, and exact for two-hot values); Self-forcing (task 00039, lifetime.py on the GPU): `online.sf_windows` replayed windows per update
     get their last 1..`sf_steps` steps' inputs (frame and body) from the model's own predictions (`online.dream_inputs`:

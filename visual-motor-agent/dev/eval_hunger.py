@@ -102,7 +102,8 @@ STEP = "final"   # task 00106: --step N tests the checkpoint saved at tick N (ro
 
 class Life:
     """A run's frozen pieces, one body per world, and one tick of its acting. With the state (task 00104) each piece keeps
-    its queue of writes in its ring (cuda_lib), and Life the reads' spread over ticks."""
+    its queue of writes in its ring (cuda_lib), and Life the reads' spread over ticks. A run that lived without the ring
+    (online.ring = 0, task 00107) acts as it lived: on windows of its last ctx steps, with its own instinct_h."""
 
     def __init__(self, path, bodies, seed, clog=0.0, off=0.0, view=None):
         import agent_lib
@@ -127,8 +128,13 @@ class Life:
         self.cfg = make_config(dict(env_at_end(info["config"]["env"], info["config"]["online"].get("env_sched")), **ENV_SET),
                                auto_reset=True)   # task 00106: the world the life ended in, and --env over it
         self.bodies, self.rng = bodies, np.random.default_rng(seed)
+        self.ring = bool(self.on["ring"])   # task 00107
+        if not self.ring and (clog or off or view is not None or self.state):
+            raise ValueError("Life without the ring (online.ring = 0) takes no clog, outage, view or state")
+        self.hist = []   # task 00107: without the ring, the last ctx - 1 steps
         for m in self.models:
-            m.uni_ring_reset(bodies)
+            if self.ring:
+                m.uni_ring_reset(bodies)
         self.es = np.ones(bodies, np.uint8)
         self.clogs = [None] * self.S
         if clog:   # task 00085: each piece acts on its own damaged view
@@ -171,13 +177,24 @@ class Life:
                 self.missed[k] = 0
         models = [self.models[k] for k in self.live]
         clogs = [self.clogs[k] for k in self.live]
-        props = [uni_act(m, (c(obs["image"]) if c else obs["image"])[:, None], drv[:, None], act, self.es[:, None], self.bins, self.rng, on["instinct_m"], tol,
-                         on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"], per_body=True, first="sample", ring=True) for m, c in zip(models, clogs)]
+        inst = (self.bins, self.rng, on["instinct_m"], tol, on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"])
+        if self.ring:
+            props = [uni_act(m, (c(obs["image"]) if c else obs["image"])[:, None], drv[:, None], act, self.es[:, None], *inst,
+                             per_body=True, first="sample", ring=True) for m, c in zip(models, clogs)]
+        else:   # task 00107: the window of the last ctx steps, as forage_video and lifetime.py act without the ring
+            cur = dict(img=obs["image"], drv=np.asarray(drv, np.float32), act=np.zeros((self.bodies, 3), np.float32), es=self.es.copy())
+            win = self.hist + [cur]
+            st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
+            props = [uni_act(m, st("img"), st("drv"), st("act"), st("es"), *inst, per_body=True, first="sample") for m in models]
         a, won = pieces_move(models, props, on["piece_rule"], self.rng, prev=None)
         hp = np.stack([p[3] for p in props])   # task 00096: the predicted label of the move taken (as lifetime.py stores it)
         self.vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(len(a))], hp.mean(0))
-        for m in models:
-            m.uni_ring_move(a)
+        if self.ring:
+            for m in models:
+                m.uni_ring_move(a)
+        else:
+            cur["act"] = np.asarray(a, np.float32)
+            self.hist = (self.hist + [cur])[-(self.ctx - 1):] if self.ctx > 1 else []
         self.missed[self.is_off] += 1
         self.t += 1
         if self.state and self.t > self.ctx:   # task 00104: the reads, for their spread over ticks (after the first ctx, which are blank)
@@ -525,8 +542,9 @@ def moving_body(path, ticks, bodies, seed):
     obs = env.observe()
     p, size, rows = life.cfg.max_step_px, float(life.cfg.size), np.arange(bodies)
     acc = {k: np.zeros(len(MOVE_GAP_NAMES)) for k in ("f_n", "f_speed", "f_aim", "f_motion", "p_n", "p_speed", "p_away")}
-    speed, top, brake, moving, food, poisoned = [], [], 0, 0, 0, 0
+    speed, top, brake, moving, food, poisoned, hunger = [], [], 0, 0, 0, 0, []
     for t in range(ticks):
+        hunger.append(float(obs["drives"][:, 0].mean()))   # task 00107: the mean hunger too, as the poison mode reads it
         a = life.act(obs)
         xy = a[:, :2].astype(np.float64)
         v0 = env.vel.copy()   # the velocity kept (with inertia), else the last displacement
@@ -553,7 +571,7 @@ def moving_body(path, ticks, bodies, seed):
     life.close()
     k = 1000.0 / (ticks * bodies)
     per = lambda x, c: (acc[x] / np.maximum(acc[c], 1)).tolist()   # noqa: E731
-    yield dict(mode="move", run=os.path.basename(path), inertia=float(life.cfg.inertia), food=food * k, poison=poisoned * k,
+    yield dict(mode="move", run=os.path.basename(path), inertia=float(life.cfg.inertia), food=food * k, poison=poisoned * k, hunger=float(np.mean(hunger)),
                speed=float(np.mean(speed)), top=float(np.mean(top)), brake=brake / max(moving, 1), moving=moving / (ticks * bodies),
                gaps=list(MOVE_GAP_NAMES), food_share=(acc["f_n"] / acc["f_n"].sum()).tolist(), food_speed=per("f_speed", "f_n"),
                food_aim=per("f_aim", "f_n"), food_motion=per("f_motion", "f_n"), poison_share=(acc["p_n"] / acc["p_n"].sum()).tolist(),
