@@ -1,7 +1,7 @@
 # Task 00105: The Flexible Layer, W = S + F (experiment vm-00094)
 
 **Date:** 2026-11-16
-**Status:** In progress (approved 2026-11-16, the owner: "yes, go ahead with 105 - use both gpus")
+**Status:** Complete (2026-11-17; experiment vm-00094, `00094-flexible-layer/`; approved 2026-11-16, the owner: "yes, go ahead with 105 - use both gpus")
 
 ## Context
 
@@ -94,11 +94,22 @@
 ## Implementation
 
 - [x] The owner approves this design (2026-11-16).
-- [ ] Code 1–3, with the tests (4) passing; `fast = 0` byte-identical.
-- [ ] Timing; then the runs, the frozen tests, the write-up and videos.
+- [x] Code 1–3, with the tests (4) passing (`tests/test_fast.py`; the 181 tests of lifetimes and the frozen tools pass); `fast = 0` takes no new path.
+- [x] Timing (600-tick lives: 5.15 ticks/s per life with 14 on the 4090, 3.97 with 10 on the 3090; seeds 1–8 then on the 4090); the runs (2026-11-16 21:45 to 2026-11-17 02:08), the frozen tests (until 02:37), the write-up and videos (`videos/vm94_s5`, `vm94_s12`).
+
+## Results (summary; full report in the experiment README)
+
+- **Readings:**
+  1. Plumbing **met:** F .020 of S at 60k, below .1 in 12 of 12.
+  2. Memory in life **fails:** F − C8r at 9–16 ticks −.010 ± .033, at 17–32 −.011 ± .039.
+  3. Pays **fails:** food −1.9 ± 7.5.
+  4. No harm **fails** on prediction: patch CE +.0128 ± .0017 (12 of 12, 1.7%); poison −0.10 ± 0.57.
+  5. The measure in life agrees with the frozen one: **met.**
+- **What F did:** it strengthens the effect within the context, +.037 ± .021 at 1–8 ticks (10 of 12); a trace of the last frames, not a place (presumed).
+- **What follows (set above):** reading 4 failed, so halve k and rerun before reading 2. Not run: the owner's next step (2026-11-17) is the inertia world (task 00106).
 
 ## Verification
 
-- Every run's `info.json` has `online.fast` and `online.fast_k` by arm, and C8's settings otherwise.
-- C8r's lived food and poison are within the range of vm-00091's VW (the same settings, a rerun).
-- The measure in life is computed by the same code path that the frozen chain uses for its bins.
+- [x] Every run's `info.json` has `online.fast` and `online.fast_k` by arm, `online.mem_score` 1, and C8's settings otherwise (checked for all 24).
+- [x] C8r's lived food and poison are within the range of vm-00091's VW: food +0.8 ± 4.7, poison −0.00 ± 0.44 paired by seed.
+- [x] The measure in life is computed by the same code path that the frozen chain uses for its bins (`eval_hunger.MemoryScore`).
