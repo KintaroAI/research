@@ -1,8 +1,8 @@
 # vm-00097: A Meal Label, Learned Back in Time
 
 **Date:** 2026-11-18
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00097`)
+**Status:** Complete
+**Source:** `exp/vm-00097` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00097/`
 **Task plan:** [`../tasks/00108-meal-label.md`](../tasks/00108-meal-label.md)
 
