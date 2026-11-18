@@ -24,7 +24,7 @@ import cuda_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
 from make_video import font  # noqa: E402
 from lifetime import ckpt_name, pieces_move  # noqa: E402
-from online import DEFAULT_ONLINE, EVAL_SEED, _GpuEval, eval_moves, uni_act  # noqa: E402
+from online import DEFAULT_ONLINE, EVAL_SEED, NEED_FLOOR, _GpuEval, eval_moves, uni_act  # noqa: E402
 from world import CircleWorld, EnvConfig  # noqa: E402
 
 W, H, FPS = 1280, 720, 15
@@ -82,7 +82,9 @@ def run(args, path):
             win = ([] if ring else hist) + [cur]
             st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
             props = [uni_act(m_, st("img"), st("drv"), st("act").astype(np.float32), st("es"), agent.config["bins"], rng,
-                             *inst, per_body=True, ring=ring) for m_ in models]
+                             *(inst if not ion["need"] else  # task 00108: the label weighted by hunger when choosing
+                               (inst[0], inst[1] / np.maximum(obs["drives"][:, 0], NEED_FLOOR)) + inst[2:]),
+                             per_body=True, ring=ring) for m_ in models]
             a, w_ = pieces_move(models, props, ion["piece_rule"], rng, lam=ion["piece_lambda"], temp=ion["piece_temp"])
             won = int(w_[0, 0])
             if ring:

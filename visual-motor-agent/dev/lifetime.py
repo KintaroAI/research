@@ -77,7 +77,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
 from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, delay_targets, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
-                    UNI_CHUNK, thought_dream, uni_act)
+                    NEED_FLOOR, UNI_CHUNK, MealMonitor, meal_target, thought_dream, uni_act)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
 from world import make_config, make_world  # noqa: E402
@@ -155,12 +155,12 @@ def table_gap(models, ranges):
     return float(np.sqrt(((x - mean) ** 2).sum(1).mean() / (mean ** 2).sum()))
 
 
-def boot_values(models, rows, ctx=None):
+def boot_values(models, rows, ctx=None, mean=True):
     """Task 00098: each window's fresh bootstrap tails [B, L], the mean over models of the move token's predicted
     label (the next body's hunger slot) of the move made at each step of the bootstrap windows (b_img, b_drv, b_act,
     b_es: the L steps that start n steps after each training window). No gradient: forward passes only. Task 00104
     (b_st, the reads stored while acting, [B, L, models, V]): each model reads its own, and windows longer than the
-    context (pairs) go in pieces of ctx steps."""
+    context (pairs) go in pieces of ctx steps. mean=False (task 00108): each model's own tails [models, B, L]."""
     B, L = rows["b_img"].shape[:2]
     w = ctx or L
     out = []
@@ -172,7 +172,7 @@ def boot_values(models, rows, ctx=None):
                           move_probs=False, next_body=True,
                           state=None if st is None else st[i:i + UNI_CHUNK, t:t + w, k].astype(np.float32))["next_body"][..., 0]
             for t in range(0, L, w)], 1) for i in range(0, B, UNI_CHUNK)]))
-    return np.mean(out, 0).astype(np.float32)
+    return (np.mean(out, 0) if mean else np.stack(out)).astype(np.float32)
 
 
 def pieces_move(models, props, rule, rng, prev=None, lam=1.0, temp=0.01):
@@ -366,6 +366,11 @@ def main():
     if refresh and not (gamma and uni and on["device"] == "cuda" and not (clog or q_in or q_off or delayed)):
         raise ValueError("online.value_refresh needs online.value_gamma and the universal model on the GPU, "
                          "without online.clog, online.noise_in, online.off or env.delays")
+    meal = on["value_target"] == "meal"   # task 00108: the meal label, each transformer its own
+    if on["value_target"] not in ("hunger", "meal") or (meal and not (refresh and value_n == 1 and not agent.config.get("state"))):
+        raise ValueError("online.value_target is 'hunger' or 'meal'; 'meal' needs online.value_refresh, online.value_n = 1 and no model.state")
+    if on["need"] and on["instinct_m"] < 2:
+        raise ValueError("online.need weighs the instinct's choice: it needs online.instinct_m > 1")
     state = bool(agent.config.get("state")) and uni   # task 00104: a state carried across windows; updates on pairs of them
     if state and not (on["device"] == "cuda" and on["ring"] and on["batch"] >= 2 and on["batch"] % 2 == 0 and
                       not (on["sf_windows"] or clog or q_in or q_off or delayed or tok_sur or hasattr(env, "think"))):
@@ -471,6 +476,7 @@ def main():
         from eval_pieces import relative
         blind = make_world(N0, env_cfg, seed=args.seed + 7777)
         mscore = dict(seen=MemoryScore(N0), blind=MemoryScore(N0))
+    mmon = MealMonitor(N0, gamma) if refresh and meal else None   # task 00108: the label's predictions against what happened
     thinking = hasattr(env, "think")   # task 00064: the thought half's next frame is the right piece's dream, and waves
     if thinking and env.cfg.mode == "dream" and (S != 2 or not gpu or agent.config["band_cols"] != 1):
         raise ValueError("a dreaming env.thought needs two pieces, left and right (online.pieces, model.band_cols=1), on the GPU")
@@ -523,8 +529,11 @@ def main():
                 if missed[k]:
                     gpus[k].uni_ring_skip(missed[k])
                     missed[k] = 0
+            tol = on["instinct_tol"]   # task 00108, online.need: the label weighted by hunger when choosing
+            if on["need"]:
+                tol = (on["instinct_tol"] / np.maximum(h, NEED_FLOOR)).astype(np.float32)
             props = [uni_act(umodels[k], views[k](win_in[0][:, 0])[:, None] if views[k] else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
-                             agent.config["bins"], rng, on["instinct_m"], on["instinct_tol"], on["instinct_h"],
+                             agent.config["bins"], rng, on["instinct_m"], tol, on["instinct_h"],
                              on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
                      for k in live]
             a, won = pieces_move([umodels[k] for k in live], props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
@@ -569,6 +578,8 @@ def main():
             for name, e in (("seen", env), ("blind", blind)):
                 mscore[name].see(e, cosine(xy, relative(e, e.target)))
         obs, rew, done, inf = env.step(full)
+        if mmon is not None:   # task 00108: each body's hunger before and after its move, and the label it predicted for it
+            mmon.add(vh, h, inf["terminal_drives"][:N, 0])
         if mem_on:
             mscore["seen"].ate(inf["success"])
             mscore["blind"].ate(blind.step(full)[3]["success"])
@@ -635,7 +646,14 @@ def main():
                 else:
                     parts.append(gms[0]._from_stm(gms[0].stm.starts(Lm, Bm, rng, lag)[1:], lag))
                 rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].keys}
-            if refresh:   # task 00098: the tails from the current transformers, their mean prediction of the move made
+            if refresh and meal:   # task 00108: each transformer's own tail, and so its own label
+                vbs = boot_values(gpus, rows, L if state else None, mean=False)
+                labels = [meal_target(rows["pr_real"], rows["tw"], v_) for v_ in vbs]
+                rows["pr"] = np.mean(labels, 0).astype(np.float32)
+                vb = vbs.mean(0)
+                win["vboot"] += float(vb.sum())
+                win["vboot_n"] += vb.size
+            elif refresh:   # task 00098: the tails from the current transformers, their mean prediction of the move made
                 vb = boot_values(gpus, rows, L if state else None)
                 rows["pr"] = rows["pr_real"] + rows["tw"] * vb
                 win["vboot"] += float(vb.sum())
@@ -681,6 +699,8 @@ def main():
                     if is_off[k]:   # task 00089: an off transformer does not learn
                         continue
                     if g:   # a GPU rollout holds only the data: one for all pieces
+                        if refresh and meal:   # task 00108: this transformer's own label (set_batch copies at once)
+                            ro.ndrv[:, :, 0] = labels[k].T
                         sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
                         stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
                                                       inputs=seen_in if delayed else shared if q_in else damaged(rows), step_mask=sm))
@@ -759,6 +779,8 @@ def main():
                 row.update(fast_ratio=float(np.mean(rat)), fast_ratio_max=float(np.mean(worst)))
             if mem_on:   # task 00105: the memory measure's sums and counts since the last row, by bin
                 row["mem"] = dict(seen=mscore["seen"].take(), blind=mscore["blind"].take())
+            if mmon is not None:   # task 00108: predicted and real V by ticks to the next meal (MEAL_BIN_NAMES), since the last row
+                row["meal"] = mmon.take()
             if state and win["st_n"]:   # task 00104: how much body 0's reads vary over the window, mean over pieces and values
                 mu = win["st_sum"] / win["st_n"]
                 row["state_spread"] = float(np.sqrt(np.maximum(win["st_sq"] / win["st_n"] - mu ** 2, 0.0)).mean())

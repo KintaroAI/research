@@ -88,6 +88,13 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # move made n steps later (a forward pass without gradient over the windows that start n steps later), in place
                       # of the stored winner's prediction; long-term memory then keeps n steps past each chunk. 0: off
                       value_refresh=0,
+                      # task 00108: what the value learns. hunger: the above. meal: how soon the next meal comes, learned back in time:
+                      # V = 1 on the step whose hunger falls (a meal); else minus the hunger the step added (a poison's 0.5, the drift's
+                      # 0.001) + value_gamma x each transformer's own fresh prediction for the next step (one step: value_n 1, with
+                      # value_refresh); clipped to [-1, 1], stored as T = (1 - V) / 2 (lower is better, as hunger)
+                      value_target="hunger",
+                      # task 00108: the label weighted by hunger when choosing: the instinct's tolerance divided by max(hunger, NEED_FLOOR)
+                      need=0,
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
@@ -304,6 +311,70 @@ def value_parts(ndrv0, done, gamma, n):
     return real.astype(np.float32), tw.astype(np.float32)
 
 
+NEED_FLOOR = 0.05   # task 00108: online.need divides the tolerance by the hunger, at least this
+
+
+def meal_parts(h0, h1, done, gamma):
+    """Task 00108, the meal label: for each step j of a stretch, the parts of V[j] = real[j] + tw[j] * V_hat[j + 1].
+    A step whose hunger falls (h1 < h0) is a meal: real 1, no tail. Any other step costs the hunger it added (a poison's
+    0.5, the drift's 0.001): real -(h1 - h0), tail weight gamma, unless j's episode or the stretch ends there. Read from the
+    hunger alone, as the hunger value is (the agent knows only its body)."""
+    h0, h1 = np.asarray(h0, np.float64), np.asarray(h1, np.float64)
+    meal = h1 < h0
+    real = np.where(meal, 1.0, -(h1 - h0))
+    tw = np.where(meal | np.asarray(done, bool), 0.0, gamma)
+    tw[-1] = 0.0
+    return real.astype(np.float32), tw.astype(np.float32)
+
+
+def meal_target(real, tw, tail):
+    """Task 00108: the meal label on the model's scale, T = (1 - clip(real + tw * V_hat, -1, 1)) / 2, from its parts and the
+    tail tail [...] on the same scale T (V_hat = 1 - 2 T)."""
+    v = np.asarray(real, np.float64) + np.asarray(tw, np.float64) * (1.0 - 2.0 * np.asarray(tail, np.float64))
+    return ((1.0 - np.clip(v, -1.0, 1.0)) / 2.0).astype(np.float32)
+
+
+MEAL_BINS = (0, 1, 2, 4, 8, 16, 32, 64)                                # task 00108: ticks to the next meal, bin edges
+MEAL_BIN_NAMES = ("0", "1", "2-3", "4-7", "8-15", "16-31", "32-63")
+
+
+class MealMonitor:
+    """Task 00108, in life: the meal label's predictions against what happened. Each body's ticks since its last meal wait
+    for the next one; then each one's real value is known exactly (sum of gamma^i r up to and including the meal, clipped
+    as the label is), and its predicted V (1 - 2 x the predicted label of the move taken) and real V add up by ticks to that
+    meal (MEAL_BINS; 0: the move that ate). A tick still waiting after `wait` ticks is dropped. take() returns the sums since
+    the last call: how far back in time the label is right, and how optimistic it is."""
+
+    def __init__(self, bodies, gamma, wait=256):
+        self.gamma, self.wait = gamma, wait
+        self.pend = [[] for _ in range(bodies)]   # (predicted V, r) of each tick since the body's last meal
+        n = len(MEAL_BIN_NAMES)
+        self.pred, self.real, self.n = np.zeros(n), np.zeros(n), np.zeros(n)
+
+    def add(self, pred_t, h0, h1):
+        """One tick: each body's predicted label of its move (pred_t, T scale) and its hunger before and after it."""
+        for b in range(len(h0)):
+            meal = h1[b] < h0[b]
+            self.pend[b].append((1.0 - 2.0 * float(pred_t[b]), 1.0 if meal else -float(h1[b] - h0[b])))
+            if meal:
+                v = 0.0
+                for k, (p, r) in enumerate(reversed(self.pend[b])):   # k: ticks to the meal
+                    v = r + self.gamma * v
+                    i = int(np.searchsorted(MEAL_BINS, k, side="right")) - 1
+                    if i < len(MEAL_BIN_NAMES):
+                        self.pred[i] += p
+                        self.real[i] += min(1.0, max(-1.0, v))
+                        self.n[i] += 1
+                self.pend[b] = []
+            elif len(self.pend[b]) > self.wait:
+                self.pend[b].pop(0)
+
+    def take(self):
+        out = dict(pred=self.pred.tolist(), real=self.real.tolist(), n=self.n.tolist())
+        self.pred[:], self.real[:], self.n[:] = 0.0, 0.0, 0.0
+        return out
+
+
 def goal_labels(m, idx, k, mode, gamma=0.0):
     """The hindsight labels of the steps idx (consecutive, physical indices into memory fields m) of form mode
     (value: k - 1 real ticks, then the bootstrap; task 00096)."""
@@ -404,6 +475,7 @@ class GatedMemory:
         # bootstrap window (the L steps from n = goal_k - 1 steps later), long-term memory keeps n steps past each chunk
         self.refresh = bool(on.get("value_refresh")) and self.goal_mode == "value"
         self.vn = goal_k - 1 if self.refresh else 0
+        self.meal = self.refresh and on.get("value_target", "hunger") == "meal"   # task 00108
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
         # least one step after it ends (task 00053)
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
@@ -498,7 +570,7 @@ class GatedMemory:
         for k in s.fields:
             st.ltm[k][w] = getattr(s, k)[ext[:L + st.extra]]
         if self.refresh:   # task 00098: the real parts and tail weights; the tails are made fresh at each replay
-            st.ltm["lbl"][w], st.ltm["tw"][w] = (x[:L] for x in value_parts(s.ndrv[ext, 0], s.done[ext], self.gamma, self.vn))
+            st.ltm["lbl"][w], st.ltm["tw"][w] = (x[:L] for x in self._parts(s, ext))
         elif self.goal_k:
             st.ltm["lbl"][w] = goal_labels(s, ext, self.goal_k, self.goal_mode, self.gamma)[:L]
         st.reason[w], st.relief[w], st.end[w] = reason, relief, end
@@ -518,11 +590,20 @@ class GatedMemory:
             n = self.vn
             if lag < n:
                 raise ValueError("a refreshed value needs windows ending at least n steps back")
-            parts = [value_parts(s.ndrv[e, 0], s.done[e], self.gamma, n) for e in ext]
+            parts = [self._parts(s, e) for e in ext]
             r["pr_real"] = np.stack([p[0][:L] for p in parts])
             r["tw"] = np.stack([p[1][:L] for p in parts])
+            if self.meal:   # task 00108: the stored tails, on the model's scale; the caller replaces them with fresh ones
+                r["pr"] = meal_target(r["pr_real"], r["tw"], s.vh[ext[:, n:n + L]])
             self._boot(r, {k: getattr(s, k)[ext[:, n:n + L]] for k in self.boot})
         return r
+
+    def _parts(self, s, e):
+        """The label's real parts and tail weights for the steps e of memory s: the hunger value's (task 00098) or the
+        meal label's (task 00108)."""
+        if self.meal:
+            return meal_parts(s.drv[e, 0], s.ndrv[e, 0], s.done[e], self.gamma)
+        return value_parts(s.ndrv[e, 0], s.done[e], self.gamma, self.vn)
 
     @staticmethod
     def _boot(r, b):
@@ -544,7 +625,10 @@ class GatedMemory:
         old["img"] = as_frames(old["img"])
         if self.refresh:   # task 00098: the stored tails for pr; the caller replaces them with fresh ones
             old["pr_real"], old["tw"] = st.ltm["lbl"][ci], st.ltm["tw"][ci]
-            old["pr"] = old["pr_real"] + old["tw"] * st.ltm["vh"][ci, n:n + L]
+            if self.meal:   # task 00108
+                old["pr"] = meal_target(old["pr_real"], old["tw"], st.ltm["vh"][ci, n:n + L])
+            else:
+                old["pr"] = old["pr_real"] + old["tw"] * st.ltm["vh"][ci, n:n + L]
             self._boot(old, {k: st.ltm[k][ci, n:n + L] for k in self.boot})
         elif self.goal_k:
             old["pr"] = st.ltm["lbl"][ci]

@@ -202,6 +202,23 @@ every tick:
 - **A faster lookahead:** the imagined steps recompute the whole window for every candidate and pass; the real
   prefix is the same for all of them, so its keys and values could be cached once per tick (as the one-step
   candidates do).
+- **Hindsight before bootstrapping** (for the meal label of task 00108; the owner, 2026-11-17: store it, try the simple
+  one-step version first).
+  - **The idea:** the replay memory holds what really happened after each stored tick. When a meal really came k
+    ticks after a stored tick, its label can be the exact value: 0.95^k, less the penalties met on the way. That
+    replaces waiting for the model's one-step predictions to carry the meal back k ticks, one tick per replay.
+  - **Only past what is stored** does the model's own prediction fill in (an n-step return). The present hunger label
+    already does this for 4 ticks (`online.value_n`).
+  - **Gains:** the meal's value reaches far back at once, and the label carries no bias from the model's own errors.
+    Try it if the one-step label learns too slowly.
+- **Moving costs energy** (the owner, 2026-11-17): hunger should rise with movement, so that standing still becomes an
+  option and eating all the time has a price.
+  - `env.turn_cost` prices only changes of move; a cost per pixel moved (or per push, with inertia) would be new.
+  - With the meal label (task 00108) such a cost needs no change to the label: it is a rise in hunger, and every rise
+    is a penalty.
+- **Two labels, meal and poison apart** (task 00108): one label holding both means that weighing it by hunger (need)
+  also weakens poison avoidance when sated. Two predicted values, the next meal's nearness and the poison ahead, would
+  let need weigh the meal alone.
 - **Action repeat: decide every k ticks and hold the move** (the owner, 2026-11-17; from DQN, which held each action
   for 4 emulator frames, so that every decision was a short course).
   - **Why:** in the world with inertia (vm-00095) one push moves the body's next position by at most 1 px per axis, so

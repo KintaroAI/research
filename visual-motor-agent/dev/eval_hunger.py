@@ -165,6 +165,9 @@ class Life:
             drv[:, 0] = told
         act = np.zeros((self.bodies, 1, 3), np.float32)
         tol = on["instinct_tol"] if tol is None else tol
+        if on.get("need"):   # task 00108: the label weighted by hunger when choosing, as the life chose
+            from online import NEED_FLOOR
+            tol = (tol / np.maximum(np.asarray(drv, np.float64)[:, 0], NEED_FLOOR)).astype(np.float32)
         if self.off:   # task 00089: each piece's chain; the ticks it missed are skipped in its ring when it is back
             r = self.off_rng.random(self.S)
             self.is_off = np.where(self.is_off, r >= self.p_back, r < self.p_down)
@@ -429,8 +432,10 @@ def value(path, ticks, bodies, seed):
     else:
         M, w = k, np.full(k, 1.0 / k)
     w = w / w.sum()
-    V, H, F, P, spread = [], [], [], [], []
+    meal = on.get("value_target") == "meal"   # task 00108: the meal label, realized from the hunger before and after each tick
+    V, H, H0, F, P, spread = [], [], [], [], [], []
     for t in range(ticks):
+        H0.append(obs["drives"][:, 0].astype(np.float64).copy())
         a = life.act(obs)
         V.append(life.vh.astype(np.float64).copy())
         spread += [float(np.median(m.pred.max(1) - m.pred.min(1))) for m in life.models if m.pred is not None]
@@ -443,10 +448,30 @@ def value(path, ticks, bodies, seed):
     V, H = np.array(V), np.array(H)
     T = ticks - M
     R = np.stack([(w[:, None] * H[t:t + M]).sum(0) for t in range(T)])
+    prof = None
+    if meal:   # task 00108: V[t] = r[t] + gamma (1 - meal[t]) V[t + 1], backward from the end (cut at most gamma^M from the truth)
+        H0 = np.array(H0)
+        ate = H < H0
+        rr = np.where(ate, 1.0, -(H - H0))
+        Vm, Km = np.zeros_like(H), np.full(H.shape, 10 ** 6)
+        nxt, kn = np.zeros(H.shape[1]), np.full(H.shape[1], 10 ** 6)
+        for t in range(ticks - 1, -1, -1):
+            nxt = rr[t] + gamma * (~ate[t]) * nxt
+            kn = np.where(ate[t], 0, kn + 1)
+            Vm[t], Km[t] = nxt, kn
+        R = (1.0 - np.clip(Vm[:T], -1.0, 1.0)) / 2.0
+        ks = list(range(31))   # ticks to the next real meal (0: this tick's move eats)
+        pv, rv, nk = [], [], []
+        for k_ in ks:
+            m_ = Km[:T] == k_
+            nk.append(int(m_.sum()))
+            pv.append(float(np.mean(1.0 - 2.0 * V[:T][m_])) if m_.any() else None)
+            rv.append(float(np.mean(np.clip(Vm[:T][m_], -1.0, 1.0))) if m_.any() else None)
+        prof = dict(k=ks, pred_v=pv, real_v=rv, n=nk)
     v, r = V[:T].ravel(), R.ravel()
     yield dict(mode="value", run=os.path.basename(path), gamma=gamma, k=k, horizon=M, pred=float(v.mean()), real=float(r.mean()), bias=float((v - r).mean()),
                mae=float(np.abs(v - r).mean()), corr=float(np.corrcoef(v, r)[0, 1]), spread=float(np.median(spread)) if spread else None,
-               food=np.sum(F) * 1000.0 / np.size(F), poison=np.sum(P) * 1000.0 / np.size(P))
+               food=np.sum(F) * 1000.0 / np.size(F), poison=np.sum(P) * 1000.0 / np.size(P), **({"meal": prof} if prof else {}))
 
 
 def interval(x):
