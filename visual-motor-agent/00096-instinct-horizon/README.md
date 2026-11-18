@@ -1,8 +1,8 @@
 # vm-00096: The Instinct's Horizon in the World With Inertia
 
 **Date:** 2026-11-17
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00096`)
+**Status:** Complete
+**Source:** `exp/vm-00096` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00096/`
 **Task plan:** [`../tasks/00107-instinct-horizon-inertia.md`](../tasks/00107-instinct-horizon-inertia.md)
 
