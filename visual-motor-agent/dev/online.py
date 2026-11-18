@@ -95,6 +95,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       value_target="hunger",
                       # task 00108: the label weighted by hunger when choosing: the instinct's tolerance divided by max(hunger, NEED_FLOOR)
                       need=0,
+                      # task 00109: the stored meal label in the body's own channel (model.body_label): when acting each transformer
+                      # scores the move made; one tick later step t's label is written to memory once, never re-labeled: a meal 1,
+                      # else label_gamma x that transformer's prediction for the next step's move, less the hunger a poison added
+                      # (a rise above POISON_RISE; no cost for the drift). "": off
+                      label="", label_gamma=0.95,
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
@@ -147,7 +152,7 @@ class Replay:
     only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None):
+    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None, labels=0):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
         self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
@@ -173,6 +178,10 @@ class Replay:
         if state:    # task 00104: each transformer's read at each step, state = (transformers, values); half precision
             self.st = np.full((cap,) + tuple(state), 0.5, np.float16)
             self.fields = self.fields + ("st",)
+        if labels:   # task 00109: each transformer's predicted label (T) of the move made, and the stored label, written once
+            self.vhs = np.zeros((cap, labels), np.float32)
+            self.lab = np.full((cap, labels), 0.5, np.float32)
+            self.fields = self.fields + ("vhs", "lab")
 
     def add(self, **kw):
         i = self.w
@@ -312,19 +321,33 @@ def value_parts(ndrv0, done, gamma, n):
 
 
 NEED_FLOOR = 0.05   # task 00108: online.need divides the tolerance by the hunger, at least this
+POISON_RISE = 0.01  # task 00109: a rise of hunger above this in one step is a poison (the drift is 0.001)
 
 
-def meal_parts(h0, h1, done, gamma):
+def meal_parts(h0, h1, done, gamma, drift=True):
     """Task 00108, the meal label: for each step j of a stretch, the parts of V[j] = real[j] + tw[j] * V_hat[j + 1].
     A step whose hunger falls (h1 < h0) is a meal: real 1, no tail. Any other step costs the hunger it added (a poison's
     0.5, the drift's 0.001): real -(h1 - h0), tail weight gamma, unless j's episode or the stretch ends there. Read from the
     hunger alone, as the hunger value is (the agent knows only its body)."""
     h0, h1 = np.asarray(h0, np.float64), np.asarray(h1, np.float64)
     meal = h1 < h0
-    real = np.where(meal, 1.0, -(h1 - h0))
+    rise = h1 - h0
+    real = np.where(meal, 1.0, -rise if drift else np.where(rise > POISON_RISE, -rise, 0.0))   # task 00109: drift=False, poison only
     tw = np.where(meal | np.asarray(done, bool), 0.0, gamma)
     tw[-1] = 0.0
     return real.astype(np.float32), tw.astype(np.float32)
+
+
+def stored_labels(h0, h1, done, nxt, gamma):
+    """Task 00109: step t's stored labels on the model's scale T, one per transformer, written once: from its hunger
+    before and after, whether its episode ended there, and each transformer's prediction (T) for the move made at t + 1,
+    nxt [S]. A meal 1 (T 0); else gamma x the prediction, less the hunger a poison added; no cost for the drift."""
+    nxt = np.asarray(nxt, np.float64)
+    rise = float(h1) - float(h0)
+    if rise < 0:
+        return np.zeros(len(nxt), np.float32)
+    real = -rise if rise > POISON_RISE else 0.0
+    return meal_target(np.full(len(nxt), real), np.full(len(nxt), 0.0 if done else gamma), nxt)
 
 
 def meal_target(real, tw, tail):
@@ -345,8 +368,8 @@ class MealMonitor:
     meal (MEAL_BINS; 0: the move that ate). A tick still waiting after `wait` ticks is dropped. take() returns the sums since
     the last call: how far back in time the label is right, and how optimistic it is."""
 
-    def __init__(self, bodies, gamma, wait=256):
-        self.gamma, self.wait = gamma, wait
+    def __init__(self, bodies, gamma, wait=256, drift=True):
+        self.gamma, self.wait, self.drift = gamma, wait, drift   # drift=False (task 00109): only a poison's rise costs
         self.pend = [[] for _ in range(bodies)]   # (predicted V, r) of each tick since the body's last meal
         n = len(MEAL_BIN_NAMES)
         self.pred, self.real, self.n = np.zeros(n), np.zeros(n), np.zeros(n)
@@ -354,8 +377,9 @@ class MealMonitor:
     def add(self, pred_t, h0, h1):
         """One tick: each body's predicted label of its move (pred_t, T scale) and its hunger before and after it."""
         for b in range(len(h0)):
-            meal = h1[b] < h0[b]
-            self.pend[b].append((1.0 - 2.0 * float(pred_t[b]), 1.0 if meal else -float(h1[b] - h0[b])))
+            meal, rise = h1[b] < h0[b], float(h1[b] - h0[b])
+            cost = -rise if self.drift or rise > POISON_RISE else 0.0
+            self.pend[b].append((1.0 - 2.0 * float(pred_t[b]), 1.0 if meal else cost))
             if meal:
                 v = 0.0
                 for k, (p, r) in enumerate(reversed(self.pend[b])):   # k: ticks to the meal
@@ -467,7 +491,7 @@ class GatedMemory:
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
     def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True, img_w=0,
-                 pieces=False, state=None):
+                 pieces=False, state=None, labels=0):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.goal_mode = on.get("goal_mode", "relief")
         self.gamma = float(on.get("value_gamma") or 0.0)            # task 00096 (goal_mode value)
@@ -481,7 +505,7 @@ class GatedMemory:
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
-        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state)
+        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state, labels=labels)
         self.store = store or ChunkStore(on, L, self.stm, extra=self.vn)   # long-term memory (shared between bodies or not)
         self.boot = ("img", "drv", "act", "es") + (("st",) if state else ())   # task 00104: the bootstrap windows' reads too
         self.keys = self.stm.fields + (tuple("b_" + k for k in self.boot) + ("pr_real", "tw") if self.refresh else ())
@@ -597,6 +621,16 @@ class GatedMemory:
                 r["pr"] = meal_target(r["pr_real"], r["tw"], s.vh[ext[:, n:n + L]])
             self._boot(r, {k: getattr(s, k)[ext[:, n:n + L]] for k in self.boot})
         return r
+
+    def write_label(self, gamma):
+        """Task 00109: the step before the newest gets its stored labels, once, from its hunger before and after and each
+        transformer's prediction for the newest step's move (vhs). Returns that step's index (None before two steps)."""
+        s = self.stm
+        if s.n < 2:
+            return None
+        i, j = (s.w - 2) % s.cap, (s.w - 1) % s.cap
+        s.lab[i] = stored_labels(s.drv[i, 0], s.ndrv[i, 0], s.done[i], s.vhs[j], gamma)
+        return i
 
     def _parts(self, s, e):
         """The label's real parts and tail weights for the steps e of memory s: the hunger value's (task 00098) or the
@@ -825,12 +859,12 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
     for st in range(R, R + H - 1):
         for _ in range(J):
             out = run(st)
-            dv[:, st] = np.clip(out["next_body"][:, st - 1], 0.0, 1.0)
+            dv[:, st] = np.clip(out["next_body"][:, st - 1, :2], 0.0, 1.0)   # task 00109: the body's label is no input
             if blk is None:
                 im[:, st] = uni_frame(c, out["values_t"][:, pp])
             else:   # task 00107: the piece's own block; the rest stays the current frame
                 im[:, st, blk[0], blk[1]] = uni_frame(c, out["values_t"][:, pp], blk[2])
-    return run(-1)["next_body"][:, -1, 0].reshape(N, M)
+    return run(-1)["next_body"][:, -1, 2 if c.get("body_label") else 0].reshape(N, M)   # task 00109: the label, if the body has one
 
 
 def thought_dream(model, img, drv, act, es, J=2, decode="pair"):
@@ -931,7 +965,7 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
         ri, rd, re = rep(img), rep(drv), rep(es)
         h = np.concatenate([model.forward_uni(ri[j:j + UNI_CHUNK], rd[j:j + UNI_CHUNK], ac[j:j + UNI_CHUNK],
                                               re[j:j + UNI_CHUNK], values=False, move_probs=False,
-                                              next_body=True)["next_body"][:, -1, 0]
+                                              next_body=True)["next_body"][:, -1, 2 if model.config.get("body_label") else 0]
                             for j in range(0, N * M, UNI_CHUNK)]).reshape(N, M)
     best = np.argmin(h, 1)
     pick = np.where(h[:, 0] - h[np.arange(N), best] <= tol, 0, best)

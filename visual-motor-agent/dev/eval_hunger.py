@@ -425,6 +425,8 @@ def value(path, ticks, bodies, seed):
     obs = env.observe()
     on = life.on
     gamma = float(on.get("value_gamma") or 0.0)
+    if on.get("label") == "meal":   # task 00109: the stored meal label's gamma
+        gamma = float(on.get("label_gamma") or 0.0)
     k = max(1, int(on.get("future_k") or 0))
     if gamma:
         M = int(np.ceil(np.log(1e-3) / np.log(gamma)))
@@ -432,7 +434,8 @@ def value(path, ticks, bodies, seed):
     else:
         M, w = k, np.full(k, 1.0 / k)
     w = w / w.sum()
-    meal = on.get("value_target") == "meal"   # task 00108: the meal label, realized from the hunger before and after each tick
+    meal = on.get("value_target") == "meal" or on.get("label") == "meal"   # task 00108 (and 00109): realized from the hunger
+    drift = on.get("value_target") == "meal"   # task 00109's stored label has no cost for the drift, only a poison's rise
     V, H, H0, F, P, spread = [], [], [], [], [], []
     for t in range(ticks):
         H0.append(obs["drives"][:, 0].astype(np.float64).copy())
@@ -452,7 +455,8 @@ def value(path, ticks, bodies, seed):
     if meal:   # task 00108: V[t] = r[t] + gamma (1 - meal[t]) V[t + 1], backward from the end (cut at most gamma^M from the truth)
         H0 = np.array(H0)
         ate = H < H0
-        rr = np.where(ate, 1.0, -(H - H0))
+        from online import POISON_RISE
+        rr = np.where(ate, 1.0, np.where(drift | (H - H0 > POISON_RISE), -(H - H0), 0.0))
         Vm, Km = np.zeros_like(H), np.full(H.shape, 10 ** 6)
         nxt, kn = np.zeros(H.shape[1]), np.full(H.shape[1], 10 ** 6)
         for t in range(ticks - 1, -1, -1):

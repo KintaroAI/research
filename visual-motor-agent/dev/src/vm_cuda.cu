@@ -59,6 +59,7 @@ struct Dims {
     int act, cds, cfx;   // act token on/off (task 00020); prediction frame -> coarse frame block side; coarse values
     int ib, VI;                 // bin-embedding input (task 00036): on/off; the input map's width (V or VC * bins)
     int cv, VC;                 // a channel per value (task 00075): on/off; the tables' value positions
+    int bl;                     // task 00109: the body's third value, the label (0 or 1)
     int uni, V, nbin, OV, ch;   // universal model (task 00023): on/off; values per token; bins per value; head
                                 // outputs; channels per patch pixel (1 with gray, else 3)
     int nsum, nnot;             // summary tokens per step (tasks 00047, 00048; 0: none); tokens without a target
@@ -85,7 +86,8 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         if (!vm_attn_valid(&c)) return false;
         D.ch = (D.uni && c.gray) ? 1 : 3;
         D.V = D.uni ? D.patch * D.patch * D.ch : 0; D.nbin = D.uni ? c.bins : 0;
-        D.cv = D.uni ? c.uni_chan : 0; D.VC = D.V + (D.cv ? VM_UNI_EXTRA : 0); D.OV = D.VC * D.nbin;
+        D.cv = D.uni ? c.uni_chan : 0; D.bl = D.uni ? c.body_label : 0;
+        D.VC = D.V + (D.cv ? VM_UNI_EXTRA + D.bl : 0); D.OV = D.VC * D.nbin;
         D.ib = D.uni ? c.in_bins : 0; D.VI = D.ib ? D.VC * D.nbin : D.V;
         if (c.pred_img % (c.img / D.patch) || c.d_model % c.n_head) return false;
         D.cell = c.pred_img / (c.img / D.patch); D.cpx = D.cell * D.cell * 3;
@@ -100,7 +102,7 @@ static bool make_dims(const VMConfig& c, Dims& D) {
         return true;
     }
     D.gp = D.npch = D.pdim = D.cell = D.cpx = 0; D.ntok = 1; D.iw = c.img;
-    D.uni = D.V = D.nbin = D.OV = D.cv = D.VC = 0; D.ch = 3; D.nsum = D.nnot = 0; D.age = 0; D.st = 0;
+    D.uni = D.V = D.nbin = D.OV = D.cv = D.VC = 0; D.bl = 0; D.ch = 3; D.nsum = D.nnot = 0; D.age = 0; D.st = 0;
     if (c.universal || c.gray) return false;
     if (!c.coord || !c.pred_residual || !c.pred_skip) return false;
     if (c.img % 8 || c.pred_img % 4 || c.img / c.pred_img != 2 || c.d_model % c.n_head || c.pb <= 0) return false;
@@ -1525,6 +1527,8 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
     if (!D.uni) {   // the universal model reads neither
         CK(cudaMemcpy(M->pa, prev_action, B * 3 * sizeof(float), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(M->pr, prev_reward, B * sizeof(float), cudaMemcpyHostToDevice));
+    } else if (D.bl) {   // task 00109: the slot is the body label's target
+        CK(cudaMemcpy(M->pr, prev_reward, B * sizeof(float), cudaMemcpyHostToDevice));
     }
     if (action) CK(cudaMemcpy(M->act, action, B * 3 * sizeof(float), cudaMemcpyHostToDevice));
     else CK(cudaMemset(M->act, 0, B * 3 * sizeof(float)));
@@ -1846,20 +1850,22 @@ static int transformer_bwd(Model* M, int B, int K, const int* start, const int* 
 // Token (b, k) of frame b: its slot k from sl [UNI_SLOT * nt] (vm_uni_layout, tasks 00047-00049): kind (0 the body,
 // 1 a patch, 2 a summary, 3 the move, 4 the read, 5 the write: task 00104), index, and a summary's block (origin y, x and
 // pooling fy, fx; fy = 0: no thumbnail). Values in [0, 1]; used: 2, V, V or 0 (a summary), 3, V (the state), 0.
-__device__ inline int uni_used_(int k, int V, const int* sl) {
+__device__ inline int uni_used_(int k, int V, const int* sl, int bl = 0) {   // bl: the body's label (task 00109)
     const int kind = sl[UNI_SLOT * k];
-    return kind == 0 ? 2 : (kind == 3 ? 3 : (kind == 2 ? (sl[UNI_SLOT * k + 4] ? V : 0) : (kind == 5 ? 0 : V)));
+    return kind == 0 ? 2 + bl : (kind == 3 ? 3 : (kind == 2 ? (sl[UNI_SLOT * k + 4] ? V : 0) : (kind == 5 ? 0 : V)));
 }
+// Task 00109: the body's label (0 or 1) from the tables' value positions, VC = V + VM_UNI_EXTRA + bl with a channel per value
+__device__ inline int uni_bl_(int V, int VC) { return VC > V ? VC - V - VM_UNI_EXTRA : 0; }
 // The values token k has as a target (task 00104: the read is no target, though it has values)
 __device__ inline int uni_tused_(int k, int V, const int* sl) { return sl[UNI_SLOT * k] == 4 ? 0 : uni_used_(k, V, sl); }
 // A channel per value (task 00075; VC = V: off): where token k's values start in W_in, by its kind.
 __device__ inline int uni_chan_(int k, int V, int VC, const int* sl) {
     if (VC == V) return 0;
     const int kind = sl[UNI_SLOT * k];
-    return kind == 0 ? V : (kind == 3 ? V + 2 : 0);
+    return kind == 0 ? V : (kind == 3 ? V + 2 + uni_bl_(V, VC) : 0);
 }
 __device__ inline float uni_value_(const uint8_t* img, const float* drv, const float* act, long b, int k, int j, int nt,
-                                   int V, int S, int ps, int gp, int ch, const int* sl, int W, const float* st) {
+                                   int V, int S, int ps, int gp, int ch, const int* sl, int W, const float* st, int bl = 0) {
     const int* e = sl + UNI_SLOT * k;
     const int kind = e[0], p = e[1];
     if (kind == 2) {   // a summary: its block box-averaged to one patch (task 00049), or no values
@@ -1873,7 +1879,7 @@ __device__ inline float uni_value_(const uint8_t* img, const float* drv, const f
     }
     if (kind == 5) return 0.f;                         // task 00104: the write has no values
     if (kind == 4) return st ? st[b * V + j] : 0.5f;   // the read: frame b's state (none given: blank, 0.5)
-    if (k == 0) return j < 2 ? drv[b * 2 + j] : 0.f;
+    if (k == 0) return j < 2 ? drv[b * 2 + j] : (j == 2 && bl ? 0.5f : 0.f);   // task 00109: the label's input is blank
     if (k == nt - 1) {
         if (j < 2) return 0.5f * (clampf_(act[b * 3 + j], -1.f, 1.f) + 1.f);
         return j == 2 ? (act[b * 3 + 2] > 0.5f ? 1.f : 0.f) : 0.f;
@@ -1883,18 +1889,20 @@ __device__ inline float uni_value_(const uint8_t* img, const float* drv, const f
 }
 // in [B*nt, V]: the centred inputs (unused 0), from iimg / idrv; tgt [B*nt, V]: the next token's values (the move:
 // the next drives), from img / drv. The two differ only with self-forcing (task 00039).
+// Task 00109 (bl): the body's third value, the label: input blank (0.5), the move token's target lab[b] (the frame's
+// prev_reward slot).
 __global__ void k_uni_tokens(const uint8_t* iimg, const float* idrv, const uint8_t* img, const float* drv,
                              const float* act, const float* ndrv, float* in, float* tgt, int B, int nt, int V, int S,
-                             int ps, int gp, int ch, const int* sl, int W, const float* st) {
+                             int ps, int gp, int ch, const int* sl, int W, const float* st, int bl, const float* lab) {
     const long n = (long)B * nt * V;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int j = i % V, k = (i / V) % nt;
         const long b = i / ((long)V * nt);
-        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch, sl, W, st);
-        in[i] = j < uni_used_(k, V, sl) ? v - 0.5f : 0.f;
+        const float v = uni_value_(iimg, idrv, act, b, k, j, nt, V, S, ps, gp, ch, sl, W, st, bl);
+        in[i] = j < uni_used_(k, V, sl, bl) ? v - 0.5f : 0.f;
         if (!tgt) continue;
-        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch, sl, W, st);
-        else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : 0.f;
+        if (k < nt - 1) tgt[i] = uni_value_(img, drv, act, b, k + 1, j, nt, V, S, ps, gp, ch, sl, W, st, bl);
+        else tgt[i] = (ndrv && j < 2) ? ndrv[b * 2 + j] : ((bl && j == 2 && ndrv && lab) ? lab[b] : 0.f);
     }
 }
 // Bin-embedding input (task 00036): hot [rows, V*K] = each used value of in [rows, V] (centred) split two-hot over
@@ -1907,7 +1915,7 @@ __global__ void k_uni_twohot(const float* in, float* hot, long rows, int nt, int
         const long r = i / V;
         const int k = cand ? nt - 1 : (int)(r % nt);
         float* o = hot + (r * VC + uni_chan_(k, V, VC, sl) + j) * K;
-        if (j >= uni_used_(k, V, sl)) continue;
+        if (j >= uni_used_(k, V, sl, uni_bl_(V, VC))) continue;
         const float p = fminf(fmaxf(in[i] + 0.5f, 0.f), 1.f) * (K - 1);
         const int lo = min((int)floorf(p), K - 2);
         const float w = p - lo;
@@ -1922,7 +1930,7 @@ __global__ void k_uni_in(float* x, const float* in, const float* W, const float*
     const long n = rows * d;
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const long r = i / d;
-        const int k = (int)(r % nt), o = (int)(i % d), used = uni_used_(k, V, sl);
+        const int k = (int)(r % nt), o = (int)(i % d), used = uni_used_(k, V, sl, uni_bl_(V, VC));
         const float* w = W + (long)o * VC * K + (long)uni_chan_(k, V, VC, sl) * K;
         const float* v = in + r * V;
         float s = bias[o];
@@ -1957,10 +1965,10 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
 // Task 00104 (cg, NULL = none): a write row (the token before a read) gets the carry's gradient instead: the gradient
 // cg [frame, V] at the expected values E = sum_b p_b c_b of its head, through dE / dlogit_b = p_b (c_b - E).
 __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc,
-                           float* tok_ce, const int* sl, const float* bo, int cv, const uint8_t* km, const float* cg) {
+                           float* tok_ce, const int* sl, const float* bo, int cv, const uint8_t* km, const float* cg, int bl) {
     __shared__ double sh[2][UNI_LOSS_THREADS / 32];
     const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
-    const int u = k == nt - 1 ? 2 : uni_tused_(k + 1, V, sl), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
+    const int u = k == nt - 1 ? 2 + bl : uni_tused_(k + 1, V, sl), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
     if (cg && k + 1 < nt && sl[UNI_SLOT * (k + 1)] == 4 && !(km && !km[r])) {   // a write row: the carry (task 00104)
         for (int v = w; v < V; v += nw) {
             float* l = lg + ((long)r * V + v) * K;
@@ -1985,7 +1993,7 @@ __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V,
         if (threadIdx.x == 0) tok_ce[r] = 0.f;
         return;
     }
-    const int ch = !cv ? 0 : (k == nt - 1 ? V : (k == nt - 2 ? V + 2 : 0));   // the bias of the predicted token's channel (task 00075)
+    const int ch = !cv ? 0 : (k == nt - 1 ? V : (k == nt - 2 ? V + 2 + bl : 0));   // the bias of the predicted token's channel (task 00075)
     double ce = 0, se = 0;   // lane 0 of each warp
     for (int v = w; v < V; v += nw) {
         float* l = lg + ((long)r * V + v) * K;
@@ -2087,7 +2095,8 @@ __global__ void k_uni_pick(float* lc, float* lg, long rows, int nt, int V, int V
     for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
         const int b = (int)(i % K), j = (int)((i / K) % V);
         const long r = i / ((long)V * K);
-        const int k = (int)(r % nt), ch = k == nt - 1 ? V : (k == nt - 2 ? V + 2 : 0), u = k == nt - 1 ? 2 : 3;
+        const int bl = uni_bl_(V, VC);   // task 00109: the body's label widens the body's channel, the move's comes after it
+        const int k = (int)(r % nt), ch = k == nt - 1 ? V : (k == nt - 2 ? V + 2 + bl : 0), u = k == nt - 1 ? 2 + bl : 3;
         const bool own = ch && j < u;
         float* c = lc + (r * VC + (own ? ch + j : j)) * K + b;
         if (!back) lg[i] = *c;
@@ -2319,7 +2328,7 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     if (M->has_st && M->st_n != B) { fprintf(stderr, "vm_cuda: %d states for %d frames\n", M->st_n, B); return -1; }
     k_uni_tokens<<<GRID((long)rows * V)>>>(M->has_in ? M->iimg : M->img, M->has_in ? M->idrv : M->drv, M->img, M->drv,
                                          M->act, train ? M->ndrv : nullptr, in, tgt, B, nt, V, D.img, D.patch, D.gp,
-                                         D.ch, M->uslot, D.iw, M->has_st ? M->u_st.p : nullptr);
+                                         D.ch, M->uslot, D.iw, M->has_st ? M->u_st.p : nullptr, D.bl, M->pr);
     M->has_st = false;   // task 00104: the reads are used up
     PROF(0);
     const float* uin = in;   // W_in's input: the centred values, or their two-hot bins (only the gradient needs them)
@@ -2373,7 +2382,7 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, M->t_scale / ((float)B * (nt - D.nnot)), M->acc,
                                            M->u_ce.get(rows), M->uslot, P + off[UOB], D.cv,
                                            M->has_mask ? (const uint8_t*)M->kmask.p : nullptr,
-                                           M->has_cg ? M->u_cg.p : nullptr);   // the mean over the tokens with a target (task 00089: over all of them)
+                                           M->has_cg ? M->u_cg.p : nullptr, D.bl);   // the mean over the tokens with a target (task 00089: over all of them)
     M->ce_S = M->S;
     M->ce_T = T;
     PROF(6);
@@ -2650,9 +2659,9 @@ int vmc_forward_uni(void* h, int S, int T, const uint8_t* images, const float* d
     if (move_probs)   // the last patch of each frame predicts the move: its first 3 values
         CK(cudaMemcpy2D(move_probs, 3 * K * sizeof(float), M->u_log.p + ((size_t)mrow * V) * K,
                         (size_t)stride * V * K * sizeof(float), 3 * K * sizeof(float), B, cudaMemcpyDeviceToHost));
-    if (next_body)   // the move token's expected next drives: its first 2 values
-        CK(cudaMemcpy2D(next_body, 2 * sizeof(float), M->u_val.p + (size_t)brow * V, (size_t)stride * V * sizeof(float),
-                        2 * sizeof(float), B, cudaMemcpyDeviceToHost));
+    if (next_body)   // the move token's expected next drives: its first 2 values (task 00109: and the label, 3)
+        CK(cudaMemcpy2D(next_body, (2 + D.bl) * sizeof(float), M->u_val.p + (size_t)brow * V, (size_t)stride * V * sizeof(float),
+                        (2 + D.bl) * sizeof(float), B, cudaMemcpyDeviceToHost));
     return 0;
 }
 
@@ -2675,8 +2684,8 @@ int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const flo
         CK(cudaMemcpy2D(values_t, row, M->u_val.p + (size_t)t * nt * V, (size_t)T * row, row, S,
                         cudaMemcpyDeviceToHost));
     }
-    if (next_body)
-        CK(cudaMemcpy2D(next_body, 2 * sizeof(float), M->u_val.p + (size_t)(nt - 1) * V, row, 2 * sizeof(float), B,
+    if (next_body)   // task 00109: with the label, 3 values
+        CK(cudaMemcpy2D(next_body, (2 + D.bl) * sizeof(float), M->u_val.p + (size_t)(nt - 1) * V, row, (2 + D.bl) * sizeof(float), B,
                         cudaMemcpyDeviceToHost));
     return 0;
 }
@@ -2774,8 +2783,8 @@ static int uni_cand_core(Model* M, int Mc, const float* cand, float* hunger, boo
     linear(M, lc, ln, P + off[UOW], P + off[UOB], R, d, D.OV, 0);
     if (D.cv) k_uni_pick<<<GRID((long)R * V * D.nbin)>>>(lc, lg, (long)R, 1, V, D.VC, D.nbin, 0);
     k_uni_probs<<<GRID((long)R * V)>>>(lg, val, (long)R * V, D.nbin);
-    if (hunger)
-        CK(cudaMemcpy2D(hunger, sizeof(float), val, (size_t)V * sizeof(float), sizeof(float), R, cudaMemcpyDeviceToHost));
+    if (hunger)   // the predicted next hunger; task 00109: with the body's label, the label (what the instinct reads)
+        CK(cudaMemcpy2D(hunger, sizeof(float), val + (D.bl ? 2 : 0), (size_t)V * sizeof(float), sizeof(float), R, cudaMemcpyDeviceToHost));
     return 0;
 }
 
@@ -2861,7 +2870,7 @@ int vmc_uni_ring_step(void* h, const uint8_t* images, const float* drives, const
     float* in = M->r_in.get((size_t)R * V);
     if (M->has_st && M->st_n != N) { fprintf(stderr, "vm_cuda: %d states for %d bodies\n", M->st_n, N); return -1; }
     k_uni_tokens<<<GRID((long)R * V)>>>(img, drv, img, drv, act, nullptr, in, nullptr, N, nt, V, S, D.patch, D.gp, D.ch,
-                                        M->uslot, D.iw, M->has_st ? M->u_st.p : nullptr);
+                                        M->uslot, D.iw, M->has_st ? M->u_st.p : nullptr, D.bl, nullptr);
     M->has_st = false;   // task 00104
     float* x = M->r_x.get((size_t)R * d);
     if (D.ib) k_uni_in<<<GRID((long)R * d)>>>(x, in, P + off[UIW], P + off[UIB], (long)R, V, D.VC, K, d, nt, M->uslot);

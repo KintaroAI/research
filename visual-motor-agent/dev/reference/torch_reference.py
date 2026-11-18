@@ -66,10 +66,10 @@ def uni_dims(cfg):
     return len(uni_slot_table(cfg)["kind"]), cfg["patch"] ** 2 * (1 if cfg.get("gray", 0) else 3), cfg["bins"]
 
 
-def uni_channel(kind, V):
+def uni_channel(kind, V, bl=0):
     """Where a token of this kind starts in the tables, with model.uni_chan (task 00075): the body's and the move's values
-    after a patch's V."""
-    return V if kind == 0 else (V + 2 if kind == 3 else 0)
+    after a patch's V. bl: the body's label (task 00109), a third body value before the move's."""
+    return V if kind == 0 else (V + 2 + bl if kind == 3 else 0)
 
 
 def uni_grid_w(cfg):
@@ -211,7 +211,7 @@ def uni_shapes(cfg):
     if not on:
         return {"uni_in_w": (0,), "uni_in_b": (0,), "uni_slot": (0,), "uni_out_w": (0,), "uni_out_b": (0,)}
     nt, V, K = uni_dims(cfg)
-    VC = V + 5 if cfg.get("uni_chan", 0) else V                     # a channel per value (task 00075)
+    VC = V + 5 + cfg.get("body_label", 0) if cfg.get("uni_chan", 0) else V   # a channel per value (task 00075); task 00109: + the label
     VI = VC * K if cfg.get("in_bins", 0) else V                     # bin-embedding input (task 00036)
     return {"uni_in_w": (d, VI), "uni_in_b": (d,), "uni_slot": (nt, d), "uni_out_w": (VC * K, d), "uni_out_b": (VC * K,)}
 
@@ -564,12 +564,15 @@ def uni_values(cfg, images, drives, actions, state=None):
     if (kind == 1).any():   # sum_only (task 00054): no patch tokens; band_n (task 00057): one band's, by index
         v[:, :, kind == 1] = x.transpose(0, 1, 2, 4, 3, 5, 6).reshape(S, T, g * gw, V)[:, :, index[kind == 1]]
     v[:, :, 0, :2] = np.asarray(drives, np.float64)
+    bl = int(cfg.get("body_label", 0))
+    if bl:   # task 00109: the body's label, its input blank
+        v[:, :, 0, 2] = 0.5
     a = np.asarray(actions, np.float64)
     v[:, :, nt - 1, 0] = (np.clip(a[..., 0], -1, 1) + 1) / 2
     v[:, :, nt - 1, 1] = (np.clip(a[..., 1], -1, 1) + 1) / 2
     v[:, :, nt - 1, 2] = (a[..., 2] > 0.5).astype(np.float64)
     used = np.full(nt, V)
-    used[0], used[nt - 1] = 2, 3
+    used[0], used[nt - 1] = 2 + bl, 3
     used[kind == 2] = 0                                                            # summary tokens: no values
     used[kind == 5] = 0                                                            # task 00104: the write: none
     if (kind == 4).any():                                                          # the read: the state
@@ -627,14 +630,15 @@ def forward_uni(P, cfg, images, drives, actions, ep_start, step_mask=None, state
     if cfg.get("in_bins", 0):   # bin-embedding input (task 00036): each used value two-hot over the K bins
         hot = two_hot(v, K) * m[..., None]
         if cfg.get("uni_chan", 0):   # task 00075: a token's values start at its channel
-            x = np.zeros((S, T, nt, V + 5, K))
+            bl = int(cfg.get("body_label", 0))
+            x = np.zeros((S, T, nt, V + 5 + bl, K))
             for k in range(nt):
-                ch, u = uni_channel(kind[k], V), int(used[k])
+                ch, u = uni_channel(kind[k], V, bl), int(used[k])
                 x[:, :, k, ch:ch + u] = hot[:, :, k, :u]
             x = torch.tensor(x, dtype=dt)
             if tst:   # the read's channel is the patch's (0)
                 x[:, :, rd[0], :V] = two_hot_torch(state.to(dt), K)
-            x = x.reshape(S, T * nt, (V + 5) * K)
+            x = x.reshape(S, T * nt, (V + 5 + bl) * K)
         else:
             x = torch.tensor(hot, dtype=dt)
             if tst:
@@ -664,10 +668,11 @@ def forward_uni(P, cfg, images, drives, actions, ep_start, step_mask=None, state
     hz = transformer(P, cfg, h, torch.tensor(mask)[:, None], uni_ages(cfg, T, nt))
     logits = F.linear(hz, P["uni_out_w"], P["uni_out_b"])
     if cfg.get("uni_chan", 0):   # each row's V values from the channel of the token it predicts
+        bl = int(cfg.get("body_label", 0))
         idx = np.tile(np.arange(V), (nt, 1))
-        idx[nt - 1, :2] = V, V + 1                                                 # the move token: the next body
-        idx[nt - 2, :3] = V + 2, V + 3, V + 4                                      # the token before it: the move
-        logits = logits.reshape(S, T, nt, V + 5, K)[:, :, np.arange(nt)[:, None], torch.tensor(idx)]
+        idx[nt - 1, :2 + bl] = V + np.arange(2 + bl)                              # the move token: the next body (task 00109: + the label)
+        idx[nt - 2, :3] = V + 2 + bl + np.arange(3)                                # the token before it: the move
+        logits = logits.reshape(S, T, nt, V + 5 + bl, K)[:, :, np.arange(nt)[:, None], torch.tensor(idx)]
     logits = logits.reshape(S, T * nt, V, K)
     return dict(h=hz, logits=logits, values=v, used=used, step=step)
 
@@ -706,7 +711,10 @@ def uni_loss(P, cfg, batch):
     tgt = np.zeros((S, T, nt, V))
     tgt[:, :, :nt - 1] = v[:, :, 1:]                                               # the next token in the step
     tgt[:, :, nt - 1, :2] = np.asarray(batch["next_drives"], np.float64)           # the move: the next drives
-    tu = np.concatenate([used[1:], [2]])                                           # values used by each target
+    bl = int(cfg.get("body_label", 0))
+    if bl:   # task 00109: and the label, from the frame's prev_reward slot
+        tgt[:, :, nt - 1, 2] = np.asarray(batch["prev_reward"], np.float64)
+    tu = np.concatenate([used[1:], [2 + bl]])                                      # values used by each target
     tu[:-1][uni_slot_table(cfg)["kind"][1:] == 4] = 0                              # task 00104: the read is no target
     m = (np.arange(V)[None, :] < tu[:, None]).astype(np.float64)                   # [nt, V]
     logp = out["logits"].log_softmax(-1).reshape(S, T, nt, V, K)

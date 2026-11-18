@@ -319,7 +319,7 @@ class CudaModel:
         if move_probs:
             out["move_probs"] = np.empty((S, T, 3, K), np.float32)
         if next_body:
-            out["next_body"] = np.empty((S, T, 2), np.float32)
+            out["next_body"] = np.empty((S, T, 2 + int(self.config.get("body_label", 0))), np.float32)   # task 00109: + the label
         opt = lambda a, ct: None if a is None else _p(a, ct)   # noqa: E731
         _check(lib().vmc_forward_uni(self.handle, S, T, _p(img, C.c_uint8), _p(drv, C.c_float), _p(act, C.c_float),
                                      opt(es, C.c_uint8), opt(out.get("values"), C.c_float),
@@ -401,7 +401,7 @@ class CudaModel:
         S, T = img.shape[:2]
         c = self.config
         nt, V = agent_lib.uni_layout(c)["nt"], c["patch"] ** 2 * (1 if c.get("gray") else 3)
-        vt, nb = np.empty((S, nt, V), np.float32), np.empty((S, T, 2), np.float32)
+        vt, nb = np.empty((S, nt, V), np.float32), np.empty((S, T, 2 + int(c.get("body_label", 0))), np.float32)
         es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
         _check(lib().vmc_forward_uni_step(self.handle, S, T, _p(img, C.c_uint8),
                                           _p(np.ascontiguousarray(drives, np.float32), C.c_float),

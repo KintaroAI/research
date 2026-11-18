@@ -90,8 +90,12 @@ typedef struct {
     int state;          // universal: 1 = a state carried across windows (task 00104): two more tokens per step right after the
                         //     body, a write (no values, no target: its expected output values are the state) and a read (its
                         //     values: the state written ctx steps earlier, from outside the model; no target); 0 = off
+    int body_label;     // universal, uni_chan: 1 = the body carries a third value, the label (task 00109), with its own channel
+                        //     (VC one larger, the move's channel after it). Its input is blank (0.5): a move's label is known only
+                        //     after the next prediction. The move token predicts it; its target is the frame's prev_reward slot
+                        //     (unused by the universal model otherwise). 0 = off
 } VMConfig;
-#define VM_UNI_EXTRA 5   // uni_chan: the value positions after a patch's: the body's 2, the move's 3 (task 00075)
+#define VM_UNI_EXTRA 5   // uni_chan: the value positions after a patch's: the body's 2, the move's 3 (task 00075); body_label: + 1
 
 // The universal model's slots per step (tasks 00047, 00048): 0 the body; with state (task 00104) 1 the write and 2 the
 // read; then the patches row by row, each summary token right after the last patch of its block (uni_sum: a band of R
@@ -282,6 +286,7 @@ static inline int vm_attn_valid(const VMConfig* c) {
     if (c->state < 0 || c->state > 1 || (c->state && (!c->universal || c->attn_split > 1 || c->attn_win > 0))) return 0;   // task 00104
     if (c->img_w < 0) return 0;
     if (c->uni_chan < 0 || c->uni_chan > 1 || (c->uni_chan && (!c->universal || !c->in_bins))) return 0;
+    if (c->body_label < 0 || c->body_label > 1 || (c->body_label && (!c->universal || !c->uni_chan || c->state))) return 0;   // 00109
     if (c->img_w > 0 && (!c->universal || c->patch <= 0 || c->img_w % c->patch || c->attn_split > 1 || c->attn_win ||
                          c->uni_sum || c->band_cols == 2))   // task 00064
         return 0;

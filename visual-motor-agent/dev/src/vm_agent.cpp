@@ -549,6 +549,7 @@ struct Dims {
                                           // channels per patch pixel (1 with gray, else 3)
     int ib, VI;                           // bin-embedding input on/off (task 00036); W_in's input width (V or VC * bins)
     int cv, VC;                           // a channel per value (task 00075): on/off; the table's value positions (V, or V + VM_UNI_EXTRA)
+    int bl;                               // task 00109: the body's third value, the label (0 or 1)
 };
 static Dims make_dims(const VMConfig& c) {
     Dims D;
@@ -594,7 +595,8 @@ static Dims make_dims(const VMConfig& c) {
     D.V = D.uni ? D.patch * D.patch * D.ch : 0;
     D.nbin = D.uni ? c.bins : 0;
     D.cv = D.uni ? c.uni_chan : 0;
-    D.VC = D.V + (D.cv ? VM_UNI_EXTRA : 0);
+    D.bl = D.uni ? c.body_label : 0;
+    D.VC = D.V + (D.cv ? VM_UNI_EXTRA + D.bl : 0);
     D.OV = D.VC * D.nbin;
     D.ib = D.uni ? c.in_bins : 0;
     D.VI = D.ib ? D.VC * D.nbin : D.V;
@@ -1325,9 +1327,9 @@ static void seq_fwd_patch(const Model* M, Workspace* W, const SeqView& sv, bool 
 
 // A channel per value (task 00075): where a token's values start in W_in, by its kind; and where the values that token
 // k predicts start in W_out (the last token before the move: the move; the move token: the next body).
-static inline int uni_chan_of(const Dims& D, int kind) { return !D.cv ? 0 : (kind == 0 ? D.V : (kind == 3 ? D.V + 2 : 0)); }
+static inline int uni_chan_of(const Dims& D, int kind) { return !D.cv ? 0 : (kind == 0 ? D.V : (kind == 3 ? D.V + 2 + D.bl : 0)); }
 static inline int uni_target_chan(const Dims& D, int k) {
-    return !D.cv ? 0 : (k == D.ntok - 1 ? D.V : (k == D.ntok - 2 ? D.V + 2 : 0));
+    return !D.cv ? 0 : (k == D.ntok - 1 ? D.V : (k == D.ntok - 2 ? D.V + 2 + D.bl : 0));
 }
 
 // The token values of step t, slot k, into v [V] (raw, in [0, 1]); returns the number used.
@@ -1376,7 +1378,8 @@ static int uni_values(const Model* M, const SeqView& sv, int t, int k, float* v)
     if (k == 0) {
         const float* dr = sv.drives + (size_t)t * sv.drv_st;
         v[0] = dr[0]; v[1] = dr[1];
-        return 2;
+        if (D.bl) v[2] = 0.5f;   // task 00109: the label's input is blank
+        return 2 + D.bl;
     }
     if (k == D.ntok - 1) {
         const float* a = sv.action + (size_t)t * sv.act_st;
@@ -1416,7 +1419,8 @@ static void seq_fwd_uni(const Model* M, Workspace* W, const SeqView& sv) {
                 float* tg = W->u_tgt.data() + (size_t)i * V;
                 for (int j = 0; j < V; j++) tg[j] = 0.f;
                 if (sv.next_drives) { tg[0] = sv.next_drives[(size_t)t * sv.nd_st]; tg[1] = sv.next_drives[(size_t)t * sv.nd_st + 1]; }
-                W->u_use[i] = 2;
+                if (D.bl && sv.next_drives && sv.prev_reward) tg[2] = sv.prev_reward[(size_t)t * sv.pr_st];   // task 00109: the label
+                W->u_use[i] = 2 + D.bl;
             }
         }
     linear_fwd(W->xin.data(), W->u_in.data(), M->wt.data() + M->off[UIW], P + M->off[UIB], T * nt, D.VI, d);
@@ -2602,6 +2606,7 @@ static void config_to_header(const VMConfig& c, int* h) {
     h[59] = c.img_w;
     h[60] = c.uni_chan;
     h[61] = c.state;   // task 00104
+    h[62] = c.body_label;   // task 00109
 }
 static void header_to_config(const int* h, VMConfig& c) {
     int k = 2;
@@ -2640,6 +2645,7 @@ static void header_to_config(const int* h, VMConfig& c) {
     c.img_w = h[59];
     c.uni_chan = h[60];
     c.state = h[61];
+    c.body_label = h[62];
 }
 
 // =====================================================================================
@@ -3044,7 +3050,7 @@ void vm_forward_uni(void* a, int S, int T, const uint8_t* images, const float* d
             if (!values && !(move_probs && mv) && !(next_body && nb)) continue;
             uni_head_row(M, W->lnf.data() + (size_t)i * D.d, W->u_row.data(), W->u_prob.data());
             const float* p = W->u_prob.data();
-            const int ch = uni_target_chan(D, i % nt), nch = ch == D.V ? 2 : 3;   // the rest of a row with a channel: as without
+            const int ch = uni_target_chan(D, i % nt), nch = ch == D.V ? 2 + D.bl : 3;   // the rest of a row with a channel: as without
             if (values) {
                 float* out = values + (b * nt + i) * V;
                 for (int u = 0; u < V; u++) {
@@ -3056,10 +3062,10 @@ void vm_forward_uni(void* a, int S, int T, const uint8_t* images, const float* d
             }
             if (move_probs && mv) memcpy(move_probs + (b + i / nt) * 3 * K, p + (size_t)ch * K, sizeof(float) * 3 * K);
             if (next_body && nb)
-                for (int u = 0; u < 2; u++) {
+                for (int u = 0; u < 2 + D.bl; u++) {   // task 00109: the label too, third
                     float ev = 0.f;
                     for (int k = 0; k < K; k++) ev += p[(size_t)(ch + u) * K + k] * (float)k / (K - 1);
-                    next_body[(b + i / nt) * 2 + u] = ev;
+                    next_body[(b + i / nt) * (2 + D.bl) + u] = ev;
                 }
         }
     }

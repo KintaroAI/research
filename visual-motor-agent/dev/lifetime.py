@@ -371,6 +371,14 @@ def main():
         raise ValueError("online.value_target is 'hunger' or 'meal'; 'meal' needs online.value_refresh, online.value_n = 1 and no model.state")
     if on["need"] and on["instinct_m"] < 2:
         raise ValueError("online.need weighs the instinct's choice: it needs online.instinct_m > 1")
+    slabel = on["label"] == "meal"   # task 00109: the stored meal label in the body's own channel
+    if on["label"] not in ("", "meal") or bool(agent.config.get("body_label")) != slabel or (slabel and not (
+            uni and on["device"] == "cuda" and on["instinct_m"] > 1 and not (gamma or future_k or refresh or on["need"]
+                                                                              or agent.config.get("state") or on["off"] or clog
+                                                                              or on["noise_in"] or on["sf_windows"] or tok_sur))):
+        raise ValueError("online.label = meal goes with model.body_label = 1 (and only with it): the universal model on the GPU with "
+                         "the instinct, without value_gamma, future_k, value_refresh, need, model.state, off, clog, noise_in, "
+                         "self-forcing or surprise gating")
     state = bool(agent.config.get("state")) and uni   # task 00104: a state carried across windows; updates on pairs of them
     if state and not (on["device"] == "cuda" and on["ring"] and on["batch"] >= 2 and on["batch"] % 2 == 0 and
                       not (on["sf_windows"] or clog or q_in or q_off or delayed or tok_sur or hasattr(env, "think"))):
@@ -399,6 +407,8 @@ def main():
     Lm, Bm = (2 * L, B // 2) if state else (L, B)   # task 00104: memory's chunks are pairs of windows, Bm of them per update
     label_k = goal_k or (value_n + 1 if gamma else future_k)   # the steps a hindsight label looks ahead (value: n real, then the tail)
     lag = label_k - 1 if label_k else 0       # the newest window whose hindsight labels are complete
+    if slabel:   # task 00109: step t's stored label is written at t + 1, so the newest window ends a step back
+        lag = max(lag, 1)
     rng = np.random.default_rng(args.seed)
     clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
     in_rng, act_rng = np.random.default_rng([args.seed, 0x0154]), np.random.default_rng([args.seed, 0x0155])   # task 00088
@@ -410,7 +420,8 @@ def main():
         views = [ClogStream(np.random.default_rng([args.seed, 0xC107, k]), N0, ac["img"], ac.get("img_w") or ac["img"], ac["patch"], clog, on["clog_long"]) for k in range(S)]
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off),
-                state=(S, agent.config["patch"] ** 2 * (1 if agent.config["gray"] else 3)) if state else None)
+                state=(S, agent.config["patch"] ** 2 * (1 if agent.config["gray"] else 3)) if state else None,
+                labels=S if slabel else 0)   # task 00109
     gate_on = dict(on, goal_mode="value" if gamma else "future") if future_k else on
     gms = [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, tokens=tok_sur, **kept)]   # the model's frame (task 00091: not the world's size)
     gms += [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
@@ -477,6 +488,10 @@ def main():
         blind = make_world(N0, env_cfg, seed=args.seed + 7777)
         mscore = dict(seen=MemoryScore(N0), blind=MemoryScore(N0))
     mmon = MealMonitor(N0, gamma) if refresh and meal else None   # task 00108: the label's predictions against what happened
+    smon = None
+    if slabel:   # task 00109: the predictions, and the labels stored in memory, against what happened (no cost for the drift)
+        mmon = MealMonitor(N0, on["label_gamma"], drift=False)
+        smon = MealMonitor(N0, on["label_gamma"], drift=False)
     thinking = hasattr(env, "think")   # task 00064: the thought half's next frame is the right piece's dream, and waves
     if thinking and env.cfg.mode == "dream" and (S != 2 or not gpu or agent.config["band_cols"] != 1):
         raise ValueError("a dreaming env.thought needs two pieces, left and right (online.pieces, model.band_cols=1), on the GPU")
@@ -537,7 +552,7 @@ def main():
                              on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
                      for k in live]
             a, won = pieces_move([umodels[k] for k in live], props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
-            if gamma:   # task 00096: the predicted label of the move taken, by the transformer that made it (a mixed move: their mean)
+            if gamma or slabel:   # task 00096: the predicted label of the move taken, by the transformer that made it (a mixed move: their mean)
                 hp = np.stack([p[3] for p in props])                                    # [live, N]
                 vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(N)], hp.mean(0)).astype(np.float32)
                 win["vh"] += float(vh.sum())
@@ -560,6 +575,8 @@ def main():
         if bab.any():   # keeps trying: own moves alone drift to never clicking
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
             a = np.where(bab[:, None], nb, a).astype(np.float32)
+        if slabel:   # task 00109: each transformer's predicted label of the move made (after babbling), before the ring takes it
+            vhs = np.stack([gpus[k].uni_candidates(np.ascontiguousarray(a[:, None, :], np.float32))[:, 0] for k in range(S)], 1)
         if on["ring"]:
             for k in live:
                 gpus[k].uni_ring_move(a)
@@ -592,12 +609,18 @@ def main():
             win["st_sum"] = win["st_sum"] + reads[0].astype(np.float64)
             win["st_sq"] = win["st_sq"] + reads[0].astype(np.float64) ** 2
         for b in range(N):
-            vb = dict(vh=vh[b]) if gamma else {}                                       # task 00096
+            vb = dict(vh=vh[b]) if gamma else (dict(vhs=vhs[b]) if slabel else {})    # task 00096; task 00109
             if state:
                 vb["st"] = reads[b].astype(np.float16)
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
                            pa=prev_a[b], pr=prev_r[b], es=ep_start[b], act=a[b], rew=rew[b], done=done[b],
                            hit=inf["success"][b], cmd=cmd[b], **on_bits, **vb)
+        if slabel:   # task 00109: the step before the new one gets its stored labels, once; the monitor of what memory holds
+            ii = [gms[b].write_label(on["label_gamma"]) for b in range(N)]
+            if ii[0] is not None:
+                sm_ = [gms[b].stm for b in range(N)]
+                smon.add(np.array([m_.lab[i_].mean() for m_, i_ in zip(sm_, ii)]), np.array([m_.drv[i_, 0] for m_, i_ in zip(sm_, ii)]),
+                         np.array([m_.ndrv[i_, 0] for m_, i_ in zip(sm_, ii)]))
         if thinking:   # the window ending in the new step: the world's new half, the old thought; moves up to now
             t_think = time.time()
             ix = [gm.stm.last(min(gm.stm.n, L - 1)) for gm in gms[:N]]
@@ -658,7 +681,9 @@ def main():
                 rows["pr"] = rows["pr_real"] + rows["tw"] * vb
                 win["vboot"] += float(vb.sum())
                 win["vboot_n"] += vb.size
-            if gamma:
+            if slabel:   # task 00109: the stored labels, each transformer its own (the mean in the shared rollout)
+                rows["pr"] = rows["lab"].mean(2).astype(np.float32)
+            if gamma or slabel:
                 win["vlab"] += float(rows["pr"].sum())
                 win["vlab_n"] += rows["pr"].size
             if future_k:   # the next body's hunger is only a target: the inputs keep the hunger of each step
@@ -701,6 +726,8 @@ def main():
                     if g:   # a GPU rollout holds only the data: one for all pieces
                         if refresh and meal:   # task 00108: this transformer's own label (set_batch copies at once)
                             ro.ndrv[:, :, 0] = labels[k].T
+                        elif slabel:   # task 00109: its own stored labels, the body label's target (the prev_reward slot)
+                            ro.pr[:, :] = rows["lab"][:, :, k].T
                         sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
                         stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
                                                       inputs=seen_in if delayed else shared if q_in else damaged(rows), step_mask=sm))
@@ -781,6 +808,8 @@ def main():
                 row["mem"] = dict(seen=mscore["seen"].take(), blind=mscore["blind"].take())
             if mmon is not None:   # task 00108: predicted and real V by ticks to the next meal (MEAL_BIN_NAMES), since the last row
                 row["meal"] = mmon.take()
+            if smon is not None:   # task 00109: the labels stored in memory, by ticks to the next meal
+                row["meal_stored"] = smon.take()
             if state and win["st_n"]:   # task 00104: how much body 0's reads vary over the window, mean over pieces and values
                 mu = win["st_sum"] / win["st_n"]
                 row["state_spread"] = float(np.sqrt(np.maximum(win["st_sq"] / win["st_n"] - mu ** 2, 0.0)).mean())
