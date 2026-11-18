@@ -1,7 +1,7 @@
 # Task 00107: The Instinct's Horizon in the Inertia World (experiment vm-00096)
 
 **Date:** 2026-11-17
-**Status:** In progress (the owner, 2026-11-17: "go ahead with the instinct horizon experiment")
+**Status:** Complete (2026-11-18; experiment vm-00096, `00096-instinct-horizon/`; the owner, 2026-11-17: "go ahead with the instinct horizon experiment")
 
 ## Context
 
@@ -65,9 +65,21 @@
 - [x] `online.uni_lookahead`: pieces (band_n ≥ 2) write their own block of the imagined frame; the rest stays the current frame (`uni_frame(cfg, pv, grid)` takes a block's grid of patches).
 - [x] `eval_hunger.Life`: runs with `online.ring = 0` act on full windows (the last ctx steps), with their own horizon (no clog, outage, view or state there). `eval_hunger.py move` reports the mean hunger too.
 - [x] `tests/test_lookahead.py` (40 pass): a piece's lookahead at H = 1 equals its one-step reading; at H = 2 and 4 the real steps are untouched and each imagined frame is the current frame with only the piece's block replaced; `uni_act` with a horizon runs for a piece; `Life` without the ring hands `uni_act` the window of its last ctx steps (frames in order, the moves made, the current move zero, the episode start).
-- [ ] Timing (24 lives on both cards), then `00096-instinct-horizon/` (README, Makefile), the runs, the frozen tests, the analysis, the write-up and videos.
+- [x] Timing (24 lives on both cards); `00096-instinct-horizon/` (README, Makefile). The runs ran 2026-11-17 14:19 to 2026-11-18 00:05, the frozen tests until 04:23. Analysis, write-up and videos (`videos/vm96_s5`, `vm96_s12`) are done.
+
+## Results (summary; full report in the experiment README)
+
+- **Readings:**
+  1. Plumbing: **met.**
+  2. The horizon helps: **met.** IH − IR at 40–60k: food +8.5 ± 3.6 (12 of 12), poison −5.5 ± 2.2, hunger −.093 ± .067 (lower in 10).
+  3. Enough to forage: **met.** IH's food is .55 of C8r's; IR .38, IB .41.
+  4. The ring alone (descriptive): IR − IB food −1.7 ± 1.5, poison +2.7 ± 1.7.
+  5. How it moves (descriptive, frozen): IH's motion aims at food better and from farther (+.12 within 8 px, +.15 at 16–32 px, 12 of 12), with no more braking and no slowing for food.
+- **The gap opens after 30k and grows** (+4.8 at 40–50k, +12.1 at 50–60k). IH is still climbing at 60k (33.5 food per 1k at 55–60k).
+- **Frozen in the inertia world,** IH is the best agent yet: 34.2 food, 8.1 poison, hunger .130.
+- **What follows (set above):** reading 2 held, so next is the horizon's cost without inertia (H = 4 against C8r) and the switch with it; action repeat (ARCHITECTURE.md section 9) tests whether the commitment alone does it.
 
 ## Verification
 
-- Every run's `info.json` has `env.inertia` 4, `online.ring` 0, `online.instinct_h` 1 (IR) or 4 (IH), and C8's settings otherwise.
-- IR's lived numbers are within the range of vm-00095's IB (the same agent and world, without the ring).
+- [x] Every run's `info.json` has `env.inertia` 4, `online.ring` 0, `online.instinct_h` 1 (IR) or 4 with J 1 and pair decoding (IH), and C8's settings otherwise (all 24 checked).
+- [x] IR's lived numbers are close to vm-00095's IB (the same agent and world, with the ring): food 18.2 against 19.9 (−1.7 ± 1.5), poison 17.1 against 14.3 (+2.7 ± 1.7). The ring helps a little; this is reading 4.
