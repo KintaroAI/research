@@ -17,7 +17,7 @@
 #                 reach (1,500) and move (1,500) on MB and M0, without MPS, two per card (frozen_a = seeds 1-6 on GPU 1,
 #                 frozen_b = seeds 7-12 on GPU 0)
 #   make frozen2 — the same on MBN and M0N (files chain2_a.jsonl and so on)
-#   make videos — compare_video.py of seeds 5 and 12: IB and MB in the world with inertia, C8r and M0 without
+#   make videos — compare_video.py of seeds 5 and 12: IB, MB and MBN in the world with inertia, C8r, M0 and M0N without
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -87,7 +87,9 @@ videos:
 	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && { for s in 5 12; do \
 	  if [ $$s = 5 ]; then d=1; else d=0; fi; \
 	  { CUDA_VISIBLE_DEVICES=$$d $(PY) compare_video.py $(IB)/IB_s$$s:"IB (hunger value)" $(OUT)/MB_s$$s:"MB (meal label)" \
+	      $(OUT)/MBN_s$$s:"MBN (meal label, weighted by hunger)" \
 	      --steps 1000 --worlds 8 --cols 2 -o $(HOME)/data/research/visual-motor-agent/videos/vm97_inertia_s$$s; \
 	    CUDA_VISIBLE_DEVICES=$$d $(PY) compare_video.py $(C8R)/C8r_s$$s:"C8r (hunger value)" $(OUT)/M0_s$$s:"M0 (meal label)" \
+	      $(OUT)/M0N_s$$s:"M0N (meal label, weighted by hunger)" \
 	      --steps 1000 --worlds 8 --cols 2 -o $(HOME)/data/research/visual-motor-agent/videos/vm97_plain_s$$s; } & \
 	done; wait; }

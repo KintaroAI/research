@@ -1,7 +1,7 @@
 # Task 00108: A Meal Label, Learned Back in Time (experiments vm-00097 on)
 
 **Date:** 2026-11-17
-**Status:** In progress (approved 2026-11-17, the owner: "what you wrote in next message I like as it states there"; "run these runs automatically ones current runs are done - I probably be sleeping"). Experiment vm-00097, `00097-meal-label/`, queued to start when vm-00096's frozen tests end.
+**Status:** Complete (2026-11-18; experiment vm-00097, `00097-meal-label/`; approved 2026-11-17, the owner: "what you wrote in next message I like as it states there"; "run these runs automatically ones current runs are done - I probably be sleeping")
 
 ## Context
 
@@ -97,4 +97,16 @@ For the move made at tick j, with the hunger h before it and h′ after it:
   - short lives on the GPU with and without need, writing `meal` rows;
   - the refusal without the settings.
   The 150 tests of the touched paths pass (value labels, lifetimes, pieces, state, fast, lookahead, inertia, gate). 200-tick lives with the exact MB and MBN settings ran without errors.
-- [ ] The runs (queued), the frozen tests, the write-up and videos.
+- [x] The runs: batch 1 (MB, M0) 2026-11-18 04:24 to 08:55, frozen tests until 09:27; batch 2 (MBN, M0N) 09:28 to 13:51, frozen tests until 14:22. All 48 lives ran 60k ticks without errors, and their settings were checked. The write-up and videos (`videos/vm97_inertia_s5`, `_s12`, `vm97_plain_s5`, `_s12`) are done.
+
+## Results (summary; full report in the experiment README)
+
+- **Readings:**
+  1. Plumbing: **met.**
+  2. The label is learned: **partly met.** Frozen, it is within .03 of 0.95^k and of the truth out to 6 ticks before a meal; from about 8 ticks out (mostly beyond the view) it flattens at about .48.
+  3. It helps with inertia: **met.** MB − IB hunger −.137 ± .066 (lower in 11), overrides −.111 (12 of 12), food +34.3 ± 6.5 (12 of 12).
+  4. No harm without inertia: **met.** M0 − C8r hunger −.001 ± .021; food +38.7 ± 12.4 (11 of 12); poison +1.3 ± 0.6.
+  5. One scale: **no.** The candidates' spread with inertia is 12 times that without.
+- **The food:** 1.8 times C8r's without inertia (87 against 48 per 1k), and 2.7 times IB's with it (54 against 20), more than C8r without inertia and twice vm-00096's horizon.
+- **The owner's checks:** the label spreads back in time over the life, near ticks first. It heals from its pessimistic start and stays slightly optimistic and steady (+.03 in V).
+- **Need, as implemented** (the tolerance over hunger), throttles the instinct at usual hunger (overrides .07 and .20, against .24 and .59). With inertia it costs 23 food and adds 9 poison; without, it changes little. Next is need done fairly: two labels, and hunger relative to its usual level.
