@@ -1,8 +1,8 @@
 # vm-00098: The Label as a Body Value, Stored Once
 
 **Date:** 2026-11-18
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00098`)
+**Status:** Complete
+**Source:** `exp/vm-00098` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00098/`
 **Task plan:** [`../tasks/00109-stored-label-body.md`](../tasks/00109-stored-label-body.md)
 
