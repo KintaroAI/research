@@ -1,7 +1,7 @@
 # Task 00109: The Label as a Body Value, Stored Once (experiment vm-00098)
 
 **Date:** 2026-11-18
-**Status:** In progress (the owner, 2026-11-18: "yes, each transformer its own - write the task and run it ... I think we need to have lable same as hunger - property of the body and learinig parameter in embedding (same as hunger)"; choices: the label's input blank, built in one step)
+**Status:** Complete (2026-11-18; experiment vm-00098, `00098-stored-label/`; the owner, 2026-11-18: "yes, each transformer its own - write the task and run it ... I think we need to have lable same as hunger - property of the body and learinig parameter in embedding (same as hunger)"; choices: the label's input blank, built in one step; write-up: "lets commit and push and generate videos for stored label")
 
 ## Context
 
@@ -68,6 +68,27 @@
 - **If 2 and 3 hold:** the stored label in the body is the honest version. It becomes the base for need done fairly and the two labels.
 - **If 2 fails** (the front does not move back) **or 3 fails:** re-labeling did work that stored labels cannot do in a life of 60k ticks. Next is splitting the two changes: stored labels in the hunger channel, and re-labeled ones in the body channel.
 
+## Results (summary; full report in the experiment README)
+
+- **Readings:**
+  1. Plumbing: **met,** after the reruns. Four lives died when the disk filled, not from the code: three were rerun from tick 0, one final was restored.
+  2. The front moves back: **met without inertia, partly with it.**
+     - S0's predicted V one tick before a meal rises from .10 to .94 over the life, four to seven ticks before from .06 to .64.
+     - SB's moves back for 10k ticks, then stalls (.74 and .20).
+  3. It still forages: **fails.**
+     - S0 − C8r food +21.5 ± 7.9 (higher in 11 of 12): met for S0.
+     - SB − IB −13.5 ± 3.6 (lower in 12): SB eats 6.4 per 1k against IB's 19.9.
+  4. Stored against re-labeled (descriptive): S0 − M0 food −17.2 ± 14.2, SB − MB −47.8 ± 7.2.
+  5. Optimism: **none.** S0's predictions are −.008 ± .007 over all ticks at 40–60k (M0 +.034).
+- **Without inertia the stored label works as the owner described it.** The front moves back over the life, the predictions end unbiased, and S0 eats 1.4 times C8r's food (0.80 of M0's), still climbing at 60k.
+- **With inertia it fails, through a trap.**
+  - A third of the lives starve at the hunger cap with a silent instinct, three of them locked into one straight push. Frozen, the candidates' labels in those lives are practically all equal (spread .0001 or less).
+  - Under inertia one push moves the next position by at most 1 px, SB's label reaches only one to three ticks before a meal, and at the cap a poison costs nothing.
+  - The owner, watching the videos: "in case of inertia it moves in straight line fool speed and periodically changes direction - looks like there is not much change in the possible future moves to choose from".
+- **Next:**
+  - set in the plan: split the two changes in the world with inertia;
+  - also proposed: choices that last (the instinct's horizon, or the owner's action repeat), a poison cost that survives the hunger cap, and ties broken at random.
+
 ## Implementation
 
 - [x] **`model.body_label`** in C++ (`vm_agent`), CUDA (`vm_cuda`), `agent_lib`, `cuda_lib` and the reference:
@@ -94,9 +115,9 @@
   - `tests/test_body_label.py` (29): the tables; C++ and GPU against the reference, forward, loss and gradients; the label's target reaching the loss through the label's rows only; the candidates reading the label; the ring; checkpoints; refusals.
   - `tests/test_stored_label.py` (7): the arithmetic; the owner's mechanism on a table (only the meal's 1 first, then 0.95, then 0.9025: the front moving back a step per run); memory writing each label once and handing it out unchanged; the options' checks; a short GPU life.
   - Regression: 1,140 model tests and 118 tests of lives, memory and labels pass.
-- [ ] Timing, `00098-stored-label/` (README, Makefile), the runs, the frozen tests, the write-up and videos.
+- [x] `00098-stored-label/` (README, Makefile), the runs, the frozen tests, the write-up and videos. No separate timing: the 24 lives took 2 h 50 min at once. The disk filled as they ended; three lives were rerun from tick 0 and one final was restored (the README's run notes).
 
 ## Verification
 
-- Every run's `info.json` has `model.body_label` 1, `online.label` meal, `label_gamma` 0.95, `future_k` 0, `value_gamma` 0, and C8's settings otherwise.
-- The stored labels in memory never change after they are written (checked in a test, and by sampling at the end of a life).
+- Every run's `info.json` has `model.body_label` 1, `online.label` meal, `label_gamma` 0.95, `future_k` 0, `value_gamma` 0, and C8's settings otherwise. **Checked: 24 of 24, the reruns included.**
+- The stored labels in memory never change after they are written (checked in a test, and by sampling at the end of a life). **Checked in the test only:** the sample at the end of a life was not taken. The `meal_stored` monitor records each label as it is written, which is what memory holds.

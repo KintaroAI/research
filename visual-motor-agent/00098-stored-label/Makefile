@@ -15,6 +15,7 @@
 #   make frozen — eval_hunger.py chain (1,500 ticks), value (2,000, with the meal label's profile by ticks to the next meal),
 #                 reach (1,500) and move (1,500), without MPS, two per card (frozen_a = seeds 1-6 on GPU 1, frozen_b = 7-12 on GPU 0)
 #   make videos — compare_video.py of seeds 5 and 12: C8r, M0 and S0 without inertia; IB, MB and SB with it
+#   make video_stuck — IB, MB and SB of seed 3, where SB ate almost nothing all life (GPU 1)
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -28,7 +29,7 @@ RUN = $(PY) lifetime.py --config configs/U_view.json --set model.n_layer=8 --set
 INERTIA = --set env.inertia=4
 SPLIT ?= 8   # vm-00097's split for 24 lives of this agent (about 3.8 h)
 
-.PHONY: all runs frozen frozen_a frozen_b videos
+.PHONY: all runs frozen frozen_a frozen_b videos video_stuck
 
 all: runs
 
@@ -76,3 +77,9 @@ videos:
 	      $(OUT)/SB_s$$s:"SB (meal label, stored, in the body)" \
 	      --steps 1000 --worlds 8 --cols 2 -o $(HOME)/data/research/visual-motor-agent/videos/vm98_inertia_s$$s; } & \
 	done; wait; }
+
+video_stuck:
+	cd $(DEV) && unset CUDA_MPS_PIPE_DIRECTORY && export CUDA_DEVICE_ORDER=PCI_BUS_ID && \
+	  CUDA_VISIBLE_DEVICES=1 $(PY) compare_video.py $(IB)/IB_s3:"IB (hunger value)" $(M97)/MB_s3:"MB (meal label, re-labeled)" \
+	    $(OUT)/SB_s3:"SB (meal label, stored, in the body)" \
+	    --steps 1000 --worlds 8 --cols 2 -o $(HOME)/data/research/visual-motor-agent/videos/vm98_inertia_s3
