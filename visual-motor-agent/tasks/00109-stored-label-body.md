@@ -85,9 +85,14 @@
   - A third of the lives starve at the hunger cap with a silent instinct, three of them locked into one straight push. Frozen, the candidates' labels in those lives are practically all equal (spread .0001 or less).
   - Under inertia one push moves the next position by at most 1 px, SB's label reaches only one to three ticks before a meal, and at the cap a poison costs nothing.
   - The owner, watching the videos: "in case of inertia it moves in straight line fool speed and periodically changes direction - looks like there is not much change in the possible future moves to choose from".
+- **After the write-up (2026-11-19, the owner: "I wonder why it's also so bad with poison. wha we write as label when we eat poison? does poison affects lable?")** The README's R8, with `dev/eval_candidates.py` and `make candidates`.
+  - **Poison:** the stored penalty is the rise of hunger, capped at 1.
+    - Without inertia the label sees poison as M0's does: S0 dodges at the last step as often (picks a poison move on .14 of such ticks, M0 .14), but goes near poison more.
+    - SB's label hardly sees it (.004 worse in T; picks poison .53), because near the cap a poison adds little or nothing.
+  - **The candidates:** the instinct's 16 candidates are samples of the model's own move prediction. In SB's starving seeds that prediction has collapsed: on .41 to .79 of ticks all 16 are the same move, so the instinct has nothing to choose from. M0's are the same on .38 of ticks too, but its own moves are good.
 - **Next:**
   - set in the plan: split the two changes in the world with inertia;
-  - also proposed: choices that last (the instinct's horizon, or the owner's action repeat), a poison cost that survives the hunger cap, and ties broken at random.
+  - also proposed: choices that last (the instinct's horizon, or the owner's action repeat), a poison cost that shows at any hunger (hunger above 1, or the two labels), and real alternatives for the instinct (some candidates from fixed directions).
 
 ## Implementation
 
