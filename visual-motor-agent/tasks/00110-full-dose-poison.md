@@ -1,7 +1,7 @@
 # Task 00110: A Poison Costs Its Full Dose at Any Hunger (experiment vm-00099)
 
 **Date:** 2026-11-20
-**Status:** In progress (the owner, 2026-11-20: "we might want to remove hunger cap yes - start implementig it. Maybe we need firts to check if backprop in time works if we remove cap on inertia world"; design choice: "Full dose, sense capped")
+**Status:** Complete (2026-11-20; experiment vm-00099, `00099-full-dose/`; the owner, 2026-11-20: "we might want to remove hunger cap yes - start implementig it. Maybe we need firts to check if backprop in time works if we remove cap on inertia world"; design choice: "Full dose, sense capped")
 
 ## Context
 
@@ -65,7 +65,13 @@
 - [x] Tests `tests/test_full_dose.py` (7: the world's cut, below the cap unchanged, the label, the monitor, memory with and without the option, the check, a short GPU life with its frozen value test); regression: 242 world, label, value and memory tests pass.
 - [x] Timing on the RTX 3090: 12 lives at once, 3.9 ticks/s each, 10 GB; about 4.3 h for 60k ticks.
 - [x] `00099-full-dose/` (README, Makefile).
-- [ ] The runs (started 2026-11-20 08:31, queue `q99.sh`: then frozen tests, candidates, videos), the write-up.
+- [x] The runs (2026-11-20 08:31 to 12:32, all 60k ticks), frozen tests, candidates, videos (`videos/vm99_s5`, `vm99_s3`), the write-up.
+
+## Results (vm-00099)
+
+- **Readings:** 1 met; 2 met, partly (poison rated .012 worse in T against SB's .004; picked on .42 of poison pairs against .53); 3 met (no SD life starves, SB 4 of 12); 4 fails (four to seven ticks before a meal SD predicts .18, SB .20); 5 not resolved against SB (food +3.3 ± 4.3), far below IB (9.8 against 19.9 per 1k) and MB (54.2).
+- **The plan's branch** ("2 and 3 hold but SD stays below IB": the one-tick choice is the remaining trap) is not supported: MB has the same one-tick choice and eats 54.2. The stored label stalls two or three ticks before a meal; what separates MB is the label (re-labeled at every replay, in the hunger channel).
+- **Next** (the owner's decision): split the two changes, re-labeled in the body channel against stored, with the full dose.
 
 ## Verification
 

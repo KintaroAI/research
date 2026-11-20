@@ -36,7 +36,7 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00093": "../videos/vm93_s5/compare.mp4",
           "00094": "../videos/vm94_s5/compare.mp4", "00095": "../videos/vm95_s5/compare.mp4",
           "00096": "../videos/vm96_s5/compare.mp4", "00097": "../videos/vm97_inertia_s5/compare.mp4",
-          "00098": "../videos/vm98_plain_s5/compare.mp4"}
+          "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -45,7 +45,8 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00089": [("00086", ("K4D8",)), ("00088", ("K4D8", "V90RD8"))], "00090": [("00072", ("K4",))],
             "00095": [("00094", ("C8r",))], "00096": [("00095", ("IB",))],
             "00097": [("00094", ("C8r",)), ("00095", ("IB",))],
-            "00098": [("00094", ("C8r",)), ("00095", ("IB",)), ("00097", ("M0", "MB"))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00098": [("00094", ("C8r",)), ("00095", ("IB",)), ("00097", ("M0", "MB"))],
+            "00099": [("00095", ("IB",)), ("00097", ("MB",)), ("00098", ("SB",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
 
@@ -365,6 +366,9 @@ def one(d, write_readme):
             if e == "00098":
                 cap += (" C8r, M0 and S0 live without inertia, IB, MB and SB with it; C8r and IB have the hunger value, M0 and MB the"
                         " meal label re-labeled at every replay (vm-00097), S0 and SB the meal label stored once, in its own body channel.")
+            if e == "00099":
+                cap += (" All in the world with inertia from birth: IB the hunger value (vm-00095), MB the meal label re-labeled at every"
+                        " replay (vm-00097), SB the meal label stored once (vm-00098), SD stored once with the full dose of poison.")
             if total > shown:
                 cap += " The %d best arms of %d by their last value." % (shown, total)
             figs.append(("curves.png", "; ".join(p[0] for p in ps), cap))
@@ -386,6 +390,11 @@ def one(d, write_readme):
                     " view (the blue square: the quarter transformer whose move it was), and beside it the whole world with the window"
                     " outlined. Plain circles are food, checkered ones poison. The same comparison with inertia (IB, MB, SB) is in"
                     " videos/vm98_inertia_s5.")
+        if e == "00099":
+            cap += (" Seed 5 at 60k, frozen, from the same start, in the world with inertia: IB (the hunger value), MB (the meal label,"
+                    " re-labeled at every replay), SB (stored once, capped poison cost) and SD (stored once, full dose). Each arm's 64 x 64"
+                    " view (the blue square: the quarter transformer whose move it was), and beside it the whole world with the window"
+                    " outlined. Plain circles are food, checkered ones poison. Seed 3 (where SB starved) is in videos/vm99_s3.")
         if e == "00097":
             cap += (" Seed 5 at 60k, frozen, from the same start, in the world with inertia: IB (the hunger value), MB (the meal"
                     " label) and MBN (the meal label weighted by hunger when choosing). Each arm's 64 x 64 view (the blue square: the"
