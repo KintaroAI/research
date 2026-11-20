@@ -1,8 +1,8 @@
 # vm-00099: A Poison Costs Its Full Dose at Any Hunger
 
 **Date:** 2026-11-20
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00099`)
+**Status:** Complete
+**Source:** `exp/vm-00099` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00099/`
 **Task plan:** [`../tasks/00110-full-dose-poison.md`](../tasks/00110-full-dose-poison.md)
 
