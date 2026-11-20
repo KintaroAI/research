@@ -436,7 +436,8 @@ def value(path, ticks, bodies, seed):
     w = w / w.sum()
     meal = on.get("value_target") == "meal" or on.get("label") == "meal"   # task 00108 (and 00109): realized from the hunger
     drift = on.get("value_target") == "meal"   # task 00109's stored label has no cost for the drift, only a poison's rise
-    V, H, H0, F, P, spread = [], [], [], [], [], []
+    dose = bool(on.get("full_dose"))   # task 00110: the hunger the cap at 1 cut off is counted in the rise
+    V, H, H0, F, P, C, spread = [], [], [], [], [], [], []
     for t in range(ticks):
         H0.append(obs["drives"][:, 0].astype(np.float64).copy())
         a = life.act(obs)
@@ -447,6 +448,7 @@ def value(path, ticks, bodies, seed):
         H.append(inf["terminal_drives"][:, 0].astype(np.float64).copy())
         F.append(np.asarray(inf["success"], bool).copy())
         P.append(np.asarray(inf["gt_hazard_click"], bool).copy())
+        C.append(np.asarray(inf["hunger_cut"], np.float64).copy() if dose else np.zeros(len(H[-1])))
     life.close()
     V, H = np.array(V), np.array(H)
     T = ticks - M
@@ -456,7 +458,8 @@ def value(path, ticks, bodies, seed):
         H0 = np.array(H0)
         ate = H < H0
         from online import POISON_RISE
-        rr = np.where(ate, 1.0, np.where(drift | (H - H0 > POISON_RISE), -(H - H0), 0.0))
+        rise = H - H0 + np.array(C)   # task 00110: with the full dose, what the cap cut off (0 otherwise)
+        rr = np.where(ate, 1.0, np.where(drift | (rise > POISON_RISE), -rise, 0.0))
         Vm, Km = np.zeros_like(H), np.full(H.shape, 10 ** 6)
         nxt, kn = np.zeros(H.shape[1]), np.full(H.shape[1], 10 ** 6)
         for t in range(ticks - 1, -1, -1):

@@ -100,6 +100,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # else label_gamma x that transformer's prediction for the next step's move, less the hunger a poison added
                       # (a rise above POISON_RISE; no cost for the drift). "": off
                       label="", label_gamma=0.95,
+                      # task 00110 (with label = meal): a poison costs its full dose at any hunger, the hunger the cap at 1 cut off
+                      # counted (the world's info hunger_cut, memory field cut); what the model senses is unchanged. 0: off
+                      full_dose=0,
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
@@ -152,7 +155,7 @@ class Replay:
     only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None, labels=0):
+    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None, labels=0, cut=False):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
         self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
@@ -182,6 +185,9 @@ class Replay:
             self.vhs = np.zeros((cap, labels), np.float32)
             self.lab = np.full((cap, labels), 0.5, np.float32)
             self.fields = self.fields + ("vhs", "lab")
+        if cut:      # task 00110: the hunger the cap at 1 cut off at each step (the stored label's full dose)
+            self.cut = np.zeros(cap, np.float32)
+            self.fields = self.fields + ("cut",)
 
     def add(self, **kw):
         i = self.w
@@ -338,14 +344,16 @@ def meal_parts(h0, h1, done, gamma, drift=True):
     return real.astype(np.float32), tw.astype(np.float32)
 
 
-def stored_labels(h0, h1, done, nxt, gamma):
+def stored_labels(h0, h1, done, nxt, gamma, cut=0.0):
     """Task 00109: step t's stored labels on the model's scale T, one per transformer, written once: from its hunger
     before and after, whether its episode ended there, and each transformer's prediction (T) for the move made at t + 1,
-    nxt [S]. A meal 1 (T 0); else gamma x the prediction, less the hunger a poison added; no cost for the drift."""
+    nxt [S]. A meal 1 (T 0); else gamma x the prediction, less the hunger a poison added; no cost for the drift.
+    cut (task 00110, full_dose): the hunger the cap at 1 cut off at t, counted in the rise, so a poison costs its full dose."""
     nxt = np.asarray(nxt, np.float64)
     rise = float(h1) - float(h0)
     if rise < 0:
         return np.zeros(len(nxt), np.float32)
+    rise += float(cut)
     real = -rise if rise > POISON_RISE else 0.0
     return meal_target(np.full(len(nxt), real), np.full(len(nxt), 0.0 if done else gamma), nxt)
 
@@ -374,10 +382,11 @@ class MealMonitor:
         n = len(MEAL_BIN_NAMES)
         self.pred, self.real, self.n = np.zeros(n), np.zeros(n), np.zeros(n)
 
-    def add(self, pred_t, h0, h1):
-        """One tick: each body's predicted label of its move (pred_t, T scale) and its hunger before and after it."""
+    def add(self, pred_t, h0, h1, cut=None):
+        """One tick: each body's predicted label of its move (pred_t, T scale) and its hunger before and after it; cut (task
+        00110, full_dose): the hunger the cap at 1 cut off, counted in the rise."""
         for b in range(len(h0)):
-            meal, rise = h1[b] < h0[b], float(h1[b] - h0[b])
+            meal, rise = h1[b] < h0[b], float(h1[b] - h0[b]) + (0.0 if cut is None or h1[b] < h0[b] else float(cut[b]))
             cost = -rise if self.drift or rise > POISON_RISE else 0.0
             self.pend[b].append((1.0 - 2.0 * float(pred_t[b]), 1.0 if meal else cost))
             if meal:
@@ -505,7 +514,8 @@ class GatedMemory:
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
-        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state, labels=labels)
+        self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state, labels=labels,
+                          cut=bool(labels and on.get("full_dose")))   # task 00110
         self.store = store or ChunkStore(on, L, self.stm, extra=self.vn)   # long-term memory (shared between bodies or not)
         self.boot = ("img", "drv", "act", "es") + (("st",) if state else ())   # task 00104: the bootstrap windows' reads too
         self.keys = self.stm.fields + (tuple("b_" + k for k in self.boot) + ("pr_real", "tw") if self.refresh else ())
@@ -629,7 +639,7 @@ class GatedMemory:
         if s.n < 2:
             return None
         i, j = (s.w - 2) % s.cap, (s.w - 1) % s.cap
-        s.lab[i] = stored_labels(s.drv[i, 0], s.ndrv[i, 0], s.done[i], s.vhs[j], gamma)
+        s.lab[i] = stored_labels(s.drv[i, 0], s.ndrv[i, 0], s.done[i], s.vhs[j], gamma, s.cut[i] if hasattr(s, "cut") else 0.0)
         return i
 
     def _parts(self, s, e):

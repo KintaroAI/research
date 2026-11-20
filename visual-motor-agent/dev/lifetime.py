@@ -379,6 +379,9 @@ def main():
         raise ValueError("online.label = meal goes with model.body_label = 1 (and only with it): the universal model on the GPU with "
                          "the instinct, without value_gamma, future_k, value_refresh, need, model.state, off, clog, noise_in, "
                          "self-forcing or surprise gating")
+    dose = bool(on["full_dose"])   # task 00110: a poison costs its full dose at any hunger (the world's hunger_cut)
+    if dose and not slabel:
+        raise ValueError("online.full_dose goes with online.label = meal")
     state = bool(agent.config.get("state")) and uni   # task 00104: a state carried across windows; updates on pairs of them
     if state and not (on["device"] == "cuda" and on["ring"] and on["batch"] >= 2 and on["batch"] % 2 == 0 and
                       not (on["sf_windows"] or clog or q_in or q_off or delayed or tok_sur or hasattr(env, "think"))):
@@ -595,8 +598,10 @@ def main():
             for name, e in (("seen", env), ("blind", blind)):
                 mscore[name].see(e, cosine(xy, relative(e, e.target)))
         obs, rew, done, inf = env.step(full)
+        if dose and "hunger_cut" not in inf:
+            raise ValueError("online.full_dose needs a world that reports hunger_cut (CircleWorld, task 00110)")
         if mmon is not None:   # task 00108: each body's hunger before and after its move, and the label it predicted for it
-            mmon.add(vh, h, inf["terminal_drives"][:N, 0])
+            mmon.add(vh, h, inf["terminal_drives"][:N, 0], inf["hunger_cut"][:N] if dose else None)
         if mem_on:
             mscore["seen"].ate(inf["success"])
             mscore["blind"].ate(blind.step(full)[3]["success"])
@@ -610,6 +615,8 @@ def main():
             win["st_sq"] = win["st_sq"] + reads[0].astype(np.float64) ** 2
         for b in range(N):
             vb = dict(vh=vh[b]) if gamma else (dict(vhs=vhs[b]) if slabel else {})    # task 00096; task 00109
+            if dose:   # task 00110
+                vb["cut"] = inf["hunger_cut"][b]
             if state:
                 vb["st"] = reads[b].astype(np.float16)
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
@@ -620,7 +627,8 @@ def main():
             if ii[0] is not None:
                 sm_ = [gms[b].stm for b in range(N)]
                 smon.add(np.array([m_.lab[i_].mean() for m_, i_ in zip(sm_, ii)]), np.array([m_.drv[i_, 0] for m_, i_ in zip(sm_, ii)]),
-                         np.array([m_.ndrv[i_, 0] for m_, i_ in zip(sm_, ii)]))
+                         np.array([m_.ndrv[i_, 0] for m_, i_ in zip(sm_, ii)]),
+                         np.array([m_.cut[i_] for m_, i_ in zip(sm_, ii)]) if dose else None)   # task 00110
         if thinking:   # the window ending in the new step: the world's new half, the old thought; moves up to now
             t_think = time.time()
             ix = [gm.stm.last(min(gm.stm.n, L - 1)) for gm in gms[:N]]

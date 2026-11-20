@@ -1074,13 +1074,16 @@ class CircleWorld:
         self.path_length += disp
         turn = cfg.turn_cost * ((move - self.last_move) ** 2).sum(1) / 8.0
         self.last_move = move.copy()
-        self.hunger = np.clip(self.hunger + cfg.h_rate - cfg.h_relief * success + cfg.hazard_cost * in_hazard + turn,
-                              0.0, 1.0)
+        h_ = self.hunger + cfg.h_rate - cfg.h_relief * success + cfg.hazard_cost * in_hazard + turn
+        cut = np.maximum(h_ - 1.0, 0.0)   # task 00110: the hunger the clip at 1 cuts off (0 below the cap)
+        self.hunger = np.clip(h_, 0.0, 1.0)
         poison = (click | cfg.touch) & in_hazard if (cfg.hazard_click >= 0 or cfg.hazard_click_add > 0) else None
         if poison is not None and cfg.hazard_click >= 0:   # a click inside a hazard: hunger is set (it wins over relief)
             self.hunger = np.where(poison, cfg.hazard_click, self.hunger)
         if poison is not None and cfg.hazard_click_add > 0:   # or raised (after relief)
-            self.hunger = np.clip(self.hunger + cfg.hazard_click_add * poison, 0.0, 1.0)
+            h_ = self.hunger + cfg.hazard_click_add * poison
+            cut = cut + np.maximum(h_ - 1.0, 0.0)
+            self.hunger = np.clip(h_, 0.0, 1.0)
         self.ep_hits += success
         self.restlessness = np.clip(
             self.restlessness + cfg.b_rate - cfg.b_relief * (disp / cfg.max_step_px) * move_factor,
@@ -1141,6 +1144,7 @@ class CircleWorld:
         info: Dict[str, np.ndarray] = {
             "terminal_image": terminal_image,
             "terminal_drives": self._drive_obs(),
+            "hunger_cut": cut,   # task 00110: the hunger the cap at 1 cut off this step (the label's full dose, not an input)
             "success": success,
             "timeout": timeout,
             "click": click,
