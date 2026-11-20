@@ -103,6 +103,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00110 (with label = meal): a poison costs its full dose at any hunger, the hunger the cap at 1 cut off
                       # counted (the world's info hunger_cut, memory field cut); what the model senses is unchanged. 0: off
                       full_dose=0,
+                      # task 00112 (with label = meal): the label re-labeled at every update in place of stored once: memory keeps the
+                      # facts (hunger before and after, the cut, one step past each chunk) and each transformer's label of step t is
+                      # the stored label's rule with its current prediction for the move made at t + 1 (a forward pass without
+                      # gradient over the window one step later, the label channel). 0: off
+                      label_refresh=0,
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
@@ -330,14 +335,17 @@ NEED_FLOOR = 0.05   # task 00108: online.need divides the tolerance by the hunge
 POISON_RISE = 0.01  # task 00109: a rise of hunger above this in one step is a poison (the drift is 0.001)
 
 
-def meal_parts(h0, h1, done, gamma, drift=True):
+def meal_parts(h0, h1, done, gamma, drift=True, cut=None):
     """Task 00108, the meal label: for each step j of a stretch, the parts of V[j] = real[j] + tw[j] * V_hat[j + 1].
     A step whose hunger falls (h1 < h0) is a meal: real 1, no tail. Any other step costs the hunger it added (a poison's
     0.5, the drift's 0.001): real -(h1 - h0), tail weight gamma, unless j's episode or the stretch ends there. Read from the
-    hunger alone, as the hunger value is (the agent knows only its body)."""
+    hunger alone, as the hunger value is (the agent knows only its body). cut (task 00112, full_dose): the hunger the cap
+    at 1 cut off at each step, counted in the rise as stored_labels does."""
     h0, h1 = np.asarray(h0, np.float64), np.asarray(h1, np.float64)
     meal = h1 < h0
     rise = h1 - h0
+    if cut is not None:
+        rise = np.where(meal, rise, rise + np.asarray(cut, np.float64))
     real = np.where(meal, 1.0, -rise if drift else np.where(rise > POISON_RISE, -rise, 0.0))   # task 00109: drift=False, poison only
     tw = np.where(meal | np.asarray(done, bool), 0.0, gamma)
     tw[-1] = 0.0
@@ -509,9 +517,17 @@ class GatedMemory:
         self.refresh = bool(on.get("value_refresh")) and self.goal_mode == "value"
         self.vn = goal_k - 1 if self.refresh else 0
         self.meal = self.refresh and on.get("value_target", "hunger") == "meal"   # task 00108
+        # task 00112: the body label re-labeled at every update: the meal label's parts (the stored label's rule) and one
+        # bootstrap step, the tails made fresh by the caller from the label channel
+        self.lrefresh = bool(labels and on.get("label_refresh"))
+        if self.lrefresh:
+            self.refresh, self.meal, self.vn, self.gamma = True, True, 1, float(on["label_gamma"])
+            self.dose = bool(on.get("full_dose"))
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
         # least one step after it ends (task 00053)
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
+        if self.D < self.vn:
+            raise ValueError("long-term memory must decide a chunk at least as late as its bootstrap steps")
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
         self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state, labels=labels,
@@ -617,8 +633,8 @@ class GatedMemory:
         idx = (starts[:, None] + np.arange(L)[None]) % s.cap
         r = {k: getattr(s, k)[idx] for k in s.fields}
         r["img"] = as_frames(r["img"])
+        ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
         if self.goal_k:
-            ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
             r["pr"] = np.stack([goal_labels(s, e, self.goal_k, self.goal_mode, self.gamma)[:L] for e in ext])
         if self.refresh:   # task 00098
             n = self.vn
@@ -627,7 +643,7 @@ class GatedMemory:
             parts = [self._parts(s, e) for e in ext]
             r["pr_real"] = np.stack([p[0][:L] for p in parts])
             r["tw"] = np.stack([p[1][:L] for p in parts])
-            if self.meal:   # task 00108: the stored tails, on the model's scale; the caller replaces them with fresh ones
+            if self.meal and not self.lrefresh:   # task 00108: the stored tails, on the model's scale; the caller replaces them with fresh ones
                 r["pr"] = meal_target(r["pr_real"], r["tw"], s.vh[ext[:, n:n + L]])
             self._boot(r, {k: getattr(s, k)[ext[:, n:n + L]] for k in self.boot})
         return r
@@ -645,6 +661,8 @@ class GatedMemory:
     def _parts(self, s, e):
         """The label's real parts and tail weights for the steps e of memory s: the hunger value's (task 00098) or the
         meal label's (task 00108)."""
+        if self.lrefresh:   # task 00112: the stored label's rule (no cost for the drift; the full dose)
+            return meal_parts(s.drv[e, 0], s.ndrv[e, 0], s.done[e], self.gamma, drift=False, cut=s.cut[e] if self.dose else None)
         if self.meal:
             return meal_parts(s.drv[e, 0], s.ndrv[e, 0], s.done[e], self.gamma)
         return value_parts(s.ndrv[e, 0], s.done[e], self.gamma, self.vn)
@@ -669,7 +687,9 @@ class GatedMemory:
         old["img"] = as_frames(old["img"])
         if self.refresh:   # task 00098: the stored tails for pr; the caller replaces them with fresh ones
             old["pr_real"], old["tw"] = st.ltm["lbl"][ci], st.ltm["tw"][ci]
-            if self.meal:   # task 00108
+            if self.lrefresh:   # task 00112: no stored tails; the caller sets the labels
+                pass
+            elif self.meal:   # task 00108
                 old["pr"] = meal_target(old["pr_real"], old["tw"], st.ltm["vh"][ci, n:n + L])
             else:
                 old["pr"] = old["pr_real"] + old["tw"] * st.ltm["vh"][ci, n:n + L]

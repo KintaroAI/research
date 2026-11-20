@@ -1,4 +1,4 @@
-# Task 00111: A Breakout World (experiment vm-00100)
+# Task 00111: A Breakout World (experiment vm-00101)
 
 **Date:** 2026-11-20
 **Status:** Proposed (the owner, 2026-11-20, on "arkanoid or breakout type of game - do you think our model can learn to play it?": "Yes write task and I like your plan"; the arms are settled after vm-00099, task 00110)
@@ -71,7 +71,7 @@
 - [ ] `world/breakout_world.py` (`BreakoutConfig`, `BreakoutWorld`), `make_config` / `make_world` for `kind = breakout`; `tests/test_breakout_world.py`.
 - [ ] `configs/U_breakout.json`.
 - [ ] `eval_breakout.py` (frozen play, walkers, the label's profile); `compare_video.py` / `forage_video.py` support for the world (the court as the view; no window).
-- [ ] Timing; `00100-breakout/` (README, Makefile); the runs, frozen tests, write-up, videos.
+- [ ] Timing; `00101-breakout/` (README, Makefile); the runs, frozen tests, write-up, videos.
 
 ## Verification
 

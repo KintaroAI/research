@@ -155,12 +155,13 @@ def table_gap(models, ranges):
     return float(np.sqrt(((x - mean) ** 2).sum(1).mean() / (mean ** 2).sum()))
 
 
-def boot_values(models, rows, ctx=None, mean=True):
+def boot_values(models, rows, ctx=None, mean=True, chan=0):
     """Task 00098: each window's fresh bootstrap tails [B, L], the mean over models of the move token's predicted
     label (the next body's hunger slot) of the move made at each step of the bootstrap windows (b_img, b_drv, b_act,
     b_es: the L steps that start n steps after each training window). No gradient: forward passes only. Task 00104
     (b_st, the reads stored while acting, [B, L, models, V]): each model reads its own, and windows longer than the
-    context (pairs) go in pieces of ctx steps. mean=False (task 00108): each model's own tails [models, B, L]."""
+    context (pairs) go in pieces of ctx steps. mean=False (task 00108): each model's own tails [models, B, L]. chan (task
+    00112): the next body's channel read (2: the body label)."""
     B, L = rows["b_img"].shape[:2]
     w = ctx or L
     out = []
@@ -170,7 +171,7 @@ def boot_values(models, rows, ctx=None, mean=True):
             m.forward_uni(rows["b_img"][i:i + UNI_CHUNK, t:t + w], rows["b_drv"][i:i + UNI_CHUNK, t:t + w],
                           rows["b_act"][i:i + UNI_CHUNK, t:t + w], rows["b_es"][i:i + UNI_CHUNK, t:t + w], values=False,
                           move_probs=False, next_body=True,
-                          state=None if st is None else st[i:i + UNI_CHUNK, t:t + w, k].astype(np.float32))["next_body"][..., 0]
+                          state=None if st is None else st[i:i + UNI_CHUNK, t:t + w, k].astype(np.float32))["next_body"][..., chan]
             for t in range(0, L, w)], 1) for i in range(0, B, UNI_CHUNK)]))
     return (np.mean(out, 0) if mean else np.stack(out)).astype(np.float32)
 
@@ -382,6 +383,9 @@ def main():
     dose = bool(on["full_dose"])   # task 00110: a poison costs its full dose at any hunger (the world's hunger_cut)
     if dose and not slabel:
         raise ValueError("online.full_dose goes with online.label = meal")
+    lref = bool(on["label_refresh"])   # task 00112: the body label re-labeled at every update, each transformer its own
+    if lref and not (slabel and S > 1 and not delayed):
+        raise ValueError("online.label_refresh goes with online.label = meal, several transformers (online.pieces) and no env.delays")
     state = bool(agent.config.get("state")) and uni   # task 00104: a state carried across windows; updates on pairs of them
     if state and not (on["device"] == "cuda" and on["ring"] and on["batch"] >= 2 and on["batch"] % 2 == 0 and
                       not (on["sf_windows"] or clog or q_in or q_off or delayed or tok_sur or hasattr(env, "think"))):
@@ -689,7 +693,13 @@ def main():
                 rows["pr"] = rows["pr_real"] + rows["tw"] * vb
                 win["vboot"] += float(vb.sum())
                 win["vboot_n"] += vb.size
-            if slabel:   # task 00109: the stored labels, each transformer its own (the mean in the shared rollout)
+            if lref:   # task 00112: each transformer's own label, from its fresh prediction of the next move (label channel)
+                vbs = boot_values(gpus, rows, mean=False, chan=2)
+                labels = [meal_target(rows["pr_real"], rows["tw"], v_) for v_ in vbs]
+                rows["pr"] = np.mean(labels, 0).astype(np.float32)
+                win["vboot"] += float(vbs.mean(0).sum())
+                win["vboot_n"] += vbs[0].size
+            elif slabel:   # task 00109: the stored labels, each transformer its own (the mean in the shared rollout)
                 rows["pr"] = rows["lab"].mean(2).astype(np.float32)
             if gamma or slabel:
                 win["vlab"] += float(rows["pr"].sum())
@@ -734,8 +744,8 @@ def main():
                     if g:   # a GPU rollout holds only the data: one for all pieces
                         if refresh and meal:   # task 00108: this transformer's own label (set_batch copies at once)
                             ro.ndrv[:, :, 0] = labels[k].T
-                        elif slabel:   # task 00109: its own stored labels, the body label's target (the prev_reward slot)
-                            ro.pr[:, :] = rows["lab"][:, :, k].T
+                        elif slabel:   # task 00109: its own stored labels, the body label's target (the prev_reward slot); task 00112: re-labeled
+                            ro.pr[:, :] = (labels[k] if lref else rows["lab"][:, :, k]).T
                         sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
                         stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
                                                       inputs=seen_in if delayed else shared if q_in else damaged(rows), step_mask=sm))
