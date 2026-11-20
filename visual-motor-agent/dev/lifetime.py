@@ -556,7 +556,7 @@ def main():
                 tol = (on["instinct_tol"] / np.maximum(h, NEED_FLOOR)).astype(np.float32)
             props = [uni_act(umodels[k], views[k](win_in[0][:, 0])[:, None] if views[k] else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], tol, on["instinct_h"],
-                             on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"])
+                             on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"], temp=on["instinct_temp"])
                      for k in live]
             a, won = pieces_move([umodels[k] for k in live], props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
             if gamma or slabel:   # task 00096: the predicted label of the move taken, by the transformer that made it (a mixed move: their mean)

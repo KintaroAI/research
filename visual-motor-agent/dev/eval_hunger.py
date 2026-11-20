@@ -183,12 +183,13 @@ class Life:
         inst = (self.bins, self.rng, on["instinct_m"], tol, on["instinct_h"], on["instinct_jacobi"], on["instinct_decode"])
         if self.ring:
             props = [uni_act(m, (c(obs["image"]) if c else obs["image"])[:, None], drv[:, None], act, self.es[:, None], *inst,
-                             per_body=True, first="sample", ring=True) for m, c in zip(models, clogs)]
+                             per_body=True, first="sample", ring=True, temp=on.get("instinct_temp", 1.0)) for m, c in zip(models, clogs)]
         else:   # task 00107: the window of the last ctx steps, as forage_video and lifetime.py act without the ring
             cur = dict(img=obs["image"], drv=np.asarray(drv, np.float32), act=np.zeros((self.bodies, 3), np.float32), es=self.es.copy())
             win = self.hist + [cur]
             st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
-            props = [uni_act(m, st("img"), st("drv"), st("act"), st("es"), *inst, per_body=True, first="sample") for m in models]
+            props = [uni_act(m, st("img"), st("drv"), st("act"), st("es"), *inst, per_body=True, first="sample",
+                             temp=on.get("instinct_temp", 1.0)) for m in models]
         a, won = pieces_move(models, props, on["piece_rule"], self.rng, prev=None)
         hp = np.stack([p[3] for p in props])   # task 00096: the predicted label of the move taken (as lifetime.py stores it)
         self.vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(len(a))], hp.mean(0))

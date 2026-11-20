@@ -84,7 +84,7 @@ def run(args, path):
             props = [uni_act(m_, st("img"), st("drv"), st("act").astype(np.float32), st("es"), agent.config["bins"], rng,
                              *(inst if not ion["need"] else  # task 00108: the label weighted by hunger when choosing
                                (inst[0], inst[1] / np.maximum(obs["drives"][:, 0], NEED_FLOOR)) + inst[2:]),
-                             per_body=True, ring=ring) for m_ in models]
+                             per_body=True, ring=ring, temp=ion.get("instinct_temp", 1.0)) for m_ in models]
             a, w_ = pieces_move(models, props, ion["piece_rule"], rng, lam=ion["piece_lambda"], temp=ion["piece_temp"])
             won = int(w_[0, 0])
             if ring:

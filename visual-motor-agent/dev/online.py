@@ -124,6 +124,9 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # its horizon (task 00029): each candidate held for instinct_h steps, the steps after the first
                       # imagined by the model (patches decoded by instinct_jacobi Jacobi iterations); 1: one step
                       instinct_h=1, instinct_jacobi=2, instinct_decode="mean",
+                      # task 00113: the instinct's candidates after the first drawn at this temperature (p^(1/T), renormalized per
+                      # value); the first stays the model's own move at temperature 1. 1: unchanged
+                      instinct_temp=1.0,
                       # lifetime.py on the GPU: read the update's stats every stats_every ticks (each read waits for
                       # the GPU; the metrics average the samples)
                       stats_every=10,
@@ -945,7 +948,7 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
 
 
 def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False,
-            first="sample", ring=False):
+            first="sample", ring=False, temp=1.0):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
@@ -957,7 +960,8 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     instinct; without it NaN) and the sharpness of its move prediction [N]: minus the entropy over the bins, dx plus
     dy. first = mode: the first candidate is the most likely bin of each value instead of a sample, so with nothing at
     stake the move is the most likely one. ring (task 00062): only the last step of img, drv, es is read, on top of the
-    model's key and value ring; the caller writes the move made back with uni_ring_move."""
+    model's key and value ring; the caller writes the move made back with uni_ring_move. temp (task 00113): the candidates
+    after the first redrawn at this temperature, from extra random numbers (1: the draws as before)."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
@@ -974,6 +978,10 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
         if per_body:
             sharp.append((probs[:, :2] * np.log(np.maximum(probs[:, :2], 1e-12))).sum((1, 2)))
         idx = np.minimum((np.cumsum(probs, -1)[:, None] < rng.random((n, M, 3, 1))).sum(-1), bins - 1)   # [n, M, 3]
+        if temp != 1.0 and M > 1:   # task 00113: the first stays at temperature 1, the others are redrawn flatter
+            pt = np.maximum(probs, 0.0) ** (1.0 / temp)
+            pt = pt / pt.sum(-1, keepdims=True)
+            idx[:, 1:] = np.minimum((np.cumsum(pt, -1)[:, None] < rng.random((n, M - 1, 3, 1))).sum(-1), bins - 1)
         if first == "mode":
             idx[:, 0] = probs.argmax(-1)
         c = idx / (bins - 1)
