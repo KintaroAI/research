@@ -1,4 +1,4 @@
-# Task 00115: A Chain of Forecasts Laid Out as Panels, with Noise (to explore later)
+# Task 00115: Forecast Panels — the Model's Own Noised Forecasts Fed Back Beside the Real Frame (to explore later)
 
 **Date:** 2026-11-20
 **Status:** Proposed, for later. The owner, 2026-11-20, during vm-00101: "there are 2 another ideas for later". Clarified the same evening:
@@ -26,52 +26,59 @@ No experiment number yet. The design below was settled with the owner on 2026-11
   - a predicted value is a distribution over 32 bins;
   - its mean averages the futures the model is unsure of, so chained means blur.
 
-## The design: a chain of forecasts laid out as panels (the owner, 2026-11-20)
+## The design: the panels are a body property, the model is unchanged (the owner, 2026-11-20)
 
-Its history in one evening:
-1. **Layers handing their outputs on with a one-tick delay,** trained against [F(t + 1)][F(t)][F(t − 1)]. Their past targets were in view (panel 2's F(t) in panel 1), so panels 2 and 3 would have copied them.
-2. **The owner's fix:**
+> we need no special treatment for panels. Imagine we currently have 64x64 field. now imagine we create 128x128 field where 3 quarters are these panels - they appear "at ones" for the model on each tick and 4th quarter is empty ... so we store 128x128 image and construct the "original" reference ... we will be training against. So it's ok for model to have 8 frames and it will take it 8 ticks to proccess. All "panels" stuff is a virtual thing and more like a body/world property which forms 128x128 image
 
-   > what if we keep everything the same but we will make them to predict future frames and not the past ones? so layer 1 sees F(t-2) -> O1 (F(t-1)) -> O2 (F(t)) -> O3 (F(t+1)) so it predicts into future but with some lag so model sees only F(t-2) but trained on [F(t-1)][F(t)][F(t+1)]
+Earlier versions of this task chained the panels within a tick, which needed an order of computing. They are superseded: here the body fills the panels before the tick, from the model's outputs of the tick before, as it feeds back the move.
 
-| Panel | Sees | Output | Trained against |
-|---|---|---|---|
-| 1 | the newest real frame, F(t − L) | O1 | F(t − L + 1), real |
-| 2 | N(O1), noised | O2 | F(t − L + 2), real |
-| 3 | N(O2), noised | O3 | F(t − L + 3), real |
+- **The frame is 128 × 128, four 64 × 64 panels, one per quarter transformer** (the owner: "it should be 4 transformers - let it be 4 panels as well so we do not waste one quarter"). It is built by the body, a world wrapper as `env.delays` built vm-00080's 2 × 2 composite.
+- **With the lag L, write R = t − L** for the newest moment sensed. At tick t:
 
-- **L is the lag** (the owner's L = 2: panel 1 sees F(t − 2), the targets are F(t − 1), F(t), F(t + 1)).
-- **No copying, so no mask against it** (the owner: "we do not need to mask anything since it's predicts future which is not yet accessible"): the newest real frame anywhere in the input is F(t − L), and every target is newer.
-- **Within one tick, in order:**
-  - each panel steps one tick ahead of the one before, so panel 2 needs this tick's O1, not last tick's;
-  - (handed over a tick late, the clock would move with the wave and all three panels would land on the same moment);
-  - with earlier panels' keys and values kept, the three ordered pieces are about one pass of work.
-- **The one rule is the order of computing:**
-  - panel k sees panels 1 to k, at this tick and every earlier one, plus the body and move tokens;
-  - it does not see the higher panels, which are made from its output;
-  - this is not about cheating. It keeps a replayed window to three pieces: all of panel 1 over the 8 steps, then all of panel 2, then panel 3.
-  - If panel 1 also read last tick's panels 2 and 3, each step would wait for the one before: 24 pieces per window.
-  - Nothing is lost: everything in panels 2 and 3 is made from real frames that panel 1 already sees in its context.
-  - Acting uses the same rule, so acting and training stay equal.
-- **The quarter transformers:** each of the 4 sees its quarter of every panel, and the summaries of all panels.
-- **Moves (an efference copy):**
-  - the agent knows its own moves without delay;
-  - each panel's forecast gets the move that leads to it: a(t − 2) and a(t − 1) are known, and the forecast of F(t + 1) needs a(t), the move being chosen now;
-  - so the instinct can score each candidate by panel 3's forecast and its body (hunger, label): a lookahead within the tick.
-- **The body (hunger, label) is delayed with the frame,** so no sense is fresher than F(t − L).
-- **The lag is one setting, and both values are arms** (the owner: "make delay as a setting ... I'm totally for checking out both arms"):
-  - **L = 2 (the owner's):** the agent senses the world two ticks late and acts on its forecast of now, like a nervous system with conduction delays;
-  - **L = 0:** panel 1 sees F(t), and the chain forecasts F(t + 1), F(t + 2), F(t + 3). It is the same chain shifted by two ticks, and the agent senses the present;
-  - the frame and the body reach the model L ticks late; moves act at once.
-- **Memory, one rule for any lag:**
-  - memory keeps real frames in world time, as now;
-  - a step at tick t takes its input from frame t − L and its targets from frames t − L + 1 to t − L + 3;
-  - so a stored chunk needs L frames before it and 3 − L after it: L = 2 needs 2 before and 1 after (the one after as now), L = 0 needs 3 after;
-  - the "after" margin exists already (`ChunkStore(extra=n)`: long-term memory keeps n steps past each chunk for `value_n` and `label_refresh`); the "before" margin is the new part;
-  - the newest trainable window ends 3 − L ticks back;
-  - a replayed window recomputes the chain with the current model, so nothing stale is stored.
-- **The first ticks of life:** panel 1 is noise until a real frame L ticks old exists.
-- **Dreaming:** the chain is a dream three ticks long, trained against reality every tick. A longer dream feeds O3 back into panel 1, on a model that has always seen its own noised forecasts.
+| Panel (transformer) | Shows (filled by the body before the tick) | Trained against (built from stored real frames) |
+|---|---|---|
+| 1 | F(R), the real frame | F(R + 1) |
+| 2 | N(O1 of tick t − 1): last tick's forecast of F(R), noised | F(R + 2) |
+| 3 | N(O2 of tick t − 1): last tick's forecast of F(R + 1), noised | F(R + 3) |
+| 4 | N(O3 of tick t − 1): last tick's forecast of F(R + 2), noised | F(R + 4) |
+
+- **In general:** panel i is trained against F(R + i), and panel i + 1 shows panel i's output of the tick before, noised.
+- **What the model sees each tick:**
+  - the real frame;
+  - its own expectation of that same moment, made a tick earlier: its prediction error is in view, as in predictive coding;
+  - its expectations of the two ticks after.
+- **What it learns:** 1, 2, 3 and 4 ticks ahead of the real frame, every tick, against reality. Panels 2 to 4 train it to work from its own noised forecasts.
+- **No copying:** every target is newer than F(R), the newest real frame anywhere in the input, its context included.
+- **Nothing special in the model:**
+  - one pass per tick;
+  - the context of 8 ticks as now;
+  - every token may see every other, as now.
+- **The panels are fed back like the move:**
+  - the move is the model's output, and the body feeds it back as the next tick's input;
+  - replay does not recompute past moves, and it does not recompute past panels either;
+  - memory stores the 128 × 128 frame the agent saw.
+- **The targets are built at training time** (as `online.delay_targets` builds vm-00080's): panel i's target is the real frame i ticks after F(R). That is panel 1 of the step i ticks later.
+- **Memory:**
+  - long-term memory keeps 4 steps past each chunk (`ChunkStore(extra=n)`, as for `value_n`);
+  - the newest trainable window ends 4 ticks back;
+  - the lag changes only what the body puts in panel 1, so memory is the same for any L.
+- **Stale panels are fine:** they were made by an older model, but they are what the agent saw, like its moves, and the targets are real. vm-00099's problem was stale targets.
+- **The lag is a body setting; L = 2 (the owner's) and L = 0 are the two arms:**
+  - the frame and the body values reach the model L ticks late;
+  - moves act at once (an efference copy).
+- **Acting:** each tick the model's predictions for panels 1 to 3 are decoded and noised by the body to fill next tick's panels 2 to 4: a readout of the patch predictions it computes anyway.
+- **The first ticks of life:** panels not yet filled are noise.
+- **The quarter transformers:**
+  - each of the 4 has one panel, and the summaries of all;
+  - transformer 1 forecasts from reality, and transformers 2 to 4 from the forecasts, further out.
+- **The body's target per transformer (to decide):**
+  - all predict the next body (hunger, label) as now;
+  - or each predicts the body at its own horizon, R + i. Then the move rule (`gain`) would compare labels at different horizons.
+- **Moves and candidates:**
+  - the step's move is the move made now, as today;
+  - panels 2 to 4 predict 2 to 4 ticks after the real frame, so a candidate's effect shows in what the model predicts there;
+  - the instinct can score candidates by that prediction and its label, as it scores the next body today.
+- **Dreaming:** fill panel 1 from O1 as well, and the model runs on its own forecasts, which it has seen in panels 2 to 4 on every tick of its life.
 
 ## Noise
 
@@ -94,10 +101,10 @@ Its history in one evening:
 
 ## Stages
 
-1. **Panels 2 and 3 fed the real frames** (teacher-forced, no chain): the cost of a 3-wide frame, and the baseline for each horizon.
-2. **The chain without noise**, L = 0 and L = 2.
+1. **Panels 2 to 4 empty:** the 128 × 128 frame with only the real panel, and the four horizons' targets. This gives the cost, and the baseline for each horizon without the model's own forecasts.
+2. **Forecast panels without noise**, L = 0 and L = 2.
 3. **With noise:** Gaussian, then sampled.
-4. **Dreaming and acting:** the dream curve (`eval_dream.py`), then the instinct reading a few dreamed ticks per candidate, in the world with inertia, against RD (vm-00100) and vm-00096's IH.
+4. **Dreaming and acting:** the dream curve (`eval_dream.py`), then the instinct scoring candidates by their three-tick forecast, in the world with inertia, against RD (vm-00100) and vm-00096's IH.
 
 Stages 1–3 can be compared frozen before any lifetime.
 
@@ -109,7 +116,7 @@ Stages 1–3 can be compared frozen before any lifetime.
 - **Sharpness:** the cursor in the dream (`eval_dream.py`: distance to the real cursor, or lost), and the predicted bins' entropy.
 - **Lived (stage 4):** as vm-00100 (food, poison, hunger, overrides, smoothness, the label monitors).
 - **Cost:**
-  - 3 panels make 3 times the patch tokens, so attention costs up to K² times per step; three ordered pieces per tick, about one pass of work;
+  - a 128 × 128 frame has 4 times the patch tokens of 64 × 64, so attention costs up to 16 times per step (less with the quarter pieces, each on one panel); one pass per tick;
   - with 4 quarter transformers it may need smaller panels (32 × 32) or fewer lives per card;
   - memory keeps K − 1 more frames per step.
 
