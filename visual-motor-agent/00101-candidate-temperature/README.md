@@ -1,8 +1,8 @@
 # vm-00101: The Instinct's Candidates at Temperature 2
 
 **Date:** 2026-11-20
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00101`)
+**Status:** Complete
+**Source:** `exp/vm-00101` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00101/`
 **Task plan:** [`../tasks/00113-candidate-temperature.md`](../tasks/00113-candidate-temperature.md)
 
