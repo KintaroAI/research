@@ -219,7 +219,7 @@ TT's lowest seed (69.2) eats more than 9 of RD's 12.
    - poison falls (−1.5 ± 0.7, lower in 10 of 12); the instinct's pick is a poison move on .24 of poison pairs, as RD;
    - smoothness .52 against .57 (−.051 ± .058): not clearly less smooth, and level with MB.
 
-**The outcome set in the plan:** reading 3 holds. The candidates' temperature joins the instinct if the owner decides so, and Breakout (task 00111, vm-00102) is built with it.
+**The outcome set in the plan:** reading 3 holds. The candidates' temperature joins the instinct if the owner decides so, and Breakout (task 00111, now vm-00103) is built with it.
 
 <!-- figures -->
 ## Figures
@@ -260,6 +260,6 @@ TT's lowest seed (69.2) eats more than 9 of RD's 12.
 ## Next steps
 
 - **The default (the owner's decision):** RD's settings with `online.instinct_temp = 2`.
-- **Breakout (task 00111, vm-00102)** is to be built on the new default.
+- **Breakout (task 00111, now vm-00103)** is to be built on the new default.
 - **The label's horizon** is the next limit: a larger γ, n-step real ticks before the bootstrap, or labels for moves not made (task 00114, Part A).
 - **The forecast panels (task 00115)** use RD's settings with T = 2 in their overnight proof of concept.

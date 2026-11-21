@@ -1,7 +1,7 @@
 # Task 00115: Forecast Panels — the Model's Own Noised Forecasts Fed Back Beside the Real Frame (to explore later)
 
 **Date:** 2026-11-20
-**Status:** In progress: an overnight proof of concept (the owner, 2026-11-20, late: "you do panels (#5) - run so it finishes by around 9 am. The goal is to see numbers and test if poc works - use re-labeled label and temperature that makes sense out of #1 but dont do those as default settings yet ... do it in small iterations ... so we fail fast"). Proposed the same evening, during vm-00101: "there are 2 another ideas for later". Clarified the same evening:
+**Status:** In progress: the full run vm-00102 (from 2026-11-21, after the overnight proof of concept below) (the owner, 2026-11-20, late: "you do panels (#5) - run so it finishes by around 9 am. The goal is to see numbers and test if poc works - use re-labeled label and temperature that makes sense out of #1 but dont do those as default settings yet ... do it in small iterations ... so we fail fast"). Proposed the same evening, during vm-00101: "there are 2 another ideas for later". Clarified the same evening:
 
 > imagine you have a "delay" mechanism in a body - so tick 1 - F1 is "live", there is no F2 and F3 or it's just a noise (first 3 ticks of life), on a second tick F1 = F1(2), F2 = F1(1), F3=noise, tick 3 F1 = F1(3), F2 = F1(2), F3 = F2(1) ... F1(t) = F1(t), F2(t) = F1(t-1), F3(t) = F2(t-1) or F1(t-2) so basically imagine like in neurones - first layer has delay so second layer sees some sort of outdated image (one spike away from layer 2)
 
@@ -223,5 +223,56 @@ Stages 1–3 can be compared frozen before any lifetime.
   - memory keeps the panels as they were shown, so replayed windows carry forecasts from an older, worse model;
   - PF trains partly on its own stale forecasts, while the frozen test has fresh ones;
   - re-forecasting at replay (as the label is re-labeled) would remove this.
-- **Food:** too few seeds and ticks to read.
-- **Pending:** the same frozen test at 10k; the pilot's last numbers at 08:45.
+- **The frozen test at 10k,** PF with its forecasts minus PB (below 0: PF predicts better):
+
+  | Checkpoint, seed | Panel 1 | Panel 2 | Panel 3 | Panel 4 |
+  |---|---|---|---|---|
+  | 5k, s1 | −.051 | −.062 | −.043 | −.016 |
+  | 5k, s2 | −.043 | −.102 | −.051 | −.048 |
+  | 10k, s1 | +.054 | −.041 | +.018 | +.006 |
+  | 10k, s2 | +.023 | −.028 | −.036 | −.024 |
+
+  - At 10k panel 2 is still better in both seeds, panel 1 worse in both, panels 3–4 split.
+  - PF blanked at 10k is worse than with its forecasts on every panel (by up to .16): it still uses them.
+  - **The test is noisy:** each frozen run acts for itself, so PF and PB see different frames, and the two seeds differ by .03–.05 within an arm. A clean test scores both on the same frames (the same moves replayed) with more seeds.
+
+**The pilot's end (stopped 08:45 at 18–19k ticks):**
+
+| Arm | Food 15–19k, s1 / s2 | Poison 15–19k | Panel 1 loss | Panel 2 | Panel 3 | Panel 4 |
+|---|---|---|---|---|---|---|
+| PB | 35.2 / 28.5 | 19.8 / 24.2 | .836 | .892 | .891 | .898 |
+| PF | 19.0 / 21.0 | 26.0 / 22.7 | .833 | .906 | .917 | .938 |
+| PN | 22.0 / 32.3 | 23.3 / 25.0 | .836 | .888 | .908 | .918 |
+| PL | 13.7 / 19.0 | 27.7 / 25.0 | .825 | .887 | .903 | .914 |
+| TT (img 64), s1 / s2 (s1–12) | 24.0 / 41.8 (40.1) | 18.8 / 14.8 (15.4) | | | | |
+
+(the losses: training batches, mean of the 2 seeds.)
+
+- **The forecasts at 15k** (`panels_0015001.png`):
+  - in PF panel 2 is a sharp scene, panel 3 has parts of the objects, panel 4 a few;
+  - in PN the forecasts under the noise are whole blobs, food and poison, out to panel 3. That is the owner's reason for the noise, though only by eye.
+- **Training-batch loss:**
+  - with noise (PN, PL) panel 2 is level with PB and panels 3–4 come closer to it than PF's; PF stays the worst on 3–4;
+  - PL, sensing 2 ticks late, has the lowest panel-1 loss and the lowest food.
+- **Food:** PB forages best at 15–19k; PF and PL the least. With 2 seeds the arms overlap.
+
+**Readings of the pilot:**
+1. **The plumbing works:** the composite, the lag, the targets 1–4 ticks ahead and the memory's 4 extra steps ran 18–19k ticks in 8 lives without an error.
+2. **The forecasts are learned and used:** panel 2 is a recognisable scene by 5k, and blanking the forecasts raises PF's loss on every panel at 5k and 10k.
+3. **Whether they help is not settled:**
+   - frozen, PF predicted better than PB on every panel at 5k, but at 10k only panel 2 stayed ahead in both seeds;
+   - in training batches, which replay stale forecasts, PF is worse on panels 2–4;
+   - in training batches the noise (σ .1) brings panel 2 level with PB and panels 3–4 closer to it (PN .908 and .918 against PB .891 and .898).
+4. **Cost:** at 128 × 128 a life runs at about a quarter of the 64 × 64 agent's speed when sharing the card (0.8 ticks/s against TT's 3.0 with 12 lives), so 60k ticks need about a day.
+
+**For the owner's review (next steps to choose from):**
+- a statistically sound run of PB against PF or PN, scored on the same frames, with 6–12 seeds; at this speed 60k ticks take about a day;
+- σ smaller than .1 (for example .03), since .1 hides the forecasts;
+- the warm-up re-forecast (above) if stale forecasts in memory prove to be the brake.
+
+## The full run: vm-00102 (the owner, 2026-11-21: "lets do the full run and reduce noiise to the level you suggested")
+
+- **Arms:** PB (panels 2–4 noise) against PN (forecasts, pair, σ .03), 5 seeds each, 60k ticks, 10 lives at once on the RTX 3090 (the 4090 was not visible). The owner chose 5 + 5 at 60k over 12 + 12 at 30k, and no lag arm.
+- **Measures:** as the pilot, plus the frozen test at every 10k checkpoint for all 10 lives (`make frozen`), and the video (`make video`).
+- **New for it:** `online.panel_record = N` (body 0's composites of the first N ticks in `panel_frames.npy`) and `dev/panel_video.py` (the panels as seen beside the real frames they aim at).
+- **README:** [`../00102-forecast-panels/README.md`](../00102-forecast-panels/README.md). Breakout (task 00111) is renumbered vm-00103.

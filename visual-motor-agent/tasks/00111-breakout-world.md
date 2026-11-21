@@ -1,4 +1,4 @@
-# Task 00111: A Breakout World (experiment vm-00102)
+# Task 00111: A Breakout World (experiment vm-00103)
 
 **Date:** 2026-11-20
 **Status:** Proposed (the owner, 2026-11-20, on "arkanoid or breakout type of game - do you think our model can learn to play it?": "Yes write task and I like your plan"; the arms are settled after vm-00099, task 00110)

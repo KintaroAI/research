@@ -66,7 +66,7 @@ As vm-00099:
    - smoothness: more varied candidates could make the path less straight, and more overrides could make it jittery.
 
 **What follows:**
-- **If 3 holds:** the candidates' temperature joins the instinct (the owner's decision), and Breakout (task 00111, renumbered vm-00102) is built with it.
+- **If 3 holds:** the candidates' temperature joins the instinct (the owner's decision), and Breakout (task 00111, now vm-00103) is built with it.
 - **If 2 holds and 3 fails:** the candidates were not the limit; the label is (its horizon, or the one-tick choice).
 - **If 2 fails:** T = 2 is not enough; try a higher T or candidates from fixed directions.
 
@@ -89,4 +89,4 @@ As vm-00099:
 - **Reading 3 met:** TT − RD food at 40–60k +16.1 ± 7.4 (11 of 12): 71.6 per 1k against 55.5. Poison −1.5 ± 0.7, mean hunger −.032 ± .029.
 - **Faster and alike:** TT eats 41 per 1k at 15–20k (RD reaches that at 30–35k); its seeds end at 69–76 (RD 41–76).
 - **The label is right further out:** frozen, to 10 ticks before a meal (RD 6); still flat and optimistic beyond 15.
-- **What follows (the plan):** the candidates' temperature joins the instinct if the owner decides so, and Breakout (task 00111, vm-00102) is built with it.
+- **What follows (the plan):** the candidates' temperature joins the instinct if the owner decides so, and Breakout (task 00111, now vm-00103) is built with it.

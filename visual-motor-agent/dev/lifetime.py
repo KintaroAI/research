@@ -470,7 +470,7 @@ def main():
         panel_lay = [agent_lib.uni_layout(a_.config)["patch"] - 1 for a_ in agents]
         panel_g = agent.config["img"] // agent.config["patch"] // 2
         panel_rng = np.random.default_rng([args.seed, 0x9A4F])
-        panel_strip = []
+        panel_strip, panel_rec = [], []
     ce_n = prev_N = 0   # bodies whose newest window the last update trained on (their surprise is read next tick)
     rollouts = {}
 
@@ -835,6 +835,11 @@ def main():
                 for g in gpus:
                     g.sync()
             win["t_update"] += time.time() - t_
+        if panels and tick <= on["panel_record"]:   # task 00115: body 0's composites of the first panel_record ticks, for panel_video.py
+            panel_rec.append(obs["image"][0].copy())
+            if tick == on["panel_record"]:
+                np.save(os.path.join(out_dir, "panel_frames.npy"), np.stack(panel_rec))
+                panel_rec = []
         if panels and (tick - 1) % on["panel_snap"] < 6:   # task 00115: 6 consecutive composites of body 0 every panel_snap ticks (and at birth)
             panel_strip.append(obs["image"][0].copy())
             if len(panel_strip) == 6:

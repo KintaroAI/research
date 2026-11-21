@@ -132,7 +132,7 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       panel_noise=0.0,      # task 00115: Gaussian noise (sd, on [0, 1] values) on the forecasts shown in panels 2-4
                       panel_decode="pair",  # task 00115: the forecasts decoded as each value's expectation (mean) or most probable pair
                       panel_blank=0,        # task 00115: panels 2-4 noise every tick (the no-forecast baseline)
-                      panel_snap=10000,     # task 00115: every so many ticks, 6 consecutive composites of body 0 (panels_TICK.png)
+                      panel_snap=10000, panel_record=0,     # task 00115: every so many ticks, 6 consecutive composites of body 0 (panels_TICK.png)
                       # lifetime.py on the GPU: read the update's stats every stats_every ticks (each read waits for
                       # the GPU; the metrics average the samples)
                       stats_every=10,
