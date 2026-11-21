@@ -79,6 +79,18 @@ Earlier versions of this task chained the panels within a tick, which needed an 
   - an additional model that learns on chains of commands and the projected states (the panels' horizon) to choose the best ones;
   - or simply the horizon read with a heuristic.
   - "For now let's keep it simple."
+- **Stale forecasts in memory (found in the pilot; the owner, 2026-11-21):**
+  - **The problem:**
+    - memory stores the composite as it was shown, so a replayed window's panels 2 to 4 are the forecasts of the model as it was then, not of the current one;
+    - the model trains partly on old, worse forecasts. The owner expects this to slow learning, not to break it.
+  - **The plan for now: no recalculation.** The owner sees memory as a sliding window of more or less recent events, so the staleness stays bounded.
+    - As built, long-term memory holds up to 100k steps (`online.replay`, the oldest evicted first). In a 60k life that is the whole life, so the oldest forecasts are as old as the life.
+    - A smaller `replay`, or `ltm_evict` choices, bound the staleness without new code.
+    - **The owner's decision (2026-11-21):** keep the memory size as it is for now: "we need to see if it learn new stuff even with frozen predictions".
+  - **A viable option (later): a warm-up with the latest weights before training.**
+    - Before an update, re-forecast the replayed window's panels with the current weights, then train on it.
+    - The panels chain: panel 3 at step j is transformer 1's forecast from step j − 1, which read panel 2, transformer 0's forecast from step j − 2. So the warm-up runs the window forward step by step from a few steps before it, each step's forecasts filling the next step's panels. That costs about one forward pass per step, or a few Jacobi passes over the window (as `uni_lookahead`).
+    - It is the forecasts' counterpart of re-labeling the label at every replay (vm-00100), which fixed the same kind of staleness for the label.
 - **Moves:** the step's move is the move made now, as today. Panels 2 to 4 predict 2 to 4 ticks after the real frame, so the moves' effects further out are in view; the instinct does not use them yet (see "Later").
 - **Dreaming:** fill panel 1 from O1 as well, and the model runs on its own forecasts, which it has seen in panels 2 to 4 on every tick of its life.
 
