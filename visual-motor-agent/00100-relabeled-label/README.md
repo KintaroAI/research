@@ -1,8 +1,8 @@
 # vm-00100: The Body Label Re-labeled at Every Replay, with the Full Dose
 
 **Date:** 2026-11-20
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00100`)
+**Status:** Complete
+**Source:** `exp/vm-00100` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00100/`
 **Task plan:** [`../tasks/00112-relabeled-body-label.md`](../tasks/00112-relabeled-body-label.md)
 
