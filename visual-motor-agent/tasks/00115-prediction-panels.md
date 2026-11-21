@@ -71,13 +71,15 @@ Earlier versions of this task chained the panels within a tick, which needed an 
 - **The quarter transformers:**
   - each of the 4 has one panel, and the summaries of all;
   - transformer 1 forecasts from reality, and transformers 2 to 4 from the forecasts, further out.
-- **The body's target per transformer (to decide):**
-  - all predict the next body (hunger, label) as now;
-  - or each predicts the body at its own horizon, R + i. Then the move rule (`gain`) would compare labels at different horizons.
-- **Moves and candidates:**
-  - the step's move is the move made now, as today;
-  - panels 2 to 4 predict 2 to 4 ticks after the real frame, so a candidate's effect shows in what the model predicts there;
-  - the instinct can score candidates by that prediction and its label, as it scores the next body today.
+- **The body, as now** (the owner, 2026-11-20):
+  - every transformer predicts the next sensed body (hunger, label) from what it sees, trained against the real body at R + 1;
+  - no special treatment, as if the model did not know there are delays;
+  - the move rule (`gain`) and the instinct are unchanged.
+- **Later, not in this task** (the owner): choosing moves by their projected outcome further out:
+  - an additional model that learns on chains of commands and the projected states (the panels' horizon) to choose the best ones;
+  - or simply the horizon read with a heuristic.
+  - "For now let's keep it simple."
+- **Moves:** the step's move is the move made now, as today. Panels 2 to 4 predict 2 to 4 ticks after the real frame, so the moves' effects further out are in view; the instinct does not use them yet (see "Later").
 - **Dreaming:** fill panel 1 from O1 as well, and the model runs on its own forecasts, which it has seen in panels 2 to 4 on every tick of its life.
 
 ## Noise
@@ -95,7 +97,7 @@ Earlier versions of this task chained the panels within a tick, which needed an 
 - **Dreaming that stays composed:**
   - the model is trained every tick on inputs that are its own noised predictions, so a rollout that feeds its outputs back is what it has always seen;
   - to dream, the output goes back in as the next input, as in vm-00023, but now into a model trained for it.
-- **Scoring moves further out:** each candidate's forecast and label read from panel 3 within the tick, as vm-00096's horizon (which helped under inertia), on a chain trained against reality.
+- **Scoring moves further out, later:** the forecasts 2 to 4 ticks out are what a horizon or a separate chooser would read (see "Later"), as vm-00096's horizon (which helped under inertia), on forecasts trained against reality.
 - **The label's horizon:** vm-00100's label is right within about 10 ticks of food and flat beyond. A dream that stays sharp for a few ticks lets the label be read further out.
 - **The frame-level form of task 00114 Part A:** imagined outcomes of moves not made.
 
@@ -104,7 +106,7 @@ Earlier versions of this task chained the panels within a tick, which needed an 
 1. **Panels 2 to 4 empty:** the 128 × 128 frame with only the real panel, and the four horizons' targets. This gives the cost, and the baseline for each horizon without the model's own forecasts.
 2. **Forecast panels without noise**, L = 0 and L = 2.
 3. **With noise:** Gaussian, then sampled.
-4. **Dreaming and acting:** the dream curve (`eval_dream.py`), then the instinct scoring candidates by their three-tick forecast, in the world with inertia, against RD (vm-00100) and vm-00096's IH.
+4. **Dreaming and acting:** the dream curve (`eval_dream.py`), then the agent living with the panels (the instinct as now), in the world with inertia, against RD (vm-00100) and vm-00096's IH.
 
 Stages 1–3 can be compared frozen before any lifetime.
 
