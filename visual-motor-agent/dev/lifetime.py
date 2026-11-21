@@ -77,7 +77,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
 from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, delay_targets, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
-                    NEED_FLOOR, UNI_CHUNK, MealMonitor, meal_target, thought_dream, uni_act)
+                    DECODE, NEED_FLOOR, UNI_CHUNK, MealMonitor, meal_target, panel_targets, thought_dream, uni_act, uni_frame)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
 from world import make_config, make_world  # noqa: E402
@@ -283,7 +283,8 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--exp", type=int, default=16)
     ap.add_argument("-o", "--out", default=None)
-    ap.add_argument("--init", default=None, help="start from this checkpoint instead of a random model")
+    ap.add_argument("--init", default=None, help="start from this checkpoint instead of a random model (with online.pieces"
+                    " the stem, e.g. run/ckpt_00010000, of the pieces' _pK.bin)")
     args = ap.parse_args()
 
     cfg = load_config(args.config, args.set)
@@ -299,8 +300,8 @@ def main():
     env_cfg = make_config(cfg["env"], auto_reset=True)   # CircleWorld, or TextWorld with env.kind = text
     env = make_world(N0, env_cfg, seed=args.seed)
     S = int(cfg["model"].get("band_n", 0)) if on["pieces"] else 1   # task 00059: the pieces of one body
-    if on["pieces"] and (S < 2 or args.init or not cfg["model"].get("universal")):
-        raise ValueError("online.pieces needs the universal model with model.band_n >= 2 (and no --init)")
+    if on["pieces"] and (S < 2 or not cfg["model"].get("universal")):
+        raise ValueError("online.pieces needs the universal model with model.band_n >= 2")
     together = ("council", "veto", "pessimism", "rank", "rank_first")                     # every piece scores every move
     scored = on["piece_rule"] in ("gain", "gain_sharp", "soft") + together
     if on["piece_rule"] not in ("mean", "max", "random") + ("gain", "gain_sharp", "soft") + together or (scored and on["instinct_m"] <= 1):
@@ -312,7 +313,8 @@ def main():
     if on["tie_tables"] and (on["tie_tables"] not in TIED or S < 2 or on["device"] != "cuda"):
         raise ValueError("online.tie_tables: in or inout, for online.pieces on the GPU (online.device=cuda)")
     if S > 1:
-        agents = [agent_lib.Agent(dict(cfg["model"], band_k=k), seed=piece_seed(args.seed, k)) for k in range(S)]
+        agents = [agent_lib.Agent.load("%s_p%d.bin" % (args.init, k)) if args.init   # --init a checkpoint's stem: ckpt_NNNNNNNN
+                  else agent_lib.Agent(dict(cfg["model"], band_k=k), seed=piece_seed(args.seed, k)) for k in range(S)]
     else:
         agents = [agent_lib.Agent.load(args.init) if args.init else agent_lib.Agent(cfg["model"], seed=args.seed)]
     agent = agents[0]
@@ -363,6 +365,16 @@ def main():
     delayed = bool(getattr(env_cfg, "delays", ()))   # task 00091: inputs the composite, targets the present tiled
     if delayed and (not uni or on["device"] != "cuda" or on["sf_windows"] or clog or q_in or q_off):
         raise ValueError("env.delays needs the universal model on the GPU, without self-forcing, online.clog, online.noise_in or online.off")
+    panels = bool(on["panels"])   # task 00115: forecast panels; the world wrapped below, after the checks
+    if panels and not (uni and on["device"] == "cuda" and S == 4 and agent.config["band_cols"] == 2 and on["ring"]
+                       and agent.config["img"] == 2 * int(getattr(env_cfg, "view", 0) or env_cfg.size) and not agent.config["img_w"]
+                       and not (delayed or on["sf_windows"] or clog or q_in or q_off or agent.config.get("state"))
+                       and on["panel_decode"] in DECODE and on["panel_lag"] >= 0 and on["panel_noise"] >= 0 and N0 == 1):
+        raise ValueError("online.panels needs the universal model on the GPU with the ring, four quarter pieces (band_n 4, band_cols 2), "
+                         "model.img twice the view, one body, and none of env.delays, self-forcing, clog, noise_in, off or model.state")
+    if panels:
+        from world.panel_world import PanelWorld
+        env = PanelWorld(env, on["panel_lag"], seed=args.seed)
     refresh = bool(on["value_refresh"])      # task 00098: the value's tail fresh at every update, the mean of the transformers
     if refresh and not (gamma and uni and on["device"] == "cuda" and not (clog or q_in or q_off or delayed)):
         raise ValueError("online.value_refresh needs online.value_gamma and the universal model on the GPU, "
@@ -416,6 +428,8 @@ def main():
     lag = label_k - 1 if label_k else 0       # the newest window whose hindsight labels are complete
     if slabel:   # task 00109: step t's stored label is written at t + 1, so the newest window ends a step back
         lag = max(lag, 1)
+    if panels:   # task 00115: the targets are panel 1 of the 4 steps after each step
+        lag = max(lag, 4)
     rng = np.random.default_rng(args.seed)
     clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
     in_rng, act_rng = np.random.default_rng([args.seed, 0x0154]), np.random.default_rng([args.seed, 0x0155])   # task 00088
@@ -428,7 +442,7 @@ def main():
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off),
                 state=(S, agent.config["patch"] ** 2 * (1 if agent.config["gray"] else 3)) if state else None,
-                labels=S if slabel else 0)   # task 00109
+                labels=S if slabel else 0, fut=4 if panels else 0)   # task 00109; task 00115
     gate_on = dict(on, goal_mode="value" if gamma else "future") if future_k else on
     gms = [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, tokens=tok_sur, **kept)]   # the model's frame (task 00091: not the world's size)
     gms += [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
@@ -452,6 +466,11 @@ def main():
     nt = agent_lib.uni_layout(agent.config)["nt"] if uni else 0
     kinds = np.array([0] * (nt - 2) + [1, 2]) if uni else None   # what each token predicts: patch (or a summary,
     # task 00047: no target, cross-entropy 0), move, body
+    if panels:   # task 00115: the tokens that predict each piece's own patches (row-major in its block), and its block's side
+        panel_lay = [agent_lib.uni_layout(a_.config)["patch"] - 1 for a_ in agents]
+        panel_g = agent.config["img"] // agent.config["patch"] // 2
+        panel_rng = np.random.default_rng([args.seed, 0x9A4F])
+        panel_strip = []
     ce_n = prev_N = 0   # bodies whose newest window the last update trained on (their surprise is read next tick)
     rollouts = {}
 
@@ -587,6 +606,27 @@ def main():
         if on["ring"]:
             for k in live:
                 gpus[k].uni_ring_move(a)
+        if panels:   # task 00115: transformers 1-3's forecasts of their own panels at this step, noised, are next tick's panels 2-4
+            t_p = time.time()
+            if on["panel_blank"]:
+                env.set_forecasts(None)
+            else:
+                kk = min(gms[0].stm.n, L - 1)
+                ix = gms[0].stm.last(kk)
+                st_ = gms[0].stm
+                w_img = np.concatenate([st_.frames(ix), obs["image"][:1]])[None]
+                w_drv = np.concatenate([st_.drv[ix], obs["drives"][:1]])[None].astype(np.float32)
+                w_act = np.concatenate([st_.act[ix], a[:1]])[None].astype(np.float32)
+                w_es = np.concatenate([st_.es[ix], ep_start[:1]])[None].astype(np.uint8)
+                fc = []
+                for k in range(3):
+                    o = gpus[k].forward_uni_step(w_img, w_drv, w_act, w_es, kk, mode=DECODE[on["panel_decode"]])
+                    v = o["values_t"][:, panel_lay[k]]
+                    if on["panel_noise"] > 0:
+                        v = v + panel_rng.normal(0.0, on["panel_noise"], v.shape)
+                    fc.append(uni_frame(agent.config, np.clip(v, 0.0, 1.0), grid=(panel_g, panel_g)))
+                env.set_forecasts(np.stack(fc, 1))
+            win["t_panels"] = win.get("t_panels", 0.0) + time.time() - t_p
         missed[is_off] += 1
         win["t_act"] += time.time() - t_
         t_ = time.time()
@@ -711,6 +751,9 @@ def main():
             if delayed:   # task 00091: the composite as the input, the present tiled as the target
                 seen_in = (rows["img"], rows["drv"])
                 rows = dict(rows, img=delay_targets(rows["img"]))
+            elif panels:   # task 00115: the composite as shown as the input; panel i's target the real frame i ticks after panel 1's
+                seen_in = (rows["img"], rows["drv"])
+                rows = dict(rows, img=panel_targets(rows["f_img"], L))
             if state:   # task 00104: the pairs' first and next windows
                 ro1, ro2 = pair_rollouts(len(rows["img"]))
                 fill_rollout(ro1, {k: v[:, :L] for k, v in rows.items()}, L)
@@ -748,7 +791,7 @@ def main():
                             ro.pr[:, :] = (labels[k] if lref else rows["lab"][:, :, k]).T
                         sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
                         stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
-                                                      inputs=seen_in if delayed else shared if q_in else damaged(rows), step_mask=sm))
+                                                      inputs=seen_in if delayed or panels else shared if q_in else damaged(rows), step_mask=sm))
                         who.append(k)
                     else:   # a C++ rollout belongs to its agent
                         rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
@@ -792,6 +835,12 @@ def main():
                 for g in gpus:
                     g.sync()
             win["t_update"] += time.time() - t_
+        if panels and (tick - 1) % on["panel_snap"] < 6:   # task 00115: 6 consecutive composites of body 0 every panel_snap ticks (and at birth)
+            panel_strip.append(obs["image"][0].copy())
+            if len(panel_strip) == 6:
+                from PIL import Image
+                Image.fromarray(np.concatenate(panel_strip, 1)).save(os.path.join(out_dir, "panels_%07d.png" % (tick - 5)))
+                panel_strip = []
         if tick % on["save_every"] == 0:
             for k, (g, ag) in enumerate(zip(gpus, agents)):
                 if g:

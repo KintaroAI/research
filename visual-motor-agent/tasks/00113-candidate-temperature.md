@@ -1,7 +1,7 @@
 # Task 00113: The Instinct's Candidates Drawn at a Higher Temperature (experiment vm-00101)
 
 **Date:** 2026-11-20
-**Status:** In progress (the owner, 2026-11-20, on "do we use temperature in our models?": "write task for candidate temperature and run it after vm-00100")
+**Status:** Complete (vm-00101; the owner, 2026-11-20, on "do we use temperature in our models?": "write task for candidate temperature and run it after vm-00100")
 
 ## Context
 
@@ -75,9 +75,18 @@ As vm-00099:
 - [x] `uni_act(..., temp=1.0)`: the 15 candidates after the first redrawn at temperature temp when it is not 1; `online.instinct_temp` in DEFAULT_ONLINE; passed by `lifetime.py`, `eval_hunger.Life`, `forage_video.py`.
 - [x] Tests `tests/test_instinct_temp.py` (5: T = 1 the old draw exactly; T = 2 more varied with the first kept; the instinct finds a better move more often; off by default; a short GPU life and `eval_candidates.py`); regression: 336 pass, 4 skipped.
 - [x] `00101-candidate-temperature/` (README, Makefile with the base as a variable, `make base`).
-- [ ] The queue (`q101.sh`, started 2026-11-20): wait for vm-00100, check its 12 lives reached 60k, choose the base, run, frozen tests, candidates, videos; the write-up.
+- [x] The queue (`q101.sh`, started 2026-11-20): wait for vm-00100, check its 12 lives reached 60k, choose the base, run, frozen tests, candidates, videos; the write-up.
 
 ## Verification
 
 - Every TT run's `info.json` has `online.instinct_temp` 2 and the base's settings otherwise.
 - The base chosen and the numbers it was chosen by are printed to the queue's output and given in the README.
+
+## Results (vm-00101, [README](../00101-candidate-temperature/README.md))
+
+- **The base:** RD (RD − SD food at 40–60k +45.76 ± 8.38, all 12 seeds).
+- **Reading 2 met:** TT has 13.3 distinct moves among the 16 against RD's 4.4 (+8.9 ± 0.9, all 12 seeds), and no tick with all 16 the same (RD .10).
+- **Reading 3 met:** TT − RD food at 40–60k +16.1 ± 7.4 (11 of 12): 71.6 per 1k against 55.5. Poison −1.5 ± 0.7, mean hunger −.032 ± .029.
+- **Faster and alike:** TT eats 41 per 1k at 15–20k (RD reaches that at 30–35k); its seeds end at 69–76 (RD 41–76).
+- **The label is right further out:** frozen, to 10 ticks before a meal (RD 6); still flat and optimistic beyond 15.
+- **What follows (the plan):** the candidates' temperature joins the instinct if the owner decides so, and Breakout (task 00111, vm-00102) is built with it.

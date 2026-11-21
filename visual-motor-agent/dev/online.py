@@ -127,6 +127,12 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00113: the instinct's candidates after the first drawn at this temperature (p^(1/T), renormalized per
                       # value); the first stays the model's own move at temperature 1. 1: unchanged
                       instinct_temp=1.0,
+                      panels=0,             # task 00115: forecast panels (world/panel_world.py): model.img twice env.view, 4 quarter pieces
+                      panel_lag=0,          # task 00115: panel 1 is the view sensed this many ticks late (the body too)
+                      panel_noise=0.0,      # task 00115: Gaussian noise (sd, on [0, 1] values) on the forecasts shown in panels 2-4
+                      panel_decode="pair",  # task 00115: the forecasts decoded as each value's expectation (mean) or most probable pair
+                      panel_blank=0,        # task 00115: panels 2-4 noise every tick (the no-forecast baseline)
+                      panel_snap=10000,     # task 00115: every so many ticks, 6 consecutive composites of body 0 (panels_TICK.png)
                       # lifetime.py on the GPU: read the update's stats every stats_every ticks (each read waits for
                       # the GPU; the metrics average the samples)
                       stats_every=10,
@@ -511,8 +517,9 @@ class GatedMemory:
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
     def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True, img_w=0,
-                 pieces=False, state=None, labels=0):
+                 pieces=False, state=None, labels=0, fut=0):
         self.on, self.L, self.goal_k = on, L, goal_k
+        self.fut = int(fut)   # task 00115: windows also carry panel 1 of their steps and the fut steps after (f_img)
         self.goal_mode = on.get("goal_mode", "relief")
         self.gamma = float(on.get("value_gamma") or 0.0)            # task 00096 (goal_mode value)
         # task 00098: the value's tail recomputed at every update; windows carry the real part, the tail weight and the
@@ -529,15 +536,16 @@ class GatedMemory:
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
         # least one step after it ends (task 00053)
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
-        if self.D < self.vn:
+        if self.D < max(self.vn, self.fut):
             raise ValueError("long-term memory must decide a chunk at least as late as its bootstrap steps")
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
         self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state, labels=labels,
                           cut=bool(labels and on.get("full_dose")))   # task 00110
-        self.store = store or ChunkStore(on, L, self.stm, extra=self.vn)   # long-term memory (shared between bodies or not)
+        self.store = store or ChunkStore(on, L, self.stm, extra=max(self.vn, self.fut))   # long-term memory (shared between bodies or not)
         self.boot = ("img", "drv", "act", "es") + (("st",) if state else ())   # task 00104: the bootstrap windows' reads too
-        self.keys = self.stm.fields + (tuple("b_" + k for k in self.boot) + ("pr_real", "tw") if self.refresh else ())
+        self.keys = self.stm.fields + (tuple("b_" + k for k in self.boot) + ("pr_real", "tw") if self.refresh else ()) + (
+            ("f_img",) if self.fut else ())
         self.sur = np.zeros(on["stm"])                             # surprise of the steps in stm
         self.top = np.zeros(on["stm"], np.int8)                    # and its largest part
         self.recent = [collections.deque(maxlen=on["surprise_window"]) for _ in SURPRISE_PARTS]
@@ -637,6 +645,10 @@ class GatedMemory:
         r = {k: getattr(s, k)[idx] for k in s.fields}
         r["img"] = as_frames(r["img"])
         ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
+        if self.fut:   # task 00115
+            if lag < self.fut:
+                raise ValueError("forecast panels need windows ending at least fut steps back")
+            r["f_img"] = panel_one(s.img[ext[:, :L + self.fut]])
         if self.goal_k:
             r["pr"] = np.stack([goal_labels(s, e, self.goal_k, self.goal_mode, self.gamma)[:L] for e in ext])
         if self.refresh:   # task 00098
@@ -688,6 +700,8 @@ class GatedMemory:
         L, n = self.L, self.vn
         old = {k: st.ltm[k][ci, :L] for k in self.stm.fields}
         old["img"] = as_frames(old["img"])
+        if self.fut:   # task 00115
+            old["f_img"] = panel_one(st.ltm["img"][ci, :L + self.fut])
         if self.refresh:   # task 00098: the stored tails for pr; the caller replaces them with fresh ones
             old["pr_real"], old["tw"] = st.ltm["lbl"][ci], st.ltm["tw"][ci]
             if self.lrefresh:   # task 00112: no stored tails; the caller sets the labels
@@ -760,6 +774,22 @@ def damage(frames, hit, black, patch, rng):
         keep = rng.random((k, patch, patch, 1), dtype=np.float32) < 0.5
         blocks[speckle] = np.where(keep, blocks[speckle], rng.integers(0, 256, (k, patch, patch, 1), dtype=np.uint8))
     return out
+
+
+def panel_one(frames):
+    """Task 00115: panel 1 (the top-left quarter) of composites [..., 2h, 2w, ch], three channels."""
+    h, w = frames.shape[-3] // 2, frames.shape[-2] // 2
+    return as_frames(frames[..., :h, :w, :])
+
+
+def panel_targets(f_img, L):
+    """Task 00115: the target composites [n, L, 2h, 2w, 3] of windows of L steps from f_img [n, L + 4, h, w, 3], panel 1 of
+    each step and the 4 after: at step j, panel i (1 top left, 2 top right, 3 bottom left, 4 bottom right) is panel 1 of
+    step j + i, the real frame i ticks after the one panel 1 shows."""
+    if f_img.shape[1] < L + 4:
+        raise ValueError("panel targets need 4 steps past the window")
+    p = [f_img[:, i:i + L] for i in range(1, 5)]
+    return np.concatenate([np.concatenate(p[:2], -2), np.concatenate(p[2:], -2)], -3)
 
 
 def delay_targets(frames):

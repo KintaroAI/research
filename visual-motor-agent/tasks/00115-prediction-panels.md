@@ -1,7 +1,7 @@
 # Task 00115: Forecast Panels — the Model's Own Noised Forecasts Fed Back Beside the Real Frame (to explore later)
 
 **Date:** 2026-11-20
-**Status:** Proposed, for later. The owner, 2026-11-20, during vm-00101: "there are 2 another ideas for later". Clarified the same evening:
+**Status:** In progress: an overnight proof of concept (the owner, 2026-11-20, late: "you do panels (#5) - run so it finishes by around 9 am. The goal is to see numbers and test if poc works - use re-labeled label and temperature that makes sense out of #1 but dont do those as default settings yet ... do it in small iterations ... so we fail fast"). Proposed the same evening, during vm-00101: "there are 2 another ideas for later". Clarified the same evening:
 
 > imagine you have a "delay" mechanism in a body - so tick 1 - F1 is "live", there is no F2 and F3 or it's just a noise (first 3 ticks of life), on a second tick F1 = F1(2), F2 = F1(1), F3=noise, tick 3 F1 = F1(3), F2 = F1(2), F3 = F2(1) ... F1(t) = F1(t), F2(t) = F1(t-1), F3(t) = F2(t-1) or F1(t-2) so basically imagine like in neurones - first layer has delay so second layer sees some sort of outdated image (one spike away from layer 2)
 
@@ -91,6 +91,17 @@ Earlier versions of this task chained the panels within a tick, which needed an 
   - **Gaussian** on the values, σ fixed or drawn per tick;
   - **sampled:** each value drawn from the model's own predicted bins instead of its mean. The noise is then the model's own uncertainty, sharp by construction;
   - **pixel noise** as `online.noise_in` (vm-00077).
+- **Real pixels mixed into the noise (for later; the owner, 2026-11-21: "instead adding noise pixel we can partially add noise and partially add sampled pixels from real frame in case of a lag when real frames already exists - in this way we can control amount of info from real frames model sees and tune it in and out when we need real forecast and "noise" pixels are not available, or we can slowly replace proportion of real pixels "noise" with just random noise over time keeping the whole noise level at the same level"):**
+  - **Needs a lag:** with a sensing lag the frames panels 2 to 4 forecast may already exist. The body holds them; the model has not seen them yet.
+  - **The mix:** of the pixels a forecast panel replaces, a share r takes the real future frame's pixel and a share q random noise; the rest stays the forecast.
+  - **A dial on real information:**
+    - r tunes how much of the real future leaks into the panel, and can be turned up or down;
+    - with r = 0 the panel is the pure forecast, as it must be when no real frame exists yet (no lag, or further out than the lag).
+  - **A schedule, like scheduled sampling:**
+    - start with a large r, so the panels carry mostly real future pixels and their targets are easy;
+    - over the life move the share from real pixels to random noise (r down, q up), keeping r + q constant, so the panel's total corruption stays at one level while its real information fades to zero;
+    - the model then ends on its own forecasts, having learned the panel layout and the chain while they were easy.
+  - **To check:** that the model does not learn to copy the real pixels, so its loss on them stays honest. One option is to score only the pixels that are not real; another is to keep r small enough that copying does not pay.
 
 ## What it is for
 
@@ -128,3 +139,77 @@ Stages 1–3 can be compared frozen before any lifetime.
 - **Scheduled sampling** (Bengio 2015): feeding the model its own predictions in training.
 - **PlaNet's overshooting** (Hafner 2019): a latent model trained on predictions several steps ahead.
 - **Predictive coding:** cortical layers predicting delayed signals from the layer below (Rao & Ballard 1999), the owner's neuron picture.
+
+## The overnight proof of concept (2026-11-20/21)
+
+**Goal:** numbers by 9 am showing whether the panels work. These are pilot runs, not an experiment: few seeds, no defaults changed. A run with statistics follows after the owner's review.
+
+**The agent:**
+- RD's settings (vm-00100: the re-labeled meal label in its own channel, full dose, inertia 4);
+- the candidates' temperature if vm-00101 supports it (T = 2);
+- `model.img = 128` with the four quarter transformers, one 64 × 64 panel each.
+
+**Implementation:**
+- **`world/panel_world.py`, `PanelWorld`:**
+  - wraps the world. Its frame is the 2 × 2 composite: panel 1 (top left) the view sensed with the lag, panels 2–4 the forecasts set by `set_forecasts` before each step (noise before the first);
+  - with the lag, the drives, `terminal_drives` and `hunger_cut` are delayed with the frame.
+- **Options** (`online.panels = 1`; `panel_lag` L, default 0; `panel_noise` σ on [0, 1] values, default 0; `panel_decode` mean or pair; `panel_blank = 1`, panels 2–4 random grey noise drawn anew each tick: the no-forecast baseline):
+  - need the universal model on the GPU, `band_n = 4`, `band_cols = 2`, `model.img` twice `env.view`;
+  - refused with `env.delays`, the state, self-forcing, clog, `noise_in` and `off`.
+- **Acting:**
+  - after the move, each transformer's predicted values for its own panel at the newest step come from one `forward_uni_step` over the last ctx steps (pair or mean decoded);
+  - transformers 1–3's forecasts, noised, become next tick's panels 2–4.
+- **Memory:**
+  - `GatedMemory(fut=4)`: long-term memory keeps 4 steps past each chunk (`ChunkStore(extra=max(vn, 4))`), and windows carry `f_img`, panel 1 of their steps and the 4 after;
+  - the newest window ends 4 ticks back.
+- **Training:**
+  - the stored composites are the inputs (`update_rollout(inputs=...)`, as for `env.delays`);
+  - the target composite at step j is [P1(j + 1), P1(j + 2); P1(j + 3), P1(j + 4)] (`online.panel_targets`): panel i against the real frame i ticks after panel 1's.
+- **Measures:**
+  - per-panel prediction loss (`uni_ce_patch_pK`, logged per transformer);
+  - lived food, poison and hunger against TT (vm-00101) at the same ticks;
+  - strips of composites saved every 5k ticks (`panels_TICK.png`, `online.panel_snap`).
+
+**Iterations** (decided as results come in, logged here):
+1. Smoke and timing: a few hundred ticks, the plumbing and the speed.
+2. Short arms side by side:
+   - PB (panels 2–4 blank);
+   - PF (forecasts, no noise);
+   - PN (forecasts with noise).
+3. The longest affordable runs of the promising arms, and L = 2 if time allows.
+
+**What ran (interim, 2026-11-21 07:30):**
+- **Smoke and timing:** 7 tests (`tests/test_panels.py`). One full-size life sharing the card with 12 lives ran 1.6 ticks/s, of which the forecasts cost 55 ms a tick.
+- **The pilot** (`pilot_00115/`, from 01:14):
+  - started after vm-00101's runs, with T = 2 by vm-00101's rule (TT − RD food at 40–60k +16.06 ± 7.39);
+  - 8 lives at once under MPS, seeds 1–2: PB, PF (pair decoding), PN (pair, σ .1), PL (PN with lag 2);
+  - 0.5–0.8 ticks/s each, so about 20k ticks by 08:45, when they are stopped.
+- **What the panels look like at 5k:**
+  - in PF, panel 2 (one tick ahead) is a recognisable scene: food, poison, the cursor; panels 3–4 are fragments;
+  - with σ .1 (PN, PL) the panels are mostly snow, the forecast faint under it: σ .1 is too strong.
+- **Prediction loss in training batches** (mean of the 2 seeds, 10–14k):
+
+  | Arm | Panel 1 | Panel 2 | Panel 3 | Panel 4 |
+  |---|---|---|---|---|
+  | PB | .846 | .895 | .892 | .898 |
+  | PF | .840 | .911 | .921 | .938 |
+  | PN | .847 | .895 | .911 | .924 |
+  | PL | .832 | .894 | .908 | .916 |
+
+  - Panel 1 is slightly better with forecasts; panels 2–4 are worse.
+- **A frozen test** (`lifetime.py --init` with the pieces' checkpoints, `ppo.lr = 0`, 600 ticks in new worlds, seeds 101–102, the loss after tick 200; `--init` now loads the stem of the pieces' `_pK.bin`):
+
+  | 5k checkpoint, seeds 1 / 2 | Panel 1 | Panel 2 | Panel 3 | Panel 4 |
+  |---|---|---|---|---|
+  | PB, blank (as it lived) | .936 / .935 | 1.024 / 1.075 | 1.026 / 1.065 | 1.020 / 1.064 |
+  | PF, its own forecasts | .885 / .892 | .962 / .972 | .984 / 1.014 | 1.004 / 1.016 |
+  | PF, forecasts blanked | .948 / .941 | 1.102 / 1.124 | 1.105 / 1.104 | 1.120 / 1.132 |
+
+  - **Frozen, PF predicts better than PB on every panel,** by .04–.10, in both seeds.
+  - **It uses its forecasts:** blanked, it falls below PB.
+- **Why training batches said the opposite (a reading, not tested):**
+  - memory keeps the panels as they were shown, so replayed windows carry forecasts from an older, worse model;
+  - PF trains partly on its own stale forecasts, while the frozen test has fresh ones;
+  - re-forecasting at replay (as the label is re-labeled) would remove this.
+- **Food:** too few seeds and ticks to read.
+- **Pending:** the same frozen test at 10k; the pilot's last numbers at 08:45.
