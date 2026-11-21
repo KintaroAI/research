@@ -1,7 +1,7 @@
 # Task 00112: The Body Label Re-labeled at Every Replay, with the Full Dose (experiment vm-00100)
 
 **Date:** 2026-11-20
-**Status:** In progress (the owner, 2026-11-20, after vm-00099: "yes, write task for relabeling with full dose in own channel and run it")
+**Status:** Complete (2026-11-20, vm-00100; started by the owner, 2026-11-20, after vm-00099: "yes, write task for relabeling with full dose in own channel and run it")
 
 ## Context
 
@@ -85,9 +85,22 @@ As vm-00099:
 - [x] Tests `tests/test_label_refresh.py` (5: the parts give the stored label on a table; the bootstrap windows and labels from memory, newest, replayed and from stm; unchanged without the option; the option check; a short GPU life with its frozen value test); regression: 229 label, value, memory and world tests pass.
 - [x] Timing on the RTX 3090: 12 lives at once, 3.0 ticks/s each (SD 4.1: the bootstrap passes), 10 GB; about 5.6 h for 60k ticks.
 - [x] `00100-relabeled-label/` (README, Makefile).
-- [ ] The runs (started 2026-11-20, queue `q100.sh`: then frozen tests, candidates, videos), the write-up.
+- [x] The runs (2026-11-20, 5.5 h), frozen tests, candidates, videos; the write-up (`00100-relabeled-label/README.md`).
 
 ## Verification
 
 - Every RD run's `info.json` has `online.label_refresh` 1 and SD's settings otherwise.
 - On a table, a re-labeled label equals `stored_labels` with the same next prediction.
+
+## Results (vm-00100)
+
+- **Reading 1, plumbing: met.** The 5 tests pass, and all 12 lives ran 60k ticks.
+- **Reading 2, the front moves back: met.** Four to seven ticks before a meal at 40–60k, RD predicts .71 (true .73) against SD's .16. Paired +.548 ± .038, all 12 seeds.
+- **Reading 3, it forages: met.** RD − SD food at 40–60k +45.8 ± 8.4 (all 12): 55.5 per 1k against 9.8. Poison 9.7 against 28.6.
+- **Reading 4, against MB: level at the end.**
+  - At 40–60k: food +1.3 ± 12.9, mean hunger −.011 ± .043, poison −2.5 ± 1.5.
+  - RD is ahead earlier: food +9.0 ± 7.9 at 20–40k, and less poison from 5–10k on, in every seed.
+- **Reading 5, poison:** RD rates poison moves .050 worse (MB .040, SD .012), and its pick is a poison move on .24 of ticks (MB .26, SD .42).
+- **The branch:** "3 holds and RD comes near MB". Storing once was the cost. RD's settings are the candidate default (the owner's decision); vm-00101 runs on RD.
+- **The stall loop is confirmed:** RD's stored labels, written by SD's rule but not trained on, reach .65 four to seven ticks before a meal (SD's .08).
+- **The horizon is the new limit:** beyond about 10 ticks the label levels off near .4, optimistic.

@@ -36,7 +36,8 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00093": "../videos/vm93_s5/compare.mp4",
           "00094": "../videos/vm94_s5/compare.mp4", "00095": "../videos/vm95_s5/compare.mp4",
           "00096": "../videos/vm96_s5/compare.mp4", "00097": "../videos/vm97_inertia_s5/compare.mp4",
-          "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4"}
+          "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4",
+          "00100": "../videos/vm100_s5/compare.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -46,7 +47,8 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00095": [("00094", ("C8r",))], "00096": [("00095", ("IB",))],
             "00097": [("00094", ("C8r",)), ("00095", ("IB",))],
             "00098": [("00094", ("C8r",)), ("00095", ("IB",)), ("00097", ("M0", "MB"))],
-            "00099": [("00095", ("IB",)), ("00097", ("MB",)), ("00098", ("SB",))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00099": [("00095", ("IB",)), ("00097", ("MB",)), ("00098", ("SB",))],
+            "00100": [("00095", ("IB",)), ("00097", ("MB",)), ("00099", ("SD",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
 
@@ -369,6 +371,10 @@ def one(d, write_readme):
             if e == "00099":
                 cap += (" All in the world with inertia from birth: IB the hunger value (vm-00095), MB the meal label re-labeled at every"
                         " replay (vm-00097), SB the meal label stored once (vm-00098), SD stored once with the full dose of poison.")
+            if e == "00100":
+                cap += (" All in the world with inertia from birth: IB the hunger value (vm-00095), MB the meal label re-labeled at every"
+                        " replay in the hunger channel (vm-00097), SD stored once in its own channel with the full dose (vm-00099), RD"
+                        " re-labeled at every replay in its own channel with the full dose.")
             if total > shown:
                 cap += " The %d best arms of %d by their last value." % (shown, total)
             figs.append(("curves.png", "; ".join(p[0] for p in ps), cap))
@@ -395,6 +401,11 @@ def one(d, write_readme):
                     " re-labeled at every replay), SB (stored once, capped poison cost) and SD (stored once, full dose). Each arm's 64 x 64"
                     " view (the blue square: the quarter transformer whose move it was), and beside it the whole world with the window"
                     " outlined. Plain circles are food, checkered ones poison. Seed 3 (where SB starved) is in videos/vm99_s3.")
+        if e == "00100":
+            cap += (" Seed 5 at 60k, frozen, from the same start, in the world with inertia: IB (the hunger value), MB (the meal label,"
+                    " re-labeled, in the hunger channel), SD (stored once, own channel, full dose) and RD (re-labeled, own channel, full"
+                    " dose). Each arm's 64 x 64 view (the blue square: the quarter transformer whose move it was), and beside it the whole"
+                    " world with the window outlined. Plain circles are food, checkered ones poison. Seed 3 is in videos/vm100_s3.")
         if e == "00097":
             cap += (" Seed 5 at 60k, frozen, from the same start, in the world with inertia: IB (the hunger value), MB (the meal"
                     " label) and MBN (the meal label weighted by hunger when choosing). Each arm's 64 x 64 view (the blue square: the"
