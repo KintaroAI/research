@@ -93,6 +93,23 @@ Earlier versions of this task chained the panels within a tick, which needed an 
     - It is the forecasts' counterpart of re-labeling the label at every replay (vm-00100), which fixed the same kind of staleness for the label.
 - **Moves:** the step's move is the move made now, as today. Panels 2 to 4 predict 2 to 4 ticks after the real frame, so the moves' effects further out are in view; the instinct does not use them yet (see "Later").
 - **Dreaming:** fill panel 1 from O1 as well, and the model runs on its own forecasts, which it has seen in panels 2 to 4 on every tick of its life.
+- **Forecasts off the plane (for later; the owner, 2026-11-22: "if we try to predict few steps ahead and we do not need actually frames to be positioned on plane - we can potentially train model on next and future frames by using some tricks - like train now against bare model and train future prediction against bare model + some accumulated training not settled in base weights (short term memory) or for example to have multi-layer transfromer and each layer (or few layers) is trained against more and more distant future - so frames not located on plane but located vertically"):**
+  - **The point:** the forecasts need not be panels beside the real view. The frame stays the plain 64 × 64 view, and the horizons live elsewhere in the model.
+    - The panels cost a 128 × 128 frame (four times the pixels; vm-00102's lives ran at 0.6–0.7 ticks/s), and TT without panels still forages better than either panel arm.
+  - **Way 1: horizons in the weights.**
+    - The next frame is trained against the bare model (the slow weights S).
+    - The frames further out are trained against S plus a short-term part that has not settled into S: accumulated, quickly changing training, a short-term memory.
+    - The nearest thing built is the flexible layer (vm-00094, `online.fast`: W = S + F, F a fast, decaying part trained on the newest window).
+    - Open: how the two parts split the horizons. For example, S + F alone predicts t + 2 to t + 4 while S alone predicts t + 1, or each horizon gets its own fast part.
+  - **Way 2: horizons in depth ("vertically").**
+    - A multi-layer transformer where each layer, or each group of a few layers, is trained against a more distant future. With 8 layers, for example, layers 1–2 predict t + 1, layers 3–4 t + 2, and so on, each through the shared head.
+    - Each horizon reads the hidden state of the one before it. That is the panels' chain (panel 3 reads panel 2's forecast) moved from the plane into depth.
+    - Related: multi-token prediction (Gloeckle et al. 2024: several future tokens from one trunk, one head each), deep supervision (Lee et al. 2015: losses on intermediate layers).
+    - Open: what the last layer predicts (the furthest horizon, or t + 1 again), and whether early layers trained on the next frame leave the later ones enough room.
+  - **What both would remove:**
+    - **The stale forecasts:** nothing forecast is stored in memory, so every replayed window's forecasts are made fresh by the current weights. No warm-up is needed.
+    - **The noise on the panels:** the forecasts are internal states, never drawn as pixels and read back.
+  - **What both would lose:** the forecast as an input the model sees and corrects. vm-00102 found that input is used: blanking it costs .06–.20 nats per panel and three quarters of the food. Hidden states pass on more than a drawn frame, but with no noise to clean up, a forecast in depth may stay blurry where a panel had to commit.
 
 ## Noise
 

@@ -12,12 +12,17 @@
 #   make frozen — (after the runs; 5 lives at a time) per checkpoint (10k ... 60k) and life: 600 ticks with learning off (ppo.lr = 0) in new worlds (seed 100 + s);
 #                 PN also with its forecasts blanked (rows PN_sN_B)
 #   make video — panel_video.py of seed 1 at 60k: PN as seen beside the real frames, 400 ticks
+#   Options: GPU=1 (the RTX 4090), MPS= (no MPS daemon), T="10000 30000" (frozen's checkpoints),
+#   e.g. both cards: make frozen GPU=0 MPS= T="10000 30000 50000" & make frozen GPU=1 MPS= T="20000 40000 60000"
 
 DEV = ../dev
 PY = ./venv/bin/python
 D = $(HOME)/data/research/visual-motor-agent
 OUT = $(D)/exp_00102
-G = CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pipe CUDA_VISIBLE_DEVICES=0
+GPU ?= 0
+MPS ?= CUDA_MPS_PIPE_DIRECTORY=/tmp/claude-1000/mps_pipe
+T ?= 10000 20000 30000 40000 50000 60000
+G = CUDA_DEVICE_ORDER=PCI_BUS_ID $(MPS) CUDA_VISIBLE_DEVICES=$(GPU)
 SET = --config configs/U_view.json --set model.n_layer=8 --set online.instinct_tol=0.002 \
   --set model.body_label=1 --set online.label=meal --set online.label_gamma=0.95 --set env.inertia=4 --set online.full_dose=1 \
   --set online.label_refresh=1 --set online.instinct_temp=2 --set model.img=128 --set online.panels=1 --set online.panel_decode=pair
@@ -39,7 +44,7 @@ runs:
 	  done; done; wait; }
 
 frozen:
-	cd $(DEV) && for t in 10000 20000 30000 40000 50000 60000; do \
+	cd $(DEV) && for t in $(T); do \
 	  o=$(OUT)/frozen$$((t / 1000))k; mkdir -p $$o; \
 	  for a in PB PN; do for s in 1 2 3 4 5; do \
 	    x=$$([ $$a = PB ] && echo "$(PB)" || echo "$(PN)"); \
