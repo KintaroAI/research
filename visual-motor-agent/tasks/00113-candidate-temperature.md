@@ -90,3 +90,16 @@ As vm-00099:
 - **Faster and alike:** TT eats 41 per 1k at 15–20k (RD reaches that at 30–35k); its seeds end at 69–76 (RD 41–76).
 - **The label is right further out:** frozen, to 10 ticks before a meal (RD 6); still flat and optimistic beyond 15.
 - **What follows (the plan):** the candidates' temperature joins the instinct if the owner decides so, and Breakout (task 00111, now vm-00103) is built with it.
+
+## The default (the owner, 2026-11-22: "lets do RD and T=2 as defaults")
+
+- **The default agent becomes TT:** C8 (vm-00091's view world, 4 quarter transformers of 8 layers, tolerance .002, context 8, the ring, gain), RD's label (vm-00100), the candidates at temperature 2, in the world with inertia 4. Until now the default agent was C8's settings repeated as `--set` flags in each Makefile.
+- **Where:** a new config, `dev/configs/U_agent.json`: `U_view.json` with
+  - `model.n_layer = 8`, `model.body_label = 1`;
+  - `online.instinct_tol = 0.002`, `label = meal`, `label_gamma = 0.95`, `full_dose = 1`, `label_refresh = 1`, `instinct_temp = 2`;
+  - `env.inertia = 4`.
+- **What does not change:**
+  - the code defaults (`online.DEFAULT_ONLINE`, `agent_lib.DEFAULT_MODEL`): they serve every world, the text and car worlds included, where a meal label has no meaning;
+  - `U_view.json` and the other configs, so earlier Makefiles still run as they did.
+- **Verification:** a short life from `U_agent.json` resolves to the same config as TT's (vm-00101, `TT_s1/info.json`), apart from the run's name, seed, length and output.
+- **After:** CLAUDE.md names `U_agent.json` as the config to start from; Breakout (task 00111) builds on it.

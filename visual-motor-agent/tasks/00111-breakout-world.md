@@ -34,7 +34,7 @@
   - the ball then comes back from the top at a random place and angle after a short pause;
   - hunger drifts +.001 a tick as now.
 - **The world never resets** (a continual world, as all the default agent's worlds). The `info` keys `lifetime.py` reads: `terminal_image`, `terminal_drives`, `success` (a hit), `hunger_cut`, `gt_hazard_click` (a miss); and for scoring only `gt_ball`, `gt_paddle`.
-- **`configs/U_breakout.json`:** the default agent's model (C8's: 4 quarter transformers of 8 layers, tolerance .002, context 8, the ring) in this world.
+- **`configs/U_breakout.json`:** the default agent's model (C8's: 4 quarter transformers of 8 layers, tolerance .002, context 8, the ring) in this world. Since 2026-11-22 the default agent is `configs/U_agent.json` (TT: C8 with RD's label and the candidates at temperature 2), so Breakout starts from it.
 
 ## The plan in stages
 
