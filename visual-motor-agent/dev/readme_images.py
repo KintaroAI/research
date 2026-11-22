@@ -37,7 +37,8 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00094": "../videos/vm94_s5/compare.mp4", "00095": "../videos/vm95_s5/compare.mp4",
           "00096": "../videos/vm96_s5/compare.mp4", "00097": "../videos/vm97_inertia_s5/compare.mp4",
           "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4",
-          "00100": "../videos/vm100_s5/compare.mp4", "00101": "../videos/vm101_s5/compare.mp4"}
+          "00100": "../videos/vm100_s5/compare.mp4", "00101": "../videos/vm101_s5/compare.mp4",
+          "00102": "../videos/vm102/panels_60k.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -49,7 +50,8 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00098": [("00094", ("C8r",)), ("00095", ("IB",)), ("00097", ("M0", "MB"))],
             "00099": [("00095", ("IB",)), ("00097", ("MB",)), ("00098", ("SB",))],
             "00100": [("00095", ("IB",)), ("00097", ("MB",)), ("00099", ("SD",))],
-            "00101": [("00095", ("IB",)), ("00097", ("MB",)), ("00100", ("RD",))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00101": [("00095", ("IB",)), ("00097", ("MB",)), ("00100", ("RD",))],
+            "00102": [("00101", ("TT",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
 
@@ -76,6 +78,8 @@ def load_runs(e):
         d = os.path.dirname(m)
         p = os.path.join(d, "info.json")
         info = json.load(open(p)) if os.path.exists(p) else {}
+        if info.get("ppo", {}).get("lr", 1) == 0:   # a frozen test (learning off), e.g. a video's life: not a life to plot
+            continue
         arms.setdefault(arm_of(os.path.basename(d)), []).append((rows, info, d))
     return arms
 
@@ -380,6 +384,10 @@ def one(d, write_readme):
                 cap += (" All in the world with inertia from birth: IB the hunger value (vm-00095), MB the meal label re-labeled at every"
                         " replay in the hunger channel (vm-00097), RD re-labeled in its own channel with the full dose (vm-00100), TT RD"
                         " with the instinct's candidates after the first drawn at temperature 2.")
+            if e == "00102":
+                cap += (" All in the world with inertia, on TT's settings (vm-00101: RD's label with the candidates at temperature 2): PB and PN"
+                        " see a 128 x 128 composite of four 64 x 64 panels, panel 1 the real view and panels 2-4 noise (PB) or the"
+                        " model's own forecasts (PN); TT is vm-00101's 64 x 64 agent without panels (its 12 seeds).")
             if total > shown:
                 cap += " The %d best arms of %d by their last value." % (shown, total)
             figs.append(("curves.png", "; ".join(p[0] for p in ps), cap))
@@ -417,6 +425,10 @@ def one(d, write_readme):
                     " temperature 2). Each arm's 64 x 64 view (the blue square: the quarter transformer whose move it was), and beside it"
                     " the whole world with the window outlined. Plain circles are food, checkered ones poison. Seed 3 is in"
                     " videos/vm101_s3.")
+        if e == "00102":
+            cap += (" PN seed 1 at 60k, frozen, 400 ticks in a new world. Left: the 128 x 128 frame as the model sees it (panel 1 the real"
+                    " view; panels 2-4 the forecasts of the frame now, 1 tick ahead and 2 ahead, made on the tick before, with noise .03)."
+                    " Right: the real frames those forecasts aim at. The forecast further out hedges toward the present (R6).")
         if e == "00097":
             cap += (" Seed 5 at 60k, frozen, from the same start, in the world with inertia: IB (the hunger value), MB (the meal"
                     " label) and MBN (the meal label weighted by hunger when choosing). Each arm's 64 x 64 view (the blue square: the"

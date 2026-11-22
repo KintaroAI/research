@@ -11,6 +11,7 @@
 #   make runs — PB and PN, seeds 1-5, 10 lives at once on GPU 0
 #   make frozen — (after the runs; 5 lives at a time) per checkpoint (10k ... 60k) and life: 600 ticks with learning off (ppo.lr = 0) in new worlds (seed 100 + s);
 #                 PN also with its forecasts blanked (rows PN_sN_B)
+#   make long — (after the runs) the 60k checkpoints, 2000 ticks with learning off (seed 300 + s): PB, PN and PN blanked (PN_B_sN)
 #   make video — panel_video.py of seed 1 at 60k: PN as seen beside the real frames, 400 ticks
 #   Options: GPU=1 (the RTX 4090), MPS= (no MPS daemon), T="10000 30000" (frozen's checkpoints),
 #   e.g. both cards: make frozen GPU=0 MPS= T="10000 30000 50000" & make frozen GPU=1 MPS= T="20000 40000 60000"
@@ -30,7 +31,7 @@ PB = --set online.panel_blank=1
 PN = --set online.panel_noise=0.03
 FROZEN = --set ppo.lr=0 --set online.steps=600 --set online.log_every=100 --set online.save_every=100000 --set online.panel_snap=100000
 
-.PHONY: all runs frozen video
+.PHONY: all runs frozen long video
 
 all: runs
 
@@ -56,6 +57,14 @@ frozen:
 	      -o $$o/PN_s$${s}_B > $$o/PN_s$${s}_B.log 2>&1 & \
 	  done; wait; \
 	done
+
+long:
+	o=$(OUT)/long60k; mkdir -p $$o; cd $(DEV) && for c in PB PN PN_B; do \
+	  for s in 1 2 3 4 5; do \
+	    x=$$([ $$c = PN ] && echo "$(PN)" || echo "$(PB)"); a=$$([ $$c = PB ] && echo PB || echo PN); \
+	    env $(G) $(PY) lifetime.py $(SET) $$x $(FROZEN) --set online.steps=2000 --init $(OUT)/$${a}_s$$s/ckpt_00060000 --seed 30$$s \
+	      -o $$o/$${c}_s$$s > $$o/$${c}_s$$s.log 2>&1 & \
+	  done; wait; done
 
 video:
 	mkdir -p $(D)/videos/vm102

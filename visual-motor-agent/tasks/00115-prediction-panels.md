@@ -1,7 +1,7 @@
 # Task 00115: Forecast Panels — the Model's Own Noised Forecasts Fed Back Beside the Real Frame (to explore later)
 
 **Date:** 2026-11-20
-**Status:** In progress: the full run vm-00102 (from 2026-11-21, after the overnight proof of concept below) (the owner, 2026-11-20, late: "you do panels (#5) - run so it finishes by around 9 am. The goal is to see numbers and test if poc works - use re-labeled label and temperature that makes sense out of #1 but dont do those as default settings yet ... do it in small iterations ... so we fail fast"). Proposed the same evening, during vm-00101: "there are 2 another ideas for later". Clarified the same evening:
+**Status:** The full run vm-00102 complete (2026-11-22, after the overnight proof of concept below); the forecasts help prediction and cut poison by a quarter, and the 128 × 128 panel frame forages worse than TT; later ideas below (the owner, 2026-11-20, late: "you do panels (#5) - run so it finishes by around 9 am. The goal is to see numbers and test if poc works - use re-labeled label and temperature that makes sense out of #1 but dont do those as default settings yet ... do it in small iterations ... so we fail fast"). Proposed the same evening, during vm-00101: "there are 2 another ideas for later". Clarified the same evening:
 
 > imagine you have a "delay" mechanism in a body - so tick 1 - F1 is "live", there is no F2 and F3 or it's just a noise (first 3 ticks of life), on a second tick F1 = F1(2), F2 = F1(1), F3=noise, tick 3 F1 = F1(3), F2 = F1(2), F3 = F2(1) ... F1(t) = F1(t), F2(t) = F1(t-1), F3(t) = F2(t-1) or F1(t-2) so basically imagine like in neurones - first layer has delay so second layer sees some sort of outdated image (one spike away from layer 2)
 
@@ -293,3 +293,11 @@ Stages 1–3 can be compared frozen before any lifetime.
 - **Measures:** as the pilot, plus the frozen test at every 10k checkpoint for all 10 lives (`make frozen`), and the video (`make video`).
 - **New for it:** `online.panel_record = N` (body 0's composites of the first N ticks in `panel_frames.npy`) and `dev/panel_video.py` (the panels as seen beside the real frames they aim at).
 - **README:** [`../00102-forecast-panels/README.md`](../00102-forecast-panels/README.md). Breakout (task 00111) is renumbered vm-00103.
+- **Results (2026-11-22; the README has the tables):**
+  - **Frozen, live forecasts help prediction:** PN − PB on panels 2–4 at 40–60k is −.027 ± .020 nats, below 0 in all 5 seeds; at 60k −.030 to −.039 on each forecast panel.
+  - **Training batches said the opposite:** PN looked worse on panels 3–4 all life (+.010 to +.028), because memory replays stale forecasts. The gap halved from 20k to 60k, so it learned with frozen forecasts in memory (the owner's question).
+  - **It relies on them:** blanked, panels 2–4 are +.091 ± .026 worse (all 5), panel 1 +.041, and from 40k on three quarters of the food is lost.
+  - **Foraging:** lived at 40–60k, poison 12.7 against 17.2 per 1k (all 5 seeds lower) with food level (59.6 against 55.0); frozen at 40–60k, +8.2 food and −8.2 poison (all 5).
+  - **Against TT** (64 × 64, no panels): PN eats 12.2 less food and 4.3 more poison, and learns about twice as slowly. In the panel frame only transformer 0's own patches show the real view, so this mixes the forecasts with a different split of the view.
+  - **The video:** the forecast of now lands on its target; the further ones hedge toward the present (blurred, not shifted).
+  - **Make options added after the reboot that brought the 4090 back:** `GPU`, `MPS`, `T`; `make long` (the 60k checkpoints, 2,000 ticks frozen).
