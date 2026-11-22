@@ -1,8 +1,8 @@
 # vm-00102: Forecast Panels — the Model's Own Forecasts Fed Back Beside the Real Frame
 
 **Date:** 2026-11-21
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00102`)
+**Status:** Complete
+**Source:** `exp/vm-00102` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00102/`
 **Task plan:** [`../tasks/00115-prediction-panels.md`](../tasks/00115-prediction-panels.md)
 
