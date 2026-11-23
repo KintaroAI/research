@@ -76,7 +76,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import (STAT_KEYS, ClogStream, GatedMemory, clog_frames, delay_targets, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
+from online import (STAT_KEYS, ClogStream, GapTeacher, GatedMemory, blind_frames, clog_frames, delay_targets, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
                     DECODE, NEED_FLOOR, UNI_CHUNK, MealMonitor, meal_target, panel_targets, thought_dream, uni_act, uni_frame)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
@@ -366,6 +366,20 @@ def main():
     if delayed and (not uni or on["device"] != "cuda" or on["sf_windows"] or clog or q_in or q_off):
         raise ValueError("env.delays needs the universal model on the GPU, without self-forcing, online.clog, online.noise_in or online.off")
     panels = bool(on["panels"])   # task 00115: forecast panels; the world wrapped below, after the checks
+    blind = [int(v) for v in (on["blind"] or [])]   # task 00118: a blind spot in everything the model sees
+    if blind:
+        H_, W_ = agent.config["img"], agent.config.get("img_w") or agent.config["img"]
+        if len(blind) != 4 or min(blind) < 0 or blind[2] < 1 or blind[3] < 1 or blind[0] + blind[2] > W_ or blind[1] + blind[3] > H_:
+            raise ValueError("online.blind is [x, y, w, h] inside the model's frame")
+        if not uni or q_in or clog or delayed or panels or on["sf_windows"] or agent.config.get("state"):
+            raise ValueError("online.blind needs the universal model, without noise_in, clog, env.delays, panels, self-forcing or model.state")
+    if on["blind_target"] not in ("", "black", "motion") or (on["blind_target"] and not blind):   # task 00118 (vm-00106)
+        raise ValueError("online.blind_target is '', 'black' or 'motion', with online.blind")
+    if on["blind_target"] == "motion" and not (getattr(env_cfg, "egocentric", False) and getattr(env_cfg, "view", 0) == agent.config["img"]
+                                                and (agent.config.get("img_w") or agent.config["img"]) == agent.config["img"]):
+        raise ValueError("online.blind_target = motion needs CircleWorld's egocentric view, the model's frame the view")
+    if on["pred_record"] and not (uni and on["device"] == "cuda" and S == 4 and agent.config.get("band_cols") == 2 and not panels):
+        raise ValueError("online.pred_record needs the four quarter pieces (band_n 4, band_cols 2) on the GPU, without panels")
     if panels and not (uni and on["device"] == "cuda" and S == 4 and agent.config["band_cols"] == 2 and on["ring"]
                        and agent.config["img"] == 2 * int(getattr(env_cfg, "view", 0) or env_cfg.size) and not agent.config["img_w"]
                        and not (delayed or on["sf_windows"] or clog or q_in or q_off or agent.config.get("state"))
@@ -395,6 +409,8 @@ def main():
     dose = bool(on["full_dose"])   # task 00110: a poison costs its full dose at any hunger (the world's hunger_cut)
     if dose and not slabel:
         raise ValueError("online.full_dose goes with online.label = meal")
+    if on["meal_size"] and not (slabel and dose and on["meal_size"] > 0):   # task 00117
+        raise ValueError("online.meal_size (> 0) goes with online.label = meal and online.full_dose")
     lref = bool(on["label_refresh"])   # task 00112: the body label re-labeled at every update, each transformer its own
     if lref and not (slabel and S > 1 and not delayed):
         raise ValueError("online.label_refresh goes with online.label = meal, several transformers (online.pieces) and no env.delays")
@@ -433,7 +449,8 @@ def main():
     rng = np.random.default_rng(args.seed)
     clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
     in_rng, act_rng = np.random.default_rng([args.seed, 0x0154]), np.random.default_rng([args.seed, 0x0155])   # task 00088
-    noised = lambda r: (noise_frames(r["img"], in_rng, q_in), r["drv"]) if q_in else None   # noqa: E731
+    noised = lambda r: ((noise_frames(r["img"], in_rng, q_in), r["drv"]) if q_in   # noqa: E731
+                        else (blind_frames(r["img"], blind), r["drv"]) if blind else None)   # task 00118: the blind spot, the same for every piece
     damaged = lambda r: (clog_frames(r["img"], clog_rng, agent.config["patch"], clog, on["clog_long"]), r["drv"]) if clog else None   # noqa: E731
     views = [None] * S                        # task 00086: each transformer's damaged view while acting, its own generator
     if on["clog_act"]:
@@ -472,6 +489,9 @@ def main():
         panel_rng = np.random.default_rng([args.seed, 0x9A4F])
         panel_strip, panel_rec = [], []
     frame_rec = []   # task 00111: online.frame_record
+    pred_rec, pred_true = [], []   # task 00118: online.pred_record
+    teacher = GapTeacher(N0, env_cfg.size, env_cfg.view, blind) if on["blind_target"] == "motion" else None   # task 00118 (vm-00106)
+    rec_lay = [agent_lib.uni_layout(a_.config)["patch"] - 1 for a_ in agents] if on["pred_record"] else None
     ce_n = prev_N = 0   # bodies whose newest window the last update trained on (their surprise is read next tick)
     rollouts = {}
 
@@ -517,8 +537,8 @@ def main():
     mmon = MealMonitor(N0, gamma) if refresh and meal else None   # task 00108: the label's predictions against what happened
     smon = None
     if slabel:   # task 00109: the predictions, and the labels stored in memory, against what happened (no cost for the drift)
-        mmon = MealMonitor(N0, on["label_gamma"], drift=False)
-        smon = MealMonitor(N0, on["label_gamma"], drift=False)
+        mmon = MealMonitor(N0, on["label_gamma"], drift=False, size=on["meal_size"])   # task 00117: meal_size
+        smon = MealMonitor(N0, on["label_gamma"], drift=False, size=on["meal_size"])
     thinking = hasattr(env, "think")   # task 00064: the thought half's next frame is the right piece's dream, and waves
     if thinking and env.cfg.mode == "dream" and (S != 2 or not gpu or agent.config["band_cols"] != 1):
         raise ValueError("a dreaming env.thought needs two pieces, left and right (online.pieces, model.band_cols=1), on the GPU")
@@ -566,6 +586,8 @@ def main():
         t_ = time.time()
         if q_in:   # task 00088: one noisy view for every transformer; the ring holds it, memory gets the clean frame
             win_in[0] = noise_frames(win_in[0], act_rng, q_in)
+        if blind:   # task 00118: the blind spot in what every transformer sees; memory gets the whole frame
+            win_in[0] = blind_frames(win_in[0], blind)
         if uni:   # the universal model: its own move prediction, and the instinct; pieces: each its own, the mean made
             for k in live:   # task 00089: back from an outage: the ticks it missed, nothing computed
                 if missed[k]:
@@ -607,6 +629,29 @@ def main():
         if on["ring"]:
             for k in live:
                 gpus[k].uni_ring_move(a)
+        if on["pred_record"] and tick <= on["pred_record"]:   # task 00118: body 0's predicted current frame and the true one
+            kk = min(gms[0].stm.n, L - 1)
+            ix = gms[0].stm.last(kk)
+            st_ = gms[0].stm
+            w_img = np.concatenate([st_.frames(ix), obs["image"][:1]])[None]
+            if blind:
+                w_img = blind_frames(w_img, blind)
+            w_drv = np.concatenate([st_.drv[ix], obs["drives"][:1]])[None].astype(np.float32)
+            w_act = np.concatenate([st_.act[ix], a[:1]])[None].astype(np.float32)
+            w_es = np.concatenate([st_.es[ix], ep_start[:1]])[None].astype(np.uint8)
+            pf = np.zeros(obs["image"].shape[1:3], np.uint8)
+            for k in range(S):
+                ck = agents[k].config
+                r0, r1, c0, c1 = agent_lib.band_piece(ck)
+                v = gpus[k].forward_uni_step(w_img, w_drv, w_act, w_es, kk, mode=DECODE["pair"])["values_t"][:, rec_lay[k]]
+                q = uni_frame(ck, np.clip(v, 0.0, 1.0), grid=(r1 - r0 + 1, c1 - c0 + 1))[0, ..., 0]
+                pf[r0 * ck["patch"]:(r1 + 1) * ck["patch"], c0 * ck["patch"]:(c1 + 1) * ck["patch"]] = q
+            pred_rec.append(pf)
+            pred_true.append(obs["image"][0, ..., 0].copy())
+            if tick == on["pred_record"]:
+                np.save(os.path.join(out_dir, "pred_frames.npy"), np.stack(pred_rec))
+                np.save(os.path.join(out_dir, "pred_truth.npy"), np.stack(pred_true))
+                pred_rec, pred_true = [], []
         if panels:   # task 00115: transformers 1-3's forecasts of their own panels at this step, noised, are next tick's panels 2-4
             t_p = time.time()
             if on["panel_blank"]:
@@ -638,6 +683,8 @@ def main():
         full = np.zeros((N0, 3), np.float32)
         full[:N] = a
         img, drv = obs["image"][:N].copy(), obs["drives"][:N].copy()
+        if teacher is not None:   # task 00118: the targets of this step, from the frame's visible part and the canvas (cursor before the step)
+            timg = teacher.target(img[..., 0], env.cursor[:N])
         if mem_on:   # task 00105: before the step, as eval_hunger.py chain
             xy = full[:, :2].astype(np.float64)
             for name, e in (("seen", env), ("blind", blind)):
@@ -662,6 +709,8 @@ def main():
             vb = dict(vh=vh[b]) if gamma else (dict(vhs=vhs[b]) if slabel else {})    # task 00096; task 00109
             if dose:   # task 00110
                 vb["cut"] = inf["hunger_cut"][b]
+            if teacher is not None:   # task 00118: this step's target, the gap filled from what was seen before
+                vb["timg"] = timg[b][..., None]
             if state:
                 vb["st"] = reads[b].astype(np.float16)
             gms[b].stm.add(img=img[b], nimg=inf["terminal_image"][b], drv=drv[b], ndrv=inf["terminal_drives"][b],
@@ -722,20 +771,21 @@ def main():
                 else:
                     parts.append(gms[0]._from_stm(gms[0].stm.starts(Lm, Bm, rng, lag)[1:], lag))
                 rows = {f: np.concatenate([p[f] for p in parts]) for f in gms[0].keys}
+            brows = dict(rows, b_img=blind_frames(rows["b_img"], blind)) if blind and "b_img" in rows else rows   # task 00118
             if refresh and meal:   # task 00108: each transformer's own tail, and so its own label
-                vbs = boot_values(gpus, rows, L if state else None, mean=False)
+                vbs = boot_values(gpus, brows, L if state else None, mean=False)
                 labels = [meal_target(rows["pr_real"], rows["tw"], v_) for v_ in vbs]
                 rows["pr"] = np.mean(labels, 0).astype(np.float32)
                 vb = vbs.mean(0)
                 win["vboot"] += float(vb.sum())
                 win["vboot_n"] += vb.size
             elif refresh:   # task 00098: the tails from the current transformers, their mean prediction of the move made
-                vb = boot_values(gpus, rows, L if state else None)
+                vb = boot_values(gpus, brows, L if state else None)
                 rows["pr"] = rows["pr_real"] + rows["tw"] * vb
                 win["vboot"] += float(vb.sum())
                 win["vboot_n"] += vb.size
             if lref:   # task 00112: each transformer's own label, from its fresh prediction of the next move (label channel)
-                vbs = boot_values(gpus, rows, mean=False, chan=2)
+                vbs = boot_values(gpus, brows, mean=False, chan=2)
                 labels = [meal_target(rows["pr_real"], rows["tw"], v_) for v_ in vbs]
                 rows["pr"] = np.mean(labels, 0).astype(np.float32)
                 win["vboot"] += float(vbs.mean(0).sum())
@@ -755,6 +805,9 @@ def main():
             elif panels:   # task 00115: the composite as shown as the input; panel i's target the real frame i ticks after panel 1's
                 seen_in = (rows["img"], rows["drv"])
                 rows = dict(rows, img=panel_targets(rows["f_img"], L))
+            elif blind and on["blind_target"]:   # task 00118 (vm-00106): the gap in the targets too, black or filled by the teacher
+                seen_in = (blind_frames(rows["img"], blind), rows["drv"])
+                rows = dict(rows, img=seen_in[0] if on["blind_target"] == "black" else rows["timg"])
             if state:   # task 00104: the pairs' first and next windows
                 ro1, ro2 = pair_rollouts(len(rows["img"]))
                 fill_rollout(ro1, {k: v[:, :L] for k, v in rows.items()}, L)
@@ -792,7 +845,7 @@ def main():
                             ro.pr[:, :] = (labels[k] if lref else rows["lab"][:, :, k]).T
                         sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
                         stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
-                                                      inputs=seen_in if delayed or panels else shared if q_in else damaged(rows), step_mask=sm))
+                                                      inputs=seen_in if seen_in is not None else shared if q_in or blind else damaged(rows), step_mask=sm))
                         who.append(k)
                     else:   # a C++ rollout belongs to its agent
                         rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
@@ -810,7 +863,7 @@ def main():
                     for k, s_ in zip(who, stats):
                         win["stats_k"][k].append(s_)
             elif gpu:
-                inputs = seen_in if delayed else noised(rows) if q_in else damaged(rows)
+                inputs = seen_in if seen_in is not None else noised(rows) if q_in or blind else damaged(rows)
                 if on["sf_windows"]:   # self-forcing (task 00039): replayed windows only, none with an episode start
                     ok = np.flatnonzero(~rows["es"][:, 1:].any(1))
                     ok = ok[ok >= ce_n]
@@ -913,6 +966,8 @@ def main():
             row.update(gate_metrics(gms))
             if hasattr(env, "stats"):
                 row.update(env.stats())
+            if teacher is not None:   # task 00118: the teacher's fill against the true gap (scoring only)
+                row.update(teacher.take())
             mf.write(json.dumps(row) + "\n")
             mf.flush()
             print("tick %7d  %5.1f tps  bodies %2d  hits %3d (all bodies %5.1f per 1k)  pred %.5f  drive %.5f  "

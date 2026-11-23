@@ -1,7 +1,7 @@
 # Task 00118: The Blind Spot — Filling the Gap (experiments vm-00105 and vm-00106)
 
 **Date:** 2026-11-22
-**Status:** Planned (after vm-00104)
+**Status:** In progress (vm-00105 queued after vm-00104, vm-00106 after vm-00105; the owner, 2026-11-22: "when current run finishes - do all the tests, write up, commit and push, generate video and start vm 105 so by the morning I can see how it went - if it finishes before morining - start 106")
 
 The owner (2026-11-22): "next experiment will be about filling the gap - we will permanently off some area in the visual field from the foraging world mimicing blind spot of the eye but train on the full picture so the predicted picture should have the gap restored - we will examine how good it is in restoring blind spot and second experiment - we need to figure out how we can train on a image with blind spot as well but teach model to restore image back nevertheless"
 
@@ -64,10 +64,15 @@ Without a target in the gap, the next-frame loss either teaches the model to pre
 - **C. Two eyes:** two views, each with its gap on its own side, as our eyes' blind spots are; one eye's gap is the other's seen part. In this flat world both eyes see the same view, so it reduces to copying from the other eye. It's worth more with parallax.
 - **D. A gap that wanders (microsaccades):** the view jitters by a few px each tick, so the gap covers different spots. That's B with more motion. It moves the gap in world terms, not the gap itself.
 
-The design is to be chosen after vm-00105, with A as the null in any case.
+**Chosen (2026-11-23, the owner: "start 106" overnight after vm-00105):**
+- **GB:** B, `online.blind_target = motion`. `GapTeacher` keeps a canvas of the world per body, painted only from the visible part of each frame; each step's target is the frame as seen, its gap read from the canvas. It's built when the step is stored, so it uses the past only. The body's position comes from the world (`env.cursor`), as a training signal only.
+- **G0:** the null, `online.blind_target = black`: the targets have the gap black, as the model sees it.
+- **A (the masked loss) is left for later:** the CUDA loss has no per-value mask (`set_step_mask` masks whole steps and their keys), and writing one with its gradient checks overnight was too risky.
+- **The teacher is imperfect:** objects are drawn at sub-pixel positions, the poison's checker is fixed to the screen, and the dots move. On random walks its gap is off by 3.7 grey levels against the background's 4.8, and with an object in the gap by 8.0 against 11.5. With the movement's sign flipped it is off by 7.1, against 2.7 with the true sign (without dots): the mapping is right.
 
 ## Implementation (vm-00105)
 
-- [ ] `online.blind` in `lifetime.py` (acting, update inputs, the label's bootstrap windows) and `DEFAULT_ONLINE`; allowed with the default agent's settings; tests: the input has the hole, memory and targets do not.
-- [ ] The predicted-frame recorder and `eval_blind.py` (measures, baselines, the four test conditions, by seed and checkpoint).
+- [x] `online.blind` in `lifetime.py` (acting, update inputs, the label's bootstrap windows) and `DEFAULT_ONLINE`; allowed with the default agent's settings; tests (`tests/test_blind.py`).
+- [x] The predicted-frame recorder (`online.pred_record`) and `eval_blind.py` (measures, baselines, video).
+- [x] vm-00106: `online.blind_target`, `GapTeacher`, the memory field `timg`; `00106-blind-spot-teacher/`.
 - [ ] `00105-blind-spot/` (README, Makefile); the runs (12 seeds; 12 lives across the two cards), the frozen tests, the video, the write-up.

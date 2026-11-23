@@ -38,7 +38,8 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00096": "../videos/vm96_s5/compare.mp4", "00097": "../videos/vm97_inertia_s5/compare.mp4",
           "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4",
           "00100": "../videos/vm100_s5/compare.mp4", "00101": "../videos/vm101_s5/compare.mp4",
-          "00102": "../videos/vm102/panels_60k.mp4", "00103": "../videos/vm103/play_60k.mp4"}
+          "00102": "../videos/vm102/panels_60k.mp4", "00103": "../videos/vm103/play_60k.mp4",
+          "00104": "../videos/vm104/play_60k.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -112,6 +113,12 @@ def smooth(y):
     return np.convolve(np.nan_to_num(y), k, "same") / np.convolve(np.ones(len(y)), k, "same")   # fewer points at the ends, no false plateau
 
 
+def delta(rows, key):
+    """A cumulative counter's change per row (task 00117: the Breakout world's bo_* stats)."""
+    v = np.array([r.get(key) or 0.0 for r in rows], float)
+    return np.diff(v, prepend=0.0)
+
+
 def x_of_all(rows):
     return np.array([x_of(r) for r in rows], float)
 
@@ -160,10 +167,15 @@ def panels(arms):
     if forage:
         out.append(("Food touched per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, hit(q))) for a, r in forage.items()}, True))
         out.append(("Poison touched per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, "poison")) for a, r in forage.items()}, False))
-    if court:
-        share = lambda q: (x_of_all(q), np.array([r.get("step_hits", 0) / max(r.get("step_hits", 0) + r.get("poison", 0), 1) for r in q], float))  # noqa: E731
-        out.append(("Ball hit share (hits over hits and misses)", {a: mean_curve(r, share) for a, r in court.items()}, True))
-        out.append(("Balls hit per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, "step_hits")) for a, r in court.items()}, True))
+    if court:   # the world's cumulative counters (bo_*), per row; stage 1's paddle hits are its meals (task 00117: bricks feed)
+        share = lambda q: (x_of_all(q), np.array([h / max(h + m, 1) for h, m in zip(delta(q, "bo_hits"), delta(q, "bo_misses"))], float))  # noqa: E731
+        out.append(("Ball hit share (paddle hits over hits and misses)", {a: mean_curve(r, share) for a, r in court.items()}, True))
+        bricks = {a: r for a, r in court.items() if "bo_food" in r[0][0][-1]}
+        if bricks:
+            out.append(("Brick food per 1k ticks", {a: mean_curve(r, lambda q: (x_of_all(q), delta(q, "bo_food") * 1000.0 / np.maximum(np.diff(x_of_all(q), prepend=0.0), 1.0)))
+                                                    for a, r in bricks.items()}, True))
+        else:
+            out.append(("Balls hit per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, "step_hits")) for a, r in court.items()}, True))
     if hits:
         out.append(("Targets hit per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, hit(q))) for a, r in hits.items()}, True))
     if text:
@@ -398,6 +410,10 @@ def one(d, write_readme):
                 cap += (" All in the world with inertia, on TT's settings (vm-00101: RD's label with the candidates at temperature 2): PB and PN"
                         " see a 128 x 128 composite of four 64 x 64 panels, panel 1 the real view and panels 2-4 noise (PB) or the"
                         " model's own forecasts (PN); TT is vm-00101's 64 x 64 agent without panels (its 12 seeds).")
+            if e == "00104":
+                cap += (" Stage 2 (a ball at 2.25 px a tick, no food for a paddle hit, 24 bricks of 3 looks feeding .1, .25 and .5): BK"
+                        " the default agent unchanged, BS with a meal worth its size; 12 seeds each. A random paddle's hit share is"
+                        " .229 and its food 3.1 per 1k; the aimer's food 7.0.")
             if e == "00103":
                 cap += (" BD is the default agent (vm-00101's TT) in the Breakout court, 12 seeds; the random paddle's hit share is .235,"
                         " the tracker's 1.0.")
@@ -442,6 +458,9 @@ def one(d, write_readme):
             cap += (" PN seed 1 at 60k, frozen, 400 ticks in a new world. Left: the 128 x 128 frame as the model sees it (panel 1 the real"
                     " view; panels 2-4 the forecasts of the frame now, 1 tick ahead and 2 ahead, made on the tick before, with noise .03)."
                     " Right: the real frames those forecasts aim at. The forecast further out hedges toward the present (R6).")
+        if e == "00104":
+            cap += (" BK (left) and BS (right) seed 1 at 60k, frozen, 900 ticks from the same court (seed 201): the frame as the"
+                    " model sees it, the bricks' three looks (solid, checker, hollow); which look feeds how much rotates with the seed.")
         if e == "00103":
             cap += (" BD seeds 1-3 at 60k, frozen, 600 ticks each in new courts: the 64 x 64 frame as the model sees it (walls, the"
                     " paddle at the bottom, the ball). Each life hit 6 balls and missed 2 here.")

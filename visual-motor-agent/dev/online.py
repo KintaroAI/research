@@ -108,6 +108,21 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # the stored label's rule with its current prediction for the move made at t + 1 (a forward pass without
                       # gradient over the window one step later, the label channel). 0: off
                       label_refresh=0,
+                      # task 00117 (with label = meal and full_dose): a meal worth its size, V = min(1, relief / meal_size), the
+                      # relief counting what the floor at 0 cut off (the world's signed hunger_cut); a meal is a step whose full
+                      # change, rise + cut, is negative. 0: off (every meal V = 1, as before)
+                      meal_size=0.0,
+                      # task 00118: a blind spot, [x, y, w, h] px of the model's frame set to 0 in everything the model sees (acting,
+                      # every update's inputs, the label's bootstrap windows); the world, memory and targets stay whole. []: off
+                      blind=[],
+                      # task 00118: body 0's predicted current frame (each piece its own block, decoded pair, from the frame as the
+                      # model sees it) and the true frame, for the first N ticks (pred_frames.npy, pred_truth.npy). 0: off
+                      pred_record=0,
+                      # task 00118 (vm-00106, with blind): the gap in the targets too. "black": the targets have the gap as the
+                      # model sees it (the eye's own data); "motion": the gap of each step's target filled from a canvas of the
+                      # world painted only with what was seen outside the gap (GapTeacher; the body's position from the world,
+                      # a training signal, never an input). "": the targets whole (vm-00105)
+                      blind_target="",
                       # task 00085: about this share of the patches of each step is damaged in each transformer's input, apart, with the target clean, drawn fresh per
                       # batch; memory and acting stay clean. clog_long: the share of that damage which lasts the whole window
                       clog=0.0, clog_long=0.5,
@@ -170,7 +185,8 @@ class Replay:
     only each frame's first channel is kept, all a gray model reads; next_frames = False: no next frames, which the
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
-    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None, labels=0, cut=False):
+    def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None, labels=0, cut=False,
+                 timg=False):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
         self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
@@ -203,12 +219,15 @@ class Replay:
         if cut:      # task 00110: the hunger the cap at 1 cut off at each step (the stored label's full dose)
             self.cut = np.zeros(cap, np.float32)
             self.fields = self.fields + ("cut",)
+        if timg:     # task 00118: each step's target frame (the gap filled by GapTeacher), as img
+            self.timg = np.zeros((cap, img, img_w or img, ch), np.uint8)
+            self.fields = self.fields + ("timg",)
 
     def add(self, **kw):
         i = self.w
         for k, v in kw.items():
-            if k == "img":
-                self.img[i] = v[..., :self.ch]
+            if k in ("img", "timg"):
+                getattr(self, k)[i] = v[..., :self.ch]
             elif k != "nimg" or self.nimg is not None:
                 getattr(self, k)[i] = v
         self.w = (self.w + 1) % self.cap
@@ -345,31 +364,42 @@ NEED_FLOOR = 0.05   # task 00108: online.need divides the tolerance by the hunge
 POISON_RISE = 0.01  # task 00109: a rise of hunger above this in one step is a poison (the drift is 0.001)
 
 
-def meal_parts(h0, h1, done, gamma, drift=True, cut=None):
+def meal_parts(h0, h1, done, gamma, drift=True, cut=None, size=0.0):
     """Task 00108, the meal label: for each step j of a stretch, the parts of V[j] = real[j] + tw[j] * V_hat[j + 1].
     A step whose hunger falls (h1 < h0) is a meal: real 1, no tail. Any other step costs the hunger it added (a poison's
     0.5, the drift's 0.001): real -(h1 - h0), tail weight gamma, unless j's episode or the stretch ends there. Read from the
     hunger alone, as the hunger value is (the agent knows only its body). cut (task 00112, full_dose): the hunger the cap
-    at 1 cut off at each step, counted in the rise as stored_labels does."""
+    at 1 cut off at each step, counted in the rise as stored_labels does. size (task 00117, with cut): a meal is a step whose
+    full change (rise + cut, the cut signed) is negative, worth min(1, -(rise + cut) / size)."""
     h0, h1 = np.asarray(h0, np.float64), np.asarray(h1, np.float64)
     meal = h1 < h0
     rise = h1 - h0
+    worth = 1.0
+    if size:
+        full = rise + np.asarray(cut, np.float64)
+        meal = full < 0
+        worth = np.minimum(1.0, -full / size)
     if cut is not None:
         rise = np.where(meal, rise, rise + np.asarray(cut, np.float64))
-    real = np.where(meal, 1.0, -rise if drift else np.where(rise > POISON_RISE, -rise, 0.0))   # task 00109: drift=False, poison only
+    real = np.where(meal, worth, -rise if drift else np.where(rise > POISON_RISE, -rise, 0.0))   # task 00109: drift=False, poison only
     tw = np.where(meal | np.asarray(done, bool), 0.0, gamma)
     tw[-1] = 0.0
     return real.astype(np.float32), tw.astype(np.float32)
 
 
-def stored_labels(h0, h1, done, nxt, gamma, cut=0.0):
+def stored_labels(h0, h1, done, nxt, gamma, cut=0.0, size=0.0):
     """Task 00109: step t's stored labels on the model's scale T, one per transformer, written once: from its hunger
     before and after, whether its episode ended there, and each transformer's prediction (T) for the move made at t + 1,
     nxt [S]. A meal 1 (T 0); else gamma x the prediction, less the hunger a poison added; no cost for the drift.
-    cut (task 00110, full_dose): the hunger the cap at 1 cut off at t, counted in the rise, so a poison costs its full dose."""
+    cut (task 00110, full_dose): the hunger the cap at 1 cut off at t, counted in the rise, so a poison costs its full dose.
+    size (task 00117): a meal (rise + cut < 0) is worth min(1, -(rise + cut) / size)."""
     nxt = np.asarray(nxt, np.float64)
     rise = float(h1) - float(h0)
-    if rise < 0:
+    if size:
+        full = rise + float(cut)
+        if full < 0:
+            return meal_target(np.full(len(nxt), min(1.0, -full / size)), np.zeros(len(nxt)), nxt)
+    elif rise < 0:
         return np.zeros(len(nxt), np.float32)
     rise += float(cut)
     real = -rise if rise > POISON_RISE else 0.0
@@ -394,8 +424,9 @@ class MealMonitor:
     meal (MEAL_BINS; 0: the move that ate). A tick still waiting after `wait` ticks is dropped. take() returns the sums since
     the last call: how far back in time the label is right, and how optimistic it is."""
 
-    def __init__(self, bodies, gamma, wait=256, drift=True):
+    def __init__(self, bodies, gamma, wait=256, drift=True, size=0.0):
         self.gamma, self.wait, self.drift = gamma, wait, drift   # drift=False (task 00109): only a poison's rise costs
+        self.size = size                                           # task 00117: a meal worth its size
         self.pend = [[] for _ in range(bodies)]   # (predicted V, r) of each tick since the body's last meal
         n = len(MEAL_BIN_NAMES)
         self.pred, self.real, self.n = np.zeros(n), np.zeros(n), np.zeros(n)
@@ -405,8 +436,13 @@ class MealMonitor:
         00110, full_dose): the hunger the cap at 1 cut off, counted in the rise."""
         for b in range(len(h0)):
             meal, rise = h1[b] < h0[b], float(h1[b] - h0[b]) + (0.0 if cut is None or h1[b] < h0[b] else float(cut[b]))
+            worth = 1.0
+            if self.size:   # task 00117
+                full = float(h1[b] - h0[b]) + float(cut[b])
+                meal, worth = full < 0, min(1.0, -full / self.size)
+                rise = full
             cost = -rise if self.drift or rise > POISON_RISE else 0.0
-            self.pend[b].append((1.0 - 2.0 * float(pred_t[b]), 1.0 if meal else cost))
+            self.pend[b].append((1.0 - 2.0 * float(pred_t[b]), worth if meal else cost))
             if meal:
                 v = 0.0
                 for k, (p, r) in enumerate(reversed(self.pend[b])):   # k: ticks to the meal
@@ -534,6 +570,7 @@ class GatedMemory:
         if self.lrefresh:
             self.refresh, self.meal, self.vn, self.gamma = True, True, 1, float(on["label_gamma"])
             self.dose = bool(on.get("full_dose"))
+        self.size = float(on.get("meal_size") or 0.0)   # task 00117
         # token surprise is noted one tick late (after the update that trained on the step), so a chunk is decided at
         # least one step after it ends (task 00053)
         self.D = max(on["relief_k"], goal_k, 2 if tokens else 1) - 1
@@ -542,7 +579,7 @@ class GatedMemory:
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
         self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state, labels=labels,
-                          cut=bool(labels and on.get("full_dose")))   # task 00110
+                          cut=bool(labels and on.get("full_dose")), timg=on.get("blind_target") == "motion")   # task 00110; task 00118
         self.store = store or ChunkStore(on, L, self.stm, extra=max(self.vn, self.fut))   # long-term memory (shared between bodies or not)
         self.boot = ("img", "drv", "act", "es") + (("st",) if state else ())   # task 00104: the bootstrap windows' reads too
         self.keys = self.stm.fields + (tuple("b_" + k for k in self.boot) + ("pr_real", "tw") if self.refresh else ()) + (
@@ -645,6 +682,8 @@ class GatedMemory:
         idx = (starts[:, None] + np.arange(L)[None]) % s.cap
         r = {k: getattr(s, k)[idx] for k in s.fields}
         r["img"] = as_frames(r["img"])
+        if "timg" in r:   # task 00118
+            r["timg"] = as_frames(r["timg"])
         ext = (starts[:, None] + np.arange(L + lag)[None]) % s.cap
         if self.fut:   # task 00115
             if lag < self.fut:
@@ -671,14 +710,15 @@ class GatedMemory:
         if s.n < 2:
             return None
         i, j = (s.w - 2) % s.cap, (s.w - 1) % s.cap
-        s.lab[i] = stored_labels(s.drv[i, 0], s.ndrv[i, 0], s.done[i], s.vhs[j], gamma, s.cut[i] if hasattr(s, "cut") else 0.0)
+        s.lab[i] = stored_labels(s.drv[i, 0], s.ndrv[i, 0], s.done[i], s.vhs[j], gamma, s.cut[i] if hasattr(s, "cut") else 0.0, self.size)
         return i
 
     def _parts(self, s, e):
         """The label's real parts and tail weights for the steps e of memory s: the hunger value's (task 00098) or the
         meal label's (task 00108)."""
         if self.lrefresh:   # task 00112: the stored label's rule (no cost for the drift; the full dose)
-            return meal_parts(s.drv[e, 0], s.ndrv[e, 0], s.done[e], self.gamma, drift=False, cut=s.cut[e] if self.dose else None)
+            return meal_parts(s.drv[e, 0], s.ndrv[e, 0], s.done[e], self.gamma, drift=False, cut=s.cut[e] if self.dose else None,
+                              size=self.size)
         if self.meal:
             return meal_parts(s.drv[e, 0], s.ndrv[e, 0], s.done[e], self.gamma)
         return value_parts(s.ndrv[e, 0], s.done[e], self.gamma, self.vn)
@@ -701,6 +741,8 @@ class GatedMemory:
         L, n = self.L, self.vn
         old = {k: st.ltm[k][ci, :L] for k in self.stm.fields}
         old["img"] = as_frames(old["img"])
+        if "timg" in old:   # task 00118
+            old["timg"] = as_frames(old["timg"])
         if self.fut:   # task 00115
             old["f_img"] = panel_one(st.ltm["img"][ci, :L + self.fut])
         if self.refresh:   # task 00098: the stored tails for pr; the caller replaces them with fresh ones
@@ -807,6 +849,66 @@ def noise_frames(frames, rng, q):
     hit = rng.random(shape, dtype=np.float32) < q
     value = rng.integers(0, 256, shape, dtype=np.uint8)
     return np.where(hit[..., None], value[..., None], frames)
+
+
+def blind_frames(frames, box):
+    """Task 00118: a copy of frames [..., H, W, C] u8 with the box [x, y, w, h] set to 0 (the blind spot)."""
+    x, y, w, h = (int(v) for v in box)
+    out = np.array(frames, copy=True)
+    out[..., y:y + h, x:x + w, :] = 0
+    return out
+
+
+class GapTeacher:
+    """Task 00118 (vm-00106, blind_target = motion): the gap's target from what was seen there before. A canvas of the
+    (wrap-around) world per body holds the last grey seen at each world pixel, painted only from the visible part of each
+    frame (never the gap). Each step's target is the frame as seen with its gap filled from the canvas at the gap's world
+    pixels; never-seen pixels take the visible part's most common grey (the background). The view pixel (i, j) of a body
+    at cursor c sees the world at x = j + m + 0.5 - size / 2 + c_x (CircleWorld's egocentric window, m its margin), the
+    canvas cell floor(x) mod size; objects drawn at sub-pixel positions and the poison's screen-fixed checker make the
+    fill inexact at edges and in texture, which take() measures against the true gap (scoring only)."""
+
+    def __init__(self, n, size, view, box):
+        self.S, self.m = int(size), (int(size) - int(view)) // 2
+        x, y, w, h = (int(v) for v in box)
+        self.gap = np.zeros((view, view), bool)
+        self.gap[y:y + h, x:x + w] = True
+        self.vis = ~self.gap
+        self.canvas = np.zeros((n, self.S, self.S), np.uint8)
+        self.seen = np.zeros((n, self.S, self.S), bool)
+        self.ii, self.jj = np.mgrid[:view, :view]
+        self.err = self.filled = self.px = 0.0
+
+    def cells(self, cursor):
+        """Each view pixel's canvas cell, (rows [n, V, V], columns [n, V, V])."""
+        c = np.asarray(cursor, np.float64)
+        off = self.m + 0.5 - 0.5 * self.S
+        cx = np.floor(self.jj[None] + off + c[:, 0, None, None]).astype(np.int64) % self.S
+        cy = np.floor(self.ii[None] + off + c[:, 1, None, None]).astype(np.int64) % self.S
+        return cy, cx
+
+    def target(self, frames, cursor):
+        """frames [n, V, V] grey (only the visible part is read) -> the targets [n, V, V], the gap filled."""
+        cy, cx = self.cells(cursor)
+        out = np.array(frames, copy=True)
+        for b in range(len(out)):
+            vy, vx = cy[b][self.vis], cx[b][self.vis]
+            self.canvas[b, vy, vx] = frames[b][self.vis]
+            self.seen[b, vy, vx] = True
+            gy, gx = cy[b][self.gap], cx[b][self.gap]
+            bgv = np.bincount(frames[b][self.vis].ravel().astype(np.int64), minlength=256).argmax()
+            out[b][self.gap] = np.where(self.seen[b, gy, gx], self.canvas[b, gy, gx], bgv)
+            self.filled += float(self.seen[b, gy, gx].sum())
+            self.err += float(np.abs(out[b][self.gap].astype(np.float64) - frames[b][self.gap]).sum())
+            self.px += float(self.gap.sum())
+        return out
+
+    def take(self):
+        """Since the last call: the fill's mean absolute error against the true gap (grey levels), the share filled from
+        the canvas (scoring only)."""
+        out = dict(teach_err=self.err / max(self.px, 1.0), teach_filled=self.filled / max(self.px, 1.0))
+        self.err = self.filled = self.px = 0.0
+        return out
 
 
 def clog_frames(frames, rng, patch, p, long_share=0.5):
