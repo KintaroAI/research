@@ -1,7 +1,7 @@
 # vm-00107: Breakout with Bricks and Food for the Paddle Hit
 
 **Date:** 2026-11-23
-**Status:** Planned (queued after vm-00106)
+**Status:** Planned (queued after vm-00106; starts automatically when its frozen tests and video are done)
 **Source:** `exp/vm-00107` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00107/`
 **Task plan:** [`../tasks/00119-breakout-paddle-food.md`](../tasks/00119-breakout-paddle-food.md)
