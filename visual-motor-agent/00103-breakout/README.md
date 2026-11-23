@@ -1,8 +1,8 @@
 # vm-00103: Breakout — the Default Agent in a New World, the Model Unchanged
 
 **Date:** 2026-11-22
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00103`)
+**Status:** Complete
+**Source:** `exp/vm-00103` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00103/`
 **Task plan:** [`../tasks/00111-breakout-world.md`](../tasks/00111-breakout-world.md)
 
