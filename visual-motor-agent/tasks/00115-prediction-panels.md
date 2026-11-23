@@ -109,6 +109,18 @@ Earlier versions of this task chained the panels within a tick, which needed an 
   - **What both would remove:**
     - **The stale forecasts:** nothing forecast is stored in memory, so every replayed window's forecasts are made fresh by the current weights. No warm-up is needed.
     - **The noise on the panels:** the forecasts are internal states, never drawn as pixels and read back.
+  - **Way 3: the layers on the plane (the owner, 2026-11-22: "imagine we can output from one transformer to feed into the other. we did it in our forcast experiment with 128x128 world. basically I can assume that it's not 4 transformers work in parallel but rather 1 with 4x layers - right? what if we try to arrange one transfromer's layers - each layer on a plane so for example if we have 8 layers - then it will be 1 visual patch, and then 8 addtional patches (outputs from layers) - would it be possible to do somethiong like this? or alternatively we can have transformer with 1 layer and put 9 transformers so that learing proccess matches with one transformer for 64x64 world?").**
+    - **vm-00102's chain is not one deeper transformer:**
+      - each hop costs a tick (depth in time, not within a tick);
+      - what passes is a decoded, noisy frame, not the residual stream;
+      - no gradient crosses: each transformer learns from its own target. vm-00038 measured backprop cut between two boxes: about 40% of what end-to-end training adds.
+    - **The layout:** beside each visual patch, readouts of layers 1–8 (each layer's output at that patch through the shared head, 64 values, as vm-00093's state write), drawn at the next tick as extra input patches.
+    - **Each readout needs a real target.**
+      - vm-00093: a state trained to predict itself collapsed to a constant within about 8k ticks in every seed;
+      - with no target it varied but carried nothing the agent used;
+      - so layer l's readout is trained against the real frame l ticks ahead. That is Way 2 with its horizons shown on the plane, so the model sees and corrects them as it did vm-00102's panels.
+    - **Cost:** 9 times the patch tokens per step, attention about 81 times. Cheaper forms: readouts of a few layers (2, 4, 6, 8), or one readout per summary token instead of per patch.
+    - **The 1-layer chain (9 transformers of 1 layer) does not reproduce one 8-layer transformer.** It equals it only with gradients through the chain, and then it is the same network split up. Through drawn frames it is local learning (vm-00038). With a tick per hop, the top learns of a change about 8 ticks late, and a single layer cannot compose attention.
   - **What both would lose:** the forecast as an input the model sees and corrects. vm-00102 found that input is used: blanking it costs .06–.20 nats per panel and three quarters of the food. Hidden states pass on more than a drawn frame, but with no noise to clean up, a forecast in depth may stay blurry where a panel had to commit.
 
 ## Noise
