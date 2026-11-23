@@ -1,79 +1,102 @@
-# Task 00111: A Breakout World (experiment vm-00103)
+# Task 00111: A Breakout World for the Default Agent (experiment vm-00103)
 
-**Date:** 2026-11-20
-**Status:** Proposed (the owner, 2026-11-20, on "arkanoid or breakout type of game - do you think our model can learn to play it?": "Yes write task and I like your plan"; the arms are settled after vm-00099, task 00110)
+**Date:** 2026-11-20, revised 2026-11-22
+**Status:** Complete (vm-00103, 2026-11-22: the default agent learns to play, hit share .68 lived at 50–60k and .64 frozen at 60k against a random paddle's .24, all 12 seeds). The owner, 2026-11-22: "lets do breakout on our default model - the goal is to have new world without changing the model itself (only custom wiring)"; first proposed 2026-11-20, on "arkanoid or breakout type of game - do you think our model can learn to play it?": "Yes write task and I like your plan")
 
 ## Context
 
 - **The owner's question:** can the default agent learn a Breakout-like game?
+- **The goal (2026-11-22): a new world, the model unchanged.**
+  - The agent is the default, `configs/U_agent.json` (vm-00101's TT): the same model, label, instinct and learning.
+  - Only the wiring is new: what the frame shows, what the move does, and which events feed and hurt the body.
+  - No new model code, no new training rule, no world-specific path in `lifetime.py`.
 - **What fits:**
-  - the game's events map onto the body values the agent already has: the paddle hitting the ball is a meal (hunger to 0), losing the ball a poison (+0.5 hunger);
-  - the meal label (task 00108), stored or re-labeled (task 00109), needs no new machinery;
-  - the whole court is in view, unlike the 64 × 64 window of `U_view` where the label flattened past about 8 ticks;
-  - the control is one axis (left, still, right), and moving toward the ball's x already catches most balls when the paddle is fast compared with the ball.
-- **What will be hard** (from vm-00096 to vm-00098):
-  - a miss is decided long before it happens (a ball crosses the court in 30 to 60 ticks), and the meal label is exact only out to about 6 ticks;
-  - one tick of paddle movement changes the outcome little, so the instinct's candidates hardly differ (the inertia world's problem);
-  - the ball is one small moving object among many still pixels;
-  - with three useful moves the model's own move prediction will often be sure of one, and the instinct's 16 candidates are then one move (vm-00098 R8);
-  - a run of misses would sit at the hunger cap, where a poison costs nothing unless the full dose is counted (task 00110).
+  - the game's events map onto the body values the agent already has: the paddle hitting the ball is a meal (hunger to 0), losing the ball a poison (+0.5 hunger, the full dose counted, task 00110);
+  - the meal label (task 00108), re-labeled at every replay (task 00112), needs no new machinery;
+  - the whole court is in view, unlike the 64 × 64 window of `U_view`;
+  - the control is one axis, and moving toward the ball's x catches most balls when the paddle is fast compared with the ball.
+- **What will be hard:**
+  - a miss is decided long before it happens: a ball takes about 40–50 ticks to cross the court, and the meal label is right only out to about 10 ticks (vm-00101);
+  - the ball is one 2 × 2 px object among still pixels;
+  - one push of the paddle changes the outcome little until the ball is near.
 - **Scale:** DQN needed about 10 million frames to play Breakout well; a life here is 60k ticks. The aim is the basic skill, keeping the paddle under the ball, not clearing walls.
 
 ## The world (`world/breakout_world.py`, `env.kind = breakout`)
 
-- **The court** in the model's frame (`model.img` 64, grey):
-  - walls left, right and at the top; the paddle a bar at the bottom (12 × 2 px to start);
-  - the ball a 2 × 2 px square; no bricks in stage 1.
-- **The move:** the move's dx moves the paddle by dx × `paddle_speed` px (clipped to the court). dy and the click are ignored, as the universal model's move token is the same in every world.
+- **The court:** 64 × 64 px, grey, the model's frame as it is (`model.img` 64, the same 4 quarter transformers of 32 × 32 px).
+  - Walls 2 px wide on the left, right and top; the background dark as `CircleWorld`'s.
+  - The paddle: a bar 12 × 2 px near the bottom (its top at row 60).
+  - The ball: a 2 × 2 px square.
+  - No bricks in stage 1.
+- **The move (the wiring of the move token, unchanged):**
+  - its dx moves the paddle by dx × `paddle_speed` px (4.5), clipped to the court;
+  - its dy and click do nothing, as a car ignores the click. The model still predicts and sends all three.
 - **The ball:**
-  - moves `ball_speed` px a tick, bounces off the walls;
-  - off the paddle its horizontal speed depends on where it hit, as in the game, so that aiming is possible.
-- **Events and the body:**
-  - a paddle hit is a meal: hunger to 0;
-  - a miss (the ball past the paddle) is a poison: hunger +0.5, with `hunger_cut` as in `CircleWorld` (task 00110);
-  - the ball then comes back from the top at a random place and angle after a short pause;
-  - hunger drifts +.001 a tick as now.
-- **The world never resets** (a continual world, as all the default agent's worlds). The `info` keys `lifetime.py` reads: `terminal_image`, `terminal_drives`, `success` (a hit), `hunger_cut`, `gt_hazard_click` (a miss); and for scoring only `gt_ball`, `gt_paddle`.
-- **`configs/U_breakout.json`:** the default agent's model (C8's: 4 quarter transformers of 8 layers, tolerance .002, context 8, the ring) in this world. Since 2026-11-22 the default agent is `configs/U_agent.json` (TT: C8 with RD's label and the candidates at temperature 2), so Breakout starts from it.
+  - moves `ball_speed` px a tick (1.5), with sub-pixel positions, drawn at the nearest pixel;
+  - bounces off the walls and the top;
+  - off the paddle, it leaves at an angle set by where it hit (up to 60° from vertical at the paddle's ends), so aiming is possible.
+- **Events and the body (the same two body values as `CircleWorld`):**
+  - **hunger** drifts +`h_rate` (.001) a tick;
+  - **a hit is a meal:** hunger to 0 (`h_relief` 1);
+  - **a miss is a poison:** the ball passes below the paddle, hunger +`miss_add` (.5), and the part the cap at 1 cuts off is reported as `hunger_cut` (task 00110);
+  - after a miss the ball is gone for `pause` ticks (8), then comes back from just under the top wall, at a random place, falling at a random angle within 45° of vertical;
+  - **restlessness** follows `CircleWorld`'s rule (+`b_rate` a tick, relieved by the paddle's movement within a movement budget), so the body token means what it means in the default world.
+- **The world never resets** (continual, as all the default agent's worlds).
+- **Info for the loop** (as `CircleWorld`'s):
+  - `terminal_image`, `terminal_drives`;
+  - `success` (a hit), `gt_hazard_click` (a miss: the loop's poison count), `hunger_cut`;
+  - `timeout`, `click` and the `ep_*` keys (empty in a continual world).
+- **Ground truth, for scoring only:** `gt_ball`, `gt_ball_vel`, `gt_paddle`, `gt_ball_live`.
+- **`configs/U_breakout.json`:** `U_agent.json` with the `env` block replaced by the Breakout world's. The `model`, `online` and `ppo` blocks are the default agent's, unchanged.
 
-## The plan in stages
+## The run: vm-00103
 
-1. **Stage 1, the easy court** (this task):
-   - a wide paddle, a slow ball (about 1 px a tick), the paddle three times as fast; no bricks;
-   - first a check that the frozen model predicts the ball's path (the dream test, `eval_dream.py`, on the ball's position);
-   - two walkers for scale: a random paddle, and a scripted tracker that moves toward the ball's x.
-2. **Stage 1's arms** (12 seeds each, on the RTX 3090), the label as vm-00099 leaves it:
-   - **K1:** the one-tick instinct;
-   - **KH:** the instinct's horizon, each candidate held for 4 imagined ticks (task 00107; `online.ring = 0`);
-   - the owner's action repeat (decide every 4 ticks and hold the move; ARCHITECTURE.md section 9) as a third arm if it is built by then.
-3. **Stage 2, if stage 1 works:** narrower paddle, faster ball, bricks as a second source of meals.
+- **One arm, BD:** the default agent in the Breakout world, 12 seeds, 60k ticks.
+  - 6 lives per card: seeds 1–6 on the RTX 3090, 7–12 on the RTX 4090, with MPS if the daemon is up.
+  - Checkpoints every 10k; the video and frozen tests from them.
+  - The instinct's horizon (KH, task 00107) and action repeat, arms of the first plan, are left out. They change how the agent acts, and the question now is the default agent unchanged.
+- **Walkers for scale** (`breakout_walkers.py`, no model, the same world and seeds):
+  - **random:** a random push each tick, held for 6 ticks (as `world_strip`'s random moves);
+  - **still:** the paddle never moves;
+  - **tracker:** pushes toward the ball's x (a script reading `gt_ball`; the best simple play).
 
 ## Measures
 
-- **Lived** by 5k and at 40–60k: hits and misses per 1k ticks, the hit share (hits over hits and misses), mean hunger, overrides, move CE.
-- **Frozen** (`eval_breakout.py`, new): hits, misses and hit share against the two walkers; the label by ticks to the next hit and to the next miss; how different the instinct's candidates are (`eval_candidates.py`); the ball's predicted path (dream).
+- **Lived**, by 5k and at 40–60k:
+  - hits and misses per 1k ticks, and the hit share (hits over hits and misses);
+  - mean hunger, overrides, move CE, prediction loss.
+- **Frozen** at 10k to 60k (`lifetime.py --init`, `ppo.lr = 0`, as vm-00102's frozen test): 2,000 ticks in new worlds (seed 100 + s), the same measures.
+- **The walkers:** the same measures over 20k ticks per seed.
+- **A video** of a frozen life at 60k: the frame as the model sees it.
+  - `online.frame_record = N` saves body 0's first N frames; it generalizes vm-00102's `panel_record` to any world, and it is the only change to `lifetime.py`.
 
 ## The readings, set before the results
 
-1. **Plumbing:** the world's tests (bounces, hits, misses, the body's events, `hunger_cut`, the paddle at the walls, determinism by seed); all lives run 60k ticks.
-2. **It sees the ball:** frozen, the dream keeps the ball within 2 px of the real one for 4 ticks.
-3. **It plays:** K1's hit share at 40–60k is above the random paddle's, paired by seed.
-4. **Lasting choices help:** KH − K1 hit share at 40–60k, paired by seed (and the action-repeat arm if run).
-5. **Against the tracker** (descriptive): the best arm's hit share as a share of the scripted tracker's.
+1. **Plumbing:**
+   - the world's tests pass: bounces, hits, misses, the body's events, `hunger_cut`, the paddle at the walls, the pause, determinism by seed;
+   - all 12 lives run 60k ticks with the default agent's settings unchanged (checked against `U_agent.json`).
+2. **It plays:** BD's hit share at 40–60k is above the random walker's, paired by seed.
+3. **It plays well (descriptive):** BD's hit share as a share of the tracker's, lived and frozen.
+4. **The label** (descriptive): mean hunger and hits per 1k over the life, as the default world's curves.
 
 **What follows:**
-- **If 3 holds:** stage 2.
-- **If 2 fails:** the ball is not seen well enough; a bigger ball or the frame's resolution comes first.
-- **If 2 holds and 3 fails:** the label's horizon is the limit; next is a longer horizon or the label's back-propagation (re-labeled against stored).
+- **If 2 holds:** stage 2 (a narrower paddle, a faster ball, bricks as a second source of meals).
+- **If 2 fails:**
+  - check whether the model predicts the ball at all (its prediction of the ball's patches), and whether the label tells moves apart near a miss;
+  - then the label's horizon (task 00114) or the instinct's horizon (task 00107) before a new world.
 
 ## Implementation
 
-- [ ] `world/breakout_world.py` (`BreakoutConfig`, `BreakoutWorld`), `make_config` / `make_world` for `kind = breakout`; `tests/test_breakout_world.py`.
-- [ ] `configs/U_breakout.json`.
-- [ ] `eval_breakout.py` (frozen play, walkers, the label's profile); `compare_video.py` / `forage_video.py` support for the world (the court as the view; no window).
-- [ ] Timing; `00102-breakout/` (README, Makefile); the runs, frozen tests, write-up, videos.
+- [x] `world/breakout_world.py` (`BreakoutConfig`, `BreakoutWorld`), `make_config` / `make_world` for `kind = breakout`.
+- [x] `tests/test_breakout_world.py`.
+- [x] `configs/U_breakout.json`.
+- [x] `online.frame_record` in `lifetime.py` and `online.py`'s defaults.
+- [x] `breakout_walkers.py`.
+- [x] A short life from `U_breakout.json`: it runs, and its model and online config equal `U_agent.json`'s.
+- [x] Timing; `00103-breakout/` (README, Makefile); the runs, frozen tests, video, write-up.
 
 ## Verification
 
-- The model's information hygiene as in every world: the frame, the body (hunger, restlessness, the label) and the previous move only; `gt_*` for scoring only.
-- The world's frames and events repeat exactly for a seed and the same moves (tested).
+- **Information hygiene** as in every world: the model receives the frame, the body (hunger, restlessness, the label) and the previous move only; `gt_*` for scoring only.
+- **Determinism:** the world's frames and events repeat exactly for a seed and the same moves (tested).
+- **The model unchanged:** the resolved `model`, `online` and `ppo` config of a Breakout life equal a default life's (tested by diff, as for `U_agent.json`).

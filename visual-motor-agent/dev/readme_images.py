@@ -38,7 +38,7 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00096": "../videos/vm96_s5/compare.mp4", "00097": "../videos/vm97_inertia_s5/compare.mp4",
           "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4",
           "00100": "../videos/vm100_s5/compare.mp4", "00101": "../videos/vm101_s5/compare.mp4",
-          "00102": "../videos/vm102/panels_60k.mp4"}
+          "00102": "../videos/vm102/panels_60k.mp4", "00103": "../videos/vm103/play_60k.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -112,6 +112,10 @@ def smooth(y):
     return np.convolve(np.nan_to_num(y), k, "same") / np.convolve(np.ones(len(y)), k, "same")   # fewer points at the ends, no false plateau
 
 
+def x_of_all(rows):
+    return np.array([x_of(r) for r in rows], float)
+
+
 def per_1k(rows, key):
     x = np.array([x_of(r) for r in rows], float)
     v = np.array([r.get(key) or 0.0 for r in rows], float)
@@ -137,7 +141,7 @@ def mean_curve(runs, fn):
 def panels(arms):
     """[(title, {arm: (x, y)}, higher is better)]; which arms go where follows each run's world and what its metrics hold."""
     out = []
-    forage, hits, text, ppo, val = {}, {}, {}, {}, {}
+    forage, hits, text, ppo, val, court = {}, {}, {}, {}, {}, {}
     for a, runs in arms.items():
         rows, info = runs[0][0], runs[0][1]
         if has(rows, "val") or "val" in rows[-1]:
@@ -146,6 +150,8 @@ def panels(arms):
             ppo[a] = runs
         elif is_text(info) or (has(rows, "uni_ce_patch") and not has(rows, "step_hits") and not has(rows, "poison")):
             text[a] = runs
+        elif env_of(info).get("kind") == "breakout":   # a hit is a meal, a miss a poison: named as the court's events
+            court[a] = runs
         elif has(rows, "poison"):
             forage[a] = runs
         elif has(rows, "step_hits") or has(rows, "hits"):
@@ -154,6 +160,10 @@ def panels(arms):
     if forage:
         out.append(("Food touched per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, hit(q))) for a, r in forage.items()}, True))
         out.append(("Poison touched per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, "poison")) for a, r in forage.items()}, False))
+    if court:
+        share = lambda q: (x_of_all(q), np.array([r.get("step_hits", 0) / max(r.get("step_hits", 0) + r.get("poison", 0), 1) for r in q], float))  # noqa: E731
+        out.append(("Ball hit share (hits over hits and misses)", {a: mean_curve(r, share) for a, r in court.items()}, True))
+        out.append(("Balls hit per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, "step_hits")) for a, r in court.items()}, True))
     if hits:
         out.append(("Targets hit per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, hit(q))) for a, r in hits.items()}, True))
     if text:
@@ -388,6 +398,9 @@ def one(d, write_readme):
                 cap += (" All in the world with inertia, on TT's settings (vm-00101: RD's label with the candidates at temperature 2): PB and PN"
                         " see a 128 x 128 composite of four 64 x 64 panels, panel 1 the real view and panels 2-4 noise (PB) or the"
                         " model's own forecasts (PN); TT is vm-00101's 64 x 64 agent without panels (its 12 seeds).")
+            if e == "00103":
+                cap += (" BD is the default agent (vm-00101's TT) in the Breakout court, 12 seeds; the random paddle's hit share is .235,"
+                        " the tracker's 1.0.")
             if total > shown:
                 cap += " The %d best arms of %d by their last value." % (shown, total)
             figs.append(("curves.png", "; ".join(p[0] for p in ps), cap))
@@ -429,6 +442,9 @@ def one(d, write_readme):
             cap += (" PN seed 1 at 60k, frozen, 400 ticks in a new world. Left: the 128 x 128 frame as the model sees it (panel 1 the real"
                     " view; panels 2-4 the forecasts of the frame now, 1 tick ahead and 2 ahead, made on the tick before, with noise .03)."
                     " Right: the real frames those forecasts aim at. The forecast further out hedges toward the present (R6).")
+        if e == "00103":
+            cap += (" BD seeds 1-3 at 60k, frozen, 600 ticks each in new courts: the 64 x 64 frame as the model sees it (walls, the"
+                    " paddle at the bottom, the ball). Each life hit 6 balls and missed 2 here.")
         if e == "00097":
             cap += (" Seed 5 at 60k, frozen, from the same start, in the world with inertia: IB (the hunger value), MB (the meal"
                     " label) and MBN (the meal label weighted by hunger when choosing). Each arm's 64 x 64 view (the blue square: the"

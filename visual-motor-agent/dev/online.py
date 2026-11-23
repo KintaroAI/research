@@ -133,6 +133,7 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       panel_decode="pair",  # task 00115: the forecasts decoded as each value's expectation (mean) or most probable pair
                       panel_blank=0,        # task 00115: panels 2-4 noise every tick (the no-forecast baseline)
                       panel_snap=10000, panel_record=0,     # task 00115: every so many ticks, 6 consecutive composites of body 0 (panels_TICK.png)
+                      frame_record=0,       # task 00111: body 0's frames of the first N ticks saved as frames.npy (any world; panels: panel_record)
                       # lifetime.py on the GPU: read the update's stats every stats_every ticks (each read waits for
                       # the GPU; the metrics average the samples)
                       stats_every=10,

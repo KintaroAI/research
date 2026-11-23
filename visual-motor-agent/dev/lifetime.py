@@ -471,6 +471,7 @@ def main():
         panel_g = agent.config["img"] // agent.config["patch"] // 2
         panel_rng = np.random.default_rng([args.seed, 0x9A4F])
         panel_strip, panel_rec = [], []
+    frame_rec = []   # task 00111: online.frame_record
     ce_n = prev_N = 0   # bodies whose newest window the last update trained on (their surprise is read next tick)
     rollouts = {}
 
@@ -840,6 +841,11 @@ def main():
             if tick == on["panel_record"]:
                 np.save(os.path.join(out_dir, "panel_frames.npy"), np.stack(panel_rec))
                 panel_rec = []
+        if tick <= on["frame_record"]:   # task 00111: body 0's frames of the first frame_record ticks (frames.npy), in any world
+            frame_rec.append(obs["image"][0].copy())
+            if tick == on["frame_record"]:
+                np.save(os.path.join(out_dir, "frames.npy"), np.stack(frame_rec))
+                frame_rec = []
         if panels and (tick - 1) % on["panel_snap"] < 6:   # task 00115: 6 consecutive composites of body 0 every panel_snap ticks (and at birth)
             panel_strip.append(obs["image"][0].copy())
             if len(panel_strip) == 6:

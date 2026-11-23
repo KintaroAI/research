@@ -1,4 +1,5 @@
-"""The worlds: CircleWorld (the Phase 0 visual-motor environment) and TextWorld (task 00032: a text as grey frames).
+"""The worlds: CircleWorld (the Phase 0 visual-motor environment), TextWorld (task 00032: a text as grey frames), CarWorld
+(task 00067) and BreakoutWorld (task 00111).
 
 Exports ``CircleWorld``, ``EnvConfig``, ``render_state``, ``TextWorld``, ``TextConfig`` and the factories
 ``make_config`` / ``make_world`` (the config's ``kind``: circle, the default, or text).  They are loaded lazily
@@ -23,6 +24,9 @@ def make_config(env: dict, **overrides):
     if d.get("kind", "circle") == "car":   # task 00067: a car in MuJoCo
         from .car_world import CarConfig
         return CarConfig(**dict(d, **overrides)).validate()
+    if d.get("kind", "circle") == "breakout":   # task 00111: a Breakout court
+        from .breakout_world import BreakoutConfig
+        return BreakoutConfig(**dict(d, **overrides)).validate()
     d.pop("kind", None)
     thought = d.pop("thought", None)
     cue = d.pop("cue", None)
@@ -49,6 +53,9 @@ def make_world(num_envs: int, config, seed: int = 0):
     if getattr(config, "kind", "circle") == "car":
         from .car_world import CarWorld
         return CarWorld(num_envs, config, seed=seed)
+    if getattr(config, "kind", "circle") == "breakout":
+        from .breakout_world import BreakoutWorld
+        return BreakoutWorld(num_envs, config, seed=seed)
     from .circle_world import CircleWorld
     if getattr(config, "cue", None) is not None:
         from .cue_world import CueWorld
