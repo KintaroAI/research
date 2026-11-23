@@ -17,9 +17,10 @@ The owner (2026-11-22): "next experiment will be about filling the gap - we will
 ## The gap (both experiments)
 
 - **`online.blind = [x, y, w, h]`** (px in the model's frame; off by default): those pixels set to 0 (black, distinct from the background's 20–30 grey) in what the model sees. That covers acting (the ring), every update's inputs, and the label's bootstrap windows. The world and memory stay clean.
-- **Where:** 12 × 12 px at x 38–49, y 16–27. That's off-centre like the eye's (right of and above the body at the centre), inside one quarter transformer's field (the top-right one), and across parts of 6 of its patches.
-  - The other three quarters never see the gap: they are a control inside the same model.
-  - 12 px can hide a whole food or poison.
+- **Where:** 12 × 12 px at x 38–49, y 16–27. That's off-centre like the eye's (right of and above the body at the centre), across parts of 6 patches of the top-right quarter. 12 px can hide a whole food or poison.
+- **No special treatment for any transformer (the owner, 2026-11-22):** all four get the same frame with the gap, when acting and in every update, as they always share one frame.
+  - Each transformer's patch tokens cover its own quarter, so the top-right one predicts the gap's patches.
+  - Every transformer also reads and predicts summary tokens of the whole frame. These are thumbnails of blocks, made from the frame it is given, so the summaries over the gap are blinded in all four inputs and trained against the real pixels in all four.
 - **Same in every seed and the whole life ("permanently").**
 - **How it's built:** the input-only path that `online.noise_in` uses (inputs ≠ targets in `update_rollout`), deterministic, with no generator. `noise_in` is refused with the meal label today; the blind spot must work with the default agent's settings.
 
