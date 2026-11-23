@@ -1,8 +1,8 @@
 # vm-00104: Breakout with Bricks — Does the Agent Go for the Better Bricks?
 
 **Date:** 2026-11-22
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00104`)
+**Status:** Complete
+**Source:** `exp/vm-00104` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00104/`
 **Task plan:** [`../tasks/00117-breakout-bricks.md`](../tasks/00117-breakout-bricks.md)
 
