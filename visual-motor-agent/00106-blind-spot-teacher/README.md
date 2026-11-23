@@ -1,8 +1,8 @@
 # vm-00106: The Blind Spot in the Targets Too — Can Motion Teach the Model to Fill It?
 
 **Date:** 2026-11-23
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00106`)
+**Status:** Complete
+**Source:** `exp/vm-00106` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00106/`
 **Task plan:** [`../tasks/00118-blind-spot.md`](../tasks/00118-blind-spot.md)
 
