@@ -40,7 +40,7 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00100": "../videos/vm100_s5/compare.mp4", "00101": "../videos/vm101_s5/compare.mp4",
           "00102": "../videos/vm102/panels_60k.mp4", "00103": "../videos/vm103/play_60k.mp4",
           "00104": "../videos/vm104/play_60k.mp4", "00105": "../videos/vm105/BL_gap_s1_60k.mp4",
-          "00106": "../videos/vm106/GB_gap_s1_60k.mp4"}
+          "00106": "../videos/vm106/GB_gap_s1_60k.mp4", "00107": "../videos/vm107/play_60k.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -53,7 +53,7 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00099": [("00095", ("IB",)), ("00097", ("MB",)), ("00098", ("SB",))],
             "00100": [("00095", ("IB",)), ("00097", ("MB",)), ("00099", ("SD",))],
             "00101": [("00095", ("IB",)), ("00097", ("MB",)), ("00100", ("RD",))],
-            "00102": [("00101", ("TT",))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00102": [("00101", ("TT",))], "00107": [("00104", ("BK", "BS"))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
 
@@ -173,7 +173,7 @@ def panels(arms):
         out.append(("Ball hit share (paddle hits over hits and misses)", {a: mean_curve(r, share) for a, r in court.items()}, True))
         bricks = {a: r for a, r in court.items() if "bo_food" in r[0][0][-1]}
         if bricks:
-            out.append(("Brick food per 1k ticks", {a: mean_curve(r, lambda q: (x_of_all(q), delta(q, "bo_food") * 1000.0 / np.maximum(np.diff(x_of_all(q), prepend=0.0), 1.0)))
+            out.append(("Food per 1k ticks (bricks, and paddle hits where they feed)", {a: mean_curve(r, lambda q: (x_of_all(q), delta(q, "bo_food") * 1000.0 / np.maximum(np.diff(x_of_all(q), prepend=0.0), 1.0)))
                                                     for a, r in bricks.items()}, True))
         else:
             out.append(("Balls hit per 1k ticks", {a: mean_curve(r, lambda q: per_1k(q, "step_hits")) for a, r in court.items()}, True))
@@ -415,6 +415,10 @@ def one(d, write_readme):
                 cap += (" Stage 2 (a ball at 2.25 px a tick, no food for a paddle hit, 24 bricks of 3 looks feeding .1, .25 and .5): BK"
                         " the default agent unchanged, BS with a meal worth its size; 12 seeds each. A random paddle's hit share is"
                         " .229 and its food 3.1 per 1k; the aimer's food 7.0.")
+            if e == "00107":
+                cap += (" Stage 2 with food for a paddle hit (.25 of hunger; bricks .1, .25 and .5 by look): PK the default agent"
+                        " unchanged, PS with a meal worth its size; 12 seeds each. BK and BS are vm-00104's same arms without paddle"
+                        " food. A random paddle's hit share is .229.")
             if e == "00105":
                 cap += (" BL is the default agent with a fixed 12 x 12 px blind spot in everything the model sees (targets whole), 12 seeds;"
                         " its control, vm-00101's TT, eats 71.6 food and 8.3 poison per 1k at 40-60k.")
@@ -468,6 +472,9 @@ def one(d, write_readme):
                     " Right: the real frames those forecasts aim at. The forecast further out hedges toward the present (R6).")
         if e == "00104":
             cap += (" BK (left) and BS (right) seed 1 at 60k, frozen, 900 ticks from the same court (seed 201): the frame as the"
+                    " model sees it, the bricks' three looks (solid, checker, hollow); which look feeds how much rotates with the seed.")
+        if e == "00107":
+            cap += (" PK (left) and PS (right) seed 1 at 60k, frozen, 900 ticks from the same court (seed 201): the frame as the"
                     " model sees it, the bricks' three looks (solid, checker, hollow); which look feeds how much rotates with the seed.")
         if e == "00105":
             cap += (" BL seed 1 at 60k, frozen, 600 ticks in a new world (seed 101). Left: what the model sees, the gap black (red box);"

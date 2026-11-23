@@ -1,7 +1,7 @@
 # Task 00119: Breakout Stage 2b — Food for the Paddle Hit Again (experiment vm-00107)
 
 **Date:** 2026-11-23
-**Status:** Planned (queued after vm-00106). The owner, 2026-11-23, after watching vm-00104's video: "it feels like we need to feed it on hittin paddle - movement feels random"
+**Status:** Complete (vm-00107, 2026-11-23): feeding the paddle hit brings the play back (PK .43, PS .47 hit share at 50–60k, random .23; vm-00104 without paddle food .28 and .33), still rising at 60k; neither arm prefers better bricks, lived or frozen. The owner, 2026-11-23, after watching vm-00104's video: "it feels like we need to feed it on hittin paddle - movement feels random"
 
 ## Context
 
@@ -34,4 +34,4 @@
 ## Implementation
 
 - [x] `00107-breakout-paddle-food/` (README, Makefile: vm-00104's with `configs/U_breakout2p.json`, the stage-2 court with `env.paddle_relief = .25`); walkers run.
-- [ ] The runs (queued after vm-00106), walkers, frozen tests, video, write-up (analysis: vm-00104's script with the new arm names).
+- [x] The runs (queued after vm-00106), walkers, frozen tests, video, write-up (analysis: vm-00104's script with the new arm names).
