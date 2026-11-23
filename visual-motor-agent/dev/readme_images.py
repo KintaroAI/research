@@ -39,7 +39,8 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4",
           "00100": "../videos/vm100_s5/compare.mp4", "00101": "../videos/vm101_s5/compare.mp4",
           "00102": "../videos/vm102/panels_60k.mp4", "00103": "../videos/vm103/play_60k.mp4",
-          "00104": "../videos/vm104/play_60k.mp4", "00105": "../videos/vm105/BL_gap_s1_60k.mp4"}
+          "00104": "../videos/vm104/play_60k.mp4", "00105": "../videos/vm105/BL_gap_s1_60k.mp4",
+          "00106": "../videos/vm106/GB_gap_s1_60k.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -417,6 +418,10 @@ def one(d, write_readme):
             if e == "00105":
                 cap += (" BL is the default agent with a fixed 12 x 12 px blind spot in everything the model sees (targets whole), 12 seeds;"
                         " its control, vm-00101's TT, eats 71.6 food and 8.3 poison per 1k at 40-60k.")
+            if e == "00106":
+                cap += (" The default agent with the vm-00105 blind spot in everything it sees and in its targets: G0 learns against"
+                        " the black gap, GB against the gap filled by the motion teacher; 12 seeds each. TT (no gap) eats 71.6 food"
+                        " and 8.3 poison per 1k at 40-60k.")
             if e == "00103":
                 cap += (" BD is the default agent (vm-00101's TT) in the Breakout court, 12 seeds; the random paddle's hit share is .235,"
                         " the tracker's 1.0.")
@@ -468,6 +473,10 @@ def one(d, write_readme):
             cap += (" BL seed 1 at 60k, frozen, 600 ticks in a new world (seed 101). Left: what the model sees, the gap black (red box);"
                     " middle: its predicted frame (each quarter transformer its own quarter, decoded pair); right: the true frame."
                     " TT with the gap put in, never trained with it, is in videos/vm105/TT_gap_s1_60k.mp4.")
+        if e == "00106":
+            cap += (" GB seed 1 at 60k, frozen, 600 ticks in a new world (seed 101). Left: what the model sees, the gap black (red box);"
+                    " middle: its predicted frame; right: the true frame. GB never learned from the true gap, only from the teacher's"
+                    " fill. G0 (trained against the black gap) predicts black there: videos/vm106/G0_gap_s1_60k.mp4.")
         if e == "00103":
             cap += (" BD seeds 1-3 at 60k, frozen, 600 ticks each in new courts: the 64 x 64 frame as the model sees it (walls, the"
                     " paddle at the bottom, the ball). Each life hit 6 balls and missed 2 here.")
