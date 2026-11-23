@@ -39,7 +39,7 @@ VIDEOS = {"00054": "videos/compare.mp4", "00056": "thought_T_s2.mp4", "00057": "
           "00098": "../videos/vm98_plain_s5/compare.mp4", "00099": "../videos/vm99_s5/compare.mp4",
           "00100": "../videos/vm100_s5/compare.mp4", "00101": "../videos/vm101_s5/compare.mp4",
           "00102": "../videos/vm102/panels_60k.mp4", "00103": "../videos/vm103/play_60k.mp4",
-          "00104": "../videos/vm104/play_60k.mp4"}
+          "00104": "../videos/vm104/play_60k.mp4", "00105": "../videos/vm105/BL_gap_s1_60k.mp4"}
 CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16")), ("00063", ("NA", "CO"))], "00066": [("00064", ("C16",))], "00067": [("00064", ("G16",)), ("00063", ("NA",))],
             "00080": [("00073", ("K4",))], "00081": [("00073", ("K4",))],
             "00082": [("00073", ("K4",))], "00083": [("00073", ("K4",)), ("00081", ("H4",))],
@@ -414,6 +414,9 @@ def one(d, write_readme):
                 cap += (" Stage 2 (a ball at 2.25 px a tick, no food for a paddle hit, 24 bricks of 3 looks feeding .1, .25 and .5): BK"
                         " the default agent unchanged, BS with a meal worth its size; 12 seeds each. A random paddle's hit share is"
                         " .229 and its food 3.1 per 1k; the aimer's food 7.0.")
+            if e == "00105":
+                cap += (" BL is the default agent with a fixed 12 x 12 px blind spot in everything the model sees (targets whole), 12 seeds;"
+                        " its control, vm-00101's TT, eats 71.6 food and 8.3 poison per 1k at 40-60k.")
             if e == "00103":
                 cap += (" BD is the default agent (vm-00101's TT) in the Breakout court, 12 seeds; the random paddle's hit share is .235,"
                         " the tracker's 1.0.")
@@ -461,6 +464,10 @@ def one(d, write_readme):
         if e == "00104":
             cap += (" BK (left) and BS (right) seed 1 at 60k, frozen, 900 ticks from the same court (seed 201): the frame as the"
                     " model sees it, the bricks' three looks (solid, checker, hollow); which look feeds how much rotates with the seed.")
+        if e == "00105":
+            cap += (" BL seed 1 at 60k, frozen, 600 ticks in a new world (seed 101). Left: what the model sees, the gap black (red box);"
+                    " middle: its predicted frame (each quarter transformer its own quarter, decoded pair); right: the true frame."
+                    " TT with the gap put in, never trained with it, is in videos/vm105/TT_gap_s1_60k.mp4.")
         if e == "00103":
             cap += (" BD seeds 1-3 at 60k, frozen, 600 ticks each in new courts: the 64 x 64 frame as the model sees it (walls, the"
                     " paddle at the bottom, the ball). Each life hit 6 balls and missed 2 here.")

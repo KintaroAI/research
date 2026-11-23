@@ -126,6 +126,7 @@ def main():
         return
     rows = []
     for r in a.runs:
+        r = r.rstrip("/")
         row = dict(measure(r, a.gap, a.skip), label=a.label)
         rows.append(row)
         print("%s  gap %.2f (bg %.2f, prev %.2f)  obj %.2f (bg %.2f, share %.2f)  hit %.2f fa %.2f d' %.2f  edge %.2f other %.2f" % (

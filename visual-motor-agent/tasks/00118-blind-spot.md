@@ -1,7 +1,7 @@
 # Task 00118: The Blind Spot — Filling the Gap (experiments vm-00105 and vm-00106)
 
 **Date:** 2026-11-22
-**Status:** In progress (vm-00105 queued after vm-00104, vm-00106 after vm-00105; the owner, 2026-11-22: "when current run finishes - do all the tests, write up, commit and push, generate video and start vm 105 so by the morning I can see how it went - if it finishes before morining - start 106")
+**Status:** In progress (vm-00105 complete 2026-11-23: BL fills the gap, 1.56 grey levels off at 60k against 5.85 for an empty gap and 1.22 seen, 12/12 seeds; vm-00106 running; the owner, 2026-11-22: "when current run finishes - do all the tests, write up, commit and push, generate video and start vm 105 so by the morning I can see how it went - if it finishes before morining - start 106")
 
 The owner (2026-11-22): "next experiment will be about filling the gap - we will permanently off some area in the visual field from the foraging world mimicing blind spot of the eye but train on the full picture so the predicted picture should have the gap restored - we will examine how good it is in restoring blind spot and second experiment - we need to figure out how we can train on a image with blind spot as well but teach model to restore image back nevertheless"
 
@@ -75,4 +75,4 @@ Without a target in the gap, the next-frame loss either teaches the model to pre
 - [x] `online.blind` in `lifetime.py` (acting, update inputs, the label's bootstrap windows) and `DEFAULT_ONLINE`; allowed with the default agent's settings; tests (`tests/test_blind.py`).
 - [x] The predicted-frame recorder (`online.pred_record`) and `eval_blind.py` (measures, baselines, video).
 - [x] vm-00106: `online.blind_target`, `GapTeacher`, the memory field `timg`; `00106-blind-spot-teacher/`.
-- [ ] `00105-blind-spot/` (README, Makefile); the runs (12 seeds; 12 lives across the two cards), the frozen tests, the video, the write-up.
+- [x] `00105-blind-spot/` (README, Makefile); the runs (12 seeds; 12 lives across the two cards), the frozen tests, the video, the write-up.

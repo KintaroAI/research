@@ -59,7 +59,7 @@ frozen:
 measure:
 	rm -f $(OUT)/blind.jsonl
 	cd $(DEV) && for t in $(T); do for c in BL_gap BL_open TT_gap TT_open; do \
-	  $(PY) eval_blind.py $(OUT)/frozen$$((t / 1000))k/$${c}_s* --gap $(GAP) --label $${c}_$$((t / 1000))k --out $(OUT)/blind.jsonl > /dev/null; \
+	  $(PY) eval_blind.py $(OUT)/frozen$$((t / 1000))k/$${c}_s*/ --gap $(GAP) --label $${c}_$$((t / 1000))k --out $(OUT)/blind.jsonl > /dev/null; \
 	done; done
 
 video:
