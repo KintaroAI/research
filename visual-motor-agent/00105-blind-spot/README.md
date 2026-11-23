@@ -1,8 +1,8 @@
 # vm-00105: The Blind Spot — Does the Prediction Restore a Gap the Model Never Sees?
 
 **Date:** 2026-11-23
-**Status:** Complete (pending tag)
-**Source:** `dev/` (pending tag `exp/vm-00105`)
+**Status:** Complete
+**Source:** `exp/vm-00105` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00105/`
 **Task plan:** [`../tasks/00118-blind-spot.md`](../tasks/00118-blind-spot.md)
 
