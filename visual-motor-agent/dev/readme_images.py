@@ -369,11 +369,92 @@ def put_section(path, text):
     open(path, "w").write(s)
 
 
+def baselines_figs(img):
+    """vm-00108 (task 00120): the learned baselines beside ours, one figure per world. Their runs name arm and world
+    (DR_breakout_s1) and PL counts samples of 16 bodies, so the generic curves don't fit them."""
+    def runs(e, name):
+        out = []
+        for sd in range(1, 7):   # seeds 1-6 (ours ran 12: the baselines' seeds are 1-6)
+            m = os.path.join(DATA, "exp_" + e, "%s_s%d" % (name, sd), "metrics.jsonl")
+            out.append(([json.loads(x) for x in open(m) if x.strip()],))
+        return out
+    def share(q):   # over the last 5 rows (5k ticks; PL's rows are 16k samples each: one row)
+        k = 1 if q[0].get("bodies", 1) > 1 else 5
+        h, m = (np.array([r["bo_" + c] for r in q], float) for c in ("hits", "misses"))
+        h, m = h - np.concatenate([np.zeros(k), h[:-k]]), m - np.concatenate([np.zeros(k), m[:-k]])
+        return x_of_all(q)[k - 1:], (h / np.maximum(h + m, 1))[k - 1:]
+    food = lambda q: (x_of_all(q), np.array([r["step_hits"] for r in q], float))  # noqa: E731
+    pois = lambda q: (x_of_all(q), np.array([r["poison"] for r in q], float))  # noqa: E731
+    first = lambda fn, n: (lambda q: fn([r for r in q if r["step"] <= n]))  # noqa: E731
+    col = {"ours": COLORS[0], "DR": COLORS[1], "PP": COLORS[2], "PL": COLORS[3]}
+    worlds = (("breakout", "BD", "00103", [("Ball hit share", share, True)], 0.235, "random paddle"),
+              ("food", "TT", "00101", [("Food per 1k ticks", food, True), ("Poison per 1k ticks", pois, False)], None, None))
+    figs = []
+    for w, ours, oe, ms, ref, ref_name in worlds:
+        series = {"ours": runs(oe, ours), "DR": runs("00108", "DR_" + w), "PP": runs("00108", "PP_" + w), "PL": runs("00108", "PL_" + w)}
+        fig, axs = plt.subplots(1, len(ms) + 1, figsize=(9.2, 3.3), dpi=100, squeeze=False, facecolor=SURFACE)
+        for i, (title, fn, up) in enumerate(ms + [ms[0]]):
+            ax = axs[0][i]
+            ax.set_facecolor(SURFACE)
+            whole = i == len(ms)
+            if whole:   # PL's whole run, by samples, with ours and DR at 50-60k as levels
+                c = mean_curve(series["PL"], fn)
+                ax.plot(c[0], c[1], color=col["PL"], lw=2, label="PL", solid_capstyle="round")
+                for a in ("ours", "DR"):
+                    if fn is share:   # the 50-60k level, from the counters
+                        lvl = float(np.mean([(q[59]["bo_hits"] - q[49]["bo_hits"]) / max(1, q[59]["bo_hits"] + q[59]["bo_misses"]
+                                             - q[49]["bo_hits"] - q[49]["bo_misses"]) for (q,) in series[a]]))
+                    else:
+                        lvl = float(np.mean([np.mean(fn(q)[1][50:60]) for (q,) in series[a]]))
+                    ax.axhline(lvl, color=col[a], lw=1.5, ls=(0, (4, 3)))
+                    ax.annotate("%s at 50-60k" % (ours if a == "ours" else a), (c[0][-1], lvl), xytext=(-2, 4), textcoords="offset points",
+                                ha="right", fontsize=8, color=MUTED_INK)
+                ax.set_title("PL's whole run: " + title[0].lower() + title[1:], fontsize=11, color=INK, loc="left")
+                ax.set_xlabel("samples (16 bodies)", fontsize=9, color=MUTED_INK)
+            else:
+                for a in ("ours", "DR", "PP", "PL"):
+                    c = mean_curve(series[a], first(fn, 64000) if a == "PL" else fn)
+                    if c is not None:
+                        ax.plot(c[0], c[1], color=col[a], lw=2, label=ours if a == "ours" else (a + " (samples)" if a == "PL" else a),
+                                solid_capstyle="round", marker="o" if a == "PL" else None, ms=4)
+                ax.set_title(title, fontsize=11, color=INK, loc="left")
+                ax.set_xlabel("ticks lived", fontsize=9, color=MUTED_INK)
+                ax.legend(frameon=False, fontsize=8, labelcolor=MUTED_INK, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.2),
+                          handlelength=1.4, columnspacing=1.0)
+            if ref is not None:
+                ax.axhline(ref, color=MUTED_INK, lw=1, ls=":")
+                if not whole:
+                    ax.annotate(ref_name, (60000, ref), xytext=(0, -11), textcoords="offset points", ha="right", fontsize=8, color=MUTED_INK)
+            ax.grid(axis="y", color=GRID, lw=1)
+            ax.set_axisbelow(True)
+            for k in ("top", "right", "left"):
+                ax.spines[k].set_visible(False)
+            ax.spines["bottom"].set_color(GRID)
+            ax.tick_params(colors=MUTED_INK, labelsize=9, length=0)
+            ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
+                lambda v, _: "%gM" % (v / 1e6) if v >= 1e6 else ("%gk" % (v / 1e3) if v >= 1e3 else "%g" % v)))
+        fig.tight_layout()
+        name = "curves_%s.png" % w
+        save(fig, os.path.join(img, name))
+        if w == "breakout":
+            cap = ("Breakout stage 1, seeds 1-6, the mean by arm, smoothed: BD the default agent (vm-00103), DR DreamerV3, PP PPO with"
+                   " one body, PL PPO with 16 bodies (its first 64k samples on the ticks' axis; right, its whole run). The dotted line"
+                   " is a random paddle (.235).")
+        else:
+            cap = ("The food world, seeds 1-6, the mean by arm, smoothed: TT the default agent (vm-00101), DR DreamerV3, PP PPO with"
+                   " one body, PL PPO with 16 bodies (its first 64k samples on the ticks' axis; right, its whole run, food per 1k"
+                   " ticks of each body).")
+        figs.append((name, "%s: ours, DreamerV3 and PPO" % w.capitalize(), cap))
+    return figs
+
+
 def one(d, write_readme):
     e = os.path.basename(d)[:5]
     arms = load_runs(e)
     img = os.path.join(d, "images")
     figs, notes = [], []
+    if e == "00108":
+        figs, arms = baselines_figs(img), {}
     if arms:
         r, kind, ok = world_strip(arms, os.path.join(img, "world.png"))
         if ok:

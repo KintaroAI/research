@@ -1,7 +1,7 @@
 # Task 00120: Calibrate — Learned Baselines on the Same Pixels and Ticks (experiment vm-00108)
 
 **Date:** 2026-11-23
-**Status:** Planned (queued after vm-00107; code and pilots done). The owner, 2026-11-23: "yes write the task and queue it after 107", on the proposal: "Calibrate first. No learned baseline has run since the first few experiments; later worlds are scored against scripted walkers. Run the PPO agent already in the codebase and one off-the-shelf world-model agent such as DreamerV3 on the food world and Breakout, with the same pixels and tick budget. That shows whether the 'no reward' machinery buys sample efficiency or costs it."
+**Status:** Complete (vm-00108, 2026-11-24). The owner, 2026-11-23: "yes write the task and queue it after 107", on the proposal: "Calibrate first. No learned baseline has run since the first few experiments; later worlds are scored against scripted walkers. Run the PPO agent already in the codebase and one off-the-shelf world-model agent such as DreamerV3 on the food world and Breakout, with the same pixels and tick budget. That shows whether the 'no reward' machinery buys sample efficiency or costs it."
 
 ## Context
 
@@ -63,4 +63,4 @@
 - [x] PPO: `dev/baselines/run_ppo.py` (CleanRL-style, torch, the same metrics rows); 1 body for PP, 16 for PL.
 - [x] Pilots under load (vm-00106's 24 frozen lives on both cards): PL on Breakout 930 samples/s, its hit share already above random at 160k samples; Dreamer about 0.8 updates/s, too loaded to time, so `make pilot` times it on free cards first.
 - [x] `00108-learned-baselines/` (README, Makefile); queued after vm-00107.
-- [ ] The runs, analysis, figures, write-up.
+- [x] The runs, analysis, figures, write-up (vm-00108).
