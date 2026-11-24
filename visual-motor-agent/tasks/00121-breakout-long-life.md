@@ -1,7 +1,7 @@
 # Task 00121: Breakout Stage 2b — One Long Life of 1M Ticks (experiment vm-00109)
 
 **Date:** 2026-11-23
-**Status:** Planned (starts after vm-00108's Dreamer pilots; runs beside vm-00108). The owner, 2026-11-23, after vm-00107: "does paddle improves over time? what if we train to 1m ticks (PS? and just one seed)"
+**Status:** Complete (vm-00109, 2026-11-24). The owner, 2026-11-23, after vm-00107: "does paddle improves over time? what if we train to 1m ticks (PS? and just one seed)"
 
 ## Context
 
@@ -34,5 +34,5 @@
 
 ## Implementation
 
-- [ ] `00109-breakout-long-life/` (README, Makefile: vm-00107's `SET`, PS's setting, `--set online.steps=1000000 --set online.save_every=50000`).
-- [ ] The run, frozen tests, video, write-up.
+- [x] `00109-breakout-long-life/` (README, Makefile: vm-00107's `SET`, PS's setting, `--set online.steps=1000000 --set online.save_every=50000`).
+- [x] The run, frozen tests, video, write-up (vm-00109).
