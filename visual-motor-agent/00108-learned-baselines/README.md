@@ -1,7 +1,7 @@
 # vm-00108: Learned Baselines — Is the Default Agent Fast or Slow for Its Ticks?
 
 **Date:** 2026-11-23
-**Status:** Planned (queued after vm-00107)
+**Status:** Running (since 2026-11-23 15:01: the Dreamer pilots, then PP and PL, then DR breakout and food)
 **Source:** `exp/vm-00108` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00108/`
 **Task plan:** [`../tasks/00120-learned-baselines.md`](../tasks/00120-learned-baselines.md)
@@ -44,3 +44,5 @@ Calibrate. Since vm-00001 our results are scored against scripted walkers and ou
 ## Results
 
 (pending)
+
+- **Dreamer's speed alone** (`make pilot`, 5,000 ticks of breakout seed 1, 2,500 of them learning at train ratio 512): 596 s on the RTX 3090 and 563 s on the 4090, about 4.4 learning ticks a second; a 60k life alone about 3.6 hours.
