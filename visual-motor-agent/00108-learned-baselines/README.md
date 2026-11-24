@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-23
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00108`)
+**Source:** `exp/vm-00108` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00108/`
 **Task plan:** [`../tasks/00120-learned-baselines.md`](../tasks/00120-learned-baselines.md)
 
