@@ -1,8 +1,8 @@
 # Makefile for experiment vm-00110-replay-ratio
 #
 # Reproduces the runs of task 00122: the default agent in Breakout stage 1 (configs/U_breakout.json, as vm-00103's BD)
-# with Dreamer's training budget per tick: online.batch = 56 (the newest window and 56 replayed windows of 8 steps, 456
-# steps per update; BD: 8, 72 steps; vm-00108's Dreamer: 512 replayed steps per tick). Arm RB, seeds 1-12, 60k ticks.
+# with Dreamer's training budget per tick: online.batch = 56 (56 windows of 8 steps, the newest and 55 replayed, 448
+# steps per update; BD: 8 windows, 64 steps; vm-00108's Dreamer: 512 replayed steps per tick). Arm RB, seeds 1-12, 60k ticks.
 # Seeds 1-6 on the RTX 3090 (GPU 0 under CUDA_DEVICE_ORDER=PCI_BUS_ID), 7-12 on the RTX 4090 (GPU 1), under MPS.
 # Outputs go to ~/data/research/visual-motor-agent/exp_00110/.
 #

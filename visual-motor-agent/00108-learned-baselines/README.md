@@ -122,7 +122,7 @@ Wall-clock per life, each under the load it ran at:
 | PP breakout, food | 24 (PP and PL together) | 130 s, 200 s |
 | PL breakout, food (2M samples) | 24 | 5 min, 30 min |
 
-- **Card time per life** (wall-clock × the card's share): DR about 1.3–1.5 card-hours, BD about 0.5: Dreamer costs about 3 times as much per breakout life. Per tick it also trains on about 7 times as many replayed steps (29.5M against 4.3M in 60k ticks) and imagines about 15,000 steps per update.
+- **Card time per life** (wall-clock × the card's share): DR about 1.3–1.5 card-hours, BD about 0.5: Dreamer costs about 3 times as much per breakout life. Per tick it also trains on about 8 times as many replayed steps (29.5M against 3.84M in 60k ticks: our update is 8 windows of 8 steps, the newest among them) and imagines about 15,000 steps per update.
 - **PPO is cheap per sample:** 2M samples of Breakout in 5 minutes. In samples it is the least efficient; in wall-clock PL reaches BD's level in about a minute.
 
 <!-- figures -->
@@ -141,14 +141,14 @@ Wall-clock per life, each under the load it ran at:
 
 - **The calibration is split by world.** In Breakout DreamerV3 learns far better than the default agent from the same 60k ticks (.99 against .65 at 50–60k); in the food world the default agent eats 1.6 times Dreamer's food and a third of its poison. PPO at our budget is far behind both, as expected; in samples it needs 3–6 times our ticks in Breakout and 20–30 times in the food world.
 - **The default agent was made in the food world, not in Breakout.** About a hundred experiments shaped TT's settings (the label, its horizon, the instinct's temperature) in the food world; Breakout ran it unchanged. Dreamer runs its generic defaults in both. The food world result is ours on home ground; Breakout is the fairer test of the architecture, and there Dreamer wins clearly.
-- **In Breakout the start is the same, the climb is not.** Both stay near random for 25–30k ticks and cross .5 at about the same time. Dreamer then goes to 1.0 within about 10k ticks; ours climbs slowly and is at .65 at 60k. Two differences fit the climb (neither tested here): Dreamer trains on 7 times as many replayed steps per tick (vm-00110 tests that alone), and its actor is trained by the gradient through imagined trajectories rather than chosen from 16 sampled moves.
+- **In Breakout the start is the same, the climb is not.** Both stay near random for 25–30k ticks and cross .5 at about the same time. Dreamer then goes to 1.0 within about 10k ticks; ours climbs slowly and is at .65 at 60k. Two differences fit the climb (neither tested here): Dreamer trains on about 8 times as many replayed steps per tick (vm-00110 tests that alone), and its actor is trained by the gradient through imagined trajectories rather than chosen from 16 sampled moves.
 - **In the food world Dreamer does not learn to avoid poison.** Its food plateaus at 44 from 30k on, and its poison stays at the level of its first 10k. Food and poison differ only in look (plain against checkered circles) and in sign of reward; a poison costs about .5 against a meal's +1 (DR s1's last row: 52 food, 22 poison, reward 41). Why Dreamer misses it is not tested here: the reconstruction may blur the checker at 64 × 64, or a γ of .997 may weigh a poison's cost too little against the food behind it. Ours sees the same pixels with γ .95.
 
 ## Conclusions
 
 1. **Against PPO at our budget the default agent is far ahead** in both worlds (+.40 hit share; +41 food per 1k, same poison; 6 of 6 seeds). PPO needs 3–6 times our ticks in Breakout and 20–30 times in the food world to reach our level.
 2. **Against DreamerV3 the result depends on the world:** in Breakout, Dreamer is far ahead (+.35 hit share at 40–60k, nearly every ball returned by 50k; 6 of 6 seeds); in the food world the default agent is (+27 food and −14.5 poison per 1k; 6 of 6 seeds).
-3. **Dreamer spends more:** about 3 times our card time per life and 7 times our replayed steps per tick, with imagination on top.
+3. **Dreamer spends more:** about 3 times our card time per life and about 8 times our replayed steps per tick, with imagination on top.
 
 ## Next steps
 
