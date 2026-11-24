@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-23
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00109`)
+**Source:** `exp/vm-00109` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00109/`
 **Task plan:** [`../tasks/00121-breakout-long-life.md`](../tasks/00121-breakout-long-life.md)
 
