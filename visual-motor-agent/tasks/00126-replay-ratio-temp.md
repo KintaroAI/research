@@ -12,7 +12,7 @@
 ## The arm
 
 - **RT:** vm-00110's RB (`configs/U_breakout.json`, `online.batch = 56`) with `online.instinct_temp = 4` (the default 2). Nothing else changed.
-- **Seeds 1–6, 60k ticks**, on the RTX 3090 under MPS (as RB's seeds 1–6), then frozen at 30k and 60k (seed 100 + s).
+- **Seeds 1–12, 60k ticks** under MPS, 1–6 on the RTX 3090 and 7–12 on the RTX 4090 (as RB's; 7–12 added when the 4090 came free), then frozen at 30k and 60k (seed 100 + s).
 - Paired by seed with RB (vm-00110), BD (vm-00103) and DR (vm-00108, Breakout).
 
 ## Measures
@@ -21,7 +21,7 @@
 - The candidates (`eval_candidates.py`, frozen at 60k): distinct moves, all-same share, label spread.
 - Move-token cross-entropy and the instinct's override share.
 
-## The readings, set before the results (6 seeds)
+## The readings, set before the results (12 seeds)
 
 1. **Does widening lift the plateau?** RT − RB at 40–60k above zero, and RT's 50–60k above its 40–50k (still climbing).
 2. **Is the early speed kept?** RT − BD at 10–30k (RB: +.22).
@@ -29,6 +29,6 @@
 
 ## Implementation
 
-- [ ] `00113-replay-ratio-temp/` (README, Makefile: vm-00110's with `--set online.instinct_temp=4`, arm RT, seeds 1–6 on GPU 0).
+- [ ] `00113-replay-ratio-temp/` (README, Makefile: vm-00110's with `--set online.instinct_temp=4`, arm RT, seeds 1–6 on GPU 0, 7–12 on GPU 1).
 - [ ] Queued after vm-00111's seeds 4–6 on the 3090 (with their frozen tests).
 - [ ] The runs, the candidates check, analysis, write-up.

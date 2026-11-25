@@ -2,11 +2,11 @@
 #
 # Reproduces the runs of task 00126: vm-00110's RB (Breakout stage 1, configs/U_breakout.json, online.batch = 56: Dreamer's
 # replayed steps per tick) with the instinct's candidates drawn at temperature 4 (online.instinct_temp; the default 2).
-# Arm RT, seeds 1-6, 60k ticks, on the RTX 3090 (GPU 0 under CUDA_DEVICE_ORDER=PCI_BUS_ID; seeds 7-12 would go to GPU 1),
+# Arm RT, seeds 1-12, 60k ticks: 1-6 on the RTX 3090 (GPU 0 under CUDA_DEVICE_ORDER=PCI_BUS_ID), 7-12 on the RTX 4090 (GPU 1),
 # under MPS. Outputs go to ~/data/research/visual-motor-agent/exp_00113/.
 #
 # Usage:
-#   make runs — RT, seeds 1-6
+#   make runs — RT, seeds 1-12 (run as 1-6, then 7-12 with SEEDS=)
 #   make frozen — (after the runs) per checkpoint (30k, 60k) and life: 2000 ticks with learning off (ppo.lr = 0) in new
 #                 courts (seed 100 + s, as vm-00110)
 #   Options: MPS= (no MPS daemon), T="10000 60000" (frozen's checkpoints)
@@ -20,7 +20,7 @@ T ?= 30000 60000
 G = CUDA_DEVICE_ORDER=PCI_BUS_ID $(MPS)
 SET = --config configs/U_breakout.json --set online.batch=56 --set online.instinct_temp=4
 FROZEN = --set ppo.lr=0 --set online.steps=2000 --set online.log_every=100 --set online.save_every=100000
-SEEDS = 1 2 3 4 5 6
+SEEDS = 1 2 3 4 5 6 7 8 9 10 11 12
 CARD = $$([ $$s -le 6 ] && echo 0 || echo 1)
 
 .PHONY: all runs frozen
