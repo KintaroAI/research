@@ -336,6 +336,8 @@ def main():
     if on["ring"] and not (uni and agent.config["age_key"] and on["device"] == "cuda" and on["instinct_h"] == 1 and
                            (N0 == 1 or not on["bodies_halve"])):
         raise ValueError("online.ring needs model.age_key on the GPU, online.instinct_h=1 and a fixed number of bodies")
+    if on["instinct_h"] > 1 and agent.config.get("body_label") and on["meal_size"]:
+        raise ValueError("online.instinct_h > 1 reads a dream's meal as emptying hunger (task 00127): not with online.meal_size")
     if S > 1 and (on["sf_windows"] or tok_sur):
         raise ValueError("online.pieces runs without self-forcing and surprise gating")
     if tok_sur and not (uni and on["device"] == "cuda"):
@@ -598,7 +600,8 @@ def main():
                 tol = (on["instinct_tol"] / np.maximum(h, NEED_FLOOR)).astype(np.float32)
             props = [uni_act(umodels[k], views[k](win_in[0][:, 0])[:, None] if views[k] else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], tol, on["instinct_h"],
-                             on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"], temp=on["instinct_temp"])
+                             on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"], temp=on["instinct_temp"],
+                             gamma=on["label_gamma"])
                      for k in live]
             a, won = pieces_move([umodels[k] for k in live], props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
             if gamma or slabel:   # task 00096: the predicted label of the move taken, by the transformer that made it (a mixed move: their mean)
@@ -625,7 +628,13 @@ def main():
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
             a = np.where(bab[:, None], nb, a).astype(np.float32)
         if slabel:   # task 00109: each transformer's predicted label of the move made (after babbling), before the ring takes it
-            vhs = np.stack([gpus[k].uni_candidates(np.ascontiguousarray(a[:, None, :], np.float32))[:, 0] for k in range(S)], 1)
+            if on["instinct_h"] > 1:   # task 00127: the lookahead's passes replaced the policy pass uni_candidates reuses
+                a_w = win_in[5].astype(np.float32)
+                a_w[:, -1] = a
+                vhs = np.stack([gpus[k].forward_uni(win_in[0], win_in[1], a_w, win_in[4].astype(np.uint8), values=False,
+                                                    move_probs=False, next_body=True)["next_body"][:, -1, 2] for k in range(S)], 1)
+            else:
+                vhs = np.stack([gpus[k].uni_candidates(np.ascontiguousarray(a[:, None, :], np.float32))[:, 0] for k in range(S)], 1)
         if on["ring"]:
             for k in live:
                 gpus[k].uni_ring_move(a)

@@ -355,3 +355,53 @@ def test_gpu_pair_decoding_matches_the_reference():
             online.uni_lookahead(agent, img, drv, act, es, cand, 3, decode="pair")
         m.close()
         agent.close()
+
+
+# task 00127: with the label in the body the score of a held candidate is its dream's H-step return
+def test_dream_return_by_hand():
+    g = 0.9
+    lab = np.array([0.5, 0.5, 0.5, 0.2], np.float32)                 # V = 0, 0, 0, .6 at the H-th move
+    hun = np.array([[0.5, 0.501, 0.0],                               # a meal after move 2: v = g * 1
+                    [0.3, 0.301, 0.801],                             # a poison after move 2: v = g * (-.5 + g * 0)
+                    [0.5, 0.501, 0.502],                             # nothing: v = g * g * 0
+                    [0.5, 0.25, 0.25]])                              # half a meal's fall after move 1: q .5
+    want_v = np.array([g, -0.5 * g, 0.0, 0.5 + 0.5 * g * g * 0.6])
+    np.testing.assert_allclose(online.dream_return(hun, lab, g), (1 - want_v) / 2, atol=1e-6)
+    np.testing.assert_allclose(online.dream_return(hun[:, :1], lab, g), lab, atol=1e-7)   # H = 1: the label itself
+    big = online.dream_return(np.array([[0.0, 1.0, 1.0]]), np.array([1.0]), 1.0)          # clipped as a label is
+    assert big[0] == 1.0
+
+
+@pytest.fixture(scope="module")
+def labelled():
+    agent_lib.set_threads(4)
+    return agent_lib.Agent(dict(SMALL_UNI, gray=1, in_bins=1, uni_chan=1, body_label=1), seed=5)
+
+
+def test_a_body_label_horizon_needs_gamma(labelled):
+    img, drv, act, es, cand = windows(labelled.config, 2, 8, 3, 6)
+    with pytest.raises(ValueError, match="gamma"):
+        online.uni_lookahead(labelled, img, drv, act, es, cand, 3)
+    h1 = online.uni_lookahead(labelled, img, drv, act, es, cand, 1)
+    np.testing.assert_array_equal(online.uni_lookahead(labelled, img, drv, act, es, cand, 1, gamma=0.9), h1)
+    nb = labelled.forward_uni(img, drv, np.concatenate([act[:, :-1], cand[:, :1]], 1), es, values=False,
+                              move_probs=False, next_body=True)["next_body"]
+    np.testing.assert_allclose(h1[:, 0], nb[:, -1, 2], atol=1e-6)    # one step: the label channel
+
+
+def test_a_body_label_horizon_reads_the_first_imagined_hunger(labelled):
+    # gamma 0: only move 1's outcome counts, read from its predicted hunger in the window the lookahead keeps
+    H, T = 3, 8
+    img, drv, act, es, cand = windows(labelled.config, 2, T, 3, 7)
+    h = online.uni_lookahead(labelled, img, drv, act, es, cand, H, gamma=0.0)
+    R = min(T, labelled.config["ctx"] - (H - 1))
+    e = es[:, T - R:].copy()
+    e[:, 0] = 1
+    for j in range(3):
+        a2 = act[:, T - R:].copy()
+        a2[:, -1] = cand[:, j]
+        nb = labelled.forward_uni(img[:, T - R:], drv[:, T - R:], a2, e, values=False, move_probs=False,
+                                  next_body=True)["next_body"]
+        h1 = np.clip(nb[:, -1, 0], 0.0, 1.0)
+        want = online.dream_return(np.stack([drv[:, -1, 0], h1], 1), np.zeros(2), 0.0)
+        np.testing.assert_allclose(h[:, j], want, atol=1e-5)

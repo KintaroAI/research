@@ -325,6 +325,7 @@ class CudaModel:
                                      opt(es, C.c_uint8), opt(out.get("values"), C.c_float),
                                      opt(out.get("move_probs"), C.c_float), opt(out.get("next_body"), C.c_float)),
                "forward_uni")
+        self.cand_S = S   # task 00127: the windows uni_candidates would reuse
         if writes:
             out["writes"] = self.uni_writes(S * T).reshape(S, T, self.V)
         return out
@@ -408,18 +409,23 @@ class CudaModel:
                                           _p(np.ascontiguousarray(actions, np.float32), C.c_float),
                                           None if es is None else _p(es, C.c_uint8), t, int(mode), _p(vt, C.c_float),
                                           _p(nb, C.c_float)), "forward_uni_step")
+        self.cand_S = S   # task 00127: these windows replace the policy pass's
         return dict(values_t=vt, next_body=nb)
 
     @property
     def uni_candidates(self):
         """The instinct's candidates, right after forward_uni of S windows: cand [S, Mc, 3] -> predicted next hunger
         [S, Mc] (only the move token is computed; the forward pass's keys and values are reused). Absent (an
-        AttributeError) with an older libvmcuda.so, so callers fall back to full passes."""
+        AttributeError) with an older libvmcuda.so, so callers fall back to full passes. Task 00127: refused when S is not
+        the last forward_uni, forward_uni_step or uni_ring_step's (the C side writes that many rows: a heap overrun)."""
         if not hasattr(lib(), "vmc_uni_candidates"):
             raise AttributeError("uni_candidates")
 
         def run(cand):
             c = np.ascontiguousarray(cand, np.float32)
+            if getattr(self, "cand_S", None) is not None and c.shape[0] != self.cand_S:   # task 00127: C writes cand_S rows
+                raise ValueError("uni_candidates: %d windows given, the last forward pass had %d (a lookahead's pass in between?)"
+                                 % (c.shape[0], self.cand_S))
             out = np.empty(c.shape[:2], np.float32)
             _check(lib().vmc_uni_candidates(self.handle, c.shape[1], _p(c, C.c_float), _p(out, C.c_float)),
                    "uni_candidates")
@@ -451,6 +457,7 @@ class CudaModel:
             self.set_uni_state(read)
         _check(lib().vmc_uni_ring_step(self.handle, _p(img, C.c_uint8), _p(drv, C.c_float),
                                        None if es is None else _p(es, C.c_uint8), _p(out, C.c_float)), "uni_ring_step")
+        self.cand_S = img.shape[0]
         if self.state:
             self.st_q[self.st_i] = self.uni_writes(img.shape[0])
             self.st_i = (self.st_i + 1) % self.ctx

@@ -189,7 +189,7 @@ class Life:
             win = self.hist + [cur]
             st = lambda k: np.stack([w[k] for w in win], 1)   # noqa: E731
             props = [uni_act(m, st("img"), st("drv"), st("act"), st("es"), *inst, per_body=True, first="sample",
-                             temp=on.get("instinct_temp", 1.0)) for m in models]
+                             temp=on.get("instinct_temp", 1.0), gamma=on.get("label_gamma", 0.95)) for m in models]
         a, won = pieces_move(models, props, on["piece_rule"], self.rng, prev=None)
         hp = np.stack([p[3] for p in props])   # task 00096: the predicted label of the move taken (as lifetime.py stores it)
         self.vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(len(a))], hp.mean(0))

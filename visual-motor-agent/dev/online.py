@@ -972,7 +972,24 @@ def uni_frame(cfg, pv, grid=None):
 DECODE = dict(mean=0, mode=1, pair=2)
 
 
-def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
+def dream_return(hun, lab, gamma):
+    """Task 00127: a held candidate's H-step return on the label's scale T, from its dream: hun [S, H] the predicted hunger
+    before each of its H moves (the first the real one), lab [S] the H-th move's own predicted label (T). Each imagined
+    step k < H is read by the stored label's rule (stored_labels), softly, as the predicted hunger is an expectation: a
+    fall is a meal with chance fall / hunger before (a meal empties hunger), worth 1 and ending the return; a rise above
+    POISON_RISE costs the rise; v_k = q 1 + (1 - q)(-p + gamma v_{k+1}), clipped to [-1, 1] as each label is, from
+    v_H = 1 - 2 lab. H = 1: lab itself."""
+    hun = np.asarray(hun, np.float64)
+    v = 1.0 - 2.0 * np.asarray(lab, np.float64)
+    for k in range(hun.shape[1] - 2, -1, -1):
+        rise = hun[:, k + 1] - hun[:, k]
+        q = np.where(rise < 0, np.minimum(1.0, -rise / np.maximum(hun[:, k], 1e-6)), 0.0)
+        p = np.where(rise > POISON_RISE, rise, 0.0)
+        v = np.clip(q + (1.0 - q) * (-p + gamma * v), -1.0, 1.0)
+    return ((1.0 - v) / 2.0).astype(np.float32)
+
+
+def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean", gamma=None):
     """The instinct's horizon (task 00029): each candidate move sequence cand [N, M, H, 3] (or [N, M, 3]: one move held
     for H steps) made from the end of the windows [N, T, ...] (act's last step ignored), and the model's predicted
     hunger after the H-th move [N, M]. The window keeps its last ctx - (H - 1) real steps; each imagined step's body is
@@ -981,7 +998,12 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
     pixel the expected value ("mean"), the most probable bin's centre ("mode", sharp) or the most probable bin and its
     more probable neighbour, weighted ("pair": sharp, but a two-hot value exactly; task 00038); the last two on the GPU
     only. A piece (band_n >= 2, task 00107) predicts only its own block: its imagined frames are the current frame with that
-    block replaced."""
+    block replaced. With the label in the body (body_label) and H > 1 the score is the dream's H-step return (task 00127,
+    dream_return, the label's gamma; refused without it): the H-th move's label alone misses a meal or a poison inside
+    the dream."""
+    lab_ret = model.config.get("body_label") and H > 1
+    if lab_ret and gamma is None:
+        raise ValueError("with body_label, instinct_h > 1 needs the label's gamma (task 00127: the dream's H-step return)")
     if decode not in DECODE:
         raise ValueError("decode must be one of %s" % ", ".join(DECODE))
     if decode != "mean" and not hasattr(model, "forward_uni_step"):
@@ -1030,7 +1052,10 @@ def uni_lookahead(model, img, drv, act, es, cand, H, J=2, decode="mean"):
                 im[:, st] = uni_frame(c, out["values_t"][:, pp])
             else:   # task 00107: the piece's own block; the rest stays the current frame
                 im[:, st, blk[0], blk[1]] = uni_frame(c, out["values_t"][:, pp], blk[2])
-    return run(-1)["next_body"][:, -1, 2 if c.get("body_label") else 0].reshape(N, M)   # task 00109: the label, if the body has one
+    last = run(-1)["next_body"][:, -1, 2 if c.get("body_label") else 0]   # task 00109: the label, if the body has one
+    if lab_ret:   # task 00127: the hunger before each held move, the first real
+        last = dream_return(dv[:, R - 1:R - 1 + H, 0], last, gamma)
+    return last.reshape(N, M)
 
 
 def thought_dream(model, img, drv, act, es, J=2, decode="pair"):
@@ -1081,7 +1106,7 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
 
 
 def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False,
-            first="sample", ring=False, temp=1.0):
+            first="sample", ring=False, temp=1.0, gamma=None):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
@@ -1094,7 +1119,8 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     dy. first = mode: the first candidate is the most likely bin of each value instead of a sample, so with nothing at
     stake the move is the most likely one. ring (task 00062): only the last step of img, drv, es is read, on top of the
     model's key and value ring; the caller writes the move made back with uni_ring_move. temp (task 00113): the candidates
-    after the first redrawn at this temperature, from extra random numbers (1: the draws as before)."""
+    after the first redrawn at this temperature, from extra random numbers (1: the draws as before). gamma (task 00127):
+    the label's, for a horizon's dream return with the label in the body."""
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
@@ -1126,7 +1152,7 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     if m <= 1:
         return (cand[:, 0], 0.0, 0.0) + ((np.full(N, np.nan), np.concatenate(sharp)) if per_body else ())
     if horizon > 1:
-        h = uni_lookahead(model, img, drv, act, es, cand, horizon, jacobi, decode)
+        h = uni_lookahead(model, img, drv, act, es, cand, horizon, jacobi, decode, gamma)
     elif fast:
         h = np.concatenate(h)
     else:
