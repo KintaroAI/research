@@ -1,7 +1,7 @@
 # Task 00122: Dreamer's Training Budget — the Default Agent at 7 Times the Replay (experiment vm-00110)
 
 **Date:** 2026-11-23
-**Status:** Planned (queued after vm-00108's Dreamer runs). The owner, 2026-11-23, on the count below: "yes write the task and queue it after dreamer"
+**Status:** Complete (vm-00110, 2026-11-24). The owner, 2026-11-23, on the count below: "yes write the task and queue it after dreamer"
 
 ## Context
 
@@ -31,5 +31,5 @@
 
 ## Implementation
 
-- [ ] `00110-replay-ratio/` (README, Makefile: vm-00103's with `--set online.batch=56`, arm RB, frozen at 30k and 60k); queued after vm-00108's `make dreamer`.
-- [ ] The runs, analysis, write-up.
+- [x] `00110-replay-ratio/` (README, Makefile: vm-00103's with `--set online.batch=56`, arm RB, frozen at 30k and 60k); queued after vm-00108's `make dreamer`.
+- [x] The runs, analysis, write-up (vm-00110).

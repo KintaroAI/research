@@ -54,7 +54,8 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00099": [("00095", ("IB",)), ("00097", ("MB",)), ("00098", ("SB",))],
             "00100": [("00095", ("IB",)), ("00097", ("MB",)), ("00099", ("SD",))],
             "00101": [("00095", ("IB",)), ("00097", ("MB",)), ("00100", ("RD",))],
-            "00102": [("00101", ("TT",))], "00107": [("00104", ("BK", "BS"))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00102": [("00101", ("TT",))], "00107": [("00104", ("BK", "BS"))],
+            "00110": [("00103", ("BD",)), ("00108", ("DR_breakout",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
 
@@ -159,7 +160,7 @@ def panels(arms):
             ppo[a] = runs
         elif is_text(info) or (has(rows, "uni_ce_patch") and not has(rows, "step_hits") and not has(rows, "poison")):
             text[a] = runs
-        elif env_of(info).get("kind") == "breakout":   # a hit is a meal, a miss a poison: named as the court's events
+        elif env_of(info).get("kind") == "breakout" or "bo_hits" in rows[-1]:   # a hit is a meal, a miss a poison (bo_*: runs without info.json, vm-00108's)
             court[a] = runs
         elif has(rows, "poison"):
             forage[a] = runs
@@ -504,6 +505,10 @@ def one(d, write_readme):
             if e == "00109":
                 cap += (" One life of 1M ticks in vm-00107's court (stage 2, paddle food .25): PS seed 1 (a meal worth its size, .5),"
                         " smoothed over about 40k ticks. vm-00107's PS returned .47 at 50-60k; a random paddle .229.")
+            if e == "00110":
+                cap += (" Breakout stage 1: RB the default agent with online.batch 56 (Dreamer's replayed steps per tick), BD the"
+                        " default agent (vm-00103, batch 8), 12 seeds each; DR_breakout DreamerV3 (vm-00108, seeds 1-6). A random"
+                        " paddle's hit share is .235.")
             if e == "00105":
                 cap += (" BL is the default agent with a fixed 12 x 12 px blind spot in everything the model sees (targets whole), 12 seeds;"
                         " its control, vm-00101's TT, eats 71.6 food and 8.3 poison per 1k at 40-60k.")
