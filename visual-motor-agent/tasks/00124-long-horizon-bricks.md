@@ -1,7 +1,7 @@
 # Task 00124: A Long Label Horizon in the Bricks-Only Court (experiment vm-00111)
 
 **Date:** 2026-11-24
-**Status:** Planned. The owner, 2026-11-24: "for now we need to do #1 (0.997) and #2 - make both to be 3 lives"; on where: the bricks-only court (vm-00104's), recommended because of the label's rule below.
+**Status:** Complete (vm-00111, 12 seeds: a faint lean above chance lived, not above γ .95, none frozen; the long label is real in hindsight but the predicted label lags). The owner, 2026-11-24: "for now we need to do #1 (0.997) and #2 - make both to be 3 lives"; on where: the bricks-only court (vm-00104's), recommended because of the label's rule below.
 
 ## Context
 
@@ -30,5 +30,5 @@
 
 ## Implementation
 
-- [ ] `00111-long-horizon-bricks/` (README, Makefile: vm-00104's `SET` and look shift, BS's setting plus `--set online.label_gamma=0.997`, arm BH, seeds 1–3 on GPU 0; frozen at 30k and 60k).
-- [ ] The runs, analysis, write-up.
+- [x] `00111-long-horizon-bricks/` (README, Makefile: vm-00104's `SET` and look shift, BS's setting plus `--set online.label_gamma=0.997`, arm BH, seeds 1–3 on GPU 0, then 4–6 on GPU 0 and 7–12 on GPU 1 while the cards were free; frozen at 30k and 60k).
+- [x] The runs, analysis, write-up.

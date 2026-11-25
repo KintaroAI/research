@@ -55,7 +55,8 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00100": [("00095", ("IB",)), ("00097", ("MB",)), ("00099", ("SD",))],
             "00101": [("00095", ("IB",)), ("00097", ("MB",)), ("00100", ("RD",))],
             "00102": [("00101", ("TT",))], "00107": [("00104", ("BK", "BS"))],
-            "00110": [("00103", ("BD",)), ("00108", ("DR_breakout",))], "00112": [("00108", ("DR_food",)), ("00101", ("TT",))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00110": [("00103", ("BD",)), ("00108", ("DR_breakout",))], "00112": [("00108", ("DR_food",)), ("00101", ("TT",))],
+            "00111": [("00104", ("BS",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
               "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order",
               "recon_sheet": "the world models' decoded frames beside the real ones"}
@@ -510,6 +511,9 @@ def one(d, write_readme):
                 cap += (" Breakout stage 1: RB the default agent with online.batch 56 (Dreamer's replayed steps per tick), BD the"
                         " default agent (vm-00103, batch 8), 12 seeds each; DR_breakout DreamerV3 (vm-00108, seeds 1-6). A random"
                         " paddle's hit share is .235.")
+            if e == "00111":
+                cap += (" Stage 2 bricks only (vm-00104's court): BH the meal worth its size with label gamma .997, BS the same at .95"
+                        " (vm-00104); 12 seeds each. A random paddle's hit share is .229.")
             if e == "00112":
                 cap += (" The food world: DG DreamerV3 with discount .95, seeds 1-3; DR_food DreamerV3 with its default .997 (vm-00108,"
                         " seeds 1-6); TT the default agent (vm-00101, 12 seeds).")
