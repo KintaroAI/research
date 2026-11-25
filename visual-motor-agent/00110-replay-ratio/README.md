@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-23
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00110`)
+**Source:** `exp/vm-00110` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00110/`
 **Task plan:** [`../tasks/00122-replay-ratio.md`](../tasks/00122-replay-ratio.md)
 
