@@ -64,11 +64,27 @@ def main():
     ap.add_argument("--dreamer", default=os.path.expanduser("~/src/dreamerv3-torch"))
     a = ap.parse_args()
     a.config = os.path.abspath(a.config)
-    sys.path.insert(0, a.dreamer)
-    from ruamel.yaml import YAML
+    ns = dreamer_config(a.dreamer, a.out, a.seed, a.steps, a.train_ratio, a.dset)
     import dreamer
+    os.makedirs(a.out, exist_ok=True)
+    made = []
+
+    def make_env(config, mode, id):
+        env = DreamerVM(a.config, a.seed, a.set, a.out if mode == "train" else None)
+        made.append(env)
+        return env
+
+    dreamer.make_env = make_env
+    dreamer.main(ns)
+
+
+def dreamer_config(dreamer_dir, out, seed, steps, train_ratio, dset=()):
+    """The port's defaults with our overrides, as the Namespace dreamer.main takes (also for dreamer_recon.py)."""
+    sys.path.insert(0, dreamer_dir)
+    from ruamel.yaml import YAML
     import tools
 
+    a = argparse.Namespace(dreamer=dreamer_dir, out=out, seed=seed, steps=steps, train_ratio=train_ratio, dset=list(dset))
     y = YAML(typ="safe")
     base = y.load((pathlib.Path(a.dreamer) / "configs.yaml").read_text())["defaults"]
     # the port runs chunks of eval_every steps after the prefill while its step < steps + eval_every: with eval_every equal
@@ -85,17 +101,7 @@ def main():
     base.update(over)
     if a.steps % pre:
         raise ValueError("--steps must be a multiple of the prefill (%d)" % pre)
-    ns = argparse.Namespace(**{k: tools.args_type(v)(v) for k, v in base.items()})
-    os.makedirs(a.out, exist_ok=True)
-    made = []
-
-    def make_env(config, mode, id):
-        env = DreamerVM(a.config, a.seed, a.set, a.out if mode == "train" else None)
-        made.append(env)
-        return env
-
-    dreamer.make_env = make_env
-    dreamer.main(ns)
+    return argparse.Namespace(**{k: tools.args_type(v)(v) for k, v in base.items()})
 
 
 if __name__ == "__main__":
