@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-24
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00111`)
+**Source:** `exp/vm-00111` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00111/`
 **Task plan:** [`../tasks/00124-long-horizon-bricks.md`](../tasks/00124-long-horizon-bricks.md)
 
