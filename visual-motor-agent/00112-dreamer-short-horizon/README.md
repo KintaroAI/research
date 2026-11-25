@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-24
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00112`)
+**Source:** `exp/vm-00112` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00112/`
 **Task plan:** [`../tasks/00125-dreamer-short-horizon.md`](../tasks/00125-dreamer-short-horizon.md)
 
