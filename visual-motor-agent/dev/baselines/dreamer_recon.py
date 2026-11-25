@@ -4,7 +4,8 @@
 For each run (its dreamer/latest.pt), a new life of random moves (seed --world-seed) is observed through the world model
 (encoder, posterior, decoder); each object in the real frame is found from its grey (94) and classed by how much of its
 area is lit (food about 1, poison about .5). Inside each object: the real and the decoded pixels' spread (std) and their
-correlation. A kept checker: the decoded poison's spread near the real one and a high correlation.
+correlation. A kept checker: the decoded poison's spread near the real one and a high correlation. Also the reward head's
+prediction at the ticks a food or a poison was eaten, against the real reward.
 
     ~/venvs/dreamer/bin/python baselines/dreamer_recon.py RUN_DIR [RUN_DIR ...] --config configs/U_agent.json
         [--dset key=value per run, as RUN_DIR:key=value] [--ticks 400] [--sheet out.png]
@@ -44,12 +45,14 @@ def life(config, seed, ticks):
     o = env.reset()
     obs = [o]
     acts = [np.zeros(2, np.float32)]
+    rew = [0.0]
     for _ in range(ticks - 1):
         a = rng.uniform(-1, 1, 2).astype(np.float32)
-        o, _, _, _ = env.step(a)
+        o, r, _, _ = env.step(a)
         obs.append(o)
         acts.append(a)
-    return {k: np.stack([x[k] for x in obs]) for k in ("image", "drives", "prev")}, np.stack(acts)
+        rew.append(float(r))
+    return {k: np.stack([x[k] for x in obs]) for k in ("image", "drives", "prev")}, np.stack(acts), np.array(rew)
 
 
 def decode(agent, data, acts):
@@ -62,8 +65,10 @@ def decode(agent, data, acts):
         p = wm.preprocess(d)
         embed = wm.encoder(p)
         states, _ = wm.dynamics.observe(embed, p["action"], p["is_first"])
-        img = wm.heads["decoder"](wm.dynamics.get_feat(states))["image"].mode()
-    return np.clip(img[0, ..., 0].float().cpu().numpy() * 255.0, 0, 255)
+        feat = wm.dynamics.get_feat(states)
+        img = wm.heads["decoder"](feat)["image"].mode()
+        rew = wm.heads["reward"](feat).mode()
+    return np.clip(img[0, ..., 0].float().cpu().numpy() * 255.0, 0, 255), rew[0, :, 0].float().cpu().numpy()
 
 
 def objects(frame):
@@ -138,14 +143,15 @@ def main():
     ap.add_argument("--dreamer", default=os.path.expanduser("~/src/dreamerv3-torch"))
     a = ap.parse_args()
     config = os.path.abspath(a.config)
-    data, acts = life(config, a.world_seed, a.ticks)
+    data, acts, rew = life(config, a.world_seed, a.ticks)
+    print("ticks with reward: food (> 0) %d, poison (< 0) %d" % ((rew > 0).sum(), (rew < 0).sum()))
     real = data["image"][..., 0]
     recs, labels = [], []
     print("run | kind n | real std  decoded std | real mean  decoded mean | corr | mean abs error")
     for spec in a.runs:
         run, _, ds = spec.partition(":")
         agent = load_agent(run, config, [x for x in ds.split(",") if x], a.dreamer)
-        rec = decode(agent, data, acts)
+        rec, prew = decode(agent, data, acts)
         recs.append(rec)
         labels.append(os.path.basename(run.rstrip("/")))
         sc = score(real, rec)
@@ -154,6 +160,8 @@ def main():
             if len(v):
                 print("%s | %s %d | %.1f  %.1f | %.1f  %.1f | %.2f | %.1f" % (labels[-1], k, len(v), v[:, 0].mean(), v[:, 1].mean(),
                       v[:, 2].mean(), v[:, 3].mean(), np.nanmean(v[:, 4]), v[:, 5].mean()), flush=True)
+        print("%s | predicted reward: food ticks %.2f (real %.2f), poison ticks %.2f (real %.2f), others %.3f" % (labels[-1],
+              prew[rew > 0].mean(), rew[rew > 0].mean(), prew[rew < 0].mean(), rew[rew < 0].mean(), prew[rew == 0].mean()), flush=True)
         del agent
     if a.sheet:
         sheet(real, recs, labels, a.sheet)

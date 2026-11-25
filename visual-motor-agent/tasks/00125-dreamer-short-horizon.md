@@ -1,7 +1,7 @@
 # Task 00125: Dreamer in the Food World with Our Horizon (experiment vm-00112)
 
 **Date:** 2026-11-24
-**Status:** Planned. The owner, 2026-11-24: "for now we need to do #1 (0.997) and #2 - make both to be 3 lives"
+**Status:** Complete (vm-00112: neither the horizon nor the look; the world model sees poison and predicts its cost, Dreamer's acting stops at a third of touches poison). The owner, 2026-11-24: "for now we need to do #1 (0.997) and #2 - make both to be 3 lives"
 
 ## Context
 
@@ -28,6 +28,6 @@
 
 ## Implementation
 
-- [ ] `00112-dreamer-short-horizon/` (README, Makefile: vm-00108's `make dreamer` for the food world with `--dset discount=0.95`, arm DG, seeds 1–3 on GPU 1).
-- [ ] `dev/baselines/dreamer_recon.py`.
-- [ ] The runs, analysis, write-up.
+- [x] `00112-dreamer-short-horizon/` (README, Makefile: vm-00108's `make dreamer` for the food world with `--dset discount=0.95`, arm DG, seeds 1–3 on GPU 1).
+- [x] `dev/baselines/dreamer_recon.py` (also the reward head at food and poison ticks).
+- [x] The runs, analysis, write-up.

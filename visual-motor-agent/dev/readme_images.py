@@ -55,9 +55,10 @@ CONTROLS = {"00064": [("00063", ("NA", "CO"))], "00065": [("00064", ("G16", "C16
             "00100": [("00095", ("IB",)), ("00097", ("MB",)), ("00099", ("SD",))],
             "00101": [("00095", ("IB",)), ("00097", ("MB",)), ("00100", ("RD",))],
             "00102": [("00101", ("TT",))], "00107": [("00104", ("BK", "BS"))],
-            "00110": [("00103", ("BD",)), ("00108", ("DR_breakout",))]}   # arms of an earlier experiment that this one compares with and did not rerun
+            "00110": [("00103", ("BD",)), ("00108", ("DR_breakout",))], "00112": [("00108", ("DR_food",)), ("00101", ("TT",))]}   # arms of an earlier experiment that this one compares with and did not rerun
 SHEET_TEXT = {"forage_sheet": "the frozen agent foraging", "dream_pair_sheet": "the model's dream beside the real frames",
-              "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order"}
+              "imagination": "imagined against real frames", "video": "stills from this experiment's video, in time order",
+              "recon_sheet": "the world models' decoded frames beside the real ones"}
 
 
 def arm_of(name):
@@ -317,7 +318,7 @@ def world_strip(arms, path):
 
 def existing_sheet(e):
     d = os.path.join(DATA, "exp_" + e)
-    for pat, kind in (("*/forage_sheet.png", "forage_sheet"), ("*/dream_pair_sheet.png", "dream_pair_sheet")):
+    for pat, kind in (("*/forage_sheet.png", "forage_sheet"), ("*/dream_pair_sheet.png", "dream_pair_sheet"), ("*/recon_sheet.png", "recon_sheet")):
         g = sorted(glob.glob(os.path.join(d, pat)))
         if g:
             return g[0], kind
@@ -509,6 +510,9 @@ def one(d, write_readme):
                 cap += (" Breakout stage 1: RB the default agent with online.batch 56 (Dreamer's replayed steps per tick), BD the"
                         " default agent (vm-00103, batch 8), 12 seeds each; DR_breakout DreamerV3 (vm-00108, seeds 1-6). A random"
                         " paddle's hit share is .235.")
+            if e == "00112":
+                cap += (" The food world: DG DreamerV3 with discount .95, seeds 1-3; DR_food DreamerV3 with its default .997 (vm-00108,"
+                        " seeds 1-6); TT the default agent (vm-00101, 12 seeds).")
             if e == "00105":
                 cap += (" BL is the default agent with a fixed 12 x 12 px blind spot in everything the model sees (targets whole), 12 seeds;"
                         " its control, vm-00101's TT, eats 71.6 food and 8.3 poison per 1k at 40-60k.")
@@ -611,7 +615,12 @@ def one(d, write_readme):
         p, kind = existing_sheet(e)
         if p:
             fit(Image.open(p).convert("RGB"), os.path.join(img, "sheet.png"))
-            figs.append(("sheet.png", SHEET_TEXT[kind].capitalize(), SHEET_TEXT[kind].capitalize() + " (`%s`)." % os.path.relpath(p, os.path.join(DATA, "exp_" + e))))
+            cap = SHEET_TEXT[kind].capitalize() + " (`%s`)." % os.path.relpath(p, os.path.join(DATA, "exp_" + e))
+            if e == "00112":
+                cap += (" A new life of random moves (seed 101) observed through DR_food seed 1's and DG seed 1's world models at 60k"
+                        " (`dev/baselines/dreamer_recon.py`): top the real frame, then each model's decoded frame. Plain circles are"
+                        " food, checkered ones poison; both models keep the checker. The small squares, the moving distractor dots, are not decoded.")
+            figs.append(("sheet.png", SHEET_TEXT[kind].capitalize(), cap))
     readme = os.path.join(d, "README.md")
     if write_readme and figs and os.path.exists(readme):
         put_section(readme, readme_section(figs))
