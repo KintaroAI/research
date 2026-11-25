@@ -2,7 +2,7 @@
 
 **Status:** Complete (negative, frozen; the lives were not run, the owner, 2026-11-25)
 **Task:** `tasks/00127-dream-lookahead.md` (option (a) of task 00123, the acting rule)
-**Source:** `dev/` (pending tag `exp/vm-00114`)
+**Source:** `exp/vm-00114` (code: `visual-motor-agent/dev/`)
 
 ## Question
 
