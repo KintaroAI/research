@@ -135,7 +135,12 @@ that help it learn the task? Plan: `../visual_motor_learning_plan.md`.
     (H − 1)·J + 1 forward passes per tick. Task 00107 (vm-00096): with the quarter pieces each imagines only its own block,
     the rest of the frame kept as the current one; H > 1 needs `online.ring = 0` (the ring refuses it; ring and full windows
     are not the same, `tests/test_ring.py`), and `eval_hunger.Life` then acts on full windows of the last ctx steps. In the
-    inertia world H = 4 costs 3.6 times H = 1 with J = 2, 2.4 times with J = 1 (one life on the 4090). `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
+    inertia world H = 4 costs 3.6 times H = 1 with J = 2, 2.4 times with J = 1 (one life on the 4090). With the meal
+    label (`body_label`) and H > 1 the score is `online.dream_return` (task 00127: each imagined step's meal and poison read
+    from the predicted hunger by the stored label's rule, then the H-th move's label; `gamma` required, `meal_size`
+    refused); the move made is then scored by a full pass (`uni_candidates` reuses the last pass and refuses a mismatched
+    batch). vm-00114: frozen, H = 4 hurts in the food world (−16% food, +47% poison) and in Breakout (−.10 hit share);
+    the dreamed hunger and label are noise at 4 ticks (`analyze_lookahead.py`). `online.instinct_decode=mode` (GPU) decodes imagined pixels by their most probable
     bin instead of the mean (its bin centres are not the world's grey levels: use `pair`, task 00038, the most probable
     bin and its more probable neighbour, weighted: sharp, and exact for two-hot values); Self-forcing (task 00039, lifetime.py on the GPU): `online.sf_windows` replayed windows per update
     get their last 1..`sf_steps` steps' inputs (frame and body) from the model's own predictions (`online.dream_inputs`:

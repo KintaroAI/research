@@ -1,7 +1,13 @@
 # Task 00127: The Instinct Looks Ahead in Its Dream (experiment vm-00114; option (a) of task 00123)
 
 **Date:** 2026-11-25
-**Status:** Planned. The owner, 2026-11-25, on trying option (a) in the food world and Breakout stage 1: "sure, lets do this"
+**Status:** Complete, negative (vm-00114). The owner, 2026-11-25, on trying option (a) in the food world and Breakout stage 1: "sure, lets do this"; on the frozen result: "close it as negative" (no lives).
+
+## Outcome
+
+- Frozen, 12 seeds: H = 4 hurts in both worlds (food world −11.4 ± 1.0 food per 1k, 0 of 12 up; poison +3.8 ± 1.2; Breakout hit share −.096 ± .044, 9 of 12 down). H = 2 is neutral in the food world (+0.5 ± 1.3) and −.064 ± .035 in Breakout.
+- The dream probe (`analyze_lookahead.py record/read`, 3 seeds per world): with no real meal in the next 4 ticks the best candidate is still credited .19 of a meal (food world, hunger median .009), and the 4th move's dreamed label alone varies .32 across the candidates. Both parts of the score are noisy; a better hunger reading would not rescue it.
+- Next for task 00123: option (b), a critic trained on the model's dreams.
 
 ## Context
 
@@ -47,4 +53,5 @@ Known costs counted in the package, not controlled: full windows instead of the 
 - [x] `tests/test_lookahead.py`: the return by hand (a meal at step 2, a poison at step 2, nothing, half a meal's fall, the clip); H = 1 unchanged; the refusal; with γ 0 the score is move 1's outcome read from its predicted hunger. 84 tests pass (lookahead, temperature, body label, stored label).
 - [x] **A fault found on the way** (it predates this task: H > 1 had never run with the label in the body). `lifetime.py` scored the move made with `uni_candidates`, which reuses the last forward pass. After a lookahead that pass is the 16 candidate windows', so the C side wrote 16 rows into a 1-row buffer: a heap overrun, and a crash by tick 4. Fix: with H > 1 the move made is scored by a full `forward_uni` pass. `CudaModel.uni_candidates` now refuses a batch that differs from the last `forward_uni`, `forward_uni_step` or `uni_ring_step`.
 - [x] Smoke test: both worlds run at H = 4, 7.3 ticks/s alone on the 4090 (full windows at H = 1: 26; 3.6 times, as vm-00096 found with J = 2).
-- [ ] Step 1 on the RTX 4090 (`make check`, started 2026-11-25); step 2 after it (`00114-dream-lookahead/` Makefile, README).
+- [x] Step 1 on the RTX 4090 (`make check`, 2026-11-25), H = 2 added after H = 4 hurt; the dream probe (`make probe`, `dev/analyze_lookahead.py`).
+- [ ] Step 2 (lives): not run, closed negative frozen (the owner).
