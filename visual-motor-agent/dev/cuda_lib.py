@@ -49,6 +49,7 @@ def lib():
             "vmc_set_batch": (i32, [vp, i32, u8p, fp, fp, fp, u8p, fp, u8p, fp, i32]),
             "vmc_set_uni_inputs": (i32, [vp, i32, u8p, fp]),
             "vmc_set_step_mask": (i32, [vp, i32, u8p]),
+            "vmc_set_move_weight": (i32, [vp, i32, fp, C.c_float]),
             "vmc_loss_and_grads": (i32, [vp, C.POINTER(PPOConfig)]),
             "vmc_update": (i32, [vp, C.POINTER(PPOConfig)]),
             "vmc_stats": (i32, [vp, C.POINTER(VMCStats)]),
@@ -203,6 +204,14 @@ class CudaModel:
         self._mask = m
         _check(lib().vmc_set_step_mask(self.handle, m.shape[0], _p(m, C.c_uint8)), "set_step_mask")
 
+    def set_move_weight(self, w, ent=0.0):
+        """Task 00128: the move token as a policy-gradient actor. The move's loss of each step [S, ctx] of the current
+        batch times w (an advantage: negative pushes the move away), plus ent times the gradient of minus the entropy of
+        the move's bins. Cleared by the next set_batch."""
+        w = np.ascontiguousarray(w, np.float32)
+        self._mw = w
+        _check(lib().vmc_set_move_weight(self.handle, w.shape[0], _p(w, C.c_float), float(ent)), "set_move_weight")
+
     def _pc(self, ppo_cfg):
         cfg = dict(DEFAULT_PPO)
         cfg.update(ppo_cfg or {})
@@ -216,16 +225,19 @@ class CudaModel:
         _check(lib().vmc_update(self.handle, C.byref(self._pc(ppo_cfg))), "update")
         return self.stats() if stats else None
 
-    def update_rollout(self, ro, ppo_cfg, agent, sync=True, stats=True, inputs=None, step_mask=None):
+    def update_rollout(self, ro, ppo_cfg, agent, sync=True, stats=True, inputs=None, step_mask=None, move_weight=None):
         """One update from a filled Rollout. sync: all the weights are copied back to the C++ agent; else only the
         log-std (for sampling moves; call sync_to(agent) before saving it). inputs: (frames, bodies) [N, T, ...] as the
         universal model's token inputs instead of the rollout's (set_uni_inputs). step_mask [N, T] (task 00089): the
-        steps this model saw (set_step_mask). Returns the stats under agent.update()'s names."""
+        steps this model saw (set_step_mask). move_weight (task 00128): (w [N, T], ent) for set_move_weight. Returns the
+        stats under agent.update()'s names."""
         self.set_batch(*ro.batch())
         if inputs is not None:
             self.set_uni_inputs(*inputs)
         if step_mask is not None:
             self.set_step_mask(step_mask)
+        if move_weight is not None:
+            self.set_move_weight(*move_weight)
         st = self.update(ppo_cfg, stats=stats)   # stats=False: no wait for the GPU here
         p = agent.params()
         if sync:

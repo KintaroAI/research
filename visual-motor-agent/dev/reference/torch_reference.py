@@ -720,6 +720,15 @@ def uni_loss(P, cfg, batch):
     logp = out["logits"].log_softmax(-1).reshape(S, T, nt, V, K)
     ce = -(torch.tensor(two_hot(tgt, K), dtype=dt) * logp).sum(-1)                # [S, T, nt, V]
     per_tok = (ce * torch.tensor(m, dtype=dt)).sum(-1) / torch.tensor(np.maximum(tu, 1), dtype=dt)
+    mw = batch.get("move_weight")   # task 00128: the move's row (nt - 2) times its step's weight, plus ent * sum p log p
+    if mw is not None:
+        k = nt - 2
+        ent = float(batch.get("move_ent", 0.0))
+        lp = logp[:, :, k]                                                         # [S, T, V, K]
+        neg_h = (lp.exp() * lp).sum(-1)                                            # sum_b p log p per value
+        mk = torch.tensor(m[k], dtype=dt)
+        row = per_tok[:, :, k] * torch.tensor(np.asarray(mw, np.float64), dtype=dt) + ent * (neg_h * mk).sum(-1) / max(tu[k], 1)
+        per_tok = torch.cat([per_tok[:, :, :k], row[:, :, None], per_tok[:, :, k + 1:]], 2)
     if sm is not None:   # the mean stays over every token: a window with missed steps gives less, not more per token
         per_tok = per_tok * torch.tensor(np.asarray(sm, bool)[:, :, None], dtype=dt)
     has = tu > 0                                                                   # a summary next: no target

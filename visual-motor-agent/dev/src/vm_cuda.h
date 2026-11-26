@@ -45,6 +45,10 @@ int vmc_set_uni_inputs(void* h, int S, const uint8_t* images, const float* drive
 // Task 00089: which steps of the uploaded batch this transformer saw, mask [S, ctx] (1 seen, 0 missed): a missed step is no
 // key for the seen steps and has no loss. Cleared by the next batch.
 int vmc_set_step_mask(void* h, int S, const uint8_t* mask);
+// Task 00128: the universal model's move token as a policy-gradient actor: the move's loss (the token before the move)
+// of each frame of the uploaded batch times w [S, ctx], plus ent times the gradient of minus its entropy (sum over the
+// used move values, at the cross-entropy's scale). Cleared by the next batch.
+int vmc_set_move_weight(void* h, int S, const float* w, float ent);
 // Loss and gradients of the current batch (gradients stay on the device; vmc_grads copies them out).
 int vmc_loss_and_grads(void* h, const PPOConfig* pc);
 // loss_and_grads, the gradient-norm clip and an AdamW step.

@@ -142,7 +142,14 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00113: the instinct's candidates after the first drawn at this temperature (p^(1/T), renormalized per
                       # value); the first stays the model's own move at temperature 1. 1: unchanged
                       instinct_temp=1.0,
-                      panels=0,             # task 00115: forecast panels (world/panel_world.py): model.img twice env.view, 4 quarter pieces
+                      # task 00128 (lifetime.py, the GPU, the meal label): the move token as a policy-gradient actor. The move
+                      # made is the first of the instinct_m samples (temperature 1, no override); its advantage per transformer
+                      # is the candidates' mean label minus the move's, stored; the move's loss is weighted by it (divided by
+                      # its running root mean square, decay pg_decay, clipped at +- pg_clip), plus pg_ent times minus the
+                      # entropy of the move's bins; pg_replay 0: only the newest windows carry the weight (replayed ones none:
+                      # a replayed move would be pushed again at every draw), 1: every window
+                      actor_pg=0, pg_ent=0.01, pg_clip=3.0, pg_decay=0.999, pg_replay=0,
+                      panels=0,            # task 00115: forecast panels (world/panel_world.py): model.img twice env.view, 4 quarter pieces
                       panel_lag=0,          # task 00115: panel 1 is the view sensed this many ticks late (the body too)
                       panel_noise=0.0,      # task 00115: Gaussian noise (sd, on [0, 1] values) on the forecasts shown in panels 2-4
                       panel_decode="pair",  # task 00115: the forecasts decoded as each value's expectation (mean) or most probable pair
@@ -186,7 +193,7 @@ class Replay:
     universal model never reads (task 00062: 12 KB + 12 KB a step down to 4 KB). frames() gives them back in three."""
 
     def __init__(self, cap, img, ch=3, next_frames=True, img_w=0, pieces=False, value=False, state=None, labels=0, cut=False,
-                 timg=False):
+                 timg=False, adv=0):
         self.cap, self.n, self.w = cap, 0, 0
         self.ch = ch
         self.img = np.zeros((cap, img, img_w or img, ch), np.uint8)
@@ -216,6 +223,9 @@ class Replay:
             self.vhs = np.zeros((cap, labels), np.float32)
             self.lab = np.full((cap, labels), 0.5, np.float32)
             self.fields = self.fields + ("vhs", "lab")
+        if adv:      # task 00128: each transformer's advantage of the move made (the policy-gradient actor's weight)
+            self.adv = np.zeros((cap, adv), np.float32)
+            self.fields = self.fields + ("adv",)
         if cut:      # task 00110: the hunger the cap at 1 cut off at each step (the stored label's full dose)
             self.cut = np.zeros(cap, np.float32)
             self.fields = self.fields + ("cut",)
@@ -554,7 +564,7 @@ class GatedMemory:
     Training sequences: the newest one from stm, plus chunks drawn uniformly from long-term memory."""
 
     def __init__(self, on, L, img, goal_k, seed, store=None, rng_key=(), tokens=False, ch=3, next_frames=True, img_w=0,
-                 pieces=False, state=None, labels=0, fut=0):
+                 pieces=False, state=None, labels=0, fut=0, adv=0):
         self.on, self.L, self.goal_k = on, L, goal_k
         self.fut = int(fut)   # task 00115: windows also carry panel 1 of their steps and the fut steps after (f_img)
         self.goal_mode = on.get("goal_mode", "relief")
@@ -579,7 +589,7 @@ class GatedMemory:
         if on["stm"] < 2 * L + self.D:
             raise ValueError("online.stm must hold at least 2 ctx + D = %d steps" % (2 * L + self.D))
         self.stm = Replay(on["stm"], img, ch, next_frames, img_w, pieces, value=self.goal_mode == "value", state=state, labels=labels,
-                          cut=bool(labels and on.get("full_dose")), timg=on.get("blind_target") == "motion")   # task 00110; task 00118
+                          cut=bool(labels and on.get("full_dose")), timg=on.get("blind_target") == "motion", adv=adv)   # task 00110; task 00118; task 00128
         self.store = store or ChunkStore(on, L, self.stm, extra=max(self.vn, self.fut))   # long-term memory (shared between bodies or not)
         self.boot = ("img", "drv", "act", "es") + (("st",) if state else ())   # task 00104: the bootstrap windows' reads too
         self.keys = self.stm.fields + (tuple("b_" + k for k in self.boot) + ("pr_real", "tw") if self.refresh else ()) + (
@@ -1106,7 +1116,7 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
 
 
 def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False,
-            first="sample", ring=False, temp=1.0, gamma=None):
+            first="sample", ring=False, temp=1.0, gamma=None, pg=False):
     """The universal model's moves for N windows [N, T, ...] (act: the moves made, the last step's ignored): sample each
     of (dx+1)/2, (dy+1)/2, click from the bins predicted for the current move; with the instinct (m > 0), sample m
     candidates, read each one's predicted next hunger (the move token's prediction of the next body) and make the
@@ -1120,7 +1130,13 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
     stake the move is the most likely one. ring (task 00062): only the last step of img, drv, es is read, on top of the
     model's key and value ring; the caller writes the move made back with uni_ring_move. temp (task 00113): the candidates
     after the first redrawn at this temperature, from extra random numbers (1: the draws as before). gamma (task 00127):
-    the label's, for a horizon's dream return with the label in the body."""
+    the label's, for a horizon's dream return with the label in the body. pg (task 00128, the move token as a
+    policy-gradient actor; needs per_body): every candidate at temperature 1, the move made is always the first, and each
+    body's baseline, the mean predicted label of its candidates [N], is returned last."""
+    if pg and not per_body:
+        raise ValueError("uni_act: pg returns each body's baseline (per_body=True)")
+    if pg:
+        temp, first = 1.0, "sample"
     N = img.shape[0]
     a0 = act.copy()
     a0[:, -1] = 0.0
@@ -1165,10 +1181,10 @@ def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jaco
                                               next_body=True)["next_body"][:, -1, 2 if model.config.get("body_label") else 0]
                             for j in range(0, N * M, UNI_CHUNK)]).reshape(N, M)
     best = np.argmin(h, 1)
-    pick = np.where(h[:, 0] - h[np.arange(N), best] <= tol, 0, best)
+    pick = np.zeros(N, int) if pg else np.where(h[:, 0] - h[np.arange(N), best] <= tol, 0, best)
     gain = h[:, 0] - h[np.arange(N), pick]
     out = cand[np.arange(N), pick], float((pick != 0).mean()), float(gain.mean())
-    return out + ((h[np.arange(N), pick], np.concatenate(sharp)) if per_body else ())
+    return out + ((h[np.arange(N), pick], np.concatenate(sharp)) if per_body else ()) + ((h.mean(1),) if pg else ())
 
 
 def sample_moves(agent, out, rng):

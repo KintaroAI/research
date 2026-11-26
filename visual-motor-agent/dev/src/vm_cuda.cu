@@ -1175,6 +1175,11 @@ struct Model {
     // missed: no key for its seen steps, no loss. Cleared by the next upload
     Buf kmask;
     bool has_mask = false;
+    // task 00128: the move token's loss weight per frame of the uploaded batch and the entropy bonus (vmc_set_move_weight).
+    // Cleared by the next upload
+    Buf mweight;
+    bool has_mw = false;
+    float mw_ent = 0.f;
     int cap = 0;   // frames allocated
     // activations and gradients
     Buf x0, cols1, cols2, cols3, Y, a1, a2, a3, vf, tin, qkv, pih, pi, pin, ph1, ph2, ub, pdrv, d1in, dc1, d2in, dc2,
@@ -1487,6 +1492,7 @@ static int upload_inputs(Model* M, int S, int T, const uint8_t* images, const fl
     M->S = S; M->T = T; M->B = B;
     M->has_in = false;
     M->has_mask = false;
+    M->has_mw = false;
     std::vector<int> start(B), pos(B), valid(B);
     for (int s = 0; s < S; s++)
         for (int t = 0; t < T; t++) {
@@ -1627,6 +1633,16 @@ int vmc_set_step_mask(void* h, int S, const uint8_t* mask) {
     if (all) return 0;
     uint8_t* p = (uint8_t*)M->kmask.get(((size_t)rows + 3) / 4);
     CK(cudaMemcpy(p, km.data(), rows, cudaMemcpyHostToDevice));
+    return 0;
+}
+
+int vmc_set_move_weight(void* h, int S, const float* w, float ent) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.uni || !M->B || S != M->S || !w) return -1;
+    CK(cudaMemcpy(M->mweight.get(M->B), w, (size_t)M->B * sizeof(float), cudaMemcpyHostToDevice));
+    M->has_mw = true;
+    M->mw_ent = ent;
     return 0;
 }
 
@@ -1964,8 +1980,12 @@ __global__ void k_uni_embed(float* x, const float* slot, const float* wpe, const
 // Task 00089 (km, NULL = none): a row of a missed step (0) has no target.
 // Task 00104 (cg, NULL = none): a write row (the token before a read) gets the carry's gradient instead: the gradient
 // cg [frame, V] at the expected values E = sum_b p_b c_b of its head, through dE / dlogit_b = p_b (c_b - E).
+// Task 00128 (mw, NULL = none): the move's row (k = nt - 2) of frame f has its cross-entropy gradient times mw[f], plus
+// ent times the gradient of sum_b p_b log p_b (minus the entropy) per used value, at the same scale; the reported
+// cross-entropy stays unweighted.
 __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V, int K, float inv_tok, double* acc,
-                           float* tok_ce, const int* sl, const float* bo, int cv, const uint8_t* km, const float* cg, int bl) {
+                           float* tok_ce, const int* sl, const float* bo, int cv, const uint8_t* km, const float* cg, int bl,
+                           const float* mw, float ent) {
     __shared__ double sh[2][UNI_LOSS_THREADS / 32];
     const int r = blockIdx.x, k = r % nt, lane = threadIdx.x & 31, w = threadIdx.x >> 5, nw = blockDim.x >> 5;
     const int u = k == nt - 1 ? 2 + bl : uni_tused_(k + 1, V, sl), kind = k == nt - 1 ? 0 : (k == nt - 2 ? 2 : 1);
@@ -2008,12 +2028,20 @@ __global__ void k_uni_loss(float* lg, const float* tgt, int rows, int nt, int V,
         int lo = (int)pos;
         if (lo > K - 2) lo = K - 2;
         const float whi = pos - lo, wlo = 1.0f - whi, sc = inv_tok / u;
+        const bool pg = mw && kind == 2;   // task 00128: the move's row
+        const float wt = pg ? mw[r / nt] : 1.0f;
+        float spl = 0.f;                   // sum_b p_b log p_b of this value
+        if (pg && ent != 0.f) {
+            for (int b = lane; b < K; b += 32) { const float p = l[b] * inv; spl += p * logf(fmaxf(p, 1e-30f)); }
+            for (int o = 16; o; o >>= 1) spl += __shfl_xor_sync(0xffffffff, spl, o);
+        }
         float ev = 0.f, c = 0.f;
         for (int b = lane; b < K; b += 32) {
             const float p = l[b] * inv, tb = b == lo ? wlo : (b == lo + 1 ? whi : 0.f);
             ev += p * (float)b / (K - 1);
             if (b == lo || b == lo + 1) c -= tb * logf(fmaxf(p, 1e-30f));
-            l[b] = (p - tb) * sc;
+            l[b] = wt * (p - tb) * sc;
+            if (pg && ent != 0.f) l[b] += ent * sc * p * (logf(fmaxf(p, 1e-30f)) - spl);
         }
         for (int o = 16; o; o >>= 1) { ev += __shfl_xor_sync(0xffffffff, ev, o); c += __shfl_xor_sync(0xffffffff, c, o); }
         if (lane == 0) { ce += c; se += (double)(ev - t) * (ev - t); }
@@ -2382,7 +2410,8 @@ static int run_uni(Model* M, const PPOConfig* pcp, bool train, bool all = true) 
     k_uni_loss<<<rows, UNI_LOSS_THREADS>>>(lg, tgt, rows, nt, V, K, M->t_scale / ((float)B * (nt - D.nnot)), M->acc,
                                            M->u_ce.get(rows), M->uslot, P + off[UOB], D.cv,
                                            M->has_mask ? (const uint8_t*)M->kmask.p : nullptr,
-                                           M->has_cg ? M->u_cg.p : nullptr, D.bl);   // the mean over the tokens with a target (task 00089: over all of them)
+                                           M->has_cg ? M->u_cg.p : nullptr, D.bl,   // the mean over the tokens with a target (task 00089: over all of them)
+                                           M->has_mw ? M->mweight.p : nullptr, M->mw_ent);   // task 00128
     M->ce_S = M->S;
     M->ce_T = T;
     PROF(6);

@@ -421,6 +421,20 @@ def main():
                       not (on["sf_windows"] or clog or q_in or q_off or delayed or tok_sur or hasattr(env, "think"))):
         raise ValueError("model.state needs the GPU and the ring, an even online.batch, and none of self-forcing, online.clog, "
                          "online.noise_in, online.off, env.delays, env.thought or surprise gating")
+    pg = bool(on["actor_pg"])   # task 00128: the move token as a policy-gradient actor, the label its critic
+    if pg and not (slabel and on["instinct_h"] == 1 and on["pg_clip"] > 0 and 0.0 < on["pg_decay"] < 1.0):
+        raise ValueError("online.actor_pg goes with online.label = meal (the GPU, the instinct's candidates: instinct_m > 1), "
+                         "online.instinct_h = 1, pg_clip > 0 and 0 < pg_decay < 1")
+    pg_m2, pg_n = 0.0, 0   # the advantages' running mean square (bias-corrected) and how many ticks it has seen
+
+    def pg_scale():
+        return float(np.sqrt(pg_m2 / (1.0 - on["pg_decay"] ** pg_n))) if pg_n else 1.0
+
+    def pg_weight(adv_, n_new):   # task 00128: stored advantages [B, L] -> the move's loss weights and the entropy bonus
+        w_ = np.clip(adv_ / max(pg_scale(), 1e-8), -on["pg_clip"], on["pg_clip"]).astype(np.float32)
+        if not on["pg_replay"]:   # only the newest windows (the first n_new rows): a replayed move is not pushed again and again
+            w_[n_new:] = 0.0
+        return w_, on["pg_ent"]
     fast = float(on["fast"] or 0.0)   # task 00105: the flexible layer, W = S + F
     if fast and not (0.0 < fast < 1.0 and on["device"] == "cuda" and uni and not (state or on["sf_windows"] or clog or q_in or q_off or delayed)):
         raise ValueError("online.fast needs 0 < fast < 1, the universal model on the GPU, and none of model.state, self-forcing, "
@@ -461,7 +475,7 @@ def main():
     # the universal model reads no next frames, and with model.gray one channel (task 00062)
     kept = dict(ch=1 if uni and agent.config["gray"] else 3, next_frames=not uni, img_w=agent.config["img_w"], pieces=bool(q_off),
                 state=(S, agent.config["patch"] ** 2 * (1 if agent.config["gray"] else 3)) if state else None,
-                labels=S if slabel else 0, fut=4 if panels else 0)   # task 00109; task 00115
+                labels=S if slabel else 0, fut=4 if panels else 0, adv=S if pg else 0)   # task 00109; task 00115; task 00128
     gate_on = dict(on, goal_mode="value" if gamma else "future") if future_k else on
     gms = [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, tokens=tok_sur, **kept)]   # the model's frame (task 00091: not the world's size)
     gms += [GatedMemory(gate_on, Lm, agent.config["img"], label_k, args.seed, store=gms[0].store, rng_key=(b,), tokens=tok_sur, **kept)
@@ -554,7 +568,7 @@ def main():
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(), vh=0.0, vlab=0.0, vlab_n=0, vboot=0.0, vboot_n=0,
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
                     smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
-                    on_k=np.zeros(S), st_n=0, st_sum=0.0, st_sq=0.0)
+                    on_k=np.zeros(S), st_n=0, st_sum=0.0, st_sq=0.0, pg_pos=0.0, pg_abs=0.0, move_ent=0.0)
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -601,8 +615,9 @@ def main():
             props = [uni_act(umodels[k], views[k](win_in[0][:, 0])[:, None] if views[k] else win_in[0], win_in[1], win_in[5].astype(np.float32), win_in[4].astype(np.uint8),
                              agent.config["bins"], rng, on["instinct_m"], tol, on["instinct_h"],
                              on["instinct_jacobi"], on["instinct_decode"], per_body=True, ring=on["ring"], temp=on["instinct_temp"],
-                             gamma=on["label_gamma"])
+                             gamma=on["label_gamma"], pg=pg)
                      for k in live]
+            win["move_ent"] -= float(np.mean([p[4].mean() for p in props])) * N   # task 00128: the move's entropy (dx plus dy)
             a, won = pieces_move([umodels[k] for k in live], props, on["piece_rule"], rng, lam=on["piece_lambda"], temp=on["piece_temp"])
             if gamma or slabel:   # task 00096: the predicted label of the move taken, by the transformer that made it (a mixed move: their mean)
                 hp = np.stack([p[3] for p in props])                                    # [live, N]
@@ -635,6 +650,12 @@ def main():
                                                     move_probs=False, next_body=True)["next_body"][:, -1, 2] for k in range(S)], 1)
             else:
                 vhs = np.stack([gpus[k].uni_candidates(np.ascontiguousarray(a[:, None, :], np.float32))[:, 0] for k in range(S)], 1)
+            if pg:   # task 00128: each transformer's advantage of the move made: its candidates' mean label minus the move's
+                adv = (np.stack([p[5] for p in props], 1) - vhs).astype(np.float32)   # [N, S]; the label T: lower is better
+                pg_n += 1
+                pg_m2 = on["pg_decay"] * pg_m2 + (1.0 - on["pg_decay"]) * float(np.mean(adv ** 2))
+                win["pg_pos"] += float((adv > 0).mean()) * N
+                win["pg_abs"] += float(np.abs(adv).mean()) * N
         if on["ring"]:
             for k in live:
                 gpus[k].uni_ring_move(a)
@@ -716,6 +737,8 @@ def main():
             win["st_sq"] = win["st_sq"] + reads[0].astype(np.float64) ** 2
         for b in range(N):
             vb = dict(vh=vh[b]) if gamma else (dict(vhs=vhs[b]) if slabel else {})    # task 00096; task 00109
+            if pg:   # task 00128
+                vb["adv"] = adv[b]
             if dose:   # task 00110
                 vb["cut"] = inf["hunger_cut"][b]
             if teacher is not None:   # task 00118: this step's target, the gap filled from what was seen before
@@ -854,7 +877,8 @@ def main():
                             ro.pr[:, :] = (labels[k] if lref else rows["lab"][:, :, k]).T
                         sm = ((rows["on"] >> np.uint64(k)) & np.uint64(1)).astype(np.uint8) if q_off else None   # the steps it saw
                         stats.append(g.update_rollout(ro, ppo, ag, sync=False, stats=tick % on["stats_every"] == 0,
-                                                      inputs=seen_in if seen_in is not None else shared if q_in or blind else damaged(rows), step_mask=sm))
+                                                      inputs=seen_in if seen_in is not None else shared if q_in or blind else damaged(rows), step_mask=sm,
+                                                      move_weight=pg_weight(rows["adv"][:, :, k], N) if pg else None))
                         who.append(k)
                     else:   # a C++ rollout belongs to its agent
                         rk = ro if k == 0 else piece_rollout(k, len(rows["img"]))
@@ -882,7 +906,7 @@ def main():
                                           on["sf_jacobi"])
                     win["sf"] += len(idx)
                 st = gpu.update_rollout(ro, ppo, agent, sync=False, stats=tick % on["stats_every"] == 0,
-                                        inputs=inputs)
+                                        inputs=inputs, move_weight=pg_weight(rows["adv"][:, :, 0], N) if pg else None)
             else:
                 st = agent.update(ro, zeros, ppo)
             if S == 1 and st is not None:
@@ -935,6 +959,8 @@ def main():
                 row.update(value_pred=win["vh"] / bs, value_label=win["vlab"] / max(1, win["vlab_n"]))
             if refresh:   # task 00098: the mean fresh tail
                 row.update(value_boot=win["vboot"] / max(1, win["vboot_n"]))
+            if pg:   # task 00128: the advantages' scale, the share of positive ones, their mean size; the move's entropy
+                row.update(pg_scale=pg_scale(), pg_pos=win["pg_pos"] / bs, pg_abs=win["pg_abs"] / bs, move_ent=win["move_ent"] / bs)
             if fast:   # task 00105: |F| / |S| over all parameters, and the largest by tensor, the mean over transformers
                 rat, worst = [], []
                 lay = agent.param_layout()
