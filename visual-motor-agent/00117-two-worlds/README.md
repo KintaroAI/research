@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-25 to 2026-11-26
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00117`)
+**Source:** `exp/vm-00117` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00117/`
 **Task plan:** [`../tasks/00130-two-worlds.md`](../tasks/00130-two-worlds.md)
 

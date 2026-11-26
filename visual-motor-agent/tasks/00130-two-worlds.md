@@ -1,7 +1,7 @@
 # Task 00130: Two Worlds, One Set of Weights (experiment vm-00117)
 
 **Date:** 2026-11-25
-**Status:** Complete (2026-11-26; pending tag `exp/vm-00117`): transfer is one-sided, the old world's play is forgotten within 10k ticks, and the follow-up by the rule below is rehearsal; the write-up is `00117-two-worlds/README.md`. The owner, 2026-11-25, to the plan (the ring check and two worlds tonight): "yes lets do this".
+**Status:** Complete, tagged `exp/vm-00117` (2026-11-26): transfer is one-sided, the old world's play is forgotten within 10k ticks, and the follow-up by the rule below is rehearsal; the write-up is `00117-two-worlds/README.md`. The owner, 2026-11-25, to the plan (the ring check and two worlds tonight): "yes lets do this".
 
 ## Context
 
