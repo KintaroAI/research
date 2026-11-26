@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-25
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00116`)
+**Source:** `exp/vm-00116` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00116/`
 **Task plan:** [`../tasks/00129-why-it-misses.md`](../tasks/00129-why-it-misses.md)
 
