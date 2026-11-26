@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-25
 **Status:** Complete (negative: the candidates' variety comes back, the plateau stays)
-**Source:** `dev/` (pending tag `exp/vm-00113`)
+**Source:** `exp/vm-00113` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00113/`
 **Task plan:** [`../tasks/00126-replay-ratio-temp.md`](../tasks/00126-replay-ratio-temp.md)
 
