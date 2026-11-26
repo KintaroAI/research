@@ -79,3 +79,48 @@ def test_need_after_and_concordance():
     assert conc[0] == 1.0 and pairs[0] == 3
     assert am.concordance(n2, good[:, ::-1])[0][0] == 0.0
     assert np.isnan(conc[1]) or pairs[1] == 0 or conc[1] == 0.5   # the second paddle is already under its ball
+
+
+def test_need_after_a_held_move_is_where_the_world_puts_the_paddle():
+    """Task 00131: a move made `hold` ticks running (action repeat). The formula against the court itself."""
+    w, rng = court(n=16, seed=2), np.random.default_rng(3)
+    x = np.full(16, 30.0)                                      # any landing point: only the paddle is under test
+    checked = 0
+    for _ in range(200):
+        dx, h = rng.uniform(-1.3, 1.3, 16), rng.integers(1, 6, 16)
+        want = am.need_after(w, x, dx, h)
+        start = w.paddle.copy()
+        a = np.zeros((16, 3))
+        a[:, 0] = dx
+        for k in range(1, 6):
+            ok = np.ones(16, bool) if k == 1 else ok
+            _, _, done, _ = w.step(a)
+            ok &= ~np.asarray(done, bool)
+            now = ok & (h == k)                                # the bodies whose hold ends on this tick, with no new court between
+            got = am.need_after(w, x, np.zeros(16))
+            assert np.allclose(want[0][now], got[0][now]) and np.allclose(want[1][now], got[1][now])
+            checked += int(now.sum())
+        assert (np.abs(w.paddle - start) > 0).any()
+    assert checked > 1500
+    one = am.need_after(w, x, dx)
+    assert np.array_equal(one[0], am.need_after(w, x, dx, 1)[0]) and np.array_equal(one[1], am.need_after(w, x, dx, np.ones(16))[1])
+    cand = rng.uniform(-1, 1, (16, 5))                         # candidates [N, M] with a hold per body
+    n4 = am.need_after(w, x, cand, h)[0]
+    for j in range(5):
+        assert np.array_equal(n4[:, j], am.need_after(w, x, cand[:, j], h)[0])
+
+
+def test_a_held_move_can_overshoot_what_one_tick_of_it_would_not():
+    """The label's order is scored against where the candidates end: a full move toward a near ball ends under it after
+    one tick and beyond it after four, so the two scorings can disagree about the same label."""
+    w = court(n=1, seed=1)
+    c = w.config
+    w.paddle[:] = 20.0
+    x = np.array([20.0 + c.paddle_w + 1.0])                    # the ball lands 1 px beyond the catching zone, to the right
+    assert np.isclose(am.need_after(w, x, np.zeros(1))[0][0], 1.0)
+    cand = np.array([[1.0, 0.1]])                              # a full move and a tenth of one, both toward the ball
+    one, four = am.need_after(w, x, cand)[0], am.need_after(w, x, cand, 4)[0]
+    assert one[0, 0] == 0 and one[0, 1] > 0                    # one tick: the full move is under the ball, the small one not yet
+    assert np.isclose(four[0, 0], 4 * c.paddle_speed - 1.0 - (c.paddle_w + c.ball)) and four[0, 1] == 0   # held: the full move is past it
+    full = np.array([[0.1, 0.2]])                              # a label (lower is better) that prefers the full move
+    assert am.concordance(one, full)[0][0] == 1.0 and am.concordance(four, full)[0][0] == 0.0

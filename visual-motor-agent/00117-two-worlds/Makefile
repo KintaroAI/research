@@ -20,7 +20,11 @@
 #   make floor CARD=1 SEEDS="..."                   — the untrained default model, learning off, in both worlds
 #   make back W=TB CARD=1 SEEDS="..."               — the third life: 30k ticks back in the old world from W's 60k
 #                                                     weights, learning on (TBF from TB, BFB from BF)
+#   make table                                      — the README's tables (dev/analyze_lives.py two-worlds; reads the
+#                                                     logged rows, no GPU; SEEDS="..." for a part of the seeds)
 #   Options: MPS= (no MPS daemon), T="10000 30000 60000" (frozen's checkpoints)
+#
+# As run (2026-11-25 and 26), on each card: runs W=TB, runs W=BF, frozen W=TB, frozen W=BF, floor, back W=TB, back W=BF.
 
 DEV = ../dev
 PY = ./venv/bin/python
@@ -42,7 +46,7 @@ OLDTICKS = $(if $(filter TB,$(W)),2000,6000)
 BACK = $(if $(filter TB,$(W)),TBF,BFB)
 FROZEN = --set ppo.lr=0 --set online.log_every=100 --set online.save_every=100000
 
-.PHONY: runs frozen floor back
+.PHONY: runs frozen floor back table
 
 runs:
 	mkdir -p $(OUT)
@@ -77,3 +81,6 @@ back:
 	  env $(G) CUDA_VISIBLE_DEVICES=$(CARD) $(PY) lifetime.py $(OLD) --init $(OUT)/$(W)_s$$s/ckpt_00060000 --seed $$s \
 	    --set online.steps=30000 --set name=$(BACK) -o $(OUT)/$(BACK)_s$$s > $(OUT)/$(BACK)_s$$s.log 2>&1 & \
 	done; wait; }
+
+table:
+	cd $(DEV) && $(PY) analyze_lives.py two-worlds --seeds $(SEEDS)

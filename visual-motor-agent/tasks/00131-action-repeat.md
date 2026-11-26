@@ -52,6 +52,7 @@
    - the order rises with the play: the reason holds;
    - the play rises without the order: action repeat helps another way (less dithering alone);
    - neither rises: the label's order is not mended by a larger effect per decision. The arms left are those that teach the label what a move does (an advantage-style target; labels for moves not made, task 00114 part A).
+   - **Added 2026-11-26, before the autopsy was run** (the lives of seeds 1–6 had ended; no recording existed): the order is scored twice. vm-00116 scores a pair of candidates by where one tick of each leaves the paddle. A deciding move of BA is made 4 ticks running, and a full move held for 4 ticks (18 px) can pass a ball that one tick of it (4.5 px) would only approach, so a label that is right about held moves could be counted wrong. The second scoring takes the paddle after the hold (4 ticks, or up to the landing if sooner). BD decides every tick, so for BD the two are the same number.
 5. **What it may cost,** said beforehand: a decision only every 4 ticks cannot correct late, so balls that need a last-tick move may be lost; a full held move overshoots the catching zone (18 px against 14).
 6. **Cost:** ticks per second against BD's.
 
@@ -59,7 +60,7 @@
 
 - The food world, and other k.
 - Skipping the instinct on held ticks (the compute saving).
-- The autopsy's tables restricted to deciding ticks (`analyze_misses.py` reads every tick; to add before reading 4).
+- ~~The autopsy's tables restricted to deciding ticks~~ (done with the change: `analyze_misses.py read` takes what belongs to a choice on the deciding ticks).
 
 ## Implementation
 

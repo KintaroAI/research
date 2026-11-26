@@ -120,13 +120,15 @@ def landing(w):
     return ttl, x
 
 
-def need_after(w, x_land, dx):
+def need_after(w, x_land, dx, hold=1):
     """After a move dx ([N] or [N, M], in the world's units): how far the paddle would still have to travel to be under
-    the landing ball (0: it would be returned), and the signed gap between the ball's and the paddle's centres."""
+    the landing ball (0: it would be returned), and the signed gap between the ball's and the paddle's centres. hold
+    (a number or [N]; task 00131): the move is made that many ticks running, as a held move is."""
     c = w.config
     dx = np.asarray(dx, np.float64)
     shape = (-1,) + (1,) * (dx.ndim - 1)
-    pad = np.clip(w.paddle.reshape(shape) + np.clip(dx, -1.0, 1.0) * c.paddle_speed, w.lo, w.hi - c.paddle_w)
+    ticks = np.broadcast_to(np.asarray(hold, np.float64), (len(w.paddle),)).reshape(shape)
+    pad = np.clip(w.paddle.reshape(shape) + np.clip(dx, -1.0, 1.0) * c.paddle_speed * ticks, w.lo, w.hi - c.paddle_w)
     d = (np.asarray(x_land, np.float64).reshape(shape) + c.ball / 2.0) - (pad + c.paddle_w / 2.0)
     return np.maximum(0.0, np.abs(d) - (c.paddle_w + c.ball) / 2.0), d
 
@@ -180,9 +182,11 @@ def record(out, run, step, full, ticks, bodies, seed):
     if getattr(c, "kind", "") != "breakout" or c.bricks:
         raise SystemExit("the autopsy reads Breakout stage 1 (no bricks)")
     S = len(life.models)
+    every = int(life.on.get("act_every", 1))                   # task 00131: a deciding tick's move is made this many ticks running
+    hkeys = ("conc_hold", "clear_hold", "grid_hold", "grid_clear_hold", "r_need_hold", "best_hold", "made_hold") if every > 1 else ()
     keys = ("ttl", "d", "need", "dx", "won", "quarter", "vx", "conc", "pairs", "clear", "spread", "pick", "best", "made", "label",
             "only", "grid", "grid_clear", "grid_toward", "r_need", "r_dy", "r_click", "decided", "hit", "miss")
-    rec = {k: [] for k in keys}
+    rec = {k: [] for k in keys + hkeys}
     obs = env.observe()
     try:
         for _ in range(ticks):
@@ -194,6 +198,8 @@ def record(out, run, step, full, ticks, bodies, seed):
             vx = env.vel[:, 0].copy()
             a = life.act(obs)
             props, won = seen["props"], seen["won"]
+            hold = np.clip(ttl, 1, every)                      # of a move decided now and held: its ticks up to the landing
+            H = {k: np.full((bodies, S), np.nan) for k in hkeys}
             conc, pairs, clear, spread, pick, best, only, grid, grid_clear, grid_toward, r_need, r_dy, r_click = (
                 np.full((bodies, S), np.nan) for _ in range(13))
             for k, m in enumerate(life.models):
@@ -210,18 +216,27 @@ def record(out, run, step, full, ticks, bodies, seed):
                 spread[:, k] = pred.max(1) - pred.min(1)
                 pick[:, k] = need_after(env, xs, np.asarray(props[k][0])[:, 0])[0]
                 best[:, k] = nc.min(1)
+                if hkeys:                                      # the same candidates and labels, scored by where the hold ends
+                    nh, gh = need_after(env, xs, m.cand[..., 0], hold)[0], need_after(env, xs, g, hold)[0]
+                    H["conc_hold"][:, k], H["clear_hold"][:, k] = concordance(nh, pred)[0], concordance(nh, pred, CLEAR)[0]
+                    H["grid_hold"][:, k], H["grid_clear_hold"][:, k] = concordance(gh, p_grid)[0], concordance(gh, p_grid, CLEAR)[0]
+                    H["r_need_hold"][:, k], H["best_hold"][:, k] = corr(pred, nh), nh.min(1)
             made = need_after(env, xs, a[:, 0])[0]
+            if hkeys:
+                H["made_hold"] = need_after(env, xs, a[:, 0], hold)[0]
             obs, _, done, inf = env.step(a)
             life.es = done.astype(np.uint8)
             for k, v in zip(keys, (ttl, d0, need0, a[:, 0].astype(np.float64), won[:, 0], quarter, vx, conc, pairs, clear, spread, pick, best,
                                    made, np.asarray(life.vh, np.float64), only, grid, grid_clear, grid_toward, r_need, r_dy, r_click,
                                    np.full(bodies, bool(getattr(life, "decided", True))), inf["gt_paddle_hit"], inf["gt_hazard_click"])):
                 rec[k].append(np.array(v))
+            for k in hkeys:
+                rec[k].append(np.array(H[k]))
     finally:
         life.close()
         lifetime.pieces_move = orig
     np.savez_compressed(out, **{k: np.stack(v) for k, v in rec.items()}, speed=c.paddle_speed, half=(c.paddle_w + c.ball) / 2.0,
-                        run=os.path.basename(run.rstrip("/")), step=str(step), full=int(full), seed=seed)
+                        run=os.path.basename(run.rstrip("/")), step=str(step), full=int(full), seed=seed, act_every=every)
     hit, miss = np.stack(rec["hit"]).sum(), np.stack(rec["miss"]).sum()
     print(f"{out}: {ticks} ticks x {bodies} bodies, {int(hit)} hits, {int(miss)} misses, share {hit / max(hit + miss, 1):.3f}", flush=True)
 
@@ -259,6 +274,12 @@ def read(paths):
     if not dec.all():
         print(f"action repeat: {int((dec & live).sum())} of {int(live.sum())} ticks with a ball in play decide; the move toward the ball, "
               f"the label's order and the px lost are read on those")
+    held = all("conc_hold" in z.files for z in Z)              # scored also by where a held move leaves the paddle
+    HK = (("order", "conc_hold"), ("order_clear", "clear_hold"), ("order_grid", "grid_hold"), ("order_grid_clear", "grid_clear_hold"),
+          ("r_need", "r_need_hold"))
+    if held:
+        H = {k: cat(k) for k in [k for _, k in HK] + ["best_hold", "made_hold"]}
+    rows_h = {k: [] for k in [k for k, _ in HK] + ["regret"]}
     bin_of = np.digitize(ttl, BINS) - 1
     mine = np.take_along_axis(conc, np.maximum(won, 0)[:, None], 1)[:, 0]    # the label ordering of the piece whose move was made
     print("\nby ticks to landing     " + "".join(f"{n:>8s}" for n in BIN_NAMES))
@@ -281,6 +302,10 @@ def read(paths):
             rows[key].append(np.nanmean(arr[sel]) if sel.any() and np.isfinite(arr[sel]).any() else np.nan)
         rows["spread"].append(np.nanmedian(spread[m]) if m.any() else np.nan)
         rows["regret"].append((made[act] - best[act].min(1)).mean() if act.any() else np.nan)
+        if held:
+            for key, k in HK:
+                rows_h[key].append(np.nanmean(H[k][m]) if m.any() and np.isfinite(H[k][m]).any() else np.nan)
+            rows_h["regret"].append((H["made_hold"][act] - H["best_hold"][act].min(1)).mean() if act.any() else np.nan)
     names = dict(ticks="ticks", away="paddle not yet under it", closer="  px nearer per tick", toward="move made goes toward",
                  order="label orders candidates", order_mover="  of the mover", order_clear="  pairs 4+ px apart",
                  order_only="  same dx, no dy or click", order_grid="label orders a grid of dx", order_grid_clear="  pairs 4+ px apart",
@@ -290,12 +315,16 @@ def read(paths):
     for k, name in names.items():
         fmt = "%8d" if k == "ticks" else ("%8.4f" if k == "spread" else "%8.2f")
         print(f"{name:24s}" + "".join(fmt % v for v in rows[k]))
+    if held:
+        print(f"\nscored by where the paddle is after the hold (the move made {int(Z[0]['act_every'])} ticks running, or up to the landing if sooner)")
+        for k in rows_h:
+            print(f"{names[k]:24s}" + "".join("%8.2f" % v for v in rows_h[k]))
     label = cat("label")
     print("\nthe label of the move made (lower is better), by px the paddle still has to travel")
     print("  ticks to landing      " + "".join(f"{n:>8s}" for n in FAR_NAMES))
     lab = []
     nb = np.digitize(need, FAR) - 1
-    for name, m in (("1-4", live & (ttl <= 4)), ("5-16", live & (ttl > 4) & (ttl <= 16)), ("17+", live & (ttl > 16))):
+    for name, m in (("1-4", live & dec & (ttl <= 4)), ("5-16", live & dec & (ttl > 4) & (ttl <= 16)), ("17+", live & dec & (ttl > 16))):
         lab.append([float(label[m & (nb == i)].mean()) if (m & (nb == i)).any() else None for i in range(len(FAR_NAMES))])
         print(f"  {name:22s}" + "".join(("%8.3f" % v) if v is not None else "       -" for v in lab[-1]))
     print("\nwho: the transformer whose move is made, by the quarter the ball is in (0 top left, 1 top right, 2 bottom left, 3 bottom right)")
@@ -304,7 +333,7 @@ def read(paths):
         m = live & (quarter == q) & (won >= 0)
         who[q] = np.bincount(won[m], minlength=S)[:S] / max(m.sum(), 1)
         print(f"  ball in {q}: " + "  ".join(f"p{k} {who[q, k]:.2f}" for k in range(S)))
-    near = live & (ttl <= 16)
+    near = live & dec & (ttl <= 16)
     own = np.array([np.nanmean(conc[near & (quarter == k), k]) if (near & (quarter == k)).any() else np.nan for k in range(S)])
     other = np.array([np.nanmean(conc[near & (quarter != k), k]) if (near & (quarter != k)).any() else np.nan for k in range(S)])
     print("  label orders candidates in the last 16 ticks, ball in the transformer's own quarter: "
@@ -312,17 +341,19 @@ def read(paths):
     per = []                                                  # by recording: does the label's order go with the play?
     for z in Z:
         t, nd = z["ttl"], z["need"]
-        m = (t > 0) & (t <= 16)
+        m = (t > 0) & (t <= 16) & (z["decided"].astype(bool) if "decided" in z.files else True)
         act_ = m & (nd > 0)
         h, x = float(z["hit"].sum()), float((z["ttl"] == 1).sum())
         per.append((int(z["seed"]), h / max(x, 1), float((z["dx"][act_] * z["d"][act_] > 0).mean()), float(np.nanmean(z["conc"][m])),
-                    float(np.nanmean(z["grid_toward"][act_]))))
+                    float(np.nanmean(z["grid_toward"][act_]))) + ((float(np.nanmean(z["conc_hold"][m])),) if held else ()))
     per = np.array(per)
     if len(per) > 2:
-        r = [float(np.corrcoef(per[:, 1], per[:, k])[0, 1]) for k in (2, 3, 4)]
-        print("\nby recording, the last 16 ticks (seed: returned, move toward, label's order, the grid's best dx toward):")
-        print("  " + "  ".join("%d: %.2f %.2f %.2f %.2f" % tuple(x) for x in per))
-        print(f"  across the recordings, returned goes with: move toward r {r[0]:+.2f}, label's order r {r[1]:+.2f}, the grid's best dx r {r[2]:+.2f}")
+        r = [float(np.corrcoef(per[:, 1], per[:, k])[0, 1]) for k in range(2, per.shape[1])]
+        print("\nby recording, the last 16 ticks (seed: returned, move toward, label's order, the grid's best dx toward"
+              + (", label's order after the hold" if held else "") + "):")
+        print("  " + "  ".join(("%d:" + " %.2f" * (per.shape[1] - 1)) % tuple(x) for x in per))
+        print(f"  across the recordings, returned goes with: move toward r {r[0]:+.2f}, label's order r {r[1]:+.2f}, the grid's best dx r {r[2]:+.2f}"
+              + (f", label's order after the hold r {r[3]:+.2f}" if held else ""))
     B = np.concatenate([balls(z) for z in Z])
     hit, far, gross, toward, left = B[:, 0] > 0, B[:, 1], B[:, 2], B[:, 3], B[:, 4]
     print(f"\n{len(B)} balls read over their last {LAST} ticks: returned {hit.mean():.3f}")
@@ -344,7 +375,8 @@ def read(paths):
                bins=BIN_NAMES, **{k: [float(v) for v in rows[k]] for k in rows}, who=who.tolist(), own=own.tolist(), other=other.tolist(),
                balls=len(B), far=FAR_NAMES, far_n=[int((fb == i).sum()) for i in range(len(FAR_NAMES))],
                far_hit=[float(hit[fb == i].mean()) if (fb == i).any() else None for i in range(len(FAR_NAMES))],
-               wrong=float(wrong.sum() / n), slow=float(slow.sum() / n), dither=float(dither.sum() / n), label_by_need=lab)
+               wrong=float(wrong.sum() / n), slow=float(slow.sum() / n), dither=float(dither.sum() / n), label_by_need=lab,
+               **({"hold": {k: [float(v) for v in rows_h[k]] for k in rows_h}} if held else {}))
     print(json.dumps(out))
 
 

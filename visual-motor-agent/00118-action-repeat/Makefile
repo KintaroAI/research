@@ -13,7 +13,10 @@
 #   make frozen CARD=1 SEEDS="..."         — BA's 60k weights, learning off (ppo.lr = 0), 6000 ticks in new courts
 #                                            (seed 100 + s), acting as they lived (vm-00116's ring arm is BD's)
 #   make autopsy CARD=1                    — vm-00116's miss autopsy of BA's 60k weights (16 courts x 1500 ticks a seed)
-#   make read                              — its tables
+#   make read                              — its tables (the label's order is scored by one tick of each candidate, as
+#                                            for BD, and by where the hold leaves the paddle)
+#   make table                             — the README's tables of the lives and the learning-off tests
+#                                            (dev/analyze_lives.py repeat; no GPU)
 #   Options: MPS= (no MPS daemon), K=4 (act_every)
 
 DEV = ../dev
@@ -28,7 +31,7 @@ K ?= 4
 BA = --config configs/U_breakout.json --set online.act_every=$(K)
 FROZEN = --set ppo.lr=0 --set online.steps=6000 --set online.log_every=100 --set online.save_every=100000
 
-.PHONY: runs frozen autopsy read
+.PHONY: runs frozen autopsy read table
 
 runs:
 	mkdir -p $(OUT)
@@ -55,3 +58,6 @@ autopsy:
 
 read:
 	cd $(DEV) && $(PY) analyze_misses.py read $(OUT)/autopsy/s*.npz
+
+table:
+	cd $(DEV) && $(PY) analyze_lives.py repeat --seeds $(SEEDS)
