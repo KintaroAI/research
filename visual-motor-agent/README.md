@@ -49,7 +49,8 @@ choose the move.
     not because the candidates narrow (vm-00113). The trained agent's label knows where the paddle should be but barely
     orders the candidate moves (right about six times in ten), so the paddle dithers (vm-00116).
 - **Running:** vm-00115, the move token trained as a policy-gradient actor in place of the instinct, in both worlds
-  (started 2026-11-25; cut to six seeds), and vm-00117, one set of weights in two worlds (started the same evening).
+  (started 2026-11-25; cut to six seeds), vm-00117, one set of weights in two worlds (started the same evening), and
+  vm-00118, action repeat in Breakout (queued behind it).
 
 The sections from Objective to Success criteria are the project's starting point (2026-10-23).
 
@@ -211,6 +212,7 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00115](00115-policy-gradient-actor/README.md) | The move token as a policy-gradient actor (`online.actor_pg`: one sample at temperature 1, no instinct, the label as critic, REINFORCE on the newest windows with an entropy bonus): PG (food world) against TT, PB (Breakout stage 1) against BD; seeds 1-12, 60k | Running | Started 2026-11-25. Pilot (food world, 3 seeds, 30k ticks): no foraging at `pg_ent` .03 or .1 (food about 10 per 1k at 20–30k against TT's 57), and the move token's entropy falls to a near-fixed move. |
 | [00116](00116-why-it-misses/README.md) | Why the trained agent misses in Breakout, measured on existing checkpoints with no new learning code: the ring control (BD's 60k weights, learning off, 6,000 ticks on the ring and on full windows, one build) and a miss autopsy (`analyze_misses.py`: every tick of frozen play scored against the court's state) of BD at 30k and 60k and RB at 60k; seeds 1-12 | Complete | **The label knows the court as a state but barely orders the moves.** BD at 60k moves toward the ball .58–.60 of the time in the last 8 ticks and its label prefers the nearer of two candidates .60–.62 of the time (an even grid of dx: no better), though the label is .085 with the paddle under the ball and .407 with it 16–24 px away. Misses are a paddle that travels enough (about 31 px in 12 ticks) but not to the ball; 2% moved too little. **No ring effect:** +.032 ± .053 on new ticks; vm-00114's side reading was noise. |
 | [00117](00117-two-worlds/README.md) | Two worlds, one set of weights: Breakout from TT's 60k weights (TB) and the food world from BD's (BF), against the from-scratch lives by seed; the old world with learning off after 10k, 30k and 60k ticks of the new one; a third life of 30k ticks back in the old world (TBF, BFB); seeds 1-12 | Running | Queued 2026-11-25. A life started from weights has an empty memory, so the old world is never replayed. |
+| [00118](00118-action-repeat/README.md) | Action repeat (`online.act_every = 4`: a move decided every 4 ticks and made again on the 3 between; the model still sees, predicts and learns every tick): BA against BD in Breakout stage 1; then learning off at 60k and vm-00116's miss autopsy; seeds 1-12, 60k | Running | Queued 2026-11-25 behind vm-00117 on the RTX 4090. It follows vm-00116: a held move shifts the paddle up to 18 px, so what a decision does to the label is four times larger to learn, and a held move cannot dither. |
 
 ## Open Questions
 
@@ -226,7 +228,8 @@ stand as follows:
   control, is still missing (vm-00057's delayed cue was not valid).
 - **Where goals come from.** A rule outside the network still chooses the move. Task 00123 asks whether a trained
   actor should replace it: the dream lookahead failed (vm-00114), the policy-gradient actor is running (vm-00115), a
-  critic trained on dreams is untried. Action repeat (the owner, 2026-11-17, `ARCHITECTURE.md` section 9) is not built.
+  critic trained on dreams is untried. Action repeat (the owner, 2026-11-17, `ARCHITECTURE.md` section 9) is built and
+  running (vm-00118).
 - **Scale.** Worlds up to 128 x 128, up to 64 transformers in one body, up to 8.6M parameters in one transformer,
   lives up to 1M ticks. Whether quality holds beyond that is not measured.
 

@@ -176,6 +176,16 @@ def boot_values(models, rows, ctx=None, mean=True, chan=0):
     return (np.mean(out, 0) if mean else np.stack(out)).astype(np.float32)
 
 
+def hold_move(a, won, held, decide):
+    """Action repeat (task 00131, online.act_every): on a deciding tick the move just chosen (a [N, 3]; won [N, 2], the
+    piece that made it) is made and kept; on the ticks between, the kept move is made again, whatever was chosen. With
+    nothing kept yet, or a different number of bodies, the tick decides. Returns the move to make, who made it, what is
+    kept, and whether this tick decided."""
+    if decide or held is None or held[0].shape != a.shape:
+        return a, won, (a.copy(), won.copy()), True
+    return held[0].copy(), held[1].copy(), held, False
+
+
 def pieces_move(models, props, rule, rng, prev=None, lam=1.0, temp=0.01):
     """The body's move and who made it from the pieces' props (uni_act's, per_body), right after them: council and veto
     (task 00060) have every piece score every piece's move ([scorer, N, mover], only the move token computed; the GPU's
@@ -426,6 +436,11 @@ def main():
         raise ValueError("online.actor_pg goes with online.label = meal (the GPU, the instinct's candidates: instinct_m > 1), "
                          "online.instinct_h = 1, pg_clip > 0 and 0 < pg_decay < 1")
     pg_m2, pg_n = 0.0, 0   # the advantages' running mean square (bias-corrected) and how many ticks it has seen
+    act_every = int(on.get("act_every", 1))   # task 00131: action repeat, a move decided every act_every ticks and held between
+    if act_every < 1 or (act_every > 1 and not (slabel and on["instinct_h"] == 1 and not pg and not q_off)):
+        raise ValueError("online.act_every is at least 1; above 1 it goes with online.label = meal and online.instinct_h = 1, "
+                         "without online.actor_pg and online.off")
+    held = None   # the move kept and the piece that made it
 
     def pg_scale():
         return float(np.sqrt(pg_m2 / (1.0 - on["pg_decay"] ** pg_n))) if pg_n else 1.0
@@ -568,7 +583,7 @@ def main():
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(), vh=0.0, vlab=0.0, vlab_n=0, vboot=0.0, vboot_n=0,
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
                     smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
-                    on_k=np.zeros(S), st_n=0, st_sum=0.0, st_sq=0.0, pg_pos=0.0, pg_abs=0.0, move_ent=0.0)
+                    on_k=np.zeros(S), st_n=0, st_sum=0.0, st_sq=0.0, pg_pos=0.0, pg_abs=0.0, move_ent=0.0, held=0)
     win = new_window()
     t0 = time.time()
     for tick in range(1, on["steps"] + 1):
@@ -624,6 +639,9 @@ def main():
                 vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(N)], hp.mean(0)).astype(np.float32)
                 win["vh"] += float(vh.sum())
             won = np.where(won >= 0, live[np.maximum(won, 0)], won)   # the pieces' own numbers
+            if act_every > 1:   # task 00131: decided on ticks 1, 1 + act_every, ...; the same move made again on the ticks between
+                a, won, held, decided = hold_move(a, won, held, (tick - 1) % act_every == 0)
+                win["held"] += 0 if decided else N
             win["override"] += np.mean([p[1] for p in props]) * N
             win["gain"] += np.mean([p[2] for p in props]) * N
             if S > 1:
@@ -961,6 +979,8 @@ def main():
                 row.update(value_boot=win["vboot"] / max(1, win["vboot_n"]))
             if pg:   # task 00128: the advantages' scale, the share of positive ones, their mean size; the move's entropy
                 row.update(pg_scale=pg_scale(), pg_pos=win["pg_pos"] / bs, pg_abs=win["pg_abs"] / bs, move_ent=win["move_ent"] / bs)
+            if act_every > 1:   # task 00131: the share of body-ticks whose move was a held one
+                row.update(held=win["held"] / bs)
             if fast:   # task 00105: |F| / |S| over all parameters, and the largest by tensor, the mean over transformers
                 rat, worst = [], []
                 lay = agent.param_layout()

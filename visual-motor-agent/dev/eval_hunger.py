@@ -191,6 +191,10 @@ class Life:
             props = [uni_act(m, st("img"), st("drv"), st("act"), st("es"), *inst, per_body=True, first="sample",
                              temp=on.get("instinct_temp", 1.0), gamma=on.get("label_gamma", 0.95)) for m in models]
         a, won = pieces_move(models, props, on["piece_rule"], self.rng, prev=None)
+        self.decided = True
+        if on.get("act_every", 1) > 1:   # task 00131: as the life acted: decided every act_every ticks, held between
+            from lifetime import hold_move
+            a, won, self.held, self.decided = hold_move(a, won, getattr(self, "held", None), self.t % on["act_every"] == 0)
         hp = np.stack([p[3] for p in props])   # task 00096: the predicted label of the move taken (as lifetime.py stores it)
         self.vh = np.where(won[:, 0] >= 0, hp[np.maximum(won[:, 0], 0), np.arange(len(a))], hp.mean(0))
         if self.ring:

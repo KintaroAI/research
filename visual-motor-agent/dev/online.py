@@ -149,6 +149,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # entropy of the move's bins; pg_replay 0: only the newest windows carry the weight (replayed ones none:
                       # a replayed move would be pushed again at every draw), 1: every window
                       actor_pg=0, pg_ent=0.01, pg_clip=3.0, pg_decay=0.999, pg_replay=0,
+                      # task 00131 (lifetime.py, the meal label): action repeat. A move is decided every act_every ticks
+                      # (ticks 1, 1 + act_every, ...) and made again on the ticks between, whatever the instinct picks there;
+                      # the model still sees, predicts and learns every tick, and the move token's target is the move made.
+                      # 1: a decision every tick, unchanged
+                      act_every=1,
                       panels=0,            # task 00115: forecast panels (world/panel_world.py): model.img twice env.view, 4 quarter pieces
                       panel_lag=0,          # task 00115: panel 1 is the view sensed this many ticks late (the body too)
                       panel_noise=0.0,      # task 00115: Gaussian noise (sd, on [0, 1] values) on the forecasts shown in panels 2-4

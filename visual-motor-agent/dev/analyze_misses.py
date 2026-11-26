@@ -181,7 +181,7 @@ def record(out, run, step, full, ticks, bodies, seed):
         raise SystemExit("the autopsy reads Breakout stage 1 (no bricks)")
     S = len(life.models)
     keys = ("ttl", "d", "need", "dx", "won", "quarter", "vx", "conc", "pairs", "clear", "spread", "pick", "best", "made", "label",
-            "only", "grid", "grid_clear", "grid_toward", "r_need", "r_dy", "r_click", "hit", "miss")
+            "only", "grid", "grid_clear", "grid_toward", "r_need", "r_dy", "r_click", "decided", "hit", "miss")
     rec = {k: [] for k in keys}
     obs = env.observe()
     try:
@@ -215,7 +215,7 @@ def record(out, run, step, full, ticks, bodies, seed):
             life.es = done.astype(np.uint8)
             for k, v in zip(keys, (ttl, d0, need0, a[:, 0].astype(np.float64), won[:, 0], quarter, vx, conc, pairs, clear, spread, pick, best,
                                    made, np.asarray(life.vh, np.float64), only, grid, grid_clear, grid_toward, r_need, r_dy, r_click,
-                                   inf["gt_paddle_hit"], inf["gt_hazard_click"])):
+                                   np.full(bodies, bool(getattr(life, "decided", True))), inf["gt_paddle_hit"], inf["gt_hazard_click"])):
                 rec[k].append(np.array(v))
     finally:
         life.close()
@@ -254,19 +254,25 @@ def read(paths):
     print(f"{len(Z)} recordings ({Z[0]['run']}, step {Z[0]['step']}, {'full windows' if int(Z[0]['full']) else 'as lived'}): "
           f"{hits} hits, {misses} misses, hit share {hits / max(hits + misses, 1):.3f}")
     live = ttl > 0
+    # task 00131: with action repeat the choice is made on the deciding ticks only; the held ticks' picks are not made
+    dec = np.concatenate([(z["decided"] if "decided" in z.files else np.ones(z["ttl"].shape, bool)).reshape(-1) for z in Z]).astype(bool)
+    if not dec.all():
+        print(f"action repeat: {int((dec & live).sum())} of {int(live.sum())} ticks with a ball in play decide; the move toward the ball, "
+              f"the label's order and the px lost are read on those")
     bin_of = np.digitize(ttl, BINS) - 1
     mine = np.take_along_axis(conc, np.maximum(won, 0)[:, None], 1)[:, 0]    # the label ordering of the piece whose move was made
     print("\nby ticks to landing     " + "".join(f"{n:>8s}" for n in BIN_NAMES))
     only, grid, grid_clear, grid_toward, r_need, r_dy, r_click = (cat(k) for k in ("only", "grid", "grid_clear", "grid_toward", "r_need", "r_dy", "r_click"))
-    rows = {k: [] for k in ("ticks", "away", "toward", "closer", "order", "order_mover", "order_clear", "order_only", "order_grid", "order_grid_clear",
+    rows = {k: [] for k in ("ticks", "away", "closer", "toward", "order", "order_mover", "order_clear", "order_only", "order_grid", "order_grid_clear",
                             "grid_toward", "r_need", "r_dy", "r_click", "spread", "regret")}
     for i in range(len(BIN_NAMES)):
         m = live & (bin_of == i)
         act = m & (need > 0)
         rows["ticks"].append(m.sum())
         rows["away"].append(act.sum() / max(m.sum(), 1))                    # the paddle is not yet under the landing point
-        rows["toward"].append((dx[act] * d[act] > 0).mean() if act.any() else np.nan)
         rows["closer"].append((need[act] - made[act]).mean() if act.any() else np.nan)   # px nearer per tick (full speed 4.5)
+        m, act = m & dec, act & dec                                          # from here on: the ticks that decide
+        rows["toward"].append((dx[act] * d[act] > 0).mean() if act.any() else np.nan)
         rows["order"].append(np.nanmean(conc[m]) if m.any() else np.nan)
         rows["order_mover"].append(np.nanmean(mine[m]) if m.any() else np.nan)
         rows["order_clear"].append(np.nanmean(clear[m]) if m.any() and np.isfinite(clear[m]).any() else np.nan)
@@ -275,7 +281,7 @@ def read(paths):
             rows[key].append(np.nanmean(arr[sel]) if sel.any() and np.isfinite(arr[sel]).any() else np.nan)
         rows["spread"].append(np.nanmedian(spread[m]) if m.any() else np.nan)
         rows["regret"].append((made[act] - best[act].min(1)).mean() if act.any() else np.nan)
-    names = dict(ticks="ticks", away="paddle not yet under it", toward="  move made goes toward", closer="  px nearer per tick",
+    names = dict(ticks="ticks", away="paddle not yet under it", closer="  px nearer per tick", toward="move made goes toward",
                  order="label orders candidates", order_mover="  of the mover", order_clear="  pairs 4+ px apart",
                  order_only="  same dx, no dy or click", order_grid="label orders a grid of dx", order_grid_clear="  pairs 4+ px apart",
                  grid_toward="  its best dx goes toward", r_need="label's r with px left", r_dy="  abs r with dy", r_click="  abs r with click",
