@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-25
 **Status:** Complete (negative; cut to seeds 1–6 with no frozen tests, the owner, 2026-11-25)
-**Source:** `dev/` (pending tag `exp/vm-00115`)
+**Source:** `exp/vm-00115` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00115/`
 **Task plan:** [`../tasks/00128-policy-gradient-actor.md`](../tasks/00128-policy-gradient-actor.md) (option (c) of task 00123, the acting rule)
 

@@ -12,7 +12,7 @@ There are four topics. Each is a directory with its own `README.md` (overview, c
 
 | Topic | What it is | State | Latest experiment |
 |---|---|---|---|
-| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00118; vm-00117 and vm-00118 running since 2026-11-25 and 2026-11-26; vm-00115 written up 2026-11-26 (not yet tagged); vm-00116 and all before vm-00115 written up and tagged |
+| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00118; vm-00117 and vm-00118 running since 2026-11-25 and 2026-11-26; all up to vm-00116 written up and tagged (vm-00115 on 2026-11-26) |
 | `thalamus-sorter/` | Topographic maps from temporal correlation; clusters wired to columns, a feedback loop, a forage benchmark | Parked | ts-00028 (2026-11-14); before it ts-00027 (April) |
 | `column/` | A soft winner-take-all cell with Hebbian learning and no backprop (a cortical minicolumn model) | Parked since 2026-03-18 | 00016 |
 | `llm-fundamentals/` | GPT-2 training in raw CUDA/C: banded sparsity, grokking, sequential evaluation, fact memorization | Parked since 2026-11-12 | 00021 |
