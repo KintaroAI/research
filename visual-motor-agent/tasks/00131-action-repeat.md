@@ -1,7 +1,7 @@
 # Task 00131: Action Repeat — a Move Decided Every 4 Ticks and Held (experiment vm-00118)
 
 **Date:** 2026-11-25
-**Status:** Running (built and queued 2026-11-25 on the RTX 4090 behind vm-00117's chain; the lives start at about 04:30). The owner, 2026-11-25, to the recommendation after vm-00116 (action repeat with k = 4, the agent holding its move while the model still sees every tick): "yes, lets commit and do the next arm when time is right". The idea is the owner's, 2026-11-17 (`ARCHITECTURE.md` section 9).
+**Status:** Complete (negative, 2026-11-26; pending tag `exp/vm-00118`): BA − BD = −.065 ± .053 hit share at 40–60k (2 of 12 seeds above). The label orders held moves better (.688 against .618) and the play still falls; the write-up is `00118-action-repeat/README.md`. The owner, 2026-11-25, to the recommendation after vm-00116 (action repeat with k = 4, the agent holding its move while the model still sees every tick): "yes, lets commit and do the next arm when time is right". The idea is the owner's, 2026-11-17 (`ARCHITECTURE.md` section 9).
 
 ## Context
 
@@ -67,5 +67,30 @@
 - [x] `hold_move`, the option, `Life.act`; `tests/test_act_every.py`
 - [x] The checks above; merged into `dev/`
 - [x] `00118-action-repeat/` Makefile and README; the lives queued
-- [ ] The lives, the frozen tests, the autopsy (with deciding ticks apart)
-- [ ] The tables and the write-up
+- [x] The lives, the frozen tests, the autopsy (with deciding ticks apart)
+- [x] The tables and the write-up
+
+## Result (2026-11-26)
+
+The lives ran 04:23–07:46 on the RTX 4090, the learning-off tests to 08:07, the recordings 08:08–08:41. Details and tables: `00118-action-repeat/README.md`.
+
+1. **Lived:** BA − BD = −.065 ± .053 at 40–60k (2 of 12 seeds above), −.044 ± .030 at 20–40k (1 of 12). By the rule: action repeat does not help at k = 4. The food world and k = 2 do not follow.
+2. **The start:** .5 at 40–52k (median 43k) against BD's 32–55k (median 40.5k); +2.9k ± 4.3k, 10 of 12 seeds later.
+3. **Learning off:** −.092 ± .100 (4 of 12 above); in the autopsy's recordings −.098 ± .077 (2 of 12).
+4. **The autopsy:** the order rose and the play fell, an outcome the plan did not name.
+   - the label's order in the last 8 ticks: .688 by where the hold leaves the paddle against BD's .618 (+.070 ± .021, 12 of 12), .665 by one tick (+.047 ± .023);
+   - the deciding move goes toward the ball .657 of the time against .595 (+.061 ± .060);
+   - the misses: wrong way .55 (BD .39), too little travel .08 (.02), enough travel but not to the ball .38 (.59).
+5. **The costs named beforehand** (measures defined after the first tables):
+   - the overshoot is rare: a hold ends past the ball in .012 of the 4-tick spans that start away from it;
+   - the late correction: of the balls the paddle is under 4 ticks before the landing, .798 returned against .862; from under the ball the paddle is out of the zone 4 ticks later in .224 of the spans against .145;
+   - one decision in 4 ticks leaves the paddle no nearer in .411 of the spans against .317 for BD's four moves.
+6. **Cost:** 9.83 against 9.84 ticks per second on the same card.
+
+**Found afterwards, not foreseen in the plan:**
+
+- **The candidates repeat the move being held:** .567 of a transformer's 16 candidates at a deciding tick (BD: .094), 5.6 different dx against 9.1. The candidates are sampled from the model's move prediction, whose target on three ticks of four is the move just made. A new decision goes the same way as the last .774 of the time, and the move is cut by a wall on .469 of ticks (BD: .219).
+- **A free choice does not bring the play back** (`make autopsy-grid`): the frozen weights picking from an even grid of 16 dx return .608 against .614 with their own candidates (BD: .694 against .712).
+- **Near the ball neither agent knows which way to go:** from within 8 px of the catching zone, 5 to 16 ticks before a landing, the move goes toward the ball .518 (BD) and .493 (BA) of the time.
+
+**Next, to decide with the owner:** the arms that teach the label what a move does (an advantage-style target; labels for moves not made, task 00114 part A), read in the near range.

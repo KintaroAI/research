@@ -238,6 +238,13 @@ every tick:
     - If action repeat matches IH, the commitment helped, not the imagination.
     - If IH wins, imagining the course matters.
     - Then in the world without inertia: does committing cost the agent its fine aim at food?
+  - **Run in Breakout, form (a), k = 4 (vm-00118, 2026-11-26): negative.** The label orders held moves better (.688
+    against .618 in the last 8 ticks before a landing), but the play falls by .065 ± .053: one decision in 4 ticks
+    corrects less than four, and a paddle that never slows down cannot stay under the ball once its move is held. So
+    committing does cost the fine aim, in Breakout. The test above, in the world with inertia, has not been run.
+  - **A side effect to remember:** the candidates are sampled from the model's own move prediction, and with held
+    moves its target is mostly a repeat, so more than half of the candidates at a deciding tick are the move being
+    held (.567 against .094). No compute was saved either: the instinct still ran on held ticks.
 - **Reusing the sliding window while acting** (the owner, 2026-10-30). Each tick now shifts the window by one step and
   recomputes everything: the last 7 raw frames (from the short-term buffer; tokens are never stored) plus the new one,
   a full pass over 8 steps. 7/8 of the input is the same as on the last tick, but the work is not saved.

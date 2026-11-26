@@ -8,17 +8,24 @@ Subcommands:
                  2000 ticks repeat the earlier tests of the same weights in the same courts (vm-00103's frozen60k,
                  vm-00114's check), where the difference was first noticed, so the reading is the rest: the new ticks.
                  Equal counts in the first 2000 ticks mean the build did not change the play.
-    record OUT.npz RUN [--step N] [--full] [--ticks 1500] [--bodies 16] [--seed 1]
+    record OUT.npz RUN [--step N] [--full] [--grid] [--ticks 1500] [--bodies 16] [--seed 1]
                — the miss autopsy's recording: RUN's frozen pieces (the checkpoint saved at tick N; the final one by
                  default) play `bodies` new courts for `ticks` ticks, acting as the run lived, or on full windows with
                  --full. Each tick, from the court's state (for scoring only; nothing of it reaches the model): where
                  the ball will land and in how many ticks, and how far the paddle would still have to travel to be
                  under it; from the agent: each transformer's candidates and their labels, each transformer's pick, the
-                 move made and whose it was.
+                 move made and whose it was. --grid (task 00131, a test): each transformer's pick is the best dx of an
+                 even grid of 16 by its own label (no dy, no click) in place of the best of its own candidates; the
+                 choice among the transformers and the hold are as lived.
     read OUT.npz [OUT.npz ...]
                — the autopsy's tables over the recordings (one per seed): by ticks to landing, how often the move made
                  goes toward the ball and how well each transformer's label orders its candidates; who makes the move;
                  the hit share by how far the paddle had to go in the last 12 ticks; and each miss's kind.
+
+With action repeat (task 00131, vm-00118) `record` also scores each candidate by where the hold leaves the paddle, and it
+keeps of each transformer's 16 candidate dx their spread, the number of different values and the share that repeat the
+move made on the tick before. `last_ticks`, `spans`, `moves` and `endgame` give one recording's measures for comparing
+two agents by seed (`analyze_lives.py repeat` prints them).
 """
 import argparse
 import json
@@ -152,7 +159,17 @@ def corr(a, b):
     return np.where(den > 1e-12, (a * b).sum(1) / np.maximum(den, 1e-12), np.nan)
 
 
-def record(out, run, step, full, ticks, bodies, seed):
+def variety(dx, last, same=0.05):
+    """Per body, of its candidates' dx ([N, M]): the standard deviation, the mean, the number of different values, and
+    the share that repeat `last` ([N], the dx of the move made on the tick before; NaN: none yet) to within `same`
+    (the 32 move bins are .065 apart)."""
+    dx = np.asarray(dx, np.float64)
+    distinct = np.array([len(np.unique(np.round(r, 6))) for r in dx], np.float64)
+    copy = np.where(np.isnan(last), np.nan, (np.abs(dx - np.nan_to_num(last)[:, None]) < same).mean(1))
+    return dx.std(1), dx.mean(1), distinct, copy
+
+
+def record(out, run, step, full, ticks, bodies, seed, grid_act=False):
     import eval_hunger
     import lifetime
     from world import make_world
@@ -169,6 +186,12 @@ def record(out, run, step, full, ticks, bodies, seed):
             grid = np.zeros_like(m.cand)
             grid[..., 0] = np.linspace(-1.0, 1.0, grid.shape[1])   # dx alone, evenly from full left to full right
             extra.append((np.array(m.model.uni_candidates(only), np.float64), np.array(m.model.uni_candidates(grid), np.float64), grid[..., 0]))
+        if grid_act:                                           # the test (task 00131): each piece's pick is the best dx of its even grid
+            n = np.arange(len(props[0][0]))
+            for k, (p, (_, p_grid, g)) in enumerate(zip(props, extra)):
+                mv, best = np.zeros_like(p[0]), p_grid.argmin(1)
+                mv[:, 0] = g[n, best]
+                props[k] = (mv,) + tuple(p[1:3]) + (p_grid[n, best].astype(np.asarray(p[3]).dtype),) + tuple(p[4:])
         a, won = orig(models, props, rule, rng, **kw)
         seen.update(props=props, won=won, extra=extra)
         return a, won
@@ -186,7 +209,9 @@ def record(out, run, step, full, ticks, bodies, seed):
     hkeys = ("conc_hold", "clear_hold", "grid_hold", "grid_clear_hold", "r_need_hold", "best_hold", "made_hold") if every > 1 else ()
     keys = ("ttl", "d", "need", "dx", "won", "quarter", "vx", "conc", "pairs", "clear", "spread", "pick", "best", "made", "label",
             "only", "grid", "grid_clear", "grid_toward", "r_need", "r_dy", "r_click", "decided", "hit", "miss")
-    rec = {k: [] for k in keys + hkeys}
+    ckeys = ("cand_sd", "cand_distinct", "cand_copy", "cand_mean")   # each piece's 16 candidate dx (task 00131): do they follow the last move?
+    rec = {k: [] for k in keys + hkeys + ckeys}
+    last_dx = np.full(bodies, np.nan)                          # the dx of the move made on the tick before
     obs = env.observe()
     try:
         for _ in range(ticks):
@@ -200,6 +225,7 @@ def record(out, run, step, full, ticks, bodies, seed):
             props, won = seen["props"], seen["won"]
             hold = np.clip(ttl, 1, every)                      # of a move decided now and held: its ticks up to the landing
             H = {k: np.full((bodies, S), np.nan) for k in hkeys}
+            C = {k: np.full((bodies, S), np.nan) for k in ckeys}
             conc, pairs, clear, spread, pick, best, only, grid, grid_clear, grid_toward, r_need, r_dy, r_click = (
                 np.full((bodies, S), np.nan) for _ in range(13))
             for k, m in enumerate(life.models):
@@ -216,6 +242,7 @@ def record(out, run, step, full, ticks, bodies, seed):
                 spread[:, k] = pred.max(1) - pred.min(1)
                 pick[:, k] = need_after(env, xs, np.asarray(props[k][0])[:, 0])[0]
                 best[:, k] = nc.min(1)
+                C["cand_sd"][:, k], C["cand_mean"][:, k], C["cand_distinct"][:, k], C["cand_copy"][:, k] = variety(m.cand[..., 0], last_dx)
                 if hkeys:                                      # the same candidates and labels, scored by where the hold ends
                     nh, gh = need_after(env, xs, m.cand[..., 0], hold)[0], need_after(env, xs, g, hold)[0]
                     H["conc_hold"][:, k], H["clear_hold"][:, k] = concordance(nh, pred)[0], concordance(nh, pred, CLEAR)[0]
@@ -232,11 +259,14 @@ def record(out, run, step, full, ticks, bodies, seed):
                 rec[k].append(np.array(v))
             for k in hkeys:
                 rec[k].append(np.array(H[k]))
+            for k in ckeys:
+                rec[k].append(np.array(C[k]))
+            last_dx = a[:, 0].astype(np.float64)
     finally:
         life.close()
         lifetime.pieces_move = orig
     np.savez_compressed(out, **{k: np.stack(v) for k, v in rec.items()}, speed=c.paddle_speed, half=(c.paddle_w + c.ball) / 2.0,
-                        run=os.path.basename(run.rstrip("/")), step=str(step), full=int(full), seed=seed, act_every=every)
+                        run=os.path.basename(run.rstrip("/")), step=str(step), full=int(full), seed=seed, act_every=every, grid_act=int(grid_act))
     hit, miss = np.stack(rec["hit"]).sum(), np.stack(rec["miss"]).sum()
     print(f"{out}: {ticks} ticks x {bodies} bodies, {int(hit)} hits, {int(miss)} misses, share {hit / max(hit + miss, 1):.3f}", flush=True)
 
@@ -259,6 +289,98 @@ def balls(z):
     return np.array(rows, np.float64).reshape(-1, 6)
 
 
+def last_ticks(z, upto=8):
+    """One recording's measures over the last `upto` ticks before a landing, taken as `read` takes them (on the deciding
+    ticks when the run held its moves), for comparing two agents by seed (task 00131): the share of balls returned (the
+    whole recording), of moves made toward the ball, the label's order of the candidates (all pairs, and pairs ending
+    4+ px apart) by one tick of each candidate and by where the hold leaves the paddle (the same number for a run that
+    decides every tick), the label's spread over the candidates (median), the share of the grid's best dx that goes
+    toward the ball, and the label's correlation with the px left across the candidates."""
+    ttl = z["ttl"]
+    dec = z["decided"].astype(bool) if "decided" in z.files else np.ones(ttl.shape, bool)
+    m = (ttl > 0) & (ttl <= upto) & dec
+    act = m & (z["need"] > 0)
+    held = "conc_hold" in z.files
+    mean = lambda k, sel: float(np.nanmean(z[k][sel]))         # noqa: E731
+    return dict(returned=float(z["hit"].sum()) / max(float((ttl == 1).sum()), 1.0),
+                toward=float((z["dx"][act] * z["d"][act] > 0).mean()),
+                order=mean("conc", m), clear=mean("clear", m),
+                order_hold=mean("conc_hold" if held else "conc", m), clear_hold=mean("clear_hold" if held else "clear", m),
+                spread=float(np.nanmedian(z["spread"][m])), grid_toward=mean("grid_toward", act),
+                r_need=mean("r_need", m), r_need_hold=mean("r_need_hold" if held else "r_need", m))
+
+
+def spans(z, k=4, hi=16, near=8.0):
+    """What k ticks do to the paddle (task 00131, reading 5: a held move may carry the paddle past the ball). The spans
+    of k ticks that start on a deciding tick (every k-th tick for a run that decides every tick) between k + 1 and `hi`
+    ticks before a landing, so the same ball is still coming down at the span's end and its landing point has not moved.
+    Of the spans that start with the paddle not under the landing point (all of them, those within `near` px of it and
+    those further off): the shares that end under it, past it (outside the catching zone on the other side), nearer but
+    short of it, and no nearer. Of the spans that start under it: the share that end outside the zone. Also the
+    paddle's net travel over a span (px), the number of spans and the share that start away."""
+    ttl, need, d = z["ttl"], z["need"], z["d"]
+    every = int(z["act_every"]) if "act_every" in z.files else 1
+    assert every in (1, k), "the spans must be the run's own holds"
+    start = (z["decided"].astype(bool) if every > 1 else (np.arange(len(ttl)) % k == 0)[:, None] & np.ones(ttl.shape, bool))
+    start = start & (ttl > k) & (ttl <= hi)
+    start[len(ttl) - k:] = False
+    t0, b0 = np.nonzero(start)
+    assert (ttl[t0 + k, b0] == ttl[t0, b0] - k).all()          # the same flight at the span's end
+    n0, n1, d0, d1 = need[t0, b0], need[t0 + k, b0], d[t0, b0], d[t0 + k, b0]
+    same = d0 * d1 > 0
+    out = dict(spans=len(t0), away=float((n0 > 0).mean()), travel=float(np.abs(d1 - d0).mean()),
+               left=float((n1[n0 == 0] > 0).mean()) if (n0 == 0).any() else np.nan)
+    for name, g in (("all", n0 > 0), ("near", (n0 > 0) & (n0 <= near)), ("far", n0 > near)):
+        n = max(int(g.sum()), 1)
+        out[name] = int(g.sum())
+        for key, m in (("under", n1 == 0), ("past", (n1 > 0) & ~same), ("short", (n1 > 0) & same & (n1 < n0)), ("worse", (n1 > 0) & same & (n1 >= n0))):
+            out[name + "_" + key] = float((g & m).sum()) / n
+    return out
+
+
+def moves(z, k=4, hi=16, near=8.0):
+    """How one recording's paddle moves (task 00131), on the deciding ticks with a ball in play unless said otherwise:
+    the share of all ticks on which the move is cut by a wall (the paddle travels less than the move asks), the size of
+    the move (abs dx; 1 is full speed), the share of decisions that go the same way as the decision before (for a run
+    that decides every tick: as the move k ticks before, the same gap in time, and `same1`: as the tick before), the
+    share that go toward the ball between k + 1 and `hi` ticks before a landing with the paddle within `near` px of
+    the catching zone and further off, and, where the candidates were recorded, of each transformer's 16 candidates
+    the share that repeat the move made on the tick before, the number of different dx and their standard deviation
+    (on the held ticks too, for a run that holds)."""
+    ttl, d, need, dx, speed = z["ttl"], z["d"], z["need"], np.clip(z["dx"], -1.0, 1.0), float(z["speed"])
+    every = int(z["act_every"]) if "act_every" in z.files else 1
+    assert every in (1, k)
+    dec = z["decided"].astype(bool) if "decided" in z.files else np.ones(ttl.shape, bool)
+    live = ttl > 0
+    flight = ttl[:-1] > 1                                      # the same ball is still coming down on the next tick
+    cut = np.abs((d[:-1] - d[1:]) - dx[:-1] * speed) > 1e-6    # the landing point has not moved, so d changes by the paddle's travel
+    m = dec[k:] & live[k:]
+    out = dict(wall=float((cut & flight).sum()) / max(int(flight.sum()), 1), size=float(np.abs(dx[dec & live]).mean()),
+               same=float((dx[k:][m] * dx[:-k][m] > 0).mean()),
+               same1=float((dx[1:][live[1:]] * dx[:-1][live[1:]] > 0).mean()) if every == 1 else np.nan)
+    at = dec & (ttl > k) & (ttl <= hi)
+    for name, g in (("toward_near", (need > 0) & (need <= near)), ("toward_far", need > near)):
+        out[name] = float((dx[at & g] * d[at & g] > 0).mean()) if (at & g).any() else np.nan
+    if "cand_copy" in z.files:
+        for tag, sel in (("", dec & live), ("_held", ~dec & live)):
+            for key in ("cand_copy", "cand_distinct", "cand_sd"):
+                out[key + tag] = float(np.nanmean(z[key][sel])) if sel.any() else np.nan
+    return out
+
+
+def endgame(z, at=4, near=8.0):
+    """Per ball that came down, the paddle `at` ticks before the landing and the outcome (task 00131, reading 5: a
+    decision every k ticks cannot correct late): the share of balls with the paddle under the landing point then, and
+    the shares returned of the balls it was under, within `near` px of, and further from."""
+    ttl, need = z["ttl"], z["need"]
+    t0, b0 = np.nonzero(ttl[:len(ttl) - at + 1] == at)
+    assert (ttl[t0 + at - 1, b0] == 1).all()
+    hit, n0 = z["hit"][t0 + at - 1, b0].astype(bool), need[t0, b0]      # the tick whose move decides it is the one with 1 to go
+    part = lambda m: float(hit[m].mean()) if m.any() else np.nan       # noqa: E731
+    return dict(balls=len(t0), under=float((n0 == 0).mean()), ret_under=part(n0 == 0), ret_near=part((n0 > 0) & (n0 <= near)),
+                ret_far=part(n0 > near), near=float(((n0 > 0) & (n0 <= near)).mean()))
+
+
 def read(paths):
     Z = [np.load(p) for p in paths]
     S = Z[0]["conc"].shape[2]
@@ -266,7 +388,8 @@ def read(paths):
     ttl, need, d, dx, won, quarter = (cat(k) for k in ("ttl", "need", "d", "dx", "won", "quarter"))
     conc, pairs, clear, spread, pick, best, made = (cat(k) for k in ("conc", "pairs", "clear", "spread", "pick", "best", "made"))
     hits, misses = int(sum(z["hit"].sum() for z in Z)), int(sum(z["miss"].sum() for z in Z))
-    print(f"{len(Z)} recordings ({Z[0]['run']}, step {Z[0]['step']}, {'full windows' if int(Z[0]['full']) else 'as lived'}): "
+    print(f"{len(Z)} recordings ({Z[0]['run']}, step {Z[0]['step']}, {'full windows' if int(Z[0]['full']) else 'as lived'}"
+          f"{', each pick the best dx of an even grid' if 'grid_act' in Z[0].files and int(Z[0]['grid_act']) else ''}): "
           f"{hits} hits, {misses} misses, hit share {hits / max(hits + misses, 1):.3f}")
     live = ttl > 0
     # task 00131: with action repeat the choice is made on the deciding ticks only; the held ticks' picks are not made
@@ -389,6 +512,7 @@ def main():
     r.add_argument("run")
     r.add_argument("--step", type=int, default=None)
     r.add_argument("--full", action="store_true")
+    r.add_argument("--grid", action="store_true")
     r.add_argument("--ticks", type=int, default=1500)
     r.add_argument("--bodies", type=int, default=16)
     r.add_argument("--seed", type=int, default=1)
@@ -397,7 +521,7 @@ def main():
     if a.cmd == "ring":
         ring(a.dir)
     elif a.cmd == "record":
-        record(a.out, a.run, "final" if a.step is None else a.step, a.full, a.ticks, a.bodies, a.seed)
+        record(a.out, a.run, "final" if a.step is None else a.step, a.full, a.ticks, a.bodies, a.seed, a.grid)
     else:
         read(a.paths)
 

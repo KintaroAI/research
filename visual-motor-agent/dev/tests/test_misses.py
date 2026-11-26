@@ -124,3 +124,83 @@ def test_a_held_move_can_overshoot_what_one_tick_of_it_would_not():
     assert np.isclose(four[0, 0], 4 * c.paddle_speed - 1.0 - (c.paddle_w + c.ball)) and four[0, 1] == 0   # held: the full move is past it
     full = np.array([[0.1, 0.2]])                              # a label (lower is better) that prefers the full move
     assert am.concordance(one, full)[0][0] == 1.0 and am.concordance(four, full)[0][0] == 0.0
+
+
+# ------------------------------------------------------------------ one recording's measures (task 00131, vm-00118)
+class Rec(dict):
+    """A recording as np.load gives it: arrays by name and the list of names."""
+    files = property(lambda self: list(self.keys()))
+
+
+def flights():
+    """Two bodies, 20 ticks, half a zone of 7 px: a flight of 16 ticks, then one of 4. Decisions on ticks 0, 4, 8, ..."""
+    T = 20
+    ttl = np.concatenate([np.arange(16, 0, -1), np.arange(4, 0, -1)])[:, None] * np.ones((1, 2), int)
+    d = np.zeros((T, 2))
+    d[[0, 4, 8, 12, 16], 0] = 20.0, 10.0, -9.0, -5.0, 10.0   # far; short of it; past it; under it; (the next ball) 3 px off
+    d[[0, 4, 8, 12, 16], 1] = 3.0, 9.0, 30.0, 30.0, 0.0      # under it; out of the zone; further; no nearer; (the next ball) under
+    hit = np.zeros((T, 2), bool)
+    hit[15, 0] = hit[19, 1] = True                           # the tick with 1 to go: the ball is returned
+    z = Rec(ttl=ttl, d=d, need=np.maximum(0.0, np.abs(d) - 7.0), hit=hit, miss=np.zeros((T, 2), bool),
+            decided=(np.arange(T) % 4 == 0)[:, None] & np.ones((1, 2), bool), act_every=np.array(4))
+    return z
+
+
+def test_spans_sort_what_four_ticks_do_to_the_paddle():
+    z = flights()
+    for rec in (z, Rec({k: v for k, v in z.items() if k not in ("decided", "act_every")})):   # held, and deciding every tick
+        s = am.spans(rec, 4)
+        assert s["spans"] == 6 and np.isclose(s["away"], 5 / 6)       # starts 16, 12 and 8 ticks before the landing; not 4
+        assert s["left"] == 1.0                                       # the one span that starts under the ball ends out of the zone
+        assert s["all"] == 5 and [s["all_" + k] for k in ("under", "past", "short", "worse")] == [.2, .2, .2, .4]
+        assert s["near"] == 3 and np.allclose([s["near_" + k] for k in ("under", "past", "short", "worse")], [1 / 3, 1 / 3, 0, 1 / 3])
+        assert s["far"] == 2 and [s["far_" + k] for k in ("under", "past", "short", "worse")] == [0, 0, .5, .5]
+        assert np.isclose(s["travel"], (10 + 19 + 4 + 6 + 21 + 0) / 6)
+
+
+def test_endgame_reads_the_paddle_four_ticks_before_the_landing():
+    e = am.endgame(flights(), 4)
+    assert e["balls"] == 4 and e["under"] == .5 and e["near"] == .25
+    assert e["ret_under"] == 1.0 and e["ret_near"] == 0.0 and e["ret_far"] == 0.0
+
+
+def test_last_ticks_takes_the_deciding_ticks_near_the_landing():
+    T = 10
+    ttl = np.arange(T, 0, -1)[:, None]
+    dec = (np.arange(T) % 4 == 0)[:, None]                    # ticks 0, 4, 8: 10, 6 and 2 ticks before the landing
+    col = lambda *v: np.array(v, float).reshape(T, 1, 1)      # noqa: E731
+    z = Rec(ttl=ttl, decided=dec, act_every=np.array(4), need=np.full((T, 1), 5.0), d=np.full((T, 1), 12.0),
+            dx=np.array([1, 1, 1, 1, 1, 1, 1, 1, -1, -1], float)[:, None], hit=(ttl == 1), miss=np.zeros((T, 1), bool),
+            conc=col(.1, 0, 0, 0, .6, 0, 0, 0, .8, 0), conc_hold=col(.1, 0, 0, 0, .7, 0, 0, 0, .9, 0), clear=col(*[.5] * T),
+            clear_hold=col(*[.5] * T), spread=col(9, 9, 9, 9, .02, 9, 9, 9, .04, 9), grid_toward=col(*[1] * T),
+            r_need=col(*[.2] * T), r_need_hold=col(*[.3] * T))
+    m = am.last_ticks(z, 8)
+    assert np.isclose(m["order"], .7) and np.isclose(m["order_hold"], .8) and m["toward"] == .5 and m["returned"] == 1.0
+    assert np.isclose(m["spread"], .03) and np.isclose(m["r_need_hold"], .3)
+    every = Rec({k: v for k, v in z.items() if k not in ("decided", "act_every", "conc_hold", "clear_hold", "r_need_hold")})
+    m = am.last_ticks(every, 8)                               # a run that decides every tick: all 8 ticks, and one scoring
+    assert np.isclose(m["order"], 1.4 / 8) and m["order_hold"] == m["order"] and m["toward"] == 6 / 8
+
+
+def test_moves_reads_the_walls_and_how_a_decision_follows_the_last():
+    T, speed = 12, 4.5
+    dx = np.array([1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1], float)
+    d = np.array([30, 25.5, 21, 21, 21, 16.5, 12, 7.5, 3, 7.5, 12, 16.5])    # the moves of ticks 2 and 3 are cut by a wall
+    ttl = np.arange(T, 0, -1)[:, None]
+    dec = (np.arange(T) % 4 == 0)[:, None]
+    cand = lambda a, b: np.where(dec, a, b)[:, :, None] * np.ones((1, 1, 2))   # noqa: E731
+    z = Rec(ttl=ttl, d=d[:, None], need=np.maximum(0.0, np.abs(d) - 7.0)[:, None], dx=dx[:, None], speed=np.array(speed), decided=dec,
+            act_every=np.array(4), cand_copy=cand(.5, .9), cand_distinct=cand(6.0, 3.0), cand_sd=cand(.4, .2))
+    m = am.moves(z, 4)
+    assert np.isclose(m["wall"], 2 / 11) and m["size"] == 1.0
+    assert m["same"] == .5                                    # the decision of tick 4 repeats that of tick 0; that of tick 8 turns
+    assert m["toward_far"] == 1.0 and np.isnan(m["toward_near"])   # ticks 0 and 4, 23 and 14 px off; tick 8 is 4 ticks before the landing
+    assert np.allclose((m["cand_copy"], m["cand_copy_held"], m["cand_distinct"], m["cand_distinct_held"]), (.5, .9, 6.0, 3.0))
+    every = am.moves(Rec({k: v for k, v in z.items() if k not in ("decided", "act_every")}), 4)
+    assert every["same"] == .5 and np.isclose(every["same1"], 10 / 11) and "cand_copy_held" in every and np.isnan(every["cand_copy_held"])
+
+
+def test_variety_counts_the_copies_of_the_last_move():
+    sd, mean, distinct, copy = am.variety(np.array([[.5, .5, .5, -.5], [0, .1, .2, .3]]), np.array([.5, np.nan]))
+    assert np.isclose(sd[0], np.std([.5, .5, .5, -.5])) and np.isclose(mean[1], .15)
+    assert list(distinct) == [2, 4] and copy[0] == .75 and np.isnan(copy[1])

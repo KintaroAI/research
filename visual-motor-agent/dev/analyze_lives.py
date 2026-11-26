@@ -13,7 +13,10 @@ Subcommands:
     repeat [--seeds 1 2 ...]
         — vm-00118. BA (online.act_every = 4) against BD: the hit share by 10k ticks, the paired differences, the
           first 5k window at a share, learning off (BA's frozen60k against BD's ring arm of vm-00116, the same courts)
-          and the ticks per second.
+          and the ticks per second. Then the miss autopsy's recordings by seed (analyze_misses.py: BA's in
+          exp_00118/autopsy, BD's in exp_00118/autopsy_BD or, without them, vm-00116's): the last 8 ticks before a
+          landing, what 4 ticks do to the paddle, how it moves and what its candidates are, the paddle 4 ticks before
+          the landing; and the test in which each transformer picks from an even grid of dx (grid_BA, grid_BD).
     pg [--seeds 1 2 ...]
         — vm-00115 (task 00128, the move token as a policy-gradient actor). PB against BD (Breakout) and PG against TT
           (the food world) by 10k ticks with the paired differences, and by 10k ticks the move token's entropy, the
@@ -167,8 +170,8 @@ def court_tables(name, new, base, bname, seeds, end, pre, levels=(.5, .7)):
     B = {w: [share(base % s, *w) for s in seeds] for w in wins + pre}
     table(["Ticks", "%s (%d)" % (bname, len(seeds)), "%s (%d)" % (name, len(seeds)), "%s − %s (95%%)" % (name, bname), "Seeds"],
           [[win(*w), f3(np.mean(B[w])), f3(np.mean(A[w]))] + diff(A[w], B[w]) for w in wins])
-    table(["Comparison", "Ticks", "Mean difference (95%)", "Seeds"],
-          [["%s − %s" % (name, bname), win(*w)] + diff(A[w], B[w]) for w in pre])
+    table(["Comparison", "Ticks", bname, name, "Mean difference (95%)", "Seeds"],
+          [["%s − %s" % (name, bname), win(*w), f3(np.mean(B[w])), f3(np.mean(A[w]))] + diff(A[w], B[w]) for w in pre])
     body = []
     for lv in levels:
         ta = [first_window(lambda a, b: share(new % s, a, b), lv, end) for s in seeds]
@@ -371,6 +374,107 @@ def repeat(seeds):
         if grp:
             body.append([name, "%.2f" % np.mean([tps(BD % s) for s in grp]), "%.2f" % np.mean([tps(BA % s) for s in grp]), cards])
     table(["Seeds", "BD, ticks per second", "BA, ticks per second", "Cards (six lives at a time)"], body)
+
+    print("### 4. The miss autopsy by seed: BA's recordings against BD's (vm-00116), the same courts\n")
+    ra, rb = O + "/autopsy/s%d.npz", O + "/autopsy_BD/s%d.npz"   # BD recorded again here with its candidates kept (make autopsy-bd)
+    if not all(os.path.exists(rb % s) for s in seeds):
+        rb = D + "/exp_00116/autopsy/BD_60000/s%d.npz"            # vm-00116's own recordings: the same play, no candidates
+    rs = [s for s in seeds if os.path.exists(ra % s) and os.path.exists(rb % s)]
+    if len(rs) < 2:
+        print("Not run yet.\n")
+        return
+    if rs != seeds:
+        print("Seeds with both recordings: %s.\n" % ", ".join(map(str, rs)))
+    from analyze_misses import endgame, last_ticks, moves, spans
+    ZA, ZB = [np.load(ra % s) for s in rs], [np.load(rb % s) for s in rs]
+    k = int(ZA[0]["act_every"])
+    head = ["BD (%d)" % len(rs), "BA (%d)" % len(rs), "BA − BD (95%)", "Seeds"]
+
+    def lines(fn, names):
+        A, B = [fn(z) for z in ZA], [fn(z) for z in ZB]
+        body = []
+        for key, lab, fmt in names:
+            a, b = [x[key] for x in A], [x[key] for x in B]
+            body.append([lab, fmt(np.nanmean(b)), fmt(np.nanmean(a))] + diff(a, b, fmt))
+        return body
+
+    f4 = lambda x: ("−" if x < 0 else "") + ("%.4f" % abs(x))[1:]         # noqa: E731
+    print("The last 8 ticks before a landing (BA: its deciding ticks; BD decides every tick, so for BD the order after the hold is the order by one tick):\n")
+    table(["Measure"] + head, lines(last_ticks, (
+        ("returned", "Balls returned, the whole recording", f3), ("toward", "Move made goes toward the ball", f3),
+        ("order", "Label's order of the candidates, by one tick of each", f3), ("order_hold", "The same, by where the hold leaves the paddle", f3),
+        ("clear", "Label's order of pairs ending 4+ px apart, by one tick", f3), ("clear_hold", "The same, by where the hold leaves the paddle", f3),
+        ("grid_toward", "The grid's best dx goes toward the ball", f3),
+        ("r_need", "Label's correlation with the px left across the candidates, by one tick", f3), ("r_need_hold", "The same, after the hold", f3),
+        ("spread", "Label's spread over the candidates (median)", f4))))
+    for upto in (16,):
+        print("The same over the last %d ticks:\n" % upto)
+        table(["Measure"] + head, lines(lambda z: last_ticks(z, upto), (
+            ("toward", "Move made goes toward the ball", f3), ("order", "Label's order of the candidates, by one tick of each", f3),
+            ("order_hold", "The same, by where the hold leaves the paddle", f3))))
+    print("What %d ticks do to the paddle: spans of %d ticks from a deciding tick (BD: every %dth tick), starting %d to 16 ticks before a landing "
+          "(the catching zone is 14 px wide, a full move held for %d ticks 18 px):\n" % (k, k, k, k + 1, k))
+    sp = lambda z: spans(z, k)                                           # noqa: E731
+    table(["Spans of %d ticks" % k] + head, lines(sp, (
+        ("travel", "The paddle's net travel over the span, px", f1), ("away", "Spans that start with the paddle not under the landing point", f3),
+        ("left", "Start under it: end outside the catching zone", f3),
+        ("all_under", "Start not under it: end under it", f3), ("all_past", "Start not under it: end past it, on the other side", f3),
+        ("all_short", "Start not under it: end nearer, still short", f3), ("all_worse", "Start not under it: end no nearer", f3),
+        ("near_under", "Start within 8 px of the zone: end under it", f3), ("near_past", "Start within 8 px: end past it", f3),
+        ("near_short", "Start within 8 px: end nearer, still short", f3), ("near_worse", "Start within 8 px: end no nearer", f3),
+        ("far_under", "Start further off: end under it", f3), ("far_past", "Start further off: end past it", f3),
+        ("far_short", "Start further off: end nearer, still short", f3), ("far_worse", "Start further off: end no nearer", f3))))
+    n = [x["spans"] for z in (ZA, ZB) for x in map(sp, z)]
+    print("Spans per recording: %d to %d.\n" % (min(n), max(n)))
+    print("How the paddle moves, and what the instinct is given to choose from (deciding ticks with a ball in play):\n")
+    mv = lambda z: moves(z, k)                                           # noqa: E731
+    names = [("wall", "Ticks on which the move is cut by a wall (all ticks)", f3), ("size", "Size of the move, abs dx (1 is full speed)", f3),
+             ("same", "A decision goes the same way as the one before (BD: as the move %d ticks before)" % k, f3),
+             ("toward_near", "Move goes toward the ball, %d to 16 ticks before a landing, paddle within 8 px of the zone" % (k + 1), f3),
+             ("toward_far", "The same, paddle further off", f3)]
+    if all("cand_copy" in z.files for z in ZA + ZB):
+        names += [("cand_copy", "Of a transformer's 16 candidates: the share that repeat the move made on the tick before", f3),
+                  ("cand_distinct", "Of its 16 candidates: different values of dx", f1), ("cand_sd", "Standard deviation of its candidates' dx", f3)]
+    table(["Measure"] + head, lines(mv, names))
+    A = [mv(z) for z in ZA]
+    if "cand_copy_held" in A[0]:
+        print("BA on its held ticks, where the pick is not made: %s of the 16 candidates repeat the move made on the tick before, %s different values of dx, "
+              "standard deviation %s. BD's moves go the same way as on the tick before on %s of ticks.\n" % (
+                  f3(np.mean([x["cand_copy_held"] for x in A])), f1(np.mean([x["cand_distinct_held"] for x in A])),
+                  f3(np.mean([x["cand_sd_held"] for x in A])), f3(np.mean([mv(z)["same1"] for z in ZB]))))
+    print("The paddle %d ticks before the landing, and the ball's outcome:\n" % k)
+    table(["Per ball"] + head, lines(lambda z: endgame(z, k), (
+        ("under", "Balls with the paddle under the landing point %d ticks before" % k, f3), ("near", "Balls with it within 8 px of the zone", f3),
+        ("ret_under", "Returned, of the balls it was under", f3), ("ret_near", "Returned, of the balls within 8 px", f3),
+        ("ret_far", "Returned, of the balls further off", f3))))
+
+    print("### 5. The same weights, each transformer picking the best dx of an even grid of 16 by its own label (a test added after the results)\n")
+    ga, gb = O + "/grid_BA/s%d.npz", O + "/grid_BD/s%d.npz"
+    gs = [s for s in rs if os.path.exists(ga % s) and os.path.exists(gb % s)]
+    if len(gs) < 2:
+        print("Not run yet.\n")
+        return
+    if gs != rs:
+        print("Seeds with the test: %s.\n" % ", ".join(map(str, gs)))
+    own = {"BA": [np.load(ra % s) for s in gs], "BD": [np.load(rb % s) for s in gs]}
+    grd = {"BA": [np.load(ga % s) for s in gs], "BD": [np.load(gb % s) for s in gs]}
+    R = {(a, m): [last_ticks(z)["returned"] for z in Z[a]] for m, Z in (("own", own), ("grid", grd)) for a in ("BA", "BD")}
+    gain = {a: np.array(R[a, "grid"]) - np.array(R[a, "own"]) for a in ("BA", "BD")}
+    body = [[a, f3(np.mean(R[a, "own"])), f3(np.mean(R[a, "grid"]))] + diff(R[a, "grid"], R[a, "own"]) for a in ("BD", "BA")]
+    body.append(["BA − BD (95%)", diff(R["BA", "own"], R["BD", "own"])[0], diff(R["BA", "grid"], R["BD", "grid"])[0]] + diff(gain["BA"], gain["BD"]))
+    table(["Balls returned", "Its own candidates", "The even grid", "Grid − own (95%)", "Seeds"], body)
+    table(["Seed"] + [str(s) for s in gs], [["%s, %s" % (a, m)] + [f3(x) for x in R[a, m]] for a in ("BD", "BA") for m in ("own", "grid")])
+    body = []
+    for key, lab, fn in (("toward", "Move made goes toward the ball, the last 8 ticks", last_ticks), ("same", "A decision goes the same way as the one before (BD: as the move %d ticks before)" % k, mv),
+                         ("wall", "Ticks on which the move is cut by a wall", mv), ("size", "Size of the move, abs dx", mv),
+                         ("left", "Spans of %d ticks that start under the landing point and end outside the zone" % k, sp),
+                         ("ret_under", "Returned, of the balls the paddle was under %d ticks before" % k, lambda z: endgame(z, k))):
+        row = [lab]
+        for a in ("BD", "BA"):
+            x, y = [fn(z)[key] for z in own[a]], [fn(z)[key] for z in grd[a]]
+            row += [f3(np.mean(x)), f3(np.mean(y)), diff(y, x)[0]]
+        body.append(row)
+    table(["Measure", "BD, own", "BD, grid", "BD, grid − own (95%)", "BA, own", "BA, grid", "BA, grid − own (95%)"], body)
 
 
 # ------------------------------------------------------------------------------------------------- vm-00115

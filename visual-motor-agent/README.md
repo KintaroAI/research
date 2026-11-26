@@ -49,9 +49,11 @@ choose the move.
     not because the candidates narrow (vm-00113). The trained agent's label knows where the paddle should be but barely
     orders the candidate moves (right about six times in ten), so the paddle dithers (vm-00116). The move token
     trained as a policy-gradient actor in place of the instinct narrows to a near-fixed move within 20k ticks and
-    learns neither world (vm-00115).
-- **Running:** vm-00117, one set of weights in two worlds (started 2026-11-25), and vm-00118, action repeat in
-  Breakout (started 2026-11-26 behind it on the RTX 4090).
+    learns neither world (vm-00115). A move decided every 4 ticks and held is ordered better by the label (.69
+    against .62) and still plays a little worse (−.065 ± .053 hit share), because one decision in 4 ticks corrects
+    less than four (vm-00118). Within 8 px of the catching zone the move goes toward the ball half the time, held or
+    not.
+- **Running:** vm-00117, one set of weights in two worlds (started 2026-11-25).
 
 The sections from Objective to Success criteria are the project's starting point (2026-10-23).
 
@@ -213,7 +215,7 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00115](00115-policy-gradient-actor/README.md) | The move token as a policy-gradient actor (`online.actor_pg`: one sample at temperature 1, no instinct, the label as critic, REINFORCE on the newest windows with an entropy bonus): PG (food world) against TT, PB (Breakout stage 1) against BD; seeds 1-6 (cut from 12, with no frozen tests, by the owner), 60k | Complete | **Negative: the actor learns to act in neither world.** PB stays at chance in Breakout (.215–.228 in every 10k window, a random paddle .235; PB − BD −.394 ± .075 at 40–60k, 0 of 6 seeds above; no seed reaches .5 in any 5k window). PG does not forage (food −59.9 ± 3.2 and poison +19.3 ± 5.3 per 1k against TT at 40–60k; its food stays at 10–12). The move token narrows to a near-fixed move within 20k ticks (entropy 4.3–4.8 nats at 1k ticks, 1.0–1.3 at 10k, .03–.04 at 50–60k; uniform 6.9), before the label knows the world, and both arms sit at the hunger cap half of the time for the whole life. |
 | [00116](00116-why-it-misses/README.md) | Why the trained agent misses in Breakout, measured on existing checkpoints with no new learning code: the ring control (BD's 60k weights, learning off, 6,000 ticks on the ring and on full windows, one build) and a miss autopsy (`analyze_misses.py`: every tick of frozen play scored against the court's state) of BD at 30k and 60k and RB at 60k; seeds 1-12 | Complete | **The label knows the court as a state but barely orders the moves.** BD at 60k moves toward the ball .58–.60 of the time in the last 8 ticks and its label prefers the nearer of two candidates .60–.62 of the time (an even grid of dx: no better), though the label is .085 with the paddle under the ball and .407 with it 16–24 px away. Misses are a paddle that travels enough (about 31 px in 12 ticks) but not to the ball; 2% moved too little. **No ring effect:** +.032 ± .053 on new ticks; vm-00114's side reading was noise. |
 | [00117](00117-two-worlds/README.md) | Two worlds, one set of weights: Breakout from TT's 60k weights (TB) and the food world from BD's (BF), against the from-scratch lives by seed; the old world with learning off after 10k, 30k and 60k ticks of the new one; a third life of 30k ticks back in the old world (TBF, BFB); seeds 1-12 | Running | Queued 2026-11-25. A life started from weights has an empty memory, so the old world is never replayed. |
-| [00118](00118-action-repeat/README.md) | Action repeat (`online.act_every = 4`: a move decided every 4 ticks and made again on the 3 between; the model still sees, predicts and learns every tick): BA against BD in Breakout stage 1; then learning off at 60k and vm-00116's miss autopsy; seeds 1-12, 60k | Running | Queued 2026-11-25 behind vm-00117 on the RTX 4090. It follows vm-00116: a held move shifts the paddle up to 18 px, so what a decision does to the label is four times larger to learn, and a held move cannot dither. |
+| [00118](00118-action-repeat/README.md) | Action repeat (`online.act_every = 4`: a move decided every 4 ticks and made again on the 3 between; the model still sees, predicts and learns every tick): BA against BD in Breakout stage 1; then learning off at 60k, vm-00116's miss autopsy of BA and of BD (the label's order scored by one tick of a candidate and by where the hold leaves the paddle; the candidates kept), and both frozen agents picking from an even grid of dx; seeds 1-12, 60k | Complete | **Negative: a held move is chosen better and plays worse.** BA − BD −.065 ± .053 hit share at 40–60k (2 of 12 seeds above), −.092 ± .100 with learning off; .5 reached at 40–52k (median 43k), later than BD in 10 of 12 seeds. The label orders held moves better (.688 against .618 in the last 8 ticks, 12 of 12 seeds) and the deciding move goes toward the ball more often (.657 against .595). But one decision in 4 ticks leaves the paddle no nearer to the ball in .411 of the 4-tick spans against .317 for BD's four moves, and from under the ball the paddle leaves the catching zone in .224 against .145; passing the ball is rare (.012). **A side effect:** .567 of the 16 candidates at a deciding tick repeat the move being held (BD .094), since the move token learns the repeat; picking from an even grid instead returns no more balls (.608 against .614). Near the ball (within 8 px of the zone) neither agent's move goes toward it more than half the time. No cost in time (9.83 against 9.84 ticks per second). |
 
 ## Open Questions
 
@@ -229,8 +231,9 @@ stand as follows:
   control, is still missing (vm-00057's delayed cue was not valid).
 - **Where goals come from.** A rule outside the network still chooses the move. Task 00123 asks whether a trained
   actor should replace it: the dream lookahead failed (vm-00114), and so did a policy-gradient actor on real windows
-  (vm-00115); a critic trained on dreams is untried. Action repeat (the owner, 2026-11-17, `ARCHITECTURE.md` section 9) is built and
-  running (vm-00118).
+  (vm-00115); a critic trained on dreams is untried. Action repeat (the owner, 2026-11-17, `ARCHITECTURE.md`
+  section 9) improved the label's order of the moves but not the play (vm-00118). What is left of task 00123 are the
+  arms that teach the label what a move does: an advantage-style target, and labels for moves not made.
 - **Scale.** Worlds up to 128 x 128, up to 64 transformers in one body, up to 8.6M parameters in one transformer,
   lives up to 1M ticks. Whether quality holds beyond that is not measured.
 
