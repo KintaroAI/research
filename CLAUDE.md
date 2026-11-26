@@ -12,7 +12,7 @@ There are four topics. Each is a directory with its own `README.md` (overview, c
 
 | Topic | What it is | State | Latest experiment |
 |---|---|---|---|
-| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00115, running since 2026-11-25; vm-00114 and all before it are written up |
+| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00117; vm-00115 and vm-00117 running since 2026-11-25; vm-00116 written up, pending tag |
 | `thalamus-sorter/` | Topographic maps from temporal correlation; clusters wired to columns, a feedback loop, a forage benchmark | Parked | ts-00028 (2026-11-14); before it ts-00027 (April) |
 | `column/` | A soft winner-take-all cell with Hebbian learning and no backprop (a cortical minicolumn model) | Parked since 2026-03-18 | 00016 |
 | `llm-fundamentals/` | GPT-2 training in raw CUDA/C: banded sparsity, grokking, sequential evaluation, fact memorization | Parked since 2026-11-12 | 00021 |
@@ -20,7 +20,8 @@ There are four topics. Each is a directory with its own `README.md` (overview, c
 ### Current focus (2026-11-25)
 
 - **The default agent** of `visual-motor-agent` is `dev/configs/U_agent.json` (vm-00101's TT, since 2026-11-22). New experiments in the food worlds start from it.
-- **Being worked on:** the acting rule (task 00123), that is, whether a trained actor should replace the instinct that picks the best of 16 sampled moves. vm-00114 (lookahead in the model's dream) closed negative; vm-00115 (a policy-gradient actor) is running.
+- **Being worked on:** the acting rule (task 00123), that is, whether a trained actor should replace the instinct that picks the best of 16 sampled moves. vm-00114 (lookahead in the model's dream) closed negative; vm-00115 (a policy-gradient actor) is running, cut to six seeds. vm-00116 measured why the trained agent misses in Breakout: its label knows where the paddle should be but barely orders the candidate moves, and the ring is not the cause. The next arm (action repeat, or one that teaches the label what a move does) is the owner's decision.
+- **Also running:** vm-00117, the first run of one set of weights in two worlds (challenge 1 of `visual-motor-agent/ARCHITECTURE.md` section 13).
 - **Where the agent stands, its reference numbers and known limits:** `visual-motor-agent/README.md`, section Current state.
 - **Hardware:** a QEMU VM with 128 vCPUs (no AVX), 251 GB RAM, an RTX 3090 (GPU 0) and an RTX 4090 (GPU 1) under `CUDA_DEVICE_ORDER=PCI_BUS_ID`.
 
