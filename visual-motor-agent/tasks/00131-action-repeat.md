@@ -1,7 +1,7 @@
 # Task 00131: Action Repeat — a Move Decided Every 4 Ticks and Held (experiment vm-00118)
 
 **Date:** 2026-11-25
-**Status:** Complete (negative, 2026-11-26; pending tag `exp/vm-00118`): BA − BD = −.065 ± .053 hit share at 40–60k (2 of 12 seeds above). The label orders held moves better (.688 against .618) and the play still falls; the write-up is `00118-action-repeat/README.md`. The owner, 2026-11-25, to the recommendation after vm-00116 (action repeat with k = 4, the agent holding its move while the model still sees every tick): "yes, lets commit and do the next arm when time is right". The idea is the owner's, 2026-11-17 (`ARCHITECTURE.md` section 9).
+**Status:** Complete, tagged `exp/vm-00118` (negative, 2026-11-26): BA − BD = −.065 ± .053 hit share at 40–60k (2 of 12 seeds above). The label orders held moves better (.688 against .618) and the play still falls; the write-up is `00118-action-repeat/README.md`. The owner, 2026-11-25, to the recommendation after vm-00116 (action repeat with k = 4, the agent holding its move while the model still sees every tick): "yes, lets commit and do the next arm when time is right". The idea is the owner's, 2026-11-17 (`ARCHITECTURE.md` section 9).
 
 ## Context
 

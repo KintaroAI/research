@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-26
 **Status:** Complete (negative)
-**Source:** `dev/` (pending tag `exp/vm-00118`)
+**Source:** `exp/vm-00118` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00118/`
 **Task plan:** [`../tasks/00131-action-repeat.md`](../tasks/00131-action-repeat.md)
 
