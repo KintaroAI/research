@@ -9,7 +9,7 @@ Plan: [`../visual_motor_learning_plan.md`](../visual_motor_learning_plan.md) · 
 [`ARCHITECTURE.md`](ARCHITECTURE.md) · The model as built: [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) ·
 Options and tools: [`CLAUDE.md`](CLAUDE.md)
 
-## Current state (2026-11-25)
+## Current state (2026-11-26)
 
 The project began with the click task described below (vm-00001 to vm-00018). Since vm-00019 it studies one
 **universal model** living **one life**: a causal Transformer in which every token (image patch, body value, move)
@@ -47,10 +47,11 @@ choose the move.
   - **Imagination:** the model's own dream is noise by 4 ticks, so looking ahead through it hurts (vm-00114).
   - **The acting rule** (task 00123): in Breakout more replay speeds the start but levels off at .73 (vm-00110), and
     not because the candidates narrow (vm-00113). The trained agent's label knows where the paddle should be but barely
-    orders the candidate moves (right about six times in ten), so the paddle dithers (vm-00116).
-- **Running:** vm-00115, the move token trained as a policy-gradient actor in place of the instinct, in both worlds
-  (started 2026-11-25; cut to six seeds), vm-00117, one set of weights in two worlds (started the same evening), and
-  vm-00118, action repeat in Breakout (queued behind it).
+    orders the candidate moves (right about six times in ten), so the paddle dithers (vm-00116). The move token
+    trained as a policy-gradient actor in place of the instinct narrows to a near-fixed move within 20k ticks and
+    learns neither world (vm-00115).
+- **Running:** vm-00117, one set of weights in two worlds (started 2026-11-25), and vm-00118, action repeat in
+  Breakout (started 2026-11-26 behind it on the RTX 4090).
 
 The sections from Objective to Success criteria are the project's starting point (2026-10-23).
 
@@ -209,14 +210,14 @@ of, reward. Then test whether that knowledge helps it learn the task.
 | [00112](00112-dreamer-short-horizon/README.md) | Dreamer in the food world with our horizon (discount .95): DG against DR and TT; seeds 1-3, 60k; `baselines/dreamer_recon.py` | Complete | **The horizon is not why Dreamer eats poison** (23.5 against 22.8 per 1k at 40–60k; TT 8.5), **and neither is the look:** its world model keeps the poison's checker and its reward head predicts poison's cost (−.22 to −.34 of −.5). The failure is in its acting, so an actor-critic like Dreamer's is no ready fix for the food world. |
 | [00113](00113-replay-ratio-temp/README.md) | Dreamer's training budget with varied candidates: vm-00110's RB with `instinct_temp = 4` (RT); seeds 1-12, 60k | Complete | **Negative: the candidates come back (14.2 distinct against RB's 8.1, 12 of 12 seeds) but the play does not** (RT − RB −.009 ± .037 at 40–60k, flat at .72; frozen −.006). The early speed is kept (+.21 over BD at 10–30k). The plateau is not the narrowed candidates. |
 | [00114](00114-dream-lookahead/README.md) | The instinct looks ahead in its dream (`online.dream_return`: each candidate held for 4 imagined ticks, scored by the dream's 4-step return): frozen on TT's and BD's 60k checkpoints, seeds 1-12; the lives were not run | Complete | **Negative. Frozen, 4 ticks of lookahead hurt in both worlds:** food −11.4 ± 1.0 per 1k (0 of 12 seeds up) and poison +3.8 ± 1.2 in the food world, hit share −.096 ± .044 in Breakout; 2 ticks are neutral in the food world. The dream's score is noise at 4 ticks: a dreamed meal chance of .19 with no real meal coming, and the 4th dreamed label varies by .32 across the candidates. |
-| [00115](00115-policy-gradient-actor/README.md) | The move token as a policy-gradient actor (`online.actor_pg`: one sample at temperature 1, no instinct, the label as critic, REINFORCE on the newest windows with an entropy bonus): PG (food world) against TT, PB (Breakout stage 1) against BD; seeds 1-12, 60k | Running | Started 2026-11-25. Pilot (food world, 3 seeds, 30k ticks): no foraging at `pg_ent` .03 or .1 (food about 10 per 1k at 20–30k against TT's 57), and the move token's entropy falls to a near-fixed move. |
+| [00115](00115-policy-gradient-actor/README.md) | The move token as a policy-gradient actor (`online.actor_pg`: one sample at temperature 1, no instinct, the label as critic, REINFORCE on the newest windows with an entropy bonus): PG (food world) against TT, PB (Breakout stage 1) against BD; seeds 1-6 (cut from 12, with no frozen tests, by the owner), 60k | Complete | **Negative: the actor learns to act in neither world.** PB stays at chance in Breakout (.215–.228 in every 10k window, a random paddle .235; PB − BD −.394 ± .075 at 40–60k, 0 of 6 seeds above; no seed reaches .5 in any 5k window). PG does not forage (food −59.9 ± 3.2 and poison +19.3 ± 5.3 per 1k against TT at 40–60k; its food stays at 10–12). The move token narrows to a near-fixed move within 20k ticks (entropy 4.3–4.8 nats at 1k ticks, 1.0–1.3 at 10k, .03–.04 at 50–60k; uniform 6.9), before the label knows the world, and both arms sit at the hunger cap half of the time for the whole life. |
 | [00116](00116-why-it-misses/README.md) | Why the trained agent misses in Breakout, measured on existing checkpoints with no new learning code: the ring control (BD's 60k weights, learning off, 6,000 ticks on the ring and on full windows, one build) and a miss autopsy (`analyze_misses.py`: every tick of frozen play scored against the court's state) of BD at 30k and 60k and RB at 60k; seeds 1-12 | Complete | **The label knows the court as a state but barely orders the moves.** BD at 60k moves toward the ball .58–.60 of the time in the last 8 ticks and its label prefers the nearer of two candidates .60–.62 of the time (an even grid of dx: no better), though the label is .085 with the paddle under the ball and .407 with it 16–24 px away. Misses are a paddle that travels enough (about 31 px in 12 ticks) but not to the ball; 2% moved too little. **No ring effect:** +.032 ± .053 on new ticks; vm-00114's side reading was noise. |
 | [00117](00117-two-worlds/README.md) | Two worlds, one set of weights: Breakout from TT's 60k weights (TB) and the food world from BD's (BF), against the from-scratch lives by seed; the old world with learning off after 10k, 30k and 60k ticks of the new one; a third life of 30k ticks back in the old world (TBF, BFB); seeds 1-12 | Running | Queued 2026-11-25. A life started from weights has an empty memory, so the old world is never replayed. |
 | [00118](00118-action-repeat/README.md) | Action repeat (`online.act_every = 4`: a move decided every 4 ticks and made again on the 3 between; the model still sees, predicts and learns every tick): BA against BD in Breakout stage 1; then learning off at 60k and vm-00116's miss autopsy; seeds 1-12, 60k | Running | Queued 2026-11-25 behind vm-00117 on the RTX 4090. It follows vm-00116: a held move shifts the paddle up to 18 px, so what a decision does to the label is four times larger to learn, and a held move cannot dither. |
 
 ## Open Questions
 
-**Now (2026-11-25).** The research plan is [`ARCHITECTURE.md`](ARCHITECTURE.md), section 13. Its five challenges
+**Now (2026-11-26).** The research plan is [`ARCHITECTURE.md`](ARCHITECTURE.md), section 13. Its five challenges
 stand as follows:
 
 - **One set of weights, many worlds.** The same code runs the food worlds, text, a MuJoCo car and Breakout, each in
@@ -227,8 +228,8 @@ stand as follows:
   about 15 ticks (vm-00104, vm-00107, vm-00109, vm-00111). A task that a memoryless agent cannot solve, with a valid
   control, is still missing (vm-00057's delayed cue was not valid).
 - **Where goals come from.** A rule outside the network still chooses the move. Task 00123 asks whether a trained
-  actor should replace it: the dream lookahead failed (vm-00114), the policy-gradient actor is running (vm-00115), a
-  critic trained on dreams is untried. Action repeat (the owner, 2026-11-17, `ARCHITECTURE.md` section 9) is built and
+  actor should replace it: the dream lookahead failed (vm-00114), and so did a policy-gradient actor on real windows
+  (vm-00115); a critic trained on dreams is untried. Action repeat (the owner, 2026-11-17, `ARCHITECTURE.md` section 9) is built and
   running (vm-00118).
 - **Scale.** Worlds up to 128 x 128, up to 64 transformers in one body, up to 8.6M parameters in one transformer,
   lives up to 1M ticks. Whether quality holds beyond that is not measured.

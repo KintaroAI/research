@@ -1,7 +1,7 @@
 # Task 00128: The Move Token as a Policy-Gradient Actor (experiment vm-00115; option (c) of task 00123)
 
 **Date:** 2026-11-25
-**Status:** Running (runs started 2026-11-25). The owner, 2026-11-25, after vm-00114 closed negative: "I think we need to try (c)"; on the version: real windows (no dreaming).
+**Status:** Complete, pending tag (negative; the runs ended 2026-11-25, cut to seeds 1–6 with no frozen tests; the write-up is `00115-policy-gradient-actor/README.md`, written 2026-11-26 by the review session, which also added `analyze_lives.py pg` for its tables). The owner, 2026-11-25, after vm-00114 closed negative: "I think we need to try (c)"; on the version: real windows (no dreaming).
 
 ## Context
 
@@ -69,4 +69,5 @@
 - [x] `uni_act(pg=True)`; `lifetime.py` and the memory field
 - [x] Tests (`tests/test_policy_gradient.py`, 17)
 - [x] Pilot
-- [ ] `00115-policy-gradient-actor/` Makefile, README; runs
+- [x] `00115-policy-gradient-actor/` Makefile, README; runs (seeds 1–6)
+- [x] The tables (`analyze_lives.py pg`, `make table`) and the write-up

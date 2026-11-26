@@ -15,6 +15,9 @@
 #   make frozen W=PG CARD=1 — per checkpoint (30k, 60k) and life: 2000 ticks with learning off (ppo.lr = 0) in new
 #                             worlds (seed 100 + s)
 #   make base CARD=1 — TT frozen at 30k (TT at 60k is vm-00114's check/TT_ring; BD's are vm-00103's frozen30k, frozen60k)
+#   make table — the README's tables (seeds 1-6, paired with BD and TT by seed)
+# As run: seeds 1-6 of each arm (PB on the RTX 4090, PG on the RTX 3090); seeds 7-12, `frozen` and `base` were
+# cancelled by the owner (2026-11-25) once every seed showed the whole effect.
 #   Options: MPS= (no MPS daemon), T="30000 60000" (frozen's checkpoints)
 
 DEV = ../dev
@@ -31,7 +34,7 @@ PGSET = --set online.actor_pg=1 --set online.piece_rule=random --set online.pg_e
 WSET = $(if $(filter PB,$(W)),--config configs/U_breakout.json,--config configs/U_agent.json)
 FROZEN = --set ppo.lr=0 --set online.steps=2000 --set online.log_every=100 --set online.save_every=100000
 
-.PHONY: pilot runs frozen base
+.PHONY: pilot runs frozen base table
 
 pilot:
 	mkdir -p $(OUT)/pilot3
@@ -64,3 +67,6 @@ base:
 	      --init $(D)/exp_00101/TT_s$$s/ckpt_00030000 --seed 10$$s -o $(OUT)/frozen30k/TT_s$$s > $(OUT)/frozen30k/TT_s$$s.log 2>&1 & \
 	  done; wait; \
 	done
+
+table:
+	cd $(DEV) && $(PY) analyze_lives.py pg

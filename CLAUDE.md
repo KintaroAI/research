@@ -8,19 +8,19 @@ Research repository for AGI development (KintaroAI): small hands-on experiments 
 
 There are four topics. Each is a directory with its own `README.md` (overview, current state, progress table), numbered experiments, `tasks/` and `dev/`. Every topic except `llm-fundamentals` has its own `CLAUDE.md`: read it before working in that topic. This file holds what is common, the state of the whole repository, and the `llm-fundamentals` build notes.
 
-### Topics and state (2026-11-25)
+### Topics and state (2026-11-26)
 
 | Topic | What it is | State | Latest experiment |
 |---|---|---|---|
-| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00118; vm-00115, vm-00117 and vm-00118 running or queued since 2026-11-25; vm-00116 and all before vm-00115 written up and tagged |
+| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00118; vm-00117 and vm-00118 running since 2026-11-25 and 2026-11-26; vm-00115 written up 2026-11-26 (not yet tagged); vm-00116 and all before vm-00115 written up and tagged |
 | `thalamus-sorter/` | Topographic maps from temporal correlation; clusters wired to columns, a feedback loop, a forage benchmark | Parked | ts-00028 (2026-11-14); before it ts-00027 (April) |
 | `column/` | A soft winner-take-all cell with Hebbian learning and no backprop (a cortical minicolumn model) | Parked since 2026-03-18 | 00016 |
 | `llm-fundamentals/` | GPT-2 training in raw CUDA/C: banded sparsity, grokking, sequential evaluation, fact memorization | Parked since 2026-11-12 | 00021 |
 
-### Current focus (2026-11-25)
+### Current focus (2026-11-26)
 
 - **The default agent** of `visual-motor-agent` is `dev/configs/U_agent.json` (vm-00101's TT, since 2026-11-22). New experiments in the food worlds start from it.
-- **Being worked on:** the acting rule (task 00123), that is, whether a trained actor should replace the instinct that picks the best of 16 sampled moves. vm-00114 (lookahead in the model's dream) closed negative; vm-00115 (a policy-gradient actor) is running, cut to six seeds. vm-00116 measured why the trained agent misses in Breakout: its label knows where the paddle should be but barely orders the candidate moves, and the ring is not the cause. The arm that follows is action repeat (vm-00118, `online.act_every = 4`: a move decided every 4 ticks and held between).
+- **Being worked on:** the acting rule (task 00123), that is, whether a trained actor should replace the instinct that picks the best of 16 sampled moves. vm-00114 (lookahead in the model's dream) closed negative, and so did vm-00115 (a policy-gradient actor: it narrows to a near-fixed move within 20k ticks and learns neither world). vm-00116 measured why the trained agent misses in Breakout: its label knows where the paddle should be but barely orders the candidate moves, and the ring is not the cause. The arm that follows is action repeat (vm-00118, `online.act_every = 4`: a move decided every 4 ticks and held between).
 - **Also running:** vm-00117, the first run of one set of weights in two worlds (challenge 1 of `visual-motor-agent/ARCHITECTURE.md` section 13).
 - **Where the agent stands, its reference numbers and known limits:** `visual-motor-agent/README.md`, section Current state.
 - **Hardware:** a QEMU VM with 128 vCPUs (no AVX), 251 GB RAM, an RTX 3090 (GPU 0) and an RTX 4090 (GPU 1) under `CUDA_DEVICE_ORDER=PCI_BUS_ID`.
