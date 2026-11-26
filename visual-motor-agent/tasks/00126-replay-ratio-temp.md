@@ -1,7 +1,7 @@
 # Task 00126: Dreamer's Training Budget with Varied Candidates (experiment vm-00113)
 
 **Date:** 2026-11-25
-**Status:** Planned. The owner, 2026-11-25, on queuing it on the free RTX 3090: "yes - queue it"
+**Status:** Complete (negative). The owner, 2026-11-25, on queuing it on the free RTX 3090: "yes - queue it"
 
 ## Context
 
@@ -29,6 +29,11 @@
 
 ## Implementation
 
-- [ ] `00113-replay-ratio-temp/` (README, Makefile: vm-00110's with `--set online.instinct_temp=4`, arm RT, seeds 1–6 on GPU 0, 7–12 on GPU 1).
-- [ ] Queued after vm-00111's seeds 4–6 on the 3090 (with their frozen tests).
-- [ ] The runs, the candidates check, analysis, write-up.
+- [x] `00113-replay-ratio-temp/` (README, Makefile: vm-00110's with `--set online.instinct_temp=4`, arm RT, seeds 1–6 on GPU 0, 7–12 on GPU 1).
+- [x] Queued after vm-00111's seeds 4–6 on the 3090 (with their frozen tests).
+- [x] The runs, the candidates check, analysis, write-up.
+
+## Outcome
+
+- **Negative.** The candidates' variety came back (14.2 distinct moves against RB's 8.1 and BD's 13.6, 12 of 12) but the play did not change: RT − RB −.009 ± .037 at 40–60k (5 of 12), RT flat from 40–50k to 50–60k (−.002); frozen at 60k −.006. The early speed is kept (+.21 over BD at 10–30k, 12 of 12); Dreamer still leads by .25 at 40–60k.
+- The plateau at about .72 is not the narrowed candidates; the ceiling is elsewhere in the acting rule (task 00123; vm-00115).
