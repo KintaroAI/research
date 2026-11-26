@@ -2,6 +2,54 @@
 
 Prototype implementations of **thalamic topographic map formation** — the first principle from the [Natural Intelligence](https://kintaroai.com/docs/natural-intelligence/) framework.
 
+## Current state (2026-11-25)
+
+Parked. The last experiment is ts-00028 (2026-11-14 to 2026-11-16); before it ts-00027 (April 2026).
+
+The sections from "What this is" on describe the first prototypes (`variance/`, `simulated_annealing/`, `greedy/`, `mst/`, `spatial_coherence/`). The work since then is in `dev/` and the numbered experiments below. The design history is in [`SORTER.md`](SORTER.md), the signal design in [`MODALITIES.md`](MODALITIES.md), working notes in [`CLAUDE.md`](CLAUDE.md), `dev/DESIGN.md` and `dev/METRICS.md`.
+
+Where it got to:
+
+- **Sorting from correlation alone works.** With real image crops as the signal and MSE-based neighbour scoring, 97–98% of an embedding's 10 nearest neighbours lie within 5 grid pixels at 80 x 80, stable over millions of ticks (ts-00010). The same holds at 160 x 160 when the candidate sample grows with the grid (ts-00012).
+- **Clusters wired to columns, and the loop closed** (ts-00020 to ts-00023): topographic maps with contiguity 0.98+, lateral connections that detect XOR (r = 0.77), a body that tracks its own actions. ts-00022 found no goal-directed navigation and no credit across gaps in time.
+- **Columns collapse to a single winner,** and the embedding then groups the silent outputs (ts-00025); the conscience column is the fix.
+- **The forage benchmark** (ts-00026, ts-00027): transformer columns stay below the plain conscience column (2,284 collections); a conscience column with a predictive override reaches 2,494. In ts-00027 the homeostatic-fatigue column reaches 2,969 and the temporal-prototype column 3,154 to 3,210. ts-00027 is still marked in progress.
+- **Bottleneck codes on the plane** (ts-00028): fed back and sorted with the pixels, the codes form an area of their own, folded sheets of spot detectors that are roughly topographic, not smaller pictures. Two numbers per window give the sharpest codes; with 8 or 16, 22% to 42% of the codes go silent.
+
+### Experiments
+
+One row per experiment directory; the status is the one stated in its README. There is no 00024 directory.
+
+| # | Experiment | Date | Status |
+|---|---|---|---|
+| [00001](00001-greedy-drift-gpu-grid-search/README.md) | Greedy drift on the GPU and a parameter grid search | 2026-03-08 | Complete |
+| [00002](00002-continuous-position-drift/README.md) | Continuous position drift | 2026-03-08 | In progress |
+| [00003](00003-layernorm-embeddings/README.md) | LayerNorm embeddings | 2026-03-09 | In progress |
+| [00004](00004-temporal-correlation/README.md) | Temporal correlation learning | 2026-03-09 | In progress |
+| [00005](00005-word2vec-drift/README.md) | Word2vec-style drift | 2026-03-10 | In progress |
+| [00006](00006-3d-reconstruction/README.md) | 3D reconstruction | 2026-03-10 | In progress |
+| [00007](00007-skipgram-reference/README.md) | Skip-gram reference comparison | 2026-03-11 | Complete |
+| [00008](00008-async-display/README.md) | Async display pipeline | 2026-03-11 | Complete |
+| [00009](00009-correlation-sampling/README.md) | Correlation-based neighbour sampling | 2026-03-11 | Complete |
+| [00010](00010-image-saccades/README.md) | Image saccades: real image signals from random crops | 2026-03-11 | Complete |
+| [00011](00011-variance-weighting/README.md) | Variance weighting for MSE-based neighbour scoring | 2026-03-12 | Complete |
+| [00012](00012-scale-160/README.md) | Scaling to 160 x 160 | 2026-03-12 | Complete |
+| [00013](00013-rgb-grayscale/README.md) | RGB and grayscale multi-channel sorting | 2026-03-12 | Complete |
+| [00014](00014-knn-convergence/README.md) | Online KNN convergence tracking | 2026-03-13 | Complete |
+| [00015](00015-knn-stability/README.md) | KNN stability over training | 2026-03-14 | Complete |
+| [00016](00016-knn-hierarchy/README.md) | KNN hierarchy: clustering and multi-layer processing | 2026-03-15 | Complete |
+| [00017](00017-live-clustering/README.md) | Live clustering, an integration test | 2026-03-16 | In progress |
+| [00018](00018-cluster-neuron-stability/README.md) | Cluster neuron stability | 2026-03-17 | In progress |
+| [00019](00019-cluster-signal-rendering/README.md) | Cluster signal rendering | 2026-03-18 | Complete |
+| [00020](00020-column-wiring/README.md) | Column wiring: the thalamus-to-cortex connection | 2026-03-18 | Complete |
+| [00021](00021-closing-the-loop/README.md) | Closing the loop: column output as neuron input | 2026-03-19 | In progress |
+| [00022](00022-lateral-connections/README.md) | Lateral connections between columns | 2026-03-20 | In progress |
+| [00023](00023-hierarchy/README.md) | Visual hierarchy formation | 2026-03-22 | In progress |
+| [00025](00025-patch-column-diagnostic/README.md) | Patch column diagnostic | 2026-03-26 | Complete |
+| [00026](00026-transformer-columns/README.md) | Transformer columns | 2026-03-29 to 2026-04-05 | Complete |
+| [00027](00027-homeostatic-fatigue-column/README.md) | Homeostatic-fatigue column | 2026-04-05 | In progress |
+| [00028](00028-codes-on-the-plane/README.md) | Bottleneck codes on the plane | 2026-11-14 | Complete |
+
 ## What this is
 
 The core question: given a grid of neurons receiving temporal signals, can we rearrange them so that neurons with correlated activity end up spatially close to each other?

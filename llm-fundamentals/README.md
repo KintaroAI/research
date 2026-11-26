@@ -168,6 +168,8 @@ pip install torch numpy
 
 ## Progress
 
+**State (2026-11-25):** parked since 00021 (2026-11-12). 22 experiment directories, 00001 to 00021 (two share the number 00005). The CUDA trainer is in `dev/` (build notes: `../CLAUDE.md`), the fact-memory code in `dev/facts/`.
+
 | Experiment | Status | Key Finding |
 |------------|--------|-------------|
 | [00001-karpathy-gpt-local](./00001-karpathy-gpt-local/) | Complete | Char-level GPT (210K params) learns Shakespeare structure in ~3 min on RTX 4090 |
@@ -175,6 +177,7 @@ pip install torch numpy
 | [00003-llmc-full-c](./00003-llmc-full-c/) | Complete | Pure C training pipeline; GPT-2 124M finetune val loss 5.33 to 4.29 in 40 steps |
 | [00004-cuda-probe](./00004-cuda-probe/) | Complete | RTX 4090 verified: 128 SMs, 23.5 GB VRAM, ~255B elem/s throughput |
 | [00005-from-scratch-cuda](./00005-from-scratch-cuda/) | Complete | 7.3M param model trained from scratch in C/CUDA (581K tok/s) |
+| [00005-small-model-gpu](./00005-small-model-gpu/) | No status in its README | The same 7.3M param model with a patched llm.c trainer (`-e` flag): loss 10.93 to 8.84 in one epoch (~300 steps), output still random |
 | [00006-tinystories-e2e](./00006-tinystories-e2e/) | Complete | Self-contained CUDA trainer on TinyStories; loss ~10.5 to 4.5 after 10K steps |
 | [00007-banded-sparsity](./00007-banded-sparsity/) | Complete | Diagonal band on FC1 maintains quality at ~44% density (bandwidth 256-512) |
 | [00008-banded-tinystories](./00008-banded-tinystories/) | Complete | Banded FC1 sweet spot at 25-45% density; below 15% fails |
@@ -184,6 +187,13 @@ pip install torch numpy
 | [00012-grokking-conditions](./00012-grokking-conditions/) | Complete | No delayed generalization; -p 4 dominates; wd=0 memorizes, wd=1 generalizes instantly |
 | [00013-wandb-integration](./00013-wandb-integration/) | Complete | Python wrapper logs all training metrics to W&B in real-time; zero C code changes |
 | [00014-sequential-modular-eval](./00014-sequential-modular-eval/) | Complete | Sequential eval baseline: dense model shows total catastrophic forgetting (loss ~10 vs random 4.58) |
+| [00015-formal-language-tasks](./00015-formal-language-tasks/) | Complete | Formal language tasks for the sequential eval: copy-8, reverse-8 and majority-9 learn (val loss 0.03–0.07, 0.03–0.06, ~0.0001); parity-8 stays at the coin-flip 0.693 in 50k steps |
+| [00016-held-out-domain-perplexity](./00016-held-out-domain-perplexity/) | Complete | Held-out domain perplexity with the existing eval-only mode: a TinyStories model at 5k steps scores perplexity 7.7 in domain, 2,237 on TinyShakespeare, 10,030 on WikiText-2 |
+| [00017-embedding-blend-layer](./00017-embedding-blend-layer/) | Complete | Position-based embedding blend layer (a causal 1D convolution after the embedding): neutral to slightly negative at 51M params (+0.005 val loss at 50k steps); learns a bigram-like kernel; <1% overhead |
+| [00018-hebbian-embedding-pull](./00018-hebbian-embedding-pull/) | Complete | Hebbian pull on the embedding matrix (`-H 4 -u 1e-5`) hurts val loss by +0.066 at 50k steps, throughout: a non-learnable pull works against gradient descent |
+| [00019-three-way-comparison](./00019-three-way-comparison/) | Complete | Baseline, blend-G8 and Hebbian-H4 back to back: blend −0.018 val loss (1.304 vs 1.322), Hebbian +0.037; the ranking against 00017 is sensitive to run conditions. Follow-ups: a Hebbian window of 8 is a sharp sweet spot at 512-dim only (gone at 768-dim; at 1024-dim it diverges by 50k steps); at 355M the blend's lead was a missing LR warmup (with warmup the baseline reaches 1.240 at 20k) |
+| [00020-fact-memorization](./00020-fact-memorization/) | Complete | Invented facts in a TinyStories stream, five sizes (0.4M to 85M non-embedding params), two seeds: showings needed fall from a median of 21 to 2 (GPT-2 small); every size forgets within a few thousand steps; relearning takes about half the showings of a fresh fact; recall only in the trained wording, never in reverse |
+| [00021-fact-retention](./00021-fact-retention/) | Complete | What keeps a fact (sizes L and G, two seeds): spacing does not help under Adam (8 showings massed in one step are kept longest, 10 steps apart worst); a lower or decaying learning rate slows forgetting, and only the decaying rate in G holds more facts at the end (3,006 against 1,874); four training wordings give no recall in a new one |
 
 ## Improvement Ideas: Encouraging Delayed Generalization
 
