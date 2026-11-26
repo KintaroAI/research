@@ -1,7 +1,7 @@
 # Task 00130: Two Worlds, One Set of Weights (experiment vm-00117)
 
 **Date:** 2026-11-25
-**Status:** Running (queued 2026-11-25 on both cards behind vm-00115's last lives). The owner, 2026-11-25, to the plan (the ring check and two worlds tonight): "yes lets do this".
+**Status:** Complete (2026-11-26; pending tag `exp/vm-00117`): transfer is one-sided, the old world's play is forgotten within 10k ticks, and the follow-up by the rule below is rehearsal; the write-up is `00117-two-worlds/README.md`. The owner, 2026-11-25, to the plan (the ring check and two worlds tonight): "yes lets do this".
 
 ## Context
 
@@ -66,5 +66,20 @@ Three stages, every one the default agent unchanged (`lifetime.py`, no new code)
 
 - [x] Smoke test (TB and BF, seed 1, 300 ticks)
 - [x] `00117-two-worlds/` Makefile and README; both chains queued
-- [ ] The tables
-- [ ] The write-up
+- [x] The tables (`dev/analyze_lives.py two-worlds`, `make table`)
+- [x] The write-up
+
+## Result (2026-11-26)
+
+The RTX 4090's chain ran 22:12–04:20, the RTX 3090's 22:38–09:16. No run failed. Details and tables: `00117-two-worlds/README.md`.
+
+1. **Into Breakout:** TB − BD = +.145 ± .031 hit share at 10–30k (12 of 12 seeds above) and +.129 ± .054 at 40–60k; .5 is reached 14.8k ± 4.5k ticks earlier (TB 21–33k, median 26k).
+2. **Into the food world:** BF − TT = −29.1 ± 3.0 food per 1k at 10–30k and −21.5 ± 4.3 at 40–60k (0 of 12 above); poison +5.9 ± 1.0 and +3.7 ± 1.1. BF is about 30k ticks behind and still rising at 60k.
+3. **Forgetting:** the share kept after 10k, 30k and 60k ticks of the new world is .12, .06, .02 of the food, −.03, −.05, .00 of the poison avoided and −.02, −.04, −.06 of the hit share. Below one half at 60k: by the rule the forgetting is large and **the follow-up is rehearsal,** then the flexible layer.
+4. **Savings:**
+   - TBF − TT food: +1.8 ± 1.3 at 0–10k, −2.7 ± 5.1 at 10–20k, −10.1 ± 5.1 at 20–30k; half of TT's final level at 16–29k (median 22k) against 17–23k (median 18.5k). No savings against a new model.
+   - BFB − BD = +.140 ± .044 hit share at 10–30k; half of BD's final level 9.7k ± 4.1k ticks earlier.
+   - Not set beforehand, the third life against the other order's second life: TBF − BF = +22.7 ± 3.4 food per 1k at 10–30k (12 of 12 above); BFB − TB = −.006 ± .029. The earlier food-world life counts; no trace of the earlier Breakout life shows.
+5. **The cost of a past:** none in Breakout (TB ends above BD). In the food world BF is 21.5 ± 4.3 below TT at 40–60k and still rising, so 60k ticks do not settle it.
+
+**Also seen, not set beforehand:** the way of moving comes along in both directions (TB enters Breakout with smoothness .49, BF the food world with .10 against a new model's .18), and the old world's frame is still predicted after its play is gone (Breakout's patches 1.15 nats after 60k ticks of the food world; .66 before, 3.49 untrained).

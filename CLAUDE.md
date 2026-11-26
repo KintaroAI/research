@@ -12,7 +12,7 @@ There are four topics. Each is a directory with its own `README.md` (overview, c
 
 | Topic | What it is | State | Latest experiment |
 |---|---|---|---|
-| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00118 (written up 2026-11-26); vm-00117 running since 2026-11-25; all others written up and tagged |
+| `visual-motor-agent/` | One universal next-token model (pixels, body, moves) living one life and learning online; C++/CUDA model, Python worlds | **Active** since 2026-10-23 | vm-00118; all written up and tagged (vm-00117 and vm-00118 on 2026-11-26); nothing running |
 | `thalamus-sorter/` | Topographic maps from temporal correlation; clusters wired to columns, a feedback loop, a forage benchmark | Parked | ts-00028 (2026-11-14); before it ts-00027 (April) |
 | `column/` | A soft winner-take-all cell with Hebbian learning and no backprop (a cortical minicolumn model) | Parked since 2026-03-18 | 00016 |
 | `llm-fundamentals/` | GPT-2 training in raw CUDA/C: banded sparsity, grokking, sequential evaluation, fact memorization | Parked since 2026-11-12 | 00021 |
@@ -21,7 +21,8 @@ There are four topics. Each is a directory with its own `README.md` (overview, c
 
 - **The default agent** of `visual-motor-agent` is `dev/configs/U_agent.json` (vm-00101's TT, since 2026-11-22). New experiments in the food worlds start from it.
 - **Being worked on:** the acting rule (task 00123), that is, whether a trained actor should replace the instinct that picks the best of 16 sampled moves. vm-00114 (lookahead in the model's dream) closed negative, and so did vm-00115 (a policy-gradient actor: it narrows to a near-fixed move within 20k ticks and learns neither world). vm-00116 measured why the trained agent misses in Breakout: its label knows where the paddle should be but barely orders the candidate moves, and the ring is not the cause. Action repeat (vm-00118, `online.act_every = 4`: a move decided every 4 ticks and held between) closed negative too: the label orders held moves better (.69 against .62), but one decision in 4 ticks corrects less than four and the play falls by .065 ± .053. What is left of the task are the arms that teach the label what a move does (an advantage-style target; labels for moves not made); which one is the owner's decision.
-- **Also running:** vm-00117, the first run of one set of weights in two worlds (challenge 1 of `visual-motor-agent/ARCHITECTURE.md` section 13).
+- **One set of weights in two worlds** (vm-00117, the first step of challenge 1 of `visual-motor-agent/ARCHITECTURE.md` section 13): the weights of a life in the food world start a life in Breakout and the other way round. Transfer is one-sided (a food-world past helps in Breakout, a Breakout past hurts in the food world), and the old world's play is at an untrained model's level after 10k ticks of the new one. The follow-up named beforehand is rehearsal (one process, one memory across both worlds).
+- **Nothing is running.** Open with the owner: the next arm of the acting rule, and rehearsal.
 - **Where the agent stands, its reference numbers and known limits:** `visual-motor-agent/README.md`, section Current state.
 - **Hardware:** a QEMU VM with 128 vCPUs (no AVX), 251 GB RAM, an RTX 3090 (GPU 0) and an RTX 4090 (GPU 1) under `CUDA_DEVICE_ORDER=PCI_BUS_ID`.
 
