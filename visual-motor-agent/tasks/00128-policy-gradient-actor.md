@@ -33,6 +33,7 @@
 - **Food world:** arm PG (`configs/U_agent.json` + the change), seeds 1–12, against TT (vm-00101). **Breakout stage 1:** arm PB (`configs/U_breakout.json` + the change), seeds 1–12, against BD (vm-00103). 60k ticks, paired by seed; then frozen at 30k and 60k.
 - First a pilot: 1 seed per world for 10k ticks, to check the move token's entropy does not collapse or stay uniform and the cost per tick. If the entropy collapses or stays flat, `pg_ent` is tuned on the pilot only and stated.
 - GPUs: 6 seeds per card at a time.
+- **Cut to seeds 1–6, no frozen tests** (the owner, 2026-11-25 20:57: "lets cancel seeds 7–12 and the frozen tests - twelve seeds were meant to resolve small differences, and this one is the whole effect in every seed"). At that point PB was at 47k with hit share .11–.28 over the last 5k in every seed (random .235, BD .60 at 40–50k) and the move token's entropy at 0.00–0.06; PG at 26k ate 5–15 food per 1k in every seed (TT about 50). Readings 1 and 2 are read on 6 seeds; reading 3 (frozen) is dropped.
 
 ## Readings, set before the results (12 seeds, 40–60k)
 
