@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-27
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00121`)
+**Source:** `exp/vm-00121` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00121/`
 **Task plan:** [`../tasks/00134-self-forcing-watching.md`](../tasks/00134-self-forcing-watching.md)
 
