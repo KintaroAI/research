@@ -1,7 +1,7 @@
 # Task 00132: Worlds to Watch — the World Model Measured Without Moves (experiment vm-00119)
 
 **Date:** 2026-11-26
-**Status:** Complete (2026-11-26; pending tag `exp/vm-00119`): the two worlds and the watching option, the 24 lives, the measures tool and the first reference table (vm-00119: `00119-watching-worlds/README.md`). The owner's word for the lives and the measures was "lets go according to the plan then"; the word to commit, tag and push came the same evening.
+**Status:** Complete, tagged `exp/vm-00119` (2026-11-26): the two worlds and the watching option, the 24 lives, the measures tool and the first reference table (vm-00119: `00119-watching-worlds/README.md`). The owner's word for the lives and the measures was "lets go according to the plan then"; the word to commit, tag and push came the same evening.
 
 ## Context
 

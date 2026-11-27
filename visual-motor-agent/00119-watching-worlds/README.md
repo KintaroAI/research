@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-26
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00119`)
+**Source:** `exp/vm-00119` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00119/`
 **Task plan:** [`../tasks/00132-watching-worlds.md`](../tasks/00132-watching-worlds.md)
 
