@@ -70,6 +70,7 @@ WARM_K = (1, 2, 3, 4, 6, 8, 16)
 HOME_SKIP = 60000
 FREE_TICKS, FREE_PER_COPY = 200, 2
 LEARN_TICKS = 8                         # the learning curve's dreams at every checkpoint
+SEAM, SEAM_TICKS = 4, 8                 # the seam part: px on each side of a quarter's border; dreamed ticks
 CHUNK = 256                             # windows per forward pass
 
 
@@ -807,6 +808,109 @@ def warm_dream_part(model, exam, ks=(2, 4, 8), H=8):
     return out
 
 
+def seam_mask(S):
+    """[S, S]: the pixels within SEAM px of a border between the frame's quarters (x or y near S / 2)."""
+    near = np.abs(np.arange(S) + 0.5 - S / 2.0) < SEAM
+    return near[:, None] | near[None, :]
+
+
+def seam_part(model, exam, H=SEAM_TICKS):
+    """Task 00133: does a model lose where the frame's quarters meet (four quarter transformers join their quarters
+    there)? The regular starts dreamed for H ticks. By pixels: the squared error near the seams and far from them, for
+    the model and the copy, and the skill of each part by tick. By things: the share held by tick of the things that
+    lie across a seam at that tick (their true shape touches the seam's band) and of those that do not."""
+    e, s = exam.regular()
+    fr, _ = real(exam, e, s, H)
+    fd, _ = dreams(model, exam, e, s, H)
+    cp = np.repeat(exam.frames[e, s][:, None], H, 1)
+    near = seam_mask(exam.S)
+    out = dict(px=SEAM, pixels=dict(near=int(near.sum()), far=int((~near).sum())))
+    for name, m in (("near", near), ("far", ~near)):
+        em, ec = sq(fd, fr, m), sq(cp, fr, m)                                      # [M, H]
+        out[name] = dict(skill=skill(em, ec).tolist(), rmse=np.sqrt(em.mean(0) / m.sum()).tolist(),
+                         copy_rmse=np.sqrt(ec.mean(0) / m.sum()).tolist())
+    dist, found, kinds = read_things(exam, e, s, fd)                                # [n, M, H]
+    M = len(e)
+    ee, tt = np.repeat(e, H), (np.asarray(s)[:, None] + 1 + np.arange(H)).ravel()
+    across = np.zeros(dist.shape, bool)
+    for i in range(0, M * H, 1024):
+        for j, th in enumerate(exam.things(ee[i:i + 1024], tt[i:i + 1024])):
+            across.reshape(len(kinds), -1)[j, i:i + 1024] = (th["shape"] & near).any((1, 2))
+    held = found & (np.nan_to_num(dist, nan=1e9) <= HOLD)
+    there = ~np.isnan(dist)
+    out["things"] = {}
+    for k in dict.fromkeys(kinds):
+        sel = np.array([x == k for x in kinds])[:, None, None] & there
+        out["things"][k] = {}
+        for name, m in (("across", sel & across), ("clear", sel & ~across)):
+            n = m.sum((0, 1))
+            out["things"][k][name] = dict(held=np.where(n > 0, (held & m).sum((0, 1)) / np.maximum(n, 1), np.nan).tolist(),
+                                          n=n.tolist())
+    return out
+
+
+def across_borders(exam, e, s, H):
+    """For every thing of the stretches (e, s): has its true shape lain in more than one of the frame's quarters, that
+    is, with pixels on both sides of a border between them (an inner seam; on a torus the frame's edge too), in the last
+    real frame or at a dreamed tick up to h? [n things, M, H] bool, and the things' kinds [n]. A thing that has not was
+    inside one quarter all the way: of four quarter transformers one alone has drawn it."""
+    e, s = np.asarray(e), np.asarray(s)
+    M, S = len(e), exam.S
+    half, torus = S // 2, exam.kind == "watch"
+    ee, tt = np.repeat(e, H + 1), (s[:, None] + np.arange(H + 1)).ravel()
+    kinds = at = None
+    for i in range(0, M * (H + 1), 1024):
+        ths = exam.things(ee[i:i + 1024], tt[i:i + 1024])
+        if at is None:
+            kinds, at = [th["kind"] for th in ths], np.zeros((len(ths), M * (H + 1)), bool)
+        for j, th in enumerate(ths):
+            col, row = th["shape"].any(1), th["shape"].any(2)                           # by column, by row
+            a = (col[:, half - 1] & col[:, half]) | (row[:, half - 1] & row[:, half])
+            if torus:
+                a |= (col[:, 0] & col[:, S - 1]) | (row[:, 0] & row[:, S - 1])
+            at[j, i:i + 1024] = a
+    return np.logical_or.accumulate(at.reshape(len(kinds), M, H + 1), 2)[:, :, 1:], kinds
+
+
+def borders_part(exam, dist, found):
+    """Task 00133, added after the results: the things held by tick, apart for those that have lain across a border
+    between the quarters so far (across_borders) and those inside one quarter all the way. dist, found [n, M, H]: the
+    reader's distances kept of the regular starts' dreams (the .npz of `regular`), so no model is needed."""
+    e, s = exam.regular()
+    been, kinds = across_borders(exam, e, s, dist.shape[-1])
+    there = ~np.isnan(dist)
+    held = found & (np.nan_to_num(dist, nan=1e9) <= HOLD)
+    out = {}
+    for k in dict.fromkeys(kinds):
+        sel = np.array([x == k for x in kinds])[:, None, None] & there
+        out[k] = {}
+        for name, m in (("inside", sel & ~been), ("across", sel & been)):
+            n = m.sum((0, 1))
+            out[k][name] = dict(held=np.where(n > 0, (held & m).sum((0, 1)) / np.maximum(n, 1), np.nan).tolist(), n=n.tolist())
+    return out
+
+
+def borders(runs, step=60000, decode="pair", exams=None):
+    """Writes RUN/wm/step_<step>_<decode>_work_borders.json for every run: borders_part of its kept distances on the
+    working set. One exam a world. exams: ready ones by kind of world (a test's small ones). Returns the summaries."""
+    exams, out = dict(exams or {}), []
+    for run in runs:
+        info = json.load(open(os.path.join(run, "info.json")))
+        kind = make_config(info["config"]["env"]).kind
+        if kind not in exams:
+            exams[kind] = Exam(info["config"]["env"], seed=WORK_SEED)
+        base = os.path.join(run, "wm", "step_%08d_%s_work" % (step, decode))
+        z = np.load(base + ".npz")
+        main = json.load(open(base + ".json"))
+        res = dict(run=os.path.basename(run.rstrip("/")), seed=info["seed"], step=step, decode=decode, set="work",
+                   world=exams[kind].kind, pieces=main.get("pieces"), things=borders_part(exams[kind], z["dist"], z["found"]))
+        with open(base + "_borders.json.tmp", "w") as f:
+            json.dump(res, f)
+        os.replace(base + "_borders.json.tmp", base + "_borders.json")
+        out.append(res)
+    return out
+
+
 def free_part(model, exam):
     """Measure 6: a dream of FREE_TICKS ticks from the first FREE_PER_COPY regular starts of every copy: the first
     tick with an invalid frame (FREE_TICKS + 1: none), its median; the share of valid frames by tick."""
@@ -842,7 +946,7 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
     base = os.path.join(out_dir, "step_%08d_%s_%s" % (step, decode, name or which))
     res = json.load(open(base + ".json")) if os.path.exists(base + ".json") else {}
     res.update(run=os.path.basename(run.rstrip("/")), seed=info["seed"], step=step, decode=decode, set=which,
-               world=exam.kind, params=model.params)
+               world=exam.kind, params=model.params, pieces=model.S, chunk=CHUNK)
     reg, sec = None, res.setdefault("seconds", {})
     sec["exam"] = round(t_exam, 1)
     un = res["unsettled"] = res["unsettled"] if isinstance(res.get("unsettled"), dict) else {}
@@ -863,6 +967,8 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
             res["warm"] = warm_part(model, exam)
         elif part == "warmdream":
             res["warm_dream"] = warm_dream_part(model, exam)
+        elif part == "seam":
+            res["seam"] = seam_part(model, exam)
         elif part == "free":
             res["free"] = free_part(model, exam)
         else:
@@ -943,6 +1049,17 @@ def load(out, arm, step, decode, which, seeds):
     return res
 
 
+def reach(ticks, values, level):
+    """The ticks after which a curve (its values at `ticks`, in order) is first at or above a level, linear between its
+    points: (ticks, True); at the first point already: (the first point's ticks, False: at or before); never: None."""
+    if values[0] >= level:
+        return ticks[0], False
+    for (t0, v0), (t1, v1) in zip(zip(ticks, values), zip(ticks[1:], values[1:])):
+        if v1 >= level:
+            return t0 + (t1 - t0) * (level - v0) / (v1 - v0), True
+    return None
+
+
 def after_a_turn(out, arm, seeds, step=60000, early=2, at=4, exam=None):
     """Added after the results (the disc world): a bounce moves a disc only about .4 px off its line at the next tick,
     too little to show what the model makes of it. Here the regular starts' discs are split by when they first turn in
@@ -997,7 +1114,9 @@ def tables(out, arm, seeds, step=60000, steps=(0, 10000, 20000, 30000, 40000, 50
     kinds = ("ball", "paddle") if court else ("food", "poison")
     H = len(_get(next(iter(P.values())), "regular", "curve", "skill_copy"))
     hs = [h for h in REPORT if h <= H]
-    models = [("the four transformers, `pair`", "pair", P), ("the same weights, `mean`", "mean", Mn),
+    S_ = next(iter(P.values())).get("pieces", 4)   # vm-00119's summaries were written before the key: four
+    models = [("%s, `pair`" % ("one transformer" if S_ == 1 else "the %s transformers" % {4: "four"}.get(S_, S_)), "pair", P),
+              ("the same weights, `mean`", "mean", Mn),
               ("the same weights, as the instinct dreams (`instinct`; added after the first results)", "instinct", In),
               ("the same weights, the instinct's way with `pair` (`instinct_pair`; added after the first results)", "instinct_pair", Ip)]
     models = [m for m in models if m[2]]
@@ -1241,16 +1360,158 @@ def tables(out, arm, seeds, step=60000, steps=(0, 10000, 20000, 30000, 40000, 50
     print("Frames whose decoding did not settle: %d.\n" % un)
 
 
-def figure(out, arm, seeds, path, step=60000):
+def compare(out_a, arm_a, out_b, arm_b, seeds, step=60000):
+    """Two arms scored on the same exam, paired by seed (task 00133: one transformer against four): each number of A
+    and of B with its 95% interval, A - B paired, and the seeds with A above."""
+    from analyze_lives import diff, f1, f2, f3, table
+    A, B = load(out_a, arm_a, step, "pair", "work", seeds), load(out_b, arm_b, step, "pair", "work", seeds)
+    Ah, Bh = load(out_a, arm_a, step, "pair", "home", seeds), load(out_b, arm_b, step, "pair", "home", seeds)
+    both = sorted(set(A) & set(B))
+    if len(both) < 2:
+        raise SystemExit("fewer than 2 seeds scored in both %s and %s" % (arm_a, arm_b))
+    world = A[both[0]]["world"]
+    court = world == "breakout"
+    kinds = ("ball", "paddle") if court else ("food", "poison")
+
+    def cells(ra, rb, path, fmt=f3):
+        sd = sorted(set(ra) & set(rb))
+        a, b = [_get(ra[k], *path) for k in sd], [_get(rb[k], *path) for k in sd]
+        ok = [x == x and y == y for x, y in zip(a, b)]
+        if sum(ok) < 2:
+            return None
+        ma, ha = _stat(a)
+        mb, hb = _stat(b)
+        return [fmt(ma) + " ± " + fmt(ha), fmt(mb) + " ± " + fmt(hb)] + diff(a, b, fmt)
+
+    def block(title, rows, ra=A, rb=B):
+        body = []
+        for label, path, *fmt in rows:
+            c = cells(ra, rb, path, *fmt)
+            if c:
+                body.append([label] + c)
+        if body:
+            print("### %s\n" % title)
+            table(["Number", arm_a, arm_b, "%s − %s" % (arm_a, arm_b), "Seeds with %s above" % arm_a], body)
+
+    pa, pb = A[both[0]].get("params"), B[both[0]].get("params")
+    print("## %s against %s: %d seeds at %dk (%s), paired by seed; %s has %s parameters, %s has %s\n" % (
+        arm_a, arm_b, len(both), step // 1000, ", ".join(str(k) for k in both), arm_a, "{:,}".format(pa), arm_b, "{:,}".format(pb)))
+    g = ("regular",)
+    rows = [("Next-frame skill", g + ("next", "skill"))]
+    rows += [("Next-frame skill on the %s" % k, g + ("next", "by", k, "skill")) for k in kinds + (() if court else ("dots",))]
+    rows += [("Error where nothing moves, grey levels", g + ("next", "by", "rest", "rmse"), f2)]
+    rows += [("Skill against the copy at tick %d" % h, g + ("curve", "skill_copy", h - 1)) for h in (2, 4, 8, 16, 32)]
+    rows += [("Dream horizon by pixels, ticks", g + ("curve", "horizon"), f1)]
+    block("The next frame and the dream by pixels", rows)
+    rows = []
+    for k in kinds:
+        rows += [("The %s held at tick %d" % (k, h), g + ("hold", k, "held", h - 1)) for h in (2, 4, 8, 16)]
+        rows += [("Horizon of the %s, ticks" % k, g + ("hold", k, "horizon"), f1)]
+    rows += [("Valid frames at tick %d" % h, g + ("real", "valid", h - 1)) for h in (1, 8)]
+    block("The things in the dream, and valid frames", rows)
+    if court:
+        rows = [("%s forecast, next tick" % k.capitalize(), ("events", "next", k, "auc")) for k in ("hit", "miss")]
+        rows += [("%s forecast within %d dreamed ticks" % (k.capitalize(), d), ("events", "within", k, str(d), "auc")) for k in ("hit", "miss") for d in (4, 8, 16)]
+    else:
+        rows = [("Skill on the %s that turns at the next tick" % k, ("events", "bounce", k, "skill")) for k in kinds]
+        rows += [("px off, the %s that turns" % k, ("events", "bounce", k, "dist"), f2) for k in kinds]
+        rows += [("px off, the %s in free flight" % k, ("events", "free", k, "dist"), f2) for k in kinds]
+    block("Events", rows)
+    rows = [("Next-frame skill shown %s real tick%s" % (k, "" if k == "1" else "s"), ("warm", k, "skill")) for k in ("1", "2", "4", "8")]
+    for k in kinds:
+        at = 8 if court else 4
+        rows += [("The %s held at tick %d, dreamed from %s real ticks" % (k, at, w), ("warm_dream", w, "held", k, at - 1)) for w in ("2", "4", "8")]
+    block("How much of the window is used", rows)
+    rows = []
+    for h in (1, 4, 8):
+        rows += [("Skill at tick %d, within %d px of a seam" % (h, SEAM), ("seam", "near", "skill", h - 1)),
+                 ("Skill at tick %d, away from the seams" % h, ("seam", "far", "skill", h - 1))]
+    for k in kinds:
+        for h in (2, 4, 8):
+            rows += [("The %s held at tick %d, lying across a seam" % (k, h), ("seam", "things", k, "across", "held", h - 1)),
+                     ("The %s held at tick %d, clear of the seams" % (k, h), ("seam", "things", k, "clear", "held", h - 1))]
+    block("At the seams between the quarters", rows)
+    sd = [k for k in both if isinstance(_get(A[k], "seam", "near", "skill", 0), float) and isinstance(_get(B[k], "seam", "near", "skill", 0), float)]
+    if len(sd) > 1:   # the loss at the seams against the loss away from them, by seed
+        for h in (1, 4, 8):
+            near = [_get(A[k], "seam", "near", "skill", h - 1) - _get(B[k], "seam", "near", "skill", h - 1) for k in sd]
+            far = [_get(A[k], "seam", "far", "skill", h - 1) - _get(B[k], "seam", "far", "skill", h - 1) for k in sd]
+            d = diff(near, far)
+            print("Tick %d: (%s − %s) near the seams less (%s − %s) away from them: %s, %s." % (h, arm_a, arm_b, arm_a, arm_b, d[0], d[1]))
+        print()
+    Ab, Bb = load(out_a, arm_a, step, "pair", "work_borders", seeds), load(out_b, arm_b, step, "pair", "work_borders", seeds)
+    sd = sorted(set(Ab) & set(Bb))
+    if len(sd) > 1:   # added after the results: the things by where they have been, from the kept distances (`borders`)
+        rows = []
+        for k in kinds:
+            for h in (2, 4, 8, 16):
+                rows += [("The %s held at tick %d, inside one quarter so far" % (k, h), ("things", k, "inside", "held", h - 1)),
+                         ("The %s held at tick %d, having lain across a border" % (k, h), ("things", k, "across", "held", h - 1))]
+        block("The things by where they have been", rows, Ab, Bb)
+        for k in kinds:
+            for h in (4, 8, 16):
+                v = [[_get(r[x], "things", k, part, "held", h - 1) for x in sd] for r in (Ab, Bb) for part in ("across", "inside")]
+                if all(x == x for row in v for x in row):
+                    d = diff([a - b for a, b in zip(v[0], v[2])], [a - b for a, b in zip(v[1], v[3])])
+                    print("The %s at tick %d: (%s − %s) of those that have lain across a border less (%s − %s) of those inside one "
+                          "quarter so far: %s, %s." % (k, h, arm_a, arm_b, arm_a, arm_b, d[0], d[1]))
+        n = Ab[sd[0]]["things"]
+        print("Of the things of the regular starts there to read, inside one quarter so far: " + "; ".join(
+            "the %s %s" % (k, ", ".join("%d of %d at tick %d" % (n[k]["inside"]["n"][h - 1], n[k]["inside"]["n"][h - 1] + n[k]["across"]["n"][h - 1], h)
+                                         for h in (2, 4, 8, 16) if h <= len(n[k]["inside"]["n"]))) for k in kinds) + ".\n")
+    if Ah and Bh:
+        block("Home (the life's own world, later)", [("Next-frame skill at home", g + ("next", "skill")), ("Skill at tick 8 at home", g + ("curve", "skill_copy", 7)),
+                                                    ("Dream horizon by pixels at home", g + ("curve", "horizon"), f1)]
+              + [("Horizon of the %s at home" % k, g + ("hold", k, "horizon"), f1) for k in kinds], Ah, Bh)
+    rows = []
+    for st in (10000, 20000, 30000, 40000, 50000):
+        La, Lb = load(out_a, arm_a, st, "pair", "learn", seeds), load(out_b, arm_b, st, "pair", "learn", seeds)
+        c = cells(La, Lb, g + ("next", "skill"))
+        if c:
+            rows.append(["Next-frame skill after %dk ticks" % (st // 1000)] + c)
+        for k in kinds[:1]:
+            c = cells(La, Lb, g + ("hold", k, "held", (8 if court else 4) - 1))
+            if c:
+                rows.append(["The %s held at tick %d after %dk ticks" % (k, 8 if court else 4, st // 1000)] + c)
+            c = cells(La, Lb, g + ("hold", k, "horizon"), f1)
+            if c:
+                rows.append(["Horizon of the %s (of 8) after %dk ticks" % (k, st // 1000)] + c)
+    if rows:
+        print("### Learning\n")
+        table(["Number", arm_a, arm_b, "%s − %s" % (arm_a, arm_b), "Seeds with %s above" % arm_a], rows)
+        # after how many ticks is A at B's final level? On the means of the seeds that have every checkpoint of A.
+        steps = [10000, 20000, 30000, 40000, 50000]
+        LA = {st: load(out_a, arm_a, st, "pair", "learn", seeds) for st in steps}
+        full = [k for k in both if all(k in LA[st] for st in steps)]
+        if len(full) > 1:
+            said = []
+            for label, path in [("next-frame skill", g + ("next", "skill")), ("skill at tick 8", g + ("curve", "skill_copy", 7))] + [
+                    ("the %s held at tick %d" % (k, h), g + ("hold", k, "held", h - 1)) for k in kinds for h in (4, 8)]:
+                curve = [float(np.mean([_get(LA[st][k], *path) for k in full])) for st in steps] + [float(np.mean([_get(A[k], *path) for k in full]))]
+                level = float(np.mean([_get(B[k], *path) for k in full]))
+                r = reach(steps + [step], curve, level)
+                said.append("%s (%s): %s" % (label, f3(level), "not within %dk ticks" % (step // 1000) if r is None else
+                                             ("after about %dk ticks" if r[1] else "at or before %dk ticks") % round(r[0] / 1000)))
+            print("%s is at %s's level of %dk ticks (the means of %d seeds; linear between checkpoints) in " % (arm_a, arm_b, step // 1000, len(full))
+                  + "; ".join(said) + ".\n")
+    block("The cost of a dream", [("Decoding passes a dreamed tick", g + ("passes",), f1)])
+
+
+def figure(out, arm, seeds, path, step=60000, against=None):
     """A README figure of one arm's dreams at a checkpoint, the seeds' mean with its 95% band, one colour a decoder:
     the pixel skill against the copy by dreamed tick (beside the mean frame), and for each kind of thing the share held
-    (beside the thing kept moving as it last moved)."""
+    (beside straight lines through the frames as seen). against = (out, arm, label_a, label_b): two arms with `pair`
+    in place of one arm's decoders (task 00133: one transformer against four)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from readme_images import COLORS, GRID, INK, MUTED_INK, SURFACE, save
-    runs = [(d, load(out, arm, step, d, "work", seeds)) for d in ("pair", "mean", "instinct", "instinct_pair")]
-    runs = [(d, rs, c) for (d, rs), c in zip(runs, COLORS) if rs]          # a decoder keeps its colour in every panel
+    if against:
+        runs = [(against[2], load(out, arm, step, "pair", "work", seeds)),
+                (against[3], load(against[0], against[1], step, "pair", "work", seeds))]
+    else:
+        runs = [(d, load(out, arm, step, d, "work", seeds)) for d in ("pair", "mean", "instinct", "instinct_pair")]
+    runs = [(d, rs, c) for (d, rs), c in zip(runs, COLORS) if rs]          # a decoder (an arm) keeps its colour in every panel
     world = next(iter(runs[0][1].values()))["world"]
     A = json.load(open(os.path.join(out, "anchors_%s_work.json" % world)))
     kinds = ("ball", "paddle") if world == "breakout" else ("food", "poison")
@@ -1361,6 +1622,7 @@ def strip(run, step, path, copies=(0, 1), start=1200, ticks=(1, 2, 4, 8, 16, 32)
 
 
 def main():
+    global CHUNK
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("score")
@@ -1371,6 +1633,7 @@ def main():
     a.add_argument("--parts", nargs="+", default=["regular", "events", "warm"])
     a.add_argument("--horizon", type=int, default=HORIZON)
     a.add_argument("--name", default=None, help="the set's name in the file (learn: the checkpoints' shorter run)")
+    a.add_argument("--chunk", type=int, default=CHUNK, help="windows a pass (one transformer on the whole frame: 64)")
     a = sub.add_parser("anchors")
     a.add_argument("config")
     a.add_argument("-o", "--out", required=True)
@@ -1379,22 +1642,45 @@ def main():
     a.add_argument("out")
     a.add_argument("arm")
     a.add_argument("-o", "--path", required=True)
+    a.add_argument("--against", nargs=4, metavar=("OUT", "ARM", "LABEL_A", "LABEL_B"), default=None,
+                   help="two arms with pair in place of one arm's decoders")
     a.add_argument("--seeds", type=int, nargs="+", default=list(range(1, 13)))
     a.add_argument("--step", type=int, default=60000)
     a = sub.add_parser("strip")
     a.add_argument("run")
     a.add_argument("--step", type=int, default=60000)
     a.add_argument("-o", "--out", required=True)
+    a.add_argument("--chunk", type=int, default=CHUNK)
+    a = sub.add_parser("compare")
+    a.add_argument("out_a")
+    a.add_argument("arm_a")
+    a.add_argument("out_b")
+    a.add_argument("arm_b")
+    a.add_argument("--seeds", type=int, nargs="+", default=list(range(1, 13)))
+    a.add_argument("--step", type=int, default=60000)
+    a = sub.add_parser("borders", help="the things by where they have been, from the kept distances (no model)")
+    a.add_argument("runs", nargs="+")
+    a.add_argument("--step", type=int, default=60000)
+    a.add_argument("--decode", default="pair")
     a = sub.add_parser("table")
     a.add_argument("out")
     a.add_argument("arm")
     a.add_argument("--seeds", type=int, nargs="+", default=list(range(1, 13)))
     a.add_argument("--step", type=int, default=60000)
     args = ap.parse_args()
+    if getattr(args, "chunk", None):
+        CHUNK = args.chunk
+    if args.cmd == "compare":
+        return compare(args.out_a, args.arm_a, args.out_b, args.arm_b, args.seeds, args.step)
     if args.cmd == "table":
         return tables(args.out, args.arm, args.seeds, args.step)
+    if args.cmd == "borders":
+        for r in borders(args.runs, args.step, args.decode):
+            print("%-10s %6d %-5s  inside one quarter at tick 4: %s" % (r["run"], r["step"], r["decode"], ", ".join(
+                "%s %.3f (%d)" % (k, v["inside"]["held"][3], v["inside"]["n"][3]) for k, v in r["things"].items())), flush=True)
+        return
     if args.cmd == "figure":
-        return figure(args.out, args.arm, args.seeds, args.path, args.step)
+        return figure(args.out, args.arm, args.seeds, args.path, args.step, args.against)
     if args.cmd == "strip":
         return print("wrote", args.out, strip(args.run, args.step, args.out))
     if args.cmd == "score":

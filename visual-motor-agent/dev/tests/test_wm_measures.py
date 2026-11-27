@@ -259,6 +259,76 @@ def test_a_straight_line_through_the_frames_as_seen(discs, court):
     assert r["hold_seen"]["2"]["ball"]["horizon"] < r["hold_seen"]["8"]["ball"]["horizon"] <= r["hold_linear"]["ball"]["horizon"]
 
 
+class ExactAwayFromSeams:
+    """The real continuation, but within the seam's band the last real frame (a predictor that fails only at the seams)."""
+    name = "seamless"
+
+    def dream_from(self, exam, e, s, H):
+        f, b = W.TheWorld().dream_from(exam, e, s, H)
+        near = W.seam_mask(exam.S)
+        return np.where(near, exam.frames[e, s][:, None], f), b
+
+
+def test_the_seams(discs, court):
+    near = W.seam_mask(64)
+    assert near.sum() == 960 and near[:, 28:36].all() and near[28:36].all() and not near[:28, :28].any() and not near[36:, 36:].any()
+    for ex in (discs, court):
+        w = W.seam_part(W.TheWorld(), ex, 6)
+        c = W.seam_part(W.Copy(), ex, 6)
+        x = W.seam_part(ExactAwayFromSeams(), ex, 6)
+        assert w["near"]["skill"] == [1.0] * 6 and w["far"]["skill"] == [1.0] * 6 and w["pixels"] == dict(near=960, far=3136)
+        assert c["near"]["skill"] == [0.0] * 6 and c["far"]["skill"] == [0.0] * 6
+        assert x["far"]["skill"] == [1.0] * 6 and x["near"]["skill"] == [0.0] * 6      # it loses at the seams only
+        for k in ex.thing_kinds:
+            for part in ("across", "clear"):
+                held, n = np.array(w["things"][k][part]["held"]), np.array(w["things"][k][part]["n"])
+                assert (held[n > 0] == 1.0).all() and np.isnan(held[n == 0]).all()
+        total = sum(np.array(w["things"][k][part]["n"]) for k in ex.thing_kinds for part in ("across", "clear"))
+        assert (total > 0).all()
+    x = W.seam_part(ExactAwayFromSeams(), discs, 6)["things"]["food"]   # a disc across a seam is lost by the predictor
+    held, n = np.array(x["across"]["held"]), np.array(x["across"]["n"])  # that fails there, from the third tick on
+    assert n.sum() > 0 and np.nanmean(held[2:]) < np.nanmean(np.array(x["clear"]["held"])[2:])
+
+
+def test_the_things_by_where_they_have_been(discs, court):
+    quarters = [(a, b) for a in (slice(0, 32), slice(32, 64)) for b in (slice(0, 32), slice(32, 64))]
+    for ex in (discs, court):
+        e, s = ex.regular()
+        been, kinds = W.across_borders(ex, e, s, 6)
+        assert been.shape == (len(kinds), len(e), 6) and kinds == [th["kind"] for th in ex.things(e, s)]
+        assert (been[:, :, 1:] >= been[:, :, :-1]).all()                # once across a border, across from then on
+        many = []                                                       # by hand: the true shape has pixels in two quarters
+        for t in range(7):                                              # the last real frame, then 6 ticks
+            many.append(np.stack([sum(th["shape"][:, a, b].any((1, 2)).astype(int) for a, b in quarters) > 1
+                                  for th in ex.things(e, np.asarray(s) + t)]))
+        many = np.logical_or.accumulate(np.stack(many, 2), 2)
+        assert (been == many[:, :, 1:]).all() and been.any() and not been.all()
+        d0, f0, _ = W.read_things(ex, e, s, W.TheWorld().dream_from(ex, e, s, 6)[0])
+        there = ~np.isnan(d0)
+        w = W.borders_part(ex, d0, f0)                                  # the world itself holds everything, wherever it was
+        x = W.borders_part(ex, np.where(there, np.where(been, 5.0, 0.0), np.nan), np.ones(been.shape, bool))
+        for k in ex.thing_kinds:                                        # a reader's distances made by hand: 5 px off once
+            sel = np.array([kk == k for kk in kinds])                   # the thing has lain across a border, exact before
+            n_in, n_ac = np.array(x[k]["inside"]["n"]), np.array(x[k]["across"]["n"])
+            assert (n_in == (there & ~been)[sel].sum((0, 1))).all() and (n_ac == (there & been)[sel].sum((0, 1))).all()
+            assert (np.array(x[k]["inside"]["held"])[n_in > 0] == 1.0).all() and (np.array(x[k]["across"]["held"])[n_ac > 0] == 0.0).all()
+            assert np.isnan(np.array(x[k]["inside"]["held"])[n_in == 0]).all()
+            for part, n in (("inside", n_in), ("across", n_ac)):
+                assert w[k][part]["n"] == n.tolist() and (np.array(w[k][part]["held"])[n > 0] == 1.0).all()
+    e, s = discs.regular()                                              # a torus: a disc over the frame's edge is in two quarters
+    been, kinds = W.across_borders(discs, e, s, 1)
+    edge = np.stack([th["shape"][:, :, 0].any(1) & th["shape"][:, :, 63].any(1) for th in discs.things(e, s)])
+    assert edge.any() and been[:, :, 0][edge].all()
+
+
+def test_the_ticks_after_which_a_curve_is_at_a_level():
+    assert W.reach([10, 20, 30], [0.1, 0.3, 0.5], 0.2) == (15.0, True)
+    assert W.reach([10, 20, 30], [0.1, 0.2, 0.3], 0.2) == (20.0, True)
+    assert W.reach([10, 20], [0.5, 0.6], 0.2) == (10, False)            # at the first checkpoint already
+    assert W.reach([10, 20], [0.1, 0.15], 0.2) is None                  # never
+    assert W.reach([10, 20, 30], [0.1, 0.05, 0.3], 0.2) == (26.0, True)  # a dip does not count
+
+
 def test_the_events_of_the_court_on_known_forecasts(court):
     e, s = court.every_tick()
     true = court.body[e, s + 1, 0]
@@ -381,11 +451,45 @@ def test_the_adapter_decodes_exactly_and_carries_nothing_away(runs, court):
 
 
 @gpu
+def test_one_transformer_goes_through_the_same_calls(tmp_path_factory, court):
+    """Task 00133: the adapter with one transformer on the whole frame (no pieces): the same three calls, exact decoding."""
+    d = tmp_path_factory.mktemp("wm1") / "one"
+    r = subprocess.run([sys.executable, os.path.join(DEV, "lifetime.py"), "--config", os.path.join(DEV, "configs", "W1_breakout.json"),
+                        "--set", "online.steps=8", "--set", "online.log_every=8", "--set", "online.save_every=100000",
+                        "--seed", "1", "-o", str(d)], cwd=DEV, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    m = W.Pieces(str(d), 0, "pair")
+    assert m.S == 1 and m.max_passes == 65 and m.params == 2166178
+    e, s = court.regular()
+    e, s = e[:4], s[:4]
+    null = np.zeros((4, 3), np.float32)
+    m.reset(4)
+    for j in range(7, -1, -1):
+        m.observe(court.frames[e, s - j], court.body[e, s - j], null)
+    f1, b1 = m.dream(2)
+    assert f1.shape == (4, 2, 64, 64) and m.unsettled == 0 and max(m.passes) <= 65
+    m.guess = np.random.default_rng(1).integers(0, 256, (4, 64, 64)).astype(np.uint8)
+    f2, b2 = m.dream(2)                                                  # another first guess, the same frames
+    assert (f2 == f1).all() and np.allclose(b2, b1, atol=1e-6)
+    m.close()
+    old = W.CHUNK
+    try:                                                                 # a smaller batch gives the same dream (to the last
+        W.CHUNK = 2                                                      # bits of a rounding edge: here the same frames)
+        ex = W.Exam(env_of("W1_breakout.json"), seed=5, copies=2, ticks=330, starts=(100, 200))
+        r = W.score(str(d), 0, "pair", "work", ("regular", "seam"), H=2, out_dir=str(tmp_path_factory.mktemp("wm1out")), exam=ex)
+        assert r["pieces"] == 1 and r["chunk"] == 2 and r["regular"]["starts"] == 4 and r["unsettled"] == dict(regular=0, seam=0)
+        assert len(r["seam"]["near"]["skill"]) == W.SEAM_TICKS
+    finally:
+        W.CHUNK = old
+
+
+@gpu
 @pytest.mark.parametrize("name", ["W_discs.json", "W_breakout.json"])
 def test_a_checkpoint_is_scored(runs, name, tmp_path):
     ex = W.Exam(env_of(name), seed=5, copies=2, ticks=330, starts=(100, 200))
-    r = W.score(runs[name], 0, "mean", "work", ("regular", "events", "warm", "warmdream"), H=2, out_dir=str(tmp_path), exam=ex)
-    assert r["world"] == ex.kind and r["unsettled"] == dict(regular=0, events=0, warm=0, warmdream=0) and r["regular"]["starts"] == 4
+    r = W.score(runs[name], 0, "mean", "work", ("regular", "events", "warm", "warmdream", "seam"), H=2, out_dir=str(tmp_path), exam=ex)
+    assert r["world"] == ex.kind and r["unsettled"] == dict(regular=0, events=0, warm=0, warmdream=0, seam=0) and r["regular"]["starts"] == 4
+    assert r["pieces"] == 4 and len(r["seam"]["near"]["skill"]) == W.SEAM_TICKS and set(r["seam"]["things"]) == set(ex.thing_kinds)
     assert set(r["warm_dream"]) == {"2", "4", "8"} and len(r["warm_dream"]["8"]["skill"]) == 8
     assert set(r["warm_dream"]["2"]["held"]) == set(ex.thing_kinds)
     assert len(r["regular"]["curve"]["skill_copy"]) == 2 and set(r["regular"]["hold"]) == set(ex.thing_kinds)
@@ -413,18 +517,25 @@ def test_the_tables_print_from_scored_lives(runs, name, tmp_path, capsys):
         run = tmp_path / ("XX_s%d" % sd)
         shutil.copytree(runs[name], run)
         for dec in ("pair", "mean"):
-            W.score(str(run), 0, dec, "work", ("regular", "events", "warm") if dec == "pair" else ("regular",), H=4, exam=ex)
+            W.score(str(run), 0, dec, "work", ("regular", "events", "warm", "seam") if dec == "pair" else ("regular",), H=4, exam=ex)
         r = W.score(str(run), 0, "pair", "work", ("regular", "next"), H=4, exam=ex, name="learn")
         assert "within" not in r["events"]                              # the learning curve leaves the long dreams out
         W.score(str(run), 0, "pair", "home", ("regular",), H=4, exam=ex)
+    b = W.borders([str(tmp_path / ("XX_s%d" % sd)) for sd in (1, 2)], 0, "pair", exams={ex.kind: ex})   # from the kept distances
+    saved = json.load(open(tmp_path / "XX_s2" / "wm" / "step_00000000_pair_work_borders.json"))
+    assert saved["run"] == "XX_s2" and saved["pieces"] == 4 and set(saved["things"]) == set(ex.thing_kinds)
+    assert saved["things"] == json.loads(json.dumps(b[1]["things"])) and len(saved["things"][ex.thing_kinds[0]]["inside"]["held"]) == 4
     W.figure(str(tmp_path), "XX", [1, 2, 3], str(tmp_path / "images" / "curves.png"), step=0)      # the README's pictures
     size = W.strip(str(tmp_path / "XX_s1"), 0, str(tmp_path / "images" / "dream.png"), start=150, ticks=(1, 2), exam=ex)
     assert size[0] <= 960 and all(os.path.getsize(tmp_path / "images" / f) < 200 * 1024 for f in ("curves.png", "dream.png"))
     W.tables(str(tmp_path), "XX", [1, 2, 3], step=0, steps=(0,), exam=ex)
+    W.compare(str(tmp_path), "XX", str(tmp_path), "XX", [1, 2, 3], step=0)                         # an arm against itself: no difference
     out = capsys.readouterr().out
     for part in ("### The board", "### The next frame, by kind of thing", "### The dream, tick by tick", "### The things in the dream",
                  "### Is a dreamed frame a possible frame?", "### Events", "### Warm-up", "### Learning", "### Home and away",
-                 "### By seed", "XX: 2 seeds at 0k (1, 2)", "did not settle: 0"):
+                 "### By seed", "XX: 2 seeds at 0k (1, 2)", "did not settle: 0", "## XX against XX: 2 seeds",
+                 "### At the seams between the quarters", "### The next frame and the dream by pixels", "+.000 ± .000",
+                 "### The things by where they have been", "inside one quarter so far:"):
         assert part in out, part
     width, n_tables = None, 0
     for line in out.split("\n"):                                        # every row of a table has as many cells as its head:

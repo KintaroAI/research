@@ -1,0 +1,67 @@
+{
+  "name": "W1_discs",
+  "description": "Task 00133: configs/W_discs.json with ONE transformer in place of the four quarter transformers: the same model (8 layers, width 128, context 8, 32 bins, the pyramid of summaries, the age key, the ring) without model.band_n, band_cols, band_win and without online.pieces: every patch of the 64 x 64 frame and every summary is a token of the one transformer (87 tokens a tick in place of 4 x 32). The world and the watching (online.watch) are unchanged.",
+  "env": {
+    "kind": "watch",
+    "size": 64,
+    "foods": 2,
+    "poisons": 2,
+    "food_speed": 1.5,
+    "poison_speed": 0.75,
+    "food_radius": [
+      8.0,
+      11.0
+    ],
+    "poison_radius": [
+      5.0,
+      8.0
+    ],
+    "checker_cell": 2,
+    "dots": 8,
+    "drives": true,
+    "respawn": true,
+    "gray": true
+  },
+  "model": {
+    "uni_chan": 1,
+    "patch": 8,
+    "universal": 1,
+    "bins": 32,
+    "gray": 1,
+    "ctx": 8,
+    "in_bins": 1,
+    "uni_pyr": 3,
+    "sum_thumb": 1,
+    "age_key": 1,
+    "img": 64,
+    "n_layer": 8
+  },
+  "online": {
+    "actor": "self",
+    "steps": 60000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_eps": 0.0,
+    "goal": 0,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "instinct_m": 0,
+    "device": "cuda",
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4,
+    "ring": 1,
+    "watch": 1
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  }
+}

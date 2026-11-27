@@ -685,12 +685,32 @@ The skill of a prediction is 1 − its error ÷ the copy's error, both summed ov
 - **A life in the disc world learns its own four discs:** +.221 ± .047 in next-frame skill at home.
 - **What the board should carry after this table:** the forecast 8 ticks ahead in place of the next tick's (which is at its ceiling), the discs held at tick 4 after a turn in place of the next-tick reading of bounces (too small to see), and the counts by zone beside the valid frames (an empty court is a valid frame).
 
+**One transformer against the four (vm-00120, 2026-11-27).** The owner's step back after the first table: "it is expected that adding transformers will reduce accuracy". The same lives and measures with one transformer on the whole 64 x 64 frame (`configs/W1_discs.json`, `configs/W1_breakout.json`: the W configs without the split; 2.17M parameters against the four's 8.64M), 12 seeds a world, paired by seed with vm-00119's.
+
+| Number | The moving discs: one | four | one − four | The scripted court: one | four | one − four |
+|---|---|---|---|---|---|---|
+| Next-frame skill | .322 ± .082 | .337 ± .042 | −.015 ± .043 | .759 ± .010 | .667 ± .010 | +.092 ± .010 |
+| Next-frame skill on the life's own world | .689 | .558 | +.131 ± .021 | .760 | .699 | +.061 ± .041 |
+| Skill at the 8th dreamed tick | .466 | .279 | +.187 ± .031 | .684 | .627 | +.057 ± .013 |
+| Dream horizon by pixels, ticks | 8.5 | 6.2 | +2.3 ± 1.6 | 25.6 | 22.7 | +2.9 ± 1.3 |
+| Dream horizon by objects, ticks | food 4.8, poison 5.0 | 3.0, 3.9 | +1.8 ± 0.5, +1.1 ± 0.4 | the ball 10.8, the paddle 28.4 | 9.1, 22.9 | +1.8 ± 1.0, +5.5 ± 1.2 |
+| Valid frames at 8 ticks | .176 | .095 | +.081 ± .042 | .743 | .752 | −.009 ± .023 |
+| Event forecast 8 ticks ahead (a hit, a miss) | | | | .900, .941 | .939, .913 | −.040 ± .035, +.028 ± .028 |
+
+- **The split costs prediction.** One transformer is ahead in the court at the next frame and in the dream in both worlds, with a quarter of the parameters; a life alone runs 54 ticks per second against 40. The four are ahead on the forecast of a hit (−.010 ± .008 one tick ahead, −.040 ± .035 8 ticks ahead; their forecast is the mean of four).
+- **Where the four lose:** in the court at the borders between the quarters (a ball that has crossed one); in the disc world everywhere: a disc that stayed inside one quarter, drawn by one transformer alone, is lost as fast. Each quarter transformer learns from a quarter of the frame and sees a thing whole only inside its quarter; the two are not separated.
+- **In ticks of life** the four at 60k are where the one transformer was after about 17k ticks in the disc world's dream and after about 27k ticks to about 42k ticks in the court.
+- **The one transformer learns its own four discs more by heart** (home − away in next-frame skill +.367 ± .087 against +.221 ± .047): new discs in the watched world matter more for it.
+- **The dream's weakness is the same in kind:** a disc held for 4.8 to 5.0 ticks against 10 and 13 for a straight line through two frames.
+- **Acting was not run.** The four were adopted because their competing moves forage better (vm-00051); when the model moves again that is to be measured again, and the picture can come from one transformer while several propose the moves.
+- **How it was measured:** the part `seam` (the error within 4 px of a border between the quarters and away from it) and `wm_measures.py borders` (the things held by whether they have lain across a border so far; from the kept distances, no model). A band of pixels at one tick does not follow a thing that crossed it and moved on; the second reading does.
+
 **The order of work.**
 1. The worlds to watch and the watching option: built and tested on 2026-11-26 (task 00132, `tests/test_watch.py`).
 2. The contract, the exam and the measures, with the adapter for the four transformers and the floors: built on 2026-11-26 (`dev/wm_measures.py`, `tests/test_wm_measures.py`). DreamerV3's adapter is not written.
-3. The lives that watch and the reference table: done on 2026-11-26 (vm-00119, above).
-4. The changes, each judged on that table (none started; the order is the owner's):
-   - **the dream in the disc world:** training on the model's own dreamed frames, decoded with `pair` (self-forcing; `lifetime.py` refuses it today with the four transformers; it kept the single model's dream truer in vm-00032). The mark to reach is the straight line through the last two frames;
+3. The lives that watch and the reference table: done on 2026-11-26 (vm-00119, above). One transformer set against the four on it: done on 2026-11-27 (vm-00120, above).
+4. The changes, each judged on that table (none started; the order is the owner's; after vm-00120 they would start from one transformer, `configs/W1_discs.json` and `configs/W1_breakout.json`, for the owner's word):
+   - **the dream in the disc world:** training on the model's own dreamed frames, decoded with `pair` (self-forcing; `lifetime.py` refuses it with the four transformers and runs it with one; it kept the single model's dream truer in vm-00032). The mark to reach is the straight line through the last two frames;
    - **the watched disc world:** new discs now and then, so that a life cannot learn four discs by heart;
    - **the window, then memory:** the model uses 2 to 4 of its 8 ticks. First the ball held longer by reading the whole window, then by carrying its course over more ticks than the window; then a gap that the discs and the ball pass behind (`online.blind`), with the three mechanisms of vm-00092 to vm-00094 tried again there;
    - **patch codes** in place of pixels predicted one by one (a guess, not yet tested): the numbers it should move are the things held and the valid frames;
