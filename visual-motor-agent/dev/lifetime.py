@@ -440,6 +440,10 @@ def main():
     if act_every < 1 or (act_every > 1 and not (slabel and on["instinct_h"] == 1 and not pg and not q_off)):
         raise ValueError("online.act_every is at least 1; above 1 it goes with online.label = meal and online.instinct_h = 1, "
                          "without online.actor_pg and online.off")
+    watch = bool(on.get("watch", 0))   # task 00132: the model only watches: the null move is made every tick
+    if watch and not (uni and on["instinct_m"] == 0 and not (slabel or gamma or future_k or pg or on["need"]) and act_every == 1):
+        raise ValueError("online.watch makes no moves: it needs the universal model, online.instinct_m = 0, and no label, value, "
+                         "online.need, online.actor_pg or online.act_every")
     held = None   # the move kept and the piece that made it
 
     def pg_scale():
@@ -660,6 +664,8 @@ def main():
         if bab.any():   # keeps trying: own moves alone drift to never clicking
             nb = np.concatenate([rng.normal(0, on["babble_sigma"], (N, 2)), rng.random((N, 1)) < on["babble_click"]], 1)
             a = np.where(bab[:, None], nb, a).astype(np.float32)
+        if watch:   # task 00132: the null move, whatever the model's own move prediction said
+            a = np.zeros_like(a)
         if slabel:   # task 00109: each transformer's predicted label of the move made (after babbling), before the ring takes it
             if on["instinct_h"] > 1:   # task 00127: the lookahead's passes replaced the policy pass uni_candidates reuses
                 a_w = win_in[5].astype(np.float32)

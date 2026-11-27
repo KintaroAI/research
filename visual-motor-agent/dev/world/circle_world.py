@@ -285,6 +285,8 @@ class EnvConfig:
         for name in _COLOR_FIELDS:
             if name in kwargs:
                 kwargs[name] = tuple(int(v) for v in kwargs[name])
+        if "delays" in kwargs:   # task 00091's field is a tuple; JSON gives a list back (tests/test_record.py, 2026-11-26)
+            kwargs["delays"] = tuple(kwargs["delays"])
         return cls(**kwargs)
 
     def max_episode_bonus(self) -> float:

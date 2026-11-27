@@ -154,6 +154,11 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # the model still sees, predicts and learns every tick, and the move token's target is the move made.
                       # 1: a decision every tick, unchanged
                       act_every=1,
+                      # task 00132 (lifetime.py, the universal model): the model only watches. The move made is always the
+                      # null move (no push, no click), whatever the model's own move prediction says: the world gets it,
+                      # the ring and memory hold it, and the move token's target is it. No instinct, label or actor with it.
+                      # 0: the model acts, unchanged
+                      watch=0,
                       panels=0,            # task 00115: forecast panels (world/panel_world.py): model.img twice env.view, 4 quarter pieces
                       panel_lag=0,          # task 00115: panel 1 is the view sensed this many ticks late (the body too)
                       panel_noise=0.0,      # task 00115: Gaussian noise (sd, on [0, 1] values) on the forecasts shown in panels 2-4

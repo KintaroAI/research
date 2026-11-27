@@ -353,6 +353,8 @@ every tick:
 
 The model predicts well, in pixels, text and a camera. What it does not yet show is anything a reactive predictor cannot do: its context is 8 ticks, its long-term memory is only replayed in training and never recalled while acting, and a rule outside the network chooses its moves. Foraging hardly tests any of this, so better food numbers may say little. Further work should aim at what is missing, in this order. This is a judgment, not a result.
 
+**What comes first since 2026-11-26 (the owner): section 15.** The world model, its dream and its memory, measured by numbers that do not depend on the model's parts. The challenges below keep their order after that.
+
 | challenge | what is missing | the question | first step |
 |---|---|---|---|
 | **1. One set of weights, many worlds** | "universal" so far means the same code, not the same mind | Can one life pass through circles, text and sound and come back without having forgotten? | swap worlds within a life (the worlds exist) |
@@ -606,3 +608,91 @@ vm-00074, against K4: error under long damage .064 (10%) and .053 (30%) against 
 ### Where it lives
 
 `online.py`: `clog_masks`, `brief_rate`, `damage`, `clog_frames`, `ClogStream`. `lifetime.py`: `damaged` hands each transformer's copy to `update_rollout(inputs=...)`, and `views` hold the acting streams. `tests/test_clog.py`.
+
+## 15. Next Steps: the World Model First (2026-11-26)
+
+**The decision (the owner, 2026-11-26).** Improve the world model, its dream and its memory before concentrating on anything else. The remaining arms of the acting rule (task 00123) and rehearsal for two worlds (vm-00117's follow-up) wait. This is the order of section 1, prediction before behaviour: since vm-00085 most experiments worked on the label and the move, and the last three arms of the acting rule closed negative (vm-00114, vm-00115, vm-00118).
+
+- **The world model:** the prediction of the next tick: the frame, the body, and what a move changes.
+- **The dream:** the model fed its own predictions. Its score is noise at 4 ticks (vm-00114; that dream was decoded with the expected value, under which the ball is gone by the fourth tick: the first reference table, below). Lookahead, labels from imagined choices (task 00114) and a critic trained on dreams all need a dream that holds.
+- **Memory:** what the model keeps beyond its 8-tick context. Three mechanisms gave none (vm-00092 to vm-00094), judged by foraging, where the agent is still below what needs no memory: in vm-00091 a walker that chases whatever it sees and remembers nothing ate 96 food per 1k where the agent ate 48. Memory is tested in prediction first.
+
+**Watching first (the owner, 2026-11-26).** For now the model's own movement and its decisions are left out: it observes worlds that move by themselves, and the question is only how well it predicts them. The owner's two examples, built as task 00132:
+- **Moving food and poison** (`env.kind = watch`, `dev/world/watch_world.py`, `configs/W_discs.json`): the food world's discs on a 64 x 64 torus, 2 food discs at 1.5 px a tick and 2 checker poison discs at .75, with dots under them. They never overlap: two that meet are pushed apart and each one that was closing in has its velocity mirrored, so every disc keeps its speed for ever (an exchange of momentum would mix the speeds, and the two kinds would stop differing). No body is in the frame and nothing is eaten. After the first frame nothing is left to chance. A disc flies about 13 ticks (food) or 20 (poison) between bounces.
+- **The court with a script** (`env.auto_lag = 6`, `configs/W_breakout.json`): Breakout stage 1 with the paddle given to a script that follows the ball as it was 6 ticks ago. Nothing in it is random, and each of its moves follows from frames inside the 8-tick context. The delay is what makes the play worth watching: the paddle trails a slanting ball, meets it off-centre and sends it off at an angle, and it returns .80 of the balls (4 ticks: 1.00, 8 ticks: .68). A tracker without a delay returns .99 even at a ninth of the paddle's speed, and its ball goes straight up one column. The score to predict is the body's hunger, as in the court the agent plays: a hit sets it to 0, a miss adds .5.
+- **The model only watches** (`online.watch = 1`): the move made is the null move at every tick, whatever the model's own move prediction says; no instinct and no label. The model is the default agent's without the label.
+
+What this sets aside for now: measure 3 (what a move does), measure 12 (the worth to a decision) and the anchor "another move". The contract keeps its moves, which are all null. The reference table needs new lives: the weights of vm-00101 and vm-00103 were raised acting, in other worlds.
+
+**First the measures (the owner).** Before the model is changed we need numbers that say how well a world model performs. They must not depend on the model, because its parts will be swapped all the time: the tokens, the bins, the decoder, the number of transformers, the memory. A number that changes its meaning with a part cannot compare two models. Cross-entropy is such a number: it is counted in the model's own bins, so 32 bins, 256 bins and learned patch codes give values that cannot be set side by side.
+
+**The contract.** A measure uses only what any model can give and what the world gives.
+- **From the model, three calls:** `reset()` forgets what is carried (the weights stay); `observe(frame, body, move)` takes one real tick; `dream(moves, n)` returns the next ticks under those moves as frames and body values in the world's own units (grey levels, hunger), in `n` versions if the model can draw them, else its one best guess. How it decodes is its own business.
+- **From the world:** recorded stretches of real life; its own state at every tick (for scoring only); copies of itself that can be stepped with other moves or other dice; and a reader that finds its things in any frame, real or dreamed (the body, the ball, a food), written once per world and checked against the world's state on real frames.
+- **Never:** the loss, the bins, the tokens, attention, the label. They stay useful to debug one model, not to compare two.
+- One adapter per kind of model gives the three calls. DreamerV3's world model (`dev/baselines/`) can give them too, and so can a predictor with no model at all.
+
+**The exam.** The same recorded stretches for every model, so that two models are compared stretch by stretch: made once per world by scripted walkers and by the reference agent, with the world's state kept. There are two sets, one to work with and one opened only for a final comparison: with many swaps, the working set gets fitted by selection. Differences are paired by seed and by stretch, with the 95% interval and the seeds above, as in the write-ups.
+
+**The anchors.** Every number is read between floors and a ceiling that need no model:
+- **copy:** the last real frame, unchanged;
+- **another move:** the world itself stepped with a different move, which is right about everything but what the move does;
+- **other dice:** the world itself stepped with the same moves and other chance, the best possible where the world is random;
+- **the world itself:** error 0.
+
+The skill of a prediction is 1 − its error ÷ the copy's error, both summed over the exam: 0 is no better than copying, 1 is exact.
+
+**The measures** (proposed 2026-11-26. The owner's answer was to watch first, above, and then to go on with the plan; the measures were not gone through one by one. Built the same day as `dev/wm_measures.py` for a model that watches: 1, 2, 4, 5, 6, 9, 10 and 11. Not built: 3 and 12 wait for moves, 7 for a model that gives its dream in versions, 8 for a gap. How each is counted: `tasks/00132-watching-worlds.md`. The last column names the older tools that hold a part.)
+
+| # | Measure | Its question | How it is counted | A part is in |
+|---|---|---|---|---|
+| 1 | Next-frame skill | Is the next tick predicted? | Skill in grey levels over the whole frame, and by kind of thing: the body, what moves by a rule, what appears by chance, the rest | `eval_blind.py`, `eval_clog.py` |
+| 2 | Event forecast | Does it know that a meal, a poison, a hit or a miss is coming? | Events are the jumps of the real body signal (the court's score); where the world has no body, its own events (a bounce of two discs), scored by the next-frame skill on the ticks around them against free flight. The predicted body signal's hits against its false alarms (area under the curve, .5 is chance), for the next tick and within h ticks of a dream; and the predicted size of the jump ÷ the real one | the click test (`analyze_hazards.py`), `analyze_lookahead.py` |
+| 3 | Move effect (waits while the model only watches) | Does the prediction change with the move as the world does? | Copies of the world stepped with K moves, for 1 tick and held for 4, on pairs of moves whose real outcomes differ. Retrieval: the prediction for move i is nearer to the real outcome of move i than to any other's (chance 1 ÷ K). Size: the predicted difference between two moves ÷ the real one | `analyze_dynamics.py`, `click-real` |
+| 4 | Dream curve, dream horizon | How many ticks does the dream hold? | The dream under the moves really made, 1 to 32 ticks: its error against the copy's and against the mean frame's. Horizon: the ticks until it is no better than the better of the two | `eval_dream.py` |
+| 5 | Object hold | Are the things still there, and where? | The reader on dreamed and real frames, by kind of thing: the distance in px, lost, doubled. Floor: the thing kept moving as it last moved. Horizon: the ticks while the thing is within reach in half of the dreams | `eval_dream.py`, `dream_measures.py` |
+| 6 | Dream realism | Is a dreamed frame a possible frame? | The share of dreamed frames with the world's counts right (one body, one ball); the distance between the grey-level histograms of dreamed and real frames; a free dream of 200 ticks on the model's own moves: when it empties | `dream_measures.py` |
+| 7 | Honesty | Does it know what it does not know? | With n versions: their spread ÷ the real error (1 is honest), and the forecast chance of an event against how often it comes | `analyze_lookahead.py` |
+| 8 | Memory span | How far back does it reach? | Skill on what must be remembered, by ticks since it was last in the input: what comes back into the view, a thing wholly behind a gap (`online.blind`), a meal on hidden food. Floor: the same for what was never seen. Span: the last age above that floor | `eval_hunger.py chain`, `eval_blind.py`, `eval_hidden.py` |
+| 9 | Warm-up | How much of the past does it use? | From a cold start, shown the last k real ticks, k = 1 to 64: measures 1 and 2 against k | none |
+| 10 | Learning | How fast does it get there, and what is kept? | Measures 1 to 8 on a life's checkpoints: the ticks to a set level; and the same on an old world after a life in another (vm-00117) | none |
+| 11 | Cost | At what price? | Ticks per second alone on the 4090, card memory, parameters | every write-up |
+| 12 | Worth to a decision (waits while the model only watches) | What do its errors cost a choice? | One fixed rule choosing among K moves by the dream and by copies of the world: how often the two agree, and what the difference costs | `analyze_lookahead.py` |
+
+- **Pixel error alone must not judge a dream.** A blurred frame scores better than a sharp one with the ball 2 px off, which is counted wrong twice: where it is drawn and where it should be. So measures 5 and 6 stand beside 4.
+- **What is remembered must be wholly out of the input.** For the memory span a thing counts only while no pixel of it is in the input. Ages within the 8-tick context show the window; later ages show memory.
+- **The text world keeps nats per letter** (`letter_ce.py`): there a letter is the world's own unit, and any model can give each letter a probability.
+- **Frozen first, lived after.** Frozen tests repeat exactly. A frozen checkpoint understates a living learner (vm-00005), so the lived form, each tick predicted before it is learned, follows once the frozen board stands.
+
+**The board.** Six numbers per model and world, each beside its floors: next-frame skill, event forecast, move retrieval with the move held for 4 ticks, the dream's horizon by objects, the share of valid dreamed frames at 8 ticks, the memory span; and ticks per second.
+
+**The first reference table (vm-00119, 2026-11-26).** The default agent's model without the label, only watching, 12 seeds a world, 60k ticks; the working set of the exam; the reference decoder `pair`; ± is the 95% interval over the seeds.
+
+| Number | The moving discs | Its floor or ceiling | The scripted court | Its floor or ceiling |
+|---|---|---|---|---|
+| Next-frame skill | .337 ± .042 (.558 on the life's own discs) | the copy 0, the world 1 | .667 ± .010 | the copy 0, the world 1 |
+| Event forecast | the discs that turn are 0.39 px off at the next tick | the straight line 0.40 px | a hit .996, a miss .987 at the next tick; .939 and .913 8 ticks ahead | chance .5 |
+| Dream horizon by pixels, ticks | 6.2 | of 32 | 22.7 | of 32 |
+| Dream horizon by objects, ticks | food 3.0, poison 3.9 | a straight line through the last 2 frames: 10 and 13 | the ball 9.1, the paddle 22.9 | a straight line through the 8 frames of the window: 11 and 15 |
+| Valid frames at 8 ticks | .095 | the world 1 | .752 | the world 1 |
+| Real ticks of context that give all of the next-frame skill | 4 of 8 | | 4 of 8 | |
+| Real ticks of context that give all of the dream | 4 of 8 | | 2 of 8 | |
+
+- **The model knows what comes next; the dream is weakest in where the things are.** In the disc world a straight line through the last two frames holds a disc three times longer than the dream. In the court the ball is drawn at whole pixels and the dream holds it nearly as long as a line through all 8 frames of the window does, from the last 2 frames alone.
+- **Half of the window is not used.** Four of the 8 ticks give all of the next-frame skill and of the dream, in the court's dream two. To hold the ball longer a model must first read the window it has, and then carry the ball's course over more ticks than it sees at once: a first task for a memory, with no gap needed.
+- **A floor must know no more than a model can see.** The straight line through the true places, set beforehand, knows the ball's place to a fraction of a pixel; the lines through the frames as seen are the fair floors.
+- **The decoder is a part that matters.** The same weights dreamed with the expected value, as the agent's instinct and vm-00114's lookahead dream, hold the ball in .234 of the dreams at tick 2 and .008 at tick 4; with `pair`, in .928 and .818; with the instinct's quick decoding and `pair` (`online.instinct_decode = pair`), in .866 and .654. The pixel error understates this in the court and ranks the blurring decoder first in the disc world. Dream with `pair`. vm-00114's lookahead dreamed with the expected value, so its negative result was read off a dream that, in these lives, has no ball by its fourth tick; its agent acted and had a label, and its weights are not these, so this is a reason to test the lookahead again with `pair`, not a result about it.
+- **A life in the disc world learns its own four discs:** +.221 ± .047 in next-frame skill at home.
+- **What the board should carry after this table:** the forecast 8 ticks ahead in place of the next tick's (which is at its ceiling), the discs held at tick 4 after a turn in place of the next-tick reading of bounces (too small to see), and the counts by zone beside the valid frames (an empty court is a valid frame).
+
+**The order of work.**
+1. The worlds to watch and the watching option: built and tested on 2026-11-26 (task 00132, `tests/test_watch.py`).
+2. The contract, the exam and the measures, with the adapter for the four transformers and the floors: built on 2026-11-26 (`dev/wm_measures.py`, `tests/test_wm_measures.py`). DreamerV3's adapter is not written.
+3. The lives that watch and the reference table: done on 2026-11-26 (vm-00119, above).
+4. The changes, each judged on that table (none started; the order is the owner's):
+   - **the dream in the disc world:** training on the model's own dreamed frames, decoded with `pair` (self-forcing; `lifetime.py` refuses it today with the four transformers; it kept the single model's dream truer in vm-00032). The mark to reach is the straight line through the last two frames;
+   - **the watched disc world:** new discs now and then, so that a life cannot learn four discs by heart;
+   - **the window, then memory:** the model uses 2 to 4 of its 8 ticks. First the ball held longer by reading the whole window, then by carrying its course over more ticks than the window; then a gap that the discs and the ball pass behind (`online.blind`), with the three mechanisms of vm-00092 to vm-00094 tried again there;
+   - **patch codes** in place of pixels predicted one by one (a guess, not yet tested): the numbers it should move are the things held and the valid frames;
+   - **an outside reference:** DreamerV3's world model through the same three calls.
+5. Then the model's own moves again: measures 3 and 12, the acting rule, rehearsal; and vm-00114's lookahead again with `pair` (its dream was decoded with the expected value, which loses the ball).

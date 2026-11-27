@@ -1,5 +1,5 @@
 """The worlds: CircleWorld (the Phase 0 visual-motor environment), TextWorld (task 00032: a text as grey frames), CarWorld
-(task 00067) and BreakoutWorld (task 00111).
+(task 00067), BreakoutWorld (task 00111) and WatchWorld (task 00132: moving food and poison to watch, no body).
 
 Exports ``CircleWorld``, ``EnvConfig``, ``render_state``, ``TextWorld``, ``TextConfig`` and the factories
 ``make_config`` / ``make_world`` (the config's ``kind``: circle, the default, or text).  They are loaded lazily
@@ -27,6 +27,9 @@ def make_config(env: dict, **overrides):
     if d.get("kind", "circle") == "breakout":   # task 00111: a Breakout court
         from .breakout_world import BreakoutConfig
         return BreakoutConfig(**dict(d, **overrides)).validate()
+    if d.get("kind", "circle") == "watch":   # task 00132: food and poison that move and bounce, nothing to do
+        from .watch_world import WatchConfig
+        return WatchConfig(**dict(d, **overrides)).validate()
     d.pop("kind", None)
     thought = d.pop("thought", None)
     cue = d.pop("cue", None)
@@ -56,6 +59,9 @@ def make_world(num_envs: int, config, seed: int = 0):
     if getattr(config, "kind", "circle") == "breakout":
         from .breakout_world import BreakoutWorld
         return BreakoutWorld(num_envs, config, seed=seed)
+    if getattr(config, "kind", "circle") == "watch":
+        from .watch_world import WatchWorld
+        return WatchWorld(num_envs, config, seed=seed)
     from .circle_world import CircleWorld
     if getattr(config, "cue", None) is not None:
         from .cue_world import CueWorld

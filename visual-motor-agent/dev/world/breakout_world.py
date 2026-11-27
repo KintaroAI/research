@@ -22,6 +22,12 @@ Stage 2 (task 00117, vm-00104), all off by default (stage 1 unchanged):
   derangement, the same count of each type). The serve comes from just below the bricks.
 - info["hunger_cut"] is signed: the clip's correction (unclipped - clipped hunger), positive at the cap, negative at the
   floor (a meal the floor cut short). Earlier label code adds it only on steps whose hunger did not fall.
+
+A court to watch (task 00132), off by default: auto_lag = d > 0 gives the paddle to a script and the move does nothing.
+The script sees the court as it was d ticks ago: if a ball was in play then, it pushes the paddle's centre toward that
+ball's centre, as far as paddle_speed allows; if not, the paddle stays. Nothing in it is random, and every move follows
+from the last d + 1 frames. A delay makes the play varied: the paddle trails a slanting ball, meets it off-centre and
+sends it off at an angle; with a long delay it also misses.
 """
 import dataclasses
 from typing import Any, Dict, Optional
@@ -43,6 +49,7 @@ class BreakoutConfig:
     max_angle: float = 60.0        # degrees from vertical off the paddle's ends
     serve_angle: float = 45.0      # a new ball falls within this many degrees of vertical
     pause: int = 8                 # ticks without a ball after a miss
+    auto_lag: int = 0              # task 00132: d > 0: a script moves the paddle (toward the ball as it was d ticks ago); the move is ignored
     paddle_relief: float = 1.0     # a paddle hit's food (task 00117: 0 in stage 2)
     bricks: int = 0                # task 00117: 1 = a wall of bricks
     brick_rows: int = 4
@@ -83,6 +90,8 @@ class BreakoutConfig:
             raise ValueError("speeds must be positive, and the ball slower than paddle_h + ball a tick (or it can pass through)")
         if not 0 < self.max_angle < 90 or not 0 <= self.serve_angle < 90 or self.pause < 0:
             raise ValueError("angles in (0, 90), serve_angle in [0, 90), pause >= 0")
+        if int(self.auto_lag) != self.auto_lag or not 0 <= self.auto_lag <= 64:
+            raise ValueError("auto_lag must be an integer in 0..64")
         if self.bricks:
             n = self.brick_rows * self.brick_cols
             if len(self.brick_food) != 3 or n % 3 or inner % self.brick_cols or inner // self.brick_cols < 4:
@@ -116,6 +125,9 @@ class BreakoutWorld:
         self.hits = np.zeros(n, np.int64)
         self.misses = np.zeros(n, np.int64)
         self.food_seen = 0.0
+        if c.auto_lag:   # task 00132: what the script will see: the ball's centre x and whether it was in play, newest last
+            self.seen_x = np.zeros((n, c.auto_lag + 1))
+            self.seen_live = np.zeros((n, c.auto_lag + 1), bool)
         if c.bricks:   # task 00117: a separate stream, so stage 1's draws are unchanged
             self.brng = np.random.default_rng([seed, 0xB1])
             k = c.brick_rows * c.brick_cols
@@ -272,6 +284,14 @@ class BreakoutWorld:
             raise ValueError(f"expected actions of shape ({n}, 3), got {np.shape(actions)}")
         c = self.config
         a = np.nan_to_num(np.clip(np.asarray(actions, np.float64), -1.0, 1.0))
+        if c.auto_lag:   # task 00132: the script's push, from the court as it was auto_lag ticks ago; the move given is ignored
+            self.seen_x = np.roll(self.seen_x, -1, 1)
+            self.seen_live = np.roll(self.seen_live, -1, 1)
+            self.seen_x[:, -1] = self.ball[:, 0] + c.ball / 2.0
+            self.seen_live[:, -1] = self.live
+            want = self.seen_x[:, 0] - (self.paddle + c.paddle_w / 2.0)
+            a = np.zeros_like(a)
+            a[:, 0] = np.where(self.seen_live[:, 0], np.clip(want / c.paddle_speed, -1.0, 1.0), 0.0)
         old = self.paddle.copy()
         self.paddle = np.clip(self.paddle + a[:, 0] * c.paddle_speed, self.lo, self.hi - c.paddle_w)
         disp = np.abs(self.paddle - old)

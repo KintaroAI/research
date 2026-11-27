@@ -19,6 +19,7 @@ INFO_SPEC = {  # key -> (shape after N, dtype)
     "success": ((), np.bool_), "timeout": ((), np.bool_), "click": ((), np.bool_),
     "empty_click": ((), np.bool_), "first": ((), np.bool_),
     "bonus": ((), np.float64),
+    "hunger_cut": ((), np.float64),   # task 00110: the part of a rise that the cap at 1 cut off
     "ep_length": ((), np.float64), "ep_return": ((), np.float64),
     "ep_success": ((), np.float64), "ep_clicks": ((), np.float64),
     "ep_empty_clicks": ((), np.float64), "ep_path_length": ((), np.float64),

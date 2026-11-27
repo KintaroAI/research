@@ -1,0 +1,72 @@
+{
+  "name": "W_discs",
+  "description": "Task 00132: a world to watch (world/watch_world.py). 64 x 64 torus, 2 food discs at 1.5 px a tick and 2 checker poison discs at .75, each keeping its speed, bouncing off each other without overlapping, 8 dots under them; no body in the frame, nothing eaten, the body's values 0. The model is the default agent's (U_agent.json) without the label: 4 quarter transformers of 8 layers, context 8, the ring. It only watches (online.watch): no instinct, the null move every tick.",
+  "env": {
+    "kind": "watch",
+    "size": 64,
+    "foods": 2,
+    "poisons": 2,
+    "food_speed": 1.5,
+    "poison_speed": 0.75,
+    "food_radius": [
+      8.0,
+      11.0
+    ],
+    "poison_radius": [
+      5.0,
+      8.0
+    ],
+    "checker_cell": 2,
+    "dots": 8,
+    "drives": true,
+    "respawn": true,
+    "gray": true
+  },
+  "model": {
+    "uni_chan": 1,
+    "patch": 8,
+    "universal": 1,
+    "bins": 32,
+    "gray": 1,
+    "ctx": 8,
+    "in_bins": 1,
+    "uni_pyr": 3,
+    "sum_thumb": 1,
+    "band_n": 4,
+    "band_cols": 2,
+    "age_key": 1,
+    "img": 64,
+    "band_win": 1,
+    "n_layer": 8
+  },
+  "online": {
+    "actor": "self",
+    "steps": 60000,
+    "batch": 8,
+    "replay": 100000,
+    "explore_eps": 0.0,
+    "goal": 0,
+    "memory": "gated",
+    "stm": 256,
+    "relief_k": 12,
+    "store_relief": 0,
+    "store_surprise": 0.0,
+    "store_base": 1.0,
+    "store_warmup": 1000,
+    "instinct_m": 0,
+    "device": "cuda",
+    "save_every": 10000,
+    "log_every": 1000,
+    "threads": 4,
+    "pieces": 1,
+    "piece_rule": "mean",
+    "ring": 1,
+    "watch": 1
+  },
+  "ppo": {
+    "use_ppo": 0,
+    "epochs": 1,
+    "minibatches": 1,
+    "lr": 0.0003
+  }
+}
