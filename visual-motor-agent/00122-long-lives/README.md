@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-27
 **Status:** Complete (one seed an arm: a look, not a measurement)
-**Source:** `dev/` (pending tag `exp/vm-00122`)
+**Source:** `exp/vm-00122` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00122/`
 **Task plan:** [`../tasks/00135-long-lives.md`](../tasks/00135-long-lives.md)
 

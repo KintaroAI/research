@@ -1,7 +1,7 @@
 # Task 00135: Lives of 200k Ticks, Watching (experiment vm-00122)
 
 **Date:** 2026-11-27
-**Status:** Complete (2026-11-27), pending tag `exp/vm-00122` (the owner: "how about we run 200k runs for both worlds to see if it improves over time?"): a longer life keeps improving what the life knows (the court, its own discs) and does nothing for discs it has never seen. One seed an arm: a look.
+**Status:** Complete, tagged `exp/vm-00122` (2026-11-27; the owner: "how about we run 200k runs for both worlds to see if it improves over time?"): a longer life keeps improving what the life knows (the court, its own discs) and does nothing for discs it has never seen. One seed an arm: a look.
 
 ## Context
 
