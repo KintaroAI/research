@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-26 to 2026-11-27
 **Status:** Complete
-**Source:** `dev/` (pending tag `exp/vm-00120`)
+**Source:** `exp/vm-00120` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00120/`
 **Task plan:** [`../tasks/00133-one-transformer.md`](../tasks/00133-one-transformer.md)
 

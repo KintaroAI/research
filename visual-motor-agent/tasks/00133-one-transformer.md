@@ -1,7 +1,7 @@
 # Task 00133: One Transformer on the Whole Frame, Watching (experiment vm-00120)
 
 **Date:** 2026-11-26
-**Status:** Complete (2026-11-27), pending tag `exp/vm-00120`: 24 lives of 60k ticks scored and set against vm-00119's four transformers by seed; `00120-one-transformer/README.md`.
+**Status:** Complete, tagged `exp/vm-00120` (2026-11-27): 24 lives of 60k ticks scored and set against vm-00119's four transformers by seed; `00120-one-transformer/README.md`.
 
 ## Context
 
