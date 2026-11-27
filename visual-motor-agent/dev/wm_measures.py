@@ -980,6 +980,12 @@ def free_part(model, exam):
                 zones=zone_counts(exam, e, fd, fr))   # by zone: what the dream keeps (the ball is the court's zone)
 
 
+def home_skip(info):
+    """The tick from which a life's own world is its home set: after its last tick (60,000 for the lives of vm-00119
+    to vm-00121; a longer life, task 00135, must not be examined on ticks it has lived)."""
+    return max(HOME_SKIP, int(info["config"].get("online", {}).get("steps", 0)))
+
+
 def score(run, step, decode="pair", which="work", parts=("regular", "events", "warm"), H=HORIZON, out_dir=None, exam=None,
           name=None, home_starts=None):
     """The measures of one checkpoint on one exam set. Writes (and adds to) RUN/wm/step_<step>_<decode>_<which>.json and
@@ -996,7 +1002,7 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
         if home_starts:
             st = tuple(range(STARTS[0], STARTS[0] + 125 * int(home_starts), 125))
             more = dict(starts=st, ticks=st[-1] + TICKS - STARTS[-1])
-        exam = Exam(env, seed=info["seed"], copies=1, skip=HOME_SKIP, **more)
+        exam = Exam(env, seed=info["seed"], copies=1, skip=home_skip(info), **more)
     else:
         exam = Exam(env, seed=dict(work=WORK_SEED, final=FINAL_SEED)[which])
     t_exam = time.time() - t0

@@ -365,6 +365,15 @@ def test_the_things_on_their_course(discs, court):
     assert W.course_part(None, discs, 8, fd=fd) == W.course_part(HalfSpeed(), discs, 8)
 
 
+def test_home_is_after_the_life(monkeypatch):
+    """Task 00135: a life's home set starts after its last tick, and not before tick 60,000 (the earlier lives' home)."""
+    life = lambda n: dict(config=dict(online=dict(steps=n)))            # noqa: E731
+    assert W.home_skip(life(60000)) == 60000 and W.home_skip(life(200000)) == 200000 and W.home_skip(life(8)) == 60000
+    assert W.home_skip(dict(config={})) == 60000
+    monkeypatch.setattr(W, "HOME_SKIP", 40)
+    assert W.home_skip(life(8)) == 40 and W.home_skip(life(100)) == 100
+
+
 def test_the_ticks_after_which_a_curve_is_at_a_level():
     assert W.reach([10, 20, 30], [0.1, 0.3, 0.5], 0.2) == (15.0, True)
     assert W.reach([10, 20, 30], [0.1, 0.2, 0.3], 0.2) == (20.0, True)

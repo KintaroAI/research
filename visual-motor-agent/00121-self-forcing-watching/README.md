@@ -239,7 +239,8 @@ For the owner's word; each on 1 to 2 seeds an arm:
 
 ## Files
 
-- `Makefile`: `runs`, `anchors`, `score`, `warm-dream`, `home`, `learn`, `free`, `course`, `course-base`, `table`, `compare`, `images`.
+- `Makefile`: `runs`, `anchors`, `score`, `warm-dream`, `home`, `learn`, `free`, `course`, `course-base`, `table`, `compare`, `images`, `videos`.
+- Videos (`make videos SEEDS="1 2"`, added on the owner's request; in the output folder's `videos/`, not in the repository): `court_seed<s>.mp4`, `discs_new_seed<s>.mp4`, `discs_own_seed<s>.mp4`. Four fixed stretches each: 8 watched ticks, then the world's continuation beside the dreams of the lives without self-forcing, with up to 3 and with up to 7 dreamed steps; on the dreams the true places of the things are outlined.
 - `images/` (`make images ARMS="SD3 SB3"`):
   - `curves_SB3.png`, `curves_SD3.png`: up to 3 dreamed steps against none, the seeds' mean with its 95% band: the pixel skill and the things held by dreamed tick, beside the floors that need no model;
   - `dream_SB3.png`, `dream_SD3.png`: seed 1's life with up to 3 dreamed steps, two stretches of the exam: the world, the dream with `pair`, and the dream with the expected value, 1 to 32 ticks after the last real frame.

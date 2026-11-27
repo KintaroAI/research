@@ -69,6 +69,8 @@ Self-forcing adds forward passes to every update: up to 3 a dreamed step (one fo
   - `compare` prints the block "On its course" for the working set and for `home64`. Makefile: `course`, `course-base` (vm-00120's lives, the other side of every pair; their summaries get the part added, nothing else in them changes).
   - Tests (no card needed): the world itself keeps every thing's speed; a dream at half speed has gone half the way; the copy none; a frame moved by 4 px has its things 4 px off, mirrored when moved the other way.
 
+- **Videos, after the write-up** (the owner, 2026-11-27: "can you generate videos with examples?"): `dev/wm_video.py`, the world and the models' dreams side by side, tick by tick, with the true places of the things outlined on the dreams; four stretches a video, fixed by the number asked for. `make videos SEEDS="1 2"` writes the court, the exam's new discs and the life's own discs for the three arms into the output folder's `videos/`. `tests/test_wm_video.py`: 2 passed (predictors made by hand, no card).
+
 ## Results (2026-11-27)
 
 20 lives ran to 60k ticks and were scored (SD3, SD7, SB3 on seeds 1–6, SB7 on seeds 1–2); the write-up is `00121-self-forcing-watching/README.md`. Self-forcing − none, paired by seed, `pair`, the working set:

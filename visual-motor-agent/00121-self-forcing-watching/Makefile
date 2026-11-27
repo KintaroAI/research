@@ -32,6 +32,9 @@
 #   make images CARD=1 ARMS="SD3 SB3"              — images/curves_<arm>.png (the arm against none, all seeds) and
 #                                                    images/dream_<arm>.png (seed 1: real ticks and dreamed ones);
 #                                                    the README shows those of the two 3-step arms
+#   make videos CARD=1 SEEDS="1 2"                 — the world and the dreams side by side, tick by tick: MP4s in the
+#                                                    output folder's videos/ (the court, new discs, the life's own
+#                                                    discs; none, up to 3 and up to 7 dreamed steps: seeds 1-2 have all)
 #   Options: MPS= (no MPS daemon), ARMS="SD3 SD7", JOBS (scoring processes at a time; one holds about 8 GB)
 
 DEV = ../dev
@@ -72,7 +75,7 @@ LIVES = for s in $(SEEDS); do $(foreach a,$(ARMS),echo $(a) $$s;) done | xargs -
 ONE = $(OUT)/$$0_s$$1 --chunk $(CHUNK) --decode pair
 LOG = >> $(OUT)/$$0_s$$1.wm.log 2>&1
 
-.PHONY: runs anchors score warm-dream home learn free course course-base table compare images
+.PHONY: runs anchors score warm-dream home learn free course course-base table compare images videos
 
 # $$0: the arm, $$1: its config, $$2: the deepest dreamed step, $$3: the seed
 runs:
@@ -126,3 +129,18 @@ images:
 	    --against $(BASE) $(BASE_$(a)) $(NAME_$(a)) "none" && \
 	  env $(G) CUDA_VISIBLE_DEVICES=$(CARD) $(PY) wm_measures.py strip $(OUT)/$(a)_s1 --step 60000 --chunk $(CHUNK) \
 	    -o $(CURDIR)/images/dream_$(a).png &&) true
+
+# added on the owner's request ("can you generate videos with examples?"): four fixed stretches a video, 8 watched ticks
+# and then the dream; on the dreams the true places of the things are outlined. Nothing of it goes into the repository
+VID = env $(G) CUDA_VISIBLE_DEVICES=$(CARD) $(PY) wm_video.py
+D3 = "up to 3 dreamed steps"
+D7 = "up to 7 dreamed steps"
+videos:
+	cd $(DEV) && for s in $(SEEDS); do \
+	  $(VID) $(BASE)/OB_s$$s:"no self-forcing" $(OUT)/SB3_s$$s:$(D3) $(OUT)/SB7_s$$s:$(D7) -o $(OUT)/videos/court_seed$$s.mp4 \
+	    --dream 32 --title "The court, seed $$s: the world and three dreams of it (vm-00121)" && \
+	  $(VID) $(BASE)/OD_s$$s:"no self-forcing" $(OUT)/SD3_s$$s:$(D3) $(OUT)/SD7_s$$s:$(D7) -o $(OUT)/videos/discs_new_seed$$s.mp4 \
+	    --dream 24 --title "Discs the life has never seen (the exam), seed $$s (vm-00121)" && \
+	  $(VID) $(BASE)/OD_s$$s:"no self-forcing" $(OUT)/SD3_s$$s:$(D3) $(OUT)/SD7_s$$s:$(D7) -o $(OUT)/videos/discs_own_seed$$s.mp4 \
+	    --set home --dream 24 --title "The life's own discs, seed $$s (vm-00121)" || exit 1; \
+	done
