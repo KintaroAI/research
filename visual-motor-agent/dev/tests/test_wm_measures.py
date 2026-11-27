@@ -321,12 +321,78 @@ def test_the_things_by_where_they_have_been(discs, court):
     assert edge.any() and been[:, :, 0][edge].all()
 
 
+class HalfSpeed:
+    """The real continuation at half its speed: dreamed tick h shows real tick h // 2 (tick 1: the last real frame)."""
+    name = "half speed"
+
+    def dream_from(self, exam, e, s, H):
+        t = np.asarray(s)[:, None] + (1 + np.arange(H)) // 2
+        return exam.frames[np.asarray(e)[:, None], t], exam.body[np.asarray(e)[:, None], t]
+
+
+def test_the_things_on_their_course(discs, court):
+    """Task 00134: is a dreamed thing behind the real one on its course, ahead of it or aside? The world itself keeps
+    every thing's speed, a dream at half speed has gone half the way, the copy none of it, and a frame moved by 4 px
+    has its things 4 px off, the same way along and across whichever way it is moved."""
+    for ex in (discs, court):
+        w = W.course_part(W.TheWorld(), ex, 8)
+        assert list(w) == list(ex.thing_kinds)
+        for v in w.values():
+            assert set(v) == set(W.COURSE_KEYS) and all(len(x) == 8 for x in v.values())
+            assert v["n"][0] > 0 and v["n"] == sorted(v["n"], reverse=True)       # fewer keep a straight course for longer
+            assert v["found"] == v["n"] and v["held"] == [1.0] * 8 and v["travel"] == [1.0] * 8
+            assert v["along"] == [0.0] * 8 and v["aside"] == [0.0] * 8 and v["behind"] == [0.0] * 8 and v["ahead"] == [0.0] * 8
+        half, cop = W.course_part(HalfSpeed(), ex, 8), W.course_part(W.Copy(), ex, 8)
+        for k in w:
+            assert half[k]["n"] == w[k]["n"] == cop[k]["n"]                      # which things are on a course is the world's matter
+            for h in (2, 4, 8):                                                 # read in whole px: within .08 of a half
+                assert half[k]["travel"][h - 1] == pytest.approx(0.5, abs=0.08), (ex.kind, k, h)
+            assert half[k]["behind"][3] == 1.0 and half[k]["ahead"][3] == 0.0 and half[k]["along"][3] < -1.0
+            for h in (2, 4):                                                    # the copy has gone none of the way
+                assert abs(cop[k]["travel"][h - 1]) < 0.1, (ex.kind, k, h)
+            assert cop[k]["behind"][3] == 1.0
+        assert cop[ex.thing_kinds[0]]["held"][3] == 0.0                         # a food disc or a ball 6 px behind is not held
+    a, b = W.course_part(Shifted(4, 0), discs, 4), W.course_part(Shifted(-4, 0), discs, 4)   # 4 px: the checker in phase
+    for k in a:
+        assert a[k]["found"] == a[k]["n"] and a[k]["held"] == [0.0] * 4          # found, 4 px off: not held
+        assert a[k]["along"] == pytest.approx([-x for x in b[k]["along"]]) and a[k]["aside"] == pytest.approx(b[k]["aside"])
+        assert all(abs(x) <= 4.0 and 0.0 <= y <= 4.0 for x, y in zip(a[k]["along"], a[k]["aside"]))
+    up = W.course_part(Shifted(0, 4), discs, 4)                                 # a quarter turn: what was along is now aside
+    for k in a:
+        assert all(x ** 2 + y ** 2 <= 16.0 + 1e-9 for x, y in zip(a[k]["along"], up[k]["along"]))
+    e, s = discs.regular()                                                      # the dreams at hand give the same as dreaming again
+    fd, _ = W.dreams(HalfSpeed(), discs, e, s, 8)
+    assert W.course_part(None, discs, 8, fd=fd) == W.course_part(HalfSpeed(), discs, 8)
+
+
 def test_the_ticks_after_which_a_curve_is_at_a_level():
     assert W.reach([10, 20, 30], [0.1, 0.3, 0.5], 0.2) == (15.0, True)
     assert W.reach([10, 20, 30], [0.1, 0.2, 0.3], 0.2) == (20.0, True)
     assert W.reach([10, 20], [0.5, 0.6], 0.2) == (10, False)            # at the first checkpoint already
     assert W.reach([10, 20], [0.1, 0.15], 0.2) is None                  # never
     assert W.reach([10, 20, 30], [0.1, 0.05, 0.3], 0.2) == (26.0, True)  # a dip does not count
+
+
+def test_two_arms_are_compared_on_the_parts_both_have(tmp_path, capsys):
+    """Task 00134: an arm scored without the seam part against one scored with it (vm-00121's lives against vm-00120's).
+    A part that is not there reads as nan, and the comparison must leave its rows out, in either order."""
+    for arm, seam in (("AA", False), ("BB", True)):
+        for sd in (1, 2, 3):
+            r = dict(run="%s_s%d" % (arm, sd), seed=sd, world="watch", params=7,
+                     regular=dict(next=dict(skill=0.2 + 0.1 * sd + (0.05 if seam else 0.0))))
+            if seam:
+                r["seam"] = dict(near=dict(skill=[0.1 * sd] * 8), far=dict(skill=[0.2 * sd] * 8))
+            d = tmp_path / ("%s_s%d" % (arm, sd)) / "wm"
+            os.makedirs(d)
+            json.dump(r, open(d / "step_00000000_pair_work.json", "w"))
+    for a, b, sign in (("AA", "BB", "−"), ("BB", "AA", "+")):
+        W.compare(str(tmp_path), a, str(tmp_path), b, [1, 2, 3], step=0)
+        out = capsys.readouterr().out
+        assert "## %s against %s: 3 seeds" % (a, b) in out and "| Next-frame skill |" in out and sign + ".050 ± .000" in out
+        assert "seam" not in out                                        # neither its rows nor the difference by seed
+    W.compare(str(tmp_path), "BB", str(tmp_path), "BB", [1, 2, 3], step=0)   # both have it: the block and the difference by seed
+    out = capsys.readouterr().out
+    assert "### At the seams between the quarters" in out and "near the seams less" in out
 
 
 def test_the_events_of_the_court_on_known_forecasts(court):
@@ -485,7 +551,7 @@ def test_one_transformer_goes_through_the_same_calls(tmp_path_factory, court):
 
 @gpu
 @pytest.mark.parametrize("name", ["W_discs.json", "W_breakout.json"])
-def test_a_checkpoint_is_scored(runs, name, tmp_path):
+def test_a_checkpoint_is_scored(runs, name, tmp_path, monkeypatch):
     ex = W.Exam(env_of(name), seed=5, copies=2, ticks=330, starts=(100, 200))
     r = W.score(runs[name], 0, "mean", "work", ("regular", "events", "warm", "warmdream", "seam"), H=2, out_dir=str(tmp_path), exam=ex)
     assert r["world"] == ex.kind and r["unsettled"] == dict(regular=0, events=0, warm=0, warmdream=0, seam=0) and r["regular"]["starts"] == 4
@@ -503,6 +569,19 @@ def test_a_checkpoint_is_scored(runs, name, tmp_path):
         assert set(r["events"]) == {"next", "within"} and r["events"]["next"]["hit"]["events"] > 0
     else:
         assert set(r["events"]) == {"bounce", "free"}
+    # task 00134, the course part: from the regular part's dreams and dreamed for itself, the same numbers
+    both = W.score(runs[name], 0, "mean", "work", ("regular", "course"), H=W.COURSE_TICKS, out_dir=str(tmp_path / "both"), exam=ex)
+    alone = W.score(runs[name], 0, "mean", "work", ("course",), out_dir=str(tmp_path / "alone"), exam=ex)
+    assert list(both["course"]) == list(ex.thing_kinds) and json.dumps(both["course"]) == json.dumps(alone["course"])
+    assert alone["unsettled"] == dict(course=0) and "regular" not in alone
+    world = W.course_part(W.TheWorld(), ex)
+    for k, v in alone["course"].items():
+        assert all(len(v[m]) == W.COURSE_TICKS for m in W.COURSE_KEYS) and v["n"] == world[k]["n"]
+        assert all(f <= n for f, n in zip(v["found"], v["n"]))
+    monkeypatch.setattr(W, "HOME_SKIP", 40)                             # the home set with 3 starts in place of 16, under its own name
+    h = W.score(runs[name], 0, "mean", "home", ("course",), out_dir=str(tmp_path / "home"), name="home3", home_starts=3)
+    assert h["set"] == "home" and os.path.exists(tmp_path / "home" / "step_00000000_mean_home3.json")
+    assert all(n <= 3 * 2 for v in h["course"].values() for n in v["n"]) and any(v["n"][0] > 0 for v in h["course"].values())
 
 
 @gpu
@@ -517,7 +596,7 @@ def test_the_tables_print_from_scored_lives(runs, name, tmp_path, capsys):
         run = tmp_path / ("XX_s%d" % sd)
         shutil.copytree(runs[name], run)
         for dec in ("pair", "mean"):
-            W.score(str(run), 0, dec, "work", ("regular", "events", "warm", "seam") if dec == "pair" else ("regular",), H=4, exam=ex)
+            W.score(str(run), 0, dec, "work", ("regular", "events", "warm", "seam", "course") if dec == "pair" else ("regular",), H=4, exam=ex)
         r = W.score(str(run), 0, "pair", "work", ("regular", "next"), H=4, exam=ex, name="learn")
         assert "within" not in r["events"]                              # the learning curve leaves the long dreams out
         W.score(str(run), 0, "pair", "home", ("regular",), H=4, exam=ex)
@@ -535,7 +614,7 @@ def test_the_tables_print_from_scored_lives(runs, name, tmp_path, capsys):
                  "### Is a dreamed frame a possible frame?", "### Events", "### Warm-up", "### Learning", "### Home and away",
                  "### By seed", "XX: 2 seeds at 0k (1, 2)", "did not settle: 0", "## XX against XX: 2 seeds",
                  "### At the seams between the quarters", "### The next frame and the dream by pixels", "+.000 ± .000",
-                 "### The things by where they have been", "inside one quarter so far:"):
+                 "### The things by where they have been", "inside one quarter so far:", "### On its course (added after"):
         assert part in out, part
     width, n_tables = None, 0
     for line in out.split("\n"):                                        # every row of a table has as many cells as its head:

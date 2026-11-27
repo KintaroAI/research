@@ -71,6 +71,9 @@ HOME_SKIP = 60000
 FREE_TICKS, FREE_PER_COPY = 200, 2
 LEARN_TICKS = 8                         # the learning curve's dreams at every checkpoint
 SEAM, SEAM_TICKS = 4, 8                 # the seam part: px on each side of a quarter's border; dreamed ticks
+COURSE_TICKS, COURSE_SPEED, COURSE_EPS = 16, 0.1, 1e-3   # the course part: dreamed ticks; a thing slower than this (px a
+#                                         tick) has no course; two true steps this near (px) are the same step
+COURSE_KEYS = ("n", "found", "held", "along", "behind", "ahead", "aside", "travel")
 CHUNK = 256                             # windows per forward pass
 
 
@@ -911,6 +914,58 @@ def borders(runs, step=60000, decode="pair", exams=None):
     return out
 
 
+def course_part(model, exam, H=COURSE_TICKS, fd=None):
+    """Added after vm-00121's first results (task 00134): is a dreamed thing behind the real one on its course, ahead
+    of it or aside? The regular starts; at dreamed tick h every thing that is there and whose true steps up to tick h
+    are all the step it made into the last real frame, at least COURSE_SPEED px long (it keeps the course the last two
+    real frames show: no turn, no push, not standing). The reader's shift (the dreamed place less the true one, whole
+    px) is split along that step and across it. Per kind, a list by tick: n (the things on a straight course), found,
+    held (of n: found within HOLD px) and, over the found, along (the mean px along the course; below 0: behind),
+    behind and ahead (the shares more than half a px behind and ahead), aside (the mean px across the course, to either
+    side) and travel (the way gone along the course since the last real frame as a share of the true way: 1 keeps the
+    speed, 0 stands still). fd: the dreams of the regular starts, if they are at hand (the regular part's)."""
+    e, s = exam.regular()
+    if fd is None:
+        fd, _ = dreams(model, exam, e, s, H)
+    H = min(H, fd.shape[1])
+    S, torus = float(exam.S), exam.kind == "watch"
+    before, ok0, kinds = exam.positions(e, s - 1)
+    prev, ok1, _ = exam.positions(e, s)
+    first = wrap_delta(prev, before, S) if torus else prev - before            # [n, M, 2]: the step into the last real frame
+    speed = np.hypot(first[..., 0], first[..., 1])
+    straight = ok0 & ok1 & (speed >= COURSE_SPEED)
+    names = list(dict.fromkeys(kinds))
+    out = {k: {m: [] for m in COURSE_KEYS} for k in names}
+    for h in range(1, H + 1):
+        pos, ok, _ = exam.positions(e, s + h)
+        v = wrap_delta(pos, prev, S) if torus else pos - prev                    # the true step into tick h
+        straight = straight & ok & (np.abs(v - first).max(-1) < COURSE_EPS)
+        prev = pos
+        acc = {k: dict(n=0, found=0, held=0, along=[], aside=[], travel=[]) for k in names}
+        for j, th in enumerate(exam.things(e, s + h)):
+            on = straight[j] & th["ok"]
+            sh, gain = locate(fd[:, h - 1], th)
+            got = on & (gain > 0)
+            u = first[j][got] / speed[j][got, None]
+            along = (sh[got] * u).sum(1)
+            a = acc[kinds[j]]
+            a["n"], a["found"] = a["n"] + int(on.sum()), a["found"] + int(got.sum())
+            a["held"] += int((np.hypot(sh[got, 0], sh[got, 1]) <= HOLD).sum())
+            a["along"].append(along)
+            a["aside"].append(np.abs(sh[got, 1] * u[:, 0] - sh[got, 0] * u[:, 1]))
+            a["travel"].append(1.0 + along / (h * speed[j][got]))
+        for k in names:
+            a = acc[k]
+            al, asd, tr = (np.concatenate(a[m]) for m in ("along", "aside", "travel"))
+            mean = lambda x: float(x.mean()) if len(x) else float("nan")   # noqa: E731
+            o = out[k]
+            o["n"].append(a["n"]), o["found"].append(a["found"])
+            o["held"].append(a["held"] / a["n"] if a["n"] else float("nan"))
+            o["along"].append(mean(al)), o["aside"].append(mean(asd)), o["travel"].append(mean(tr))
+            o["behind"].append(mean(al < -0.5)), o["ahead"].append(mean(al > 0.5))
+    return out
+
+
 def free_part(model, exam):
     """Measure 6: a dream of FREE_TICKS ticks from the first FREE_PER_COPY regular starts of every copy: the first
     tick with an invalid frame (FREE_TICKS + 1: none), its median; the share of valid frames by tick."""
@@ -926,17 +981,22 @@ def free_part(model, exam):
 
 
 def score(run, step, decode="pair", which="work", parts=("regular", "events", "warm"), H=HORIZON, out_dir=None, exam=None,
-          name=None):
+          name=None, home_starts=None):
     """The measures of one checkpoint on one exam set. Writes (and adds to) RUN/wm/step_<step>_<decode>_<which>.json and
     .npz; returns the summary. exam: a ready one (a test's small one). name: the set's name in the file, if not `which`
-    (the learning curve's shorter run on the working set is kept apart as 'learn')."""
+    (the learning curve's shorter run on the working set is kept apart as 'learn'). home_starts: the home set with
+    that many regular starts in place of its 16 (a longer stretch of the life's own world; give it a name of its own)."""
     info = json.load(open(os.path.join(run, "info.json")))
     env = info["config"]["env"]
     t0 = time.time()
     if exam is not None:
         pass
     elif which == "home":
-        exam = Exam(env, seed=info["seed"], copies=1, skip=HOME_SKIP)
+        more = {}
+        if home_starts:
+            st = tuple(range(STARTS[0], STARTS[0] + 125 * int(home_starts), 125))
+            more = dict(starts=st, ticks=st[-1] + TICKS - STARTS[-1])
+        exam = Exam(env, seed=info["seed"], copies=1, skip=HOME_SKIP, **more)
     else:
         exam = Exam(env, seed=dict(work=WORK_SEED, final=FINAL_SEED)[which])
     t_exam = time.time() - t0
@@ -947,13 +1007,13 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
     res = json.load(open(base + ".json")) if os.path.exists(base + ".json") else {}
     res.update(run=os.path.basename(run.rstrip("/")), seed=info["seed"], step=step, decode=decode, set=which,
                world=exam.kind, params=model.params, pieces=model.S, chunk=CHUNK)
-    reg, sec = None, res.setdefault("seconds", {})
+    reg, regfd, sec = None, None, res.setdefault("seconds", {})
     sec["exam"] = round(t_exam, 1)
     un = res["unsettled"] = res["unsettled"] if isinstance(res.get("unsettled"), dict) else {}
     for part in parts:
         t0, model.passes, model.unsettled = time.time(), [], 0
         if part == "regular":
-            res["regular"], arrays, (_, _, _, bd) = regular_part(model, exam, H)
+            res["regular"], arrays, (_, _, regfd, bd) = regular_part(model, exam, H)
             reg = bd
             np.savez_compressed(base + ".npz", **arrays)
             res["regular"]["passes"] = float(np.mean(model.passes))
@@ -971,6 +1031,8 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
             res["seam"] = seam_part(model, exam)
         elif part == "free":
             res["free"] = free_part(model, exam)
+        elif part == "course":   # the regular part's dreams again, if this call made them
+            res["course"] = course_part(model, exam, fd=regfd if regfd is not None and regfd.shape[1] >= COURSE_TICKS else None)
         else:
             raise ValueError("unknown part '%s'" % part)
         sec[part] = round(time.time() - t0, 1)
@@ -1431,7 +1493,10 @@ def compare(out_a, arm_a, out_b, arm_b, seeds, step=60000):
             rows += [("The %s held at tick %d, lying across a seam" % (k, h), ("seam", "things", k, "across", "held", h - 1)),
                      ("The %s held at tick %d, clear of the seams" % (k, h), ("seam", "things", k, "clear", "held", h - 1))]
     block("At the seams between the quarters", rows)
-    sd = [k for k in both if isinstance(_get(A[k], "seam", "near", "skill", 0), float) and isinstance(_get(B[k], "seam", "near", "skill", 0), float)]
+    def seamed(r):     # a part that is not there reads as nan, which is a float too
+        v = _get(r, "seam", "near", "skill", 0)
+        return isinstance(v, float) and v == v
+    sd = [k for k in both if seamed(A[k]) and seamed(B[k])]
     if len(sd) > 1:   # the loss at the seams against the loss away from them, by seed
         for h in (1, 4, 8):
             near = [_get(A[k], "seam", "near", "skill", h - 1) - _get(B[k], "seam", "near", "skill", h - 1) for k in sd]
@@ -1494,6 +1559,19 @@ def compare(out_a, arm_a, out_b, arm_b, seeds, step=60000):
                                              ("after about %dk ticks" if r[1] else "at or before %dk ticks") % round(r[0] / 1000)))
             print("%s is at %s's level of %dk ticks (the means of %d seeds; linear between checkpoints) in " % (arm_a, arm_b, step // 1000, len(full))
                   + "; ".join(said) + ".\n")
+    def course_rows():
+        rows = []
+        for k in kinds:
+            rows += [("The %s on a straight course held at tick %d" % (k, h), ("course", k, "held", h - 1)) for h in (4, 8)]
+            rows += [("The %s's way along its course at tick %d, share of the true way" % (k, h), ("course", k, "travel", h - 1)) for h in (1, 4, 8)]
+            rows += [("The %s behind on its course at tick %d" % (k, h), ("course", k, "behind", h - 1)) for h in (4, 8)]
+            rows += [("The %s ahead on its course at tick %d" % (k, h), ("course", k, "ahead", h - 1)) for h in (4, 8)]
+            rows += [("px aside of its course, the %s at tick %d" % (k, h), ("course", k, "aside", h - 1), f2) for h in (4, 8)]
+        return rows
+    block("On its course (added after vm-00121's first results)", course_rows())
+    Ac, Bc = load(out_a, arm_a, step, "pair", "home64", seeds), load(out_b, arm_b, step, "pair", "home64", seeds)
+    if Ac and Bc:
+        block("On its course at home (64 starts of the life's own world, later)", course_rows(), Ac, Bc)
     block("The cost of a dream", [("Decoding passes a dreamed tick", g + ("passes",), f1)])
 
 
@@ -1634,6 +1712,7 @@ def main():
     a.add_argument("--horizon", type=int, default=HORIZON)
     a.add_argument("--name", default=None, help="the set's name in the file (learn: the checkpoints' shorter run)")
     a.add_argument("--chunk", type=int, default=CHUNK, help="windows a pass (one transformer on the whole frame: 64)")
+    a.add_argument("--home-starts", type=int, default=None, help="the home set with this many regular starts in place of 16 (with --name)")
     a = sub.add_parser("anchors")
     a.add_argument("config")
     a.add_argument("-o", "--out", required=True)
@@ -1687,7 +1766,7 @@ def main():
         for st in args.step:
             for dec in args.decode:
                 for which in args.which:
-                    r = score(args.run, st, dec, which, args.parts, args.horizon, name=args.name)
+                    r = score(args.run, st, dec, which, args.parts, args.horizon, name=args.name, home_starts=args.home_starts)
                     g = r.get("regular", {})
                     print("%-10s %6d %-5s %-5s  next-frame skill %s  horizon %s  passes %s  seconds %s" % (
                         r["run"], st, dec, which, "%.3f" % g["next"]["skill"] if g else "-",

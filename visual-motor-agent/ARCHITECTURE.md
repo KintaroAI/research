@@ -705,13 +705,31 @@ The skill of a prediction is 1 − its error ÷ the copy's error, both summed ov
 - **Acting was not run.** The four were adopted because their competing moves forage better (vm-00051); when the model moves again that is to be measured again, and the picture can come from one transformer while several propose the moves.
 - **How it was measured:** the part `seam` (the error within 4 px of a border between the quarters and away from it) and `wm_measures.py borders` (the things held by whether they have lain across a border so far; from the kept distances, no model). A band of pixels at one tick does not follow a thing that crossed it and moved on; the second reading does.
 
+**Trained on its own dreamed frames (vm-00121, 2026-11-27).** The first change, by the owner's word: the one transformer with self-forcing (of the 7 replayed windows of an update, 2 get the inputs of their last 1 to 3 or 1 to 7 steps from the model's own predictions, decoded with `pair`; the targets real). Seeds 1–6 against vm-00120's lives by seed; the court's 7-step arm on seeds 1–2.
+
+| Number | The scripted court: none | up to 3 steps | 3 steps − none | The moving discs, new discs: none | up to 3 steps | 3 steps − none | up to 7 steps | 7 steps − none |
+|---|---|---|---|---|---|---|---|---|
+| Next-frame skill | .757 | .766 | +.009 ± .016 | .253 | .319 | +.066 ± .071 | .190 | −.063 ± .200 |
+| Skill at the 8th dreamed tick | .682 | .745 | +.063 ± .033 | .435 | .446 | +.011 ± .080 | .387 | −.049 ± .052 |
+| Dream horizon by objects, ticks | the ball 10.8 | 16.2 | +5.3 ± 2.9 | food 4.5 | 4.5 | +0.0 ± 1.3 | 3.5 | −1.0 ± 1.1 |
+| The thing held at tick 8 (the ball; the food) | .645 | .826 | +.181 ± .085 | .280 | .290 | +.010 ± .069 | .157 | −.123 ± .070 |
+| Skill at the 8th dreamed tick on the life's own world | | | | .516 | .620 | +.104 ± .049 | .606 | +.090 ± .054 |
+| Hit forecast within 16 dreamed ticks | .815 | .908 | +.093 ± .072 | | | | | |
+
+- **It works where the life knows the things.** In the court every life and the exam have the same ball, and the dream holds it half as long again, past a straight line through the window's frames (11 ticks) and through its true places (15): a line cannot bounce. The next frame pays nothing.
+- **The disc world's exam shows nothing of it,** and the life's own discs do: both arms dream them better. The exam's discs and dots are new to the life.
+- **The disc world's exam measures two things at once:** how well a dream holds, and how a life that has seen four discs and eight dots deals with others. The second hides the first. On the next frame the dots are newer than the discs (skill on the dots .264 on the exam against .780 at home).
+- **A dreamed disc falls behind on its course** (the part `course`, added here): without self-forcing a poison disc has gone .786 of its true way at tick 4 on own discs and .719 on new ones. The dream's error is a lag and a drift, rarely a loss. Self-forcing reduces the lag on own discs (.856).
+- **Seven dreamed steps harm on new discs** (the food is not found in .357 of the dreams at tick 8); why is not settled.
+- **Few seeds from here on** (the owner, 2026-11-27): a change is tried on 1 to 2 seeds an arm to see whether it works at all; many seeds wait until something is worth confirming.
+
 **The order of work.**
 1. The worlds to watch and the watching option: built and tested on 2026-11-26 (task 00132, `tests/test_watch.py`).
 2. The contract, the exam and the measures, with the adapter for the four transformers and the floors: built on 2026-11-26 (`dev/wm_measures.py`, `tests/test_wm_measures.py`). DreamerV3's adapter is not written.
 3. The lives that watch and the reference table: done on 2026-11-26 (vm-00119, above). One transformer set against the four on it: done on 2026-11-27 (vm-00120, above).
-4. The changes, each judged on that table (none started; the order is the owner's; after vm-00120 they would start from one transformer, `configs/W1_discs.json` and `configs/W1_breakout.json`, for the owner's word):
-   - **the dream in the disc world:** training on the model's own dreamed frames, decoded with `pair` (self-forcing; `lifetime.py` refuses it with the four transformers and runs it with one; it kept the single model's dream truer in vm-00032). The mark to reach is the straight line through the last two frames;
-   - **the watched disc world:** new discs now and then, so that a life cannot learn four discs by heart;
+4. The changes, each judged on that table (the first done on 2026-11-27, vm-00121; the order is the owner's; they start from one transformer, `configs/W1_discs.json` and `configs/W1_breakout.json`; each on 1 to 2 seeds an arm first, by the owner's word of 2026-11-27):
+   - **the dream in the disc world:** training on the model's own dreamed frames (self-forcing; `lifetime.py` refuses it with the four transformers and runs it with one). Done as vm-00121 (above): it works where the life knows the things (the court's ball is held half as long again) and does not show on the disc world's exam, whose discs and dots are new to the life;
+   - **the watched disc world:** new discs and new dots now and then, so that a life cannot learn its scene by heart. After vm-00121 this comes before anything else in the disc world: until then its exam measures the meeting with new things together with the dream. Proposed, for the owner's word: with and without up to 3 dreamed steps;
    - **the window, then memory:** the model uses 2 to 4 of its 8 ticks. First the ball held longer by reading the whole window, then by carrying its course over more ticks than the window; then a gap that the discs and the ball pass behind (`online.blind`), with the three mechanisms of vm-00092 to vm-00094 tried again there;
    - **patch codes** in place of pixels predicted one by one (a guess, not yet tested): the numbers it should move are the things held and the valid frames;
    - **an outside reference:** DreamerV3's world model through the same three calls.
