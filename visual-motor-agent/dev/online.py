@@ -118,6 +118,14 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # task 00118: body 0's predicted current frame (each piece its own block, decoded pair, from the frame as the
                       # model sees it) and the true frame, for the first N ticks (pred_frames.npy, pred_truth.npy). 0: off
                       pred_record=0,
+                      # task 00139 (one transformer on the GPU with the ring; a plain life or one with online.blind): at every
+                      # tick, before the model learns from the frame, its picture of that frame: the sharp decoding (pair) of
+                      # what it predicts for the current frame from the window as it saw it. In the metrics, the mean over
+                      # the ticks of the summed squared error in grey levels: pred_err (the picture), pred_copy (the last
+                      # real frame), pred_mean (the mean of all frames so far). With it, pred_record = N keeps the real
+                      # frame and the picture of the first and last N ticks and of every pred_every-th tick
+                      # (pred_frames.npz: tick, real, pred). 0: off
+                      pred_score=0, pred_every=0,
                       # task 00118 (vm-00106, with blind): the gap in the targets too. "black": the targets have the gap as the
                       # model sees it (the eye's own data); "motion": the gap of each step's target filled from a canvas of the
                       # world painted only with what was seen outside the gap (GapTeacher; the body's position from the world,

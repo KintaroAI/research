@@ -528,6 +528,8 @@ class Pieces:
     lived (task 00136, a run with online.mix): the real ticks are shown as the life saw frames, each with the model's
     own prediction of it mixed in (online.mix_inputs, the life's own function; the masks from a generator fixed by the
     number of windows, so a scoring repeats). Without it the real ticks are shown whole, as to every other model.
+    lived with a run with online.blind (task 00139): the blind box black in every real tick shown, as in the life (the
+    whole frame: the model is given black frames and nothing else).
 
     decode 'draw', 'draw0.7', 'drawp', 'drawp0.5' (task 00138; one transformer): the dream rolls dice. Every pixel
     picks one of the humps of its predicted chances and takes the sharp value at that hump (draw_values). 'draw': a
@@ -547,8 +549,9 @@ class Pieces:
         on = info["config"].get("online", {})
         self.mix, self.mix_jacobi = (float(on.get("mix") or 0.0), int(on.get("mix_jacobi", 2))) if lived else (0.0, 2)
         self.mix_noise = float(on.get("mix_noise") or 0.0) if lived else 0.0   # task 00137: the life's random greys too
-        if lived and (not self.mix or self.S != 1):
-            raise ValueError("lived: the run must have online.mix and one transformer")
+        self.blind = [int(v) for v in (on.get("blind") or [])] if lived else []   # task 00139: the life's blind box (the whole frame: black)
+        if lived and not self.blind and (not self.mix or self.S != 1):
+            raise ValueError("lived: the run must have online.mix (and one transformer) or online.blind")
         self.agents = [agent_lib.Agent.load(os.path.join(run, ckpt_name(step, k, self.S))) for k in range(self.S)]
         self.models = [cuda_lib.CudaModel(a) for a in self.agents]
         self.alone = decode in ("instinct", "instinct_pair")
@@ -588,6 +591,10 @@ class Pieces:
 
     def observe(self, frame, body, move):
         frame, body, move = np.asarray(frame, np.uint8), np.asarray(body, np.float32), np.asarray(move, np.float32)
+        if self.blind:   # task 00139 (task 00118's blind spot): as in the life, the box black in what the model is given
+            x, y, w, h = self.blind
+            frame = frame.copy()
+            frame[:, y:y + h, x:x + w] = 0
         if self.mix:   # task 00136: as in the life: the model's own prediction of this frame mixed into what it sees of it
             from online import mix_inputs
             k = min(len(self.fr), self.L - 1)

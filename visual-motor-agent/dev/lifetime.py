@@ -391,8 +391,16 @@ def main():
     if on["blind_target"] == "motion" and not (getattr(env_cfg, "egocentric", False) and getattr(env_cfg, "view", 0) == agent.config["img"]
                                                 and (agent.config.get("img_w") or agent.config["img"]) == agent.config["img"]):
         raise ValueError("online.blind_target = motion needs CircleWorld's egocentric view, the model's frame the view")
-    if on["pred_record"] and not (uni and on["device"] == "cuda" and S == 4 and agent.config.get("band_cols") == 2 and not panels):
-        raise ValueError("online.pred_record needs the four quarter pieces (band_n 4, band_cols 2) on the GPU, without panels")
+    pred_score = bool(on["pred_score"])   # task 00139: the model's picture of every frame before it learns from it
+    if pred_score and not (uni and on["device"] == "cuda" and on["ring"] and S == 1 and N0 == 1 and not panels and not q_in
+                           and not clog and not delayed and not on["sf_windows"] and not agent.config.get("state")):
+        raise ValueError("online.pred_score needs one universal transformer on the GPU with the ring and one body, without "
+                         "panels, noise_in, clog, env.delays, self-forcing or model.state")
+    if on["pred_every"] and not (pred_score and on["pred_record"]):
+        raise ValueError("online.pred_every is a part of online.pred_record with online.pred_score")
+    if on["pred_record"] and not pred_score and not (uni and on["device"] == "cuda" and S == 4 and agent.config.get("band_cols") == 2 and not panels):
+        raise ValueError("online.pred_record needs the four quarter pieces (band_n 4, band_cols 2) on the GPU, without panels "
+                         "(or one transformer with online.pred_score)")
     if panels and not (uni and on["device"] == "cuda" and S == 4 and agent.config["band_cols"] == 2 and on["ring"]
                        and agent.config["img"] == 2 * int(getattr(env_cfg, "view", 0) or env_cfg.size) and not agent.config["img_w"]
                        and not (delayed or on["sf_windows"] or clog or q_in or q_off or agent.config.get("state"))
@@ -472,7 +480,7 @@ def main():
                              "and online.mix_noise add to at most 1")
         if (not uni or on["device"] != "cuda" or not on["ring"] or S > 1 or N0 > 1 or q_in or clog or q_off or delayed or blind
                 or panels or state or fast or tok_sur or refresh or lref or on["instinct_h"] > 1 or hasattr(env, "think")
-                or on["pred_record"]):
+                or on["pred_record"] or pred_score):
             raise ValueError("online.mix needs one universal transformer on the GPU with the ring and one body, without noise_in, "
                              "clog, off, env.delays, blind, panels, model.state, fast, surprise gating, a refreshed value or label, "
                              "a lookahead (instinct_h above 1), env.thought or pred_record")
@@ -542,6 +550,9 @@ def main():
         panel_strip, panel_rec = [], []
     frame_rec = []   # task 00111: online.frame_record
     pred_rec, pred_true = [], []   # task 00118: online.pred_record
+    see = dict(tick=[], real=[], pred=[])   # task 00139: online.pred_score's kept frames; the last real frame; the frames' sum
+    see_last, see_sum, see_n = None, None, 0
+    see_lay = agent_lib.uni_layout(agent.config)["patch"] - 1 if pred_score else None
     teacher = GapTeacher(N0, env_cfg.size, env_cfg.view, blind) if on["blind_target"] == "motion" else None   # task 00118 (vm-00106)
     rec_lay = [agent_lib.uni_layout(a_.config)["patch"] - 1 for a_ in agents] if on["pred_record"] else None
     ce_n = prev_N = 0   # bodies whose newest window the last update trained on (their surprise is read next tick)
@@ -605,6 +616,7 @@ def main():
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
                     smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
                     t_mix=0.0, mix_px=0, mix_n=0, mix_wrong=0, mix_abs=0.0, mix_grey=0,
+                    see_err=0.0, see_copy=0.0, see_mean=0.0, see_ticks=0,
                     on_k=np.zeros(S), st_n=0, st_sum=0.0, st_sq=0.0, pg_pos=0.0, pg_abs=0.0, move_ent=0.0, held=0)
     win = new_window()
     t0 = time.time()
@@ -725,7 +737,32 @@ def main():
         if on["ring"]:
             for k in live:
                 gpus[k].uni_ring_move(a)
-        if on["pred_record"] and tick <= on["pred_record"]:   # task 00118: body 0's predicted current frame and the true one
+        if pred_score:   # task 00139: the model's picture of this frame, from the window as it saw it, before it learns from it
+            st_ = gms[0].stm
+            kk = min(st_.n, L - 1)
+            ix = st_.last(kk)
+            w_img = np.concatenate([st_.frames(ix), obs["image"][:1]])[None]
+            if blind:
+                w_img = blind_frames(w_img, blind)
+            w_drv = np.concatenate([st_.drv[ix], obs["drives"][:1]])[None].astype(np.float32)
+            w_act = np.concatenate([st_.act[ix], a[:1]])[None].astype(np.float32)
+            w_es = np.concatenate([st_.es[ix], ep_start[:1]])[None].astype(np.uint8)
+            v = gpus[0].forward_uni_step(w_img, w_drv, w_act, w_es, kk, mode=DECODE["pair"])["values_t"][:, see_lay]
+            pf = uni_frame(agent.config, np.clip(v, 0.0, 1.0))[0, ..., 0]
+            real_ = obs["image"][0, ..., 0]
+            if see_last is not None:   # the two that need no model: the last real frame, and the mean of all frames so far
+                r64 = real_.astype(np.float64)
+                win["see_err"] += float(((pf.astype(np.float64) - r64) ** 2).sum())
+                win["see_copy"] += float(((see_last.astype(np.float64) - r64) ** 2).sum())
+                win["see_mean"] += float(((np.rint(see_sum / see_n) - r64) ** 2).sum())
+                win["see_ticks"] += 1
+            see_last = real_.copy()
+            see_sum = real_.astype(np.float64) if see_sum is None else see_sum + real_
+            see_n += 1
+            if on["pred_record"] and (tick <= on["pred_record"] or tick > on["steps"] - on["pred_record"]
+                                      or (on["pred_every"] and tick % on["pred_every"] == 0)):
+                see["tick"].append(tick), see["real"].append(real_.copy()), see["pred"].append(pf.copy())
+        if on["pred_record"] and not pred_score and tick <= on["pred_record"]:   # task 00118: body 0's predicted current frame and the true one
             kk = min(gms[0].stm.n, L - 1)
             ix = gms[0].stm.last(kk)
             st_ = gms[0].stm
@@ -1035,6 +1072,9 @@ def main():
                 row.update(pg_scale=pg_scale(), pg_pos=win["pg_pos"] / bs, pg_abs=win["pg_abs"] / bs, move_ent=win["move_ent"] / bs)
             if act_every > 1:   # task 00131: the share of body-ticks whose move was a held one
                 row.update(held=win["held"] / bs)
+            if pred_score:   # task 00139: the summed squared error a frame, in grey levels: the picture, copy, the mean frame
+                nt_ = max(1, win["see_ticks"])
+                row.update(pred_err=win["see_err"] / nt_, pred_copy=win["see_copy"] / nt_, pred_mean=win["see_mean"] / nt_)
             if q_mix:   # task 00136: the share of the pixels seen that came from the prediction; of those, the share that
                 # are not the real pixel, and their mean distance from it in grey levels (body 0, the life's own ticks)
                 row.update(mix_share=win["mix_n"] / max(1, win["mix_px"]), mix_wrong=win["mix_wrong"] / max(1, win["mix_n"]),
@@ -1098,6 +1138,8 @@ def main():
             if fast:   # task 00105: F alone, so that S = the checkpoint - F can be recovered
                 np.save(os.path.join(out_dir, ckpt_name("final", k, S).replace(".bin", "_fast.npy")), g.fast(0))
         ag.save(os.path.join(out_dir, ckpt_name("final", k, S)), with_optimizer=g is None)
+    if see["tick"]:   # task 00139: the real frames and the model's pictures of them
+        np.savez_compressed(os.path.join(out_dir, "pred_frames.npz"), **{key: np.array(v_) for key, v_ in see.items()})
     if q_mix and mix_rec["tick"]:   # task 00136: what body 0 was shown at the life's first and last ticks
         np.savez_compressed(os.path.join(out_dir, "mix_frames.npz"), **{key: np.array(v_) for key, v_ in mix_rec.items()})
     mf.close()

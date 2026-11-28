@@ -752,6 +752,13 @@ The skill of a prediction is 1 − its error ÷ the copy's error, both summed ov
 - **`pair` is not the model's likeliest value.** It ranks values by their most probable bin and so leans toward grey levels that sit on a bin: in the court the ball's white. With every pixel's likeliest value the ball is lost sooner and the next frame is predicted a little better. Where a world's greys sit on the bins decides what the sharp decoding favours.
 - **Next, for the owner's word:** a life trained on frames drawn with dice (the mix or self-forcing made with the dream's decoding), so that it meets its own stray pixels and ragged balls with the real frame as the target.
 
+**A life that never sees (vm-00126, 2026-11-28; the owner's idea; a look on one seed an arm).** The model is given a black frame at every tick and in every update and the real frame only as the target: the picture can reach it through its weights alone. Its picture of each frame is read before it learns from it.
+
+- **It paints the scenery.** With the usual update: the court's walls and background without paddle or ball, the disc world an empty background, settled by 2,000 ticks. That is worse than repeating the last frame and worse than the mean frame (15.6 grey levels a pixel against 10.2 and 14.3 in the court).
+- **Without replay the weights carry the present, where it is slow.** With the newest window only the court life paints the paddle in .980 of its pictures, a median of 2.5 px from its place; never the ball, and no disc in any life, with 10 times the learning rate either.
+- **Replay wipes that out** (a paddle in .005 of the pictures): to the model a black window of long ago and one of now are the same, so every update asks for all the paddle's places at once. And frozen, the present in the weights goes stale within some hundred ticks.
+- **What it says for the plan:** the weights as they are, updated once a tick and shared with replay, are no memory for moving things. vm-00094's flexible layer (fast weights of their own, kept apart from replay) is the place where this idea would have to be tried further.
+
 **The order of work.**
 1. The worlds to watch and the watching option: built and tested on 2026-11-26 (task 00132, `tests/test_watch.py`).
 2. The contract, the exam and the measures, with the adapter for the four transformers and the floors: built on 2026-11-26 (`dev/wm_measures.py`, `tests/test_wm_measures.py`). DreamerV3's adapter is not written.
