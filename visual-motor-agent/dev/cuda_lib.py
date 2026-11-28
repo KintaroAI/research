@@ -67,6 +67,8 @@ def lib():
             "vmc_uni_ring_skip": (i32, [vp, i32]),
             "vmc_uni_token_ce": (i32, [vp, i32, fp]),
             "vmc_forward_uni_step": (i32, [vp, i32, i32, u8p, fp, fp, u8p, i32, i32, fp, fp]),
+            "vmc_forward_uni_draw": (i32, [vp, i32, i32, u8p, fp, fp, u8p, i32, C.c_float, i32, fp, fp, fp]),   # task 00138
+            "vmc_draw_values": (i32, [fp, fp, C.c_long, i32, C.c_float, i32, fp]),
             "vmc_get_range": (i32, [vp, C.c_long, C.c_long, fp]),
             "vmc_encode": (i32, [vp, i32, u8p, fp]),
             "vmc_imagine": (i32, [vp, i32, i32, fp, fp, fp, fp, fp, fp]),
@@ -86,6 +88,18 @@ def lib():
             f = getattr(_lib, name)
             f.restype, f.argtypes = res, args
     return _lib
+
+
+def draw_values(prob, u, temp=1.0, peak=False):
+    """Task 00138: the drawing rule of forward_uni_draw on given chances prob [n, K] (K at most 64) and dice u [n] in
+    [0, 1): the values [n] in [0, 1], computed on the device (wm_measures.draw_values is the same rule in numpy)."""
+    p, d = np.ascontiguousarray(prob, np.float32), np.ascontiguousarray(u, np.float32)
+    if p.ndim != 2 or d.shape != p.shape[:1]:
+        raise ValueError("draw_values: chances [n, K] and dice [n]")
+    out = np.empty(p.shape[0], np.float32)
+    _check(lib().vmc_draw_values(_p(p, C.c_float), _p(d, C.c_float), p.shape[0], p.shape[1], float(temp), int(bool(peak)),
+                                 _p(out, C.c_float)), "draw_values")
+    return out
 
 
 def available():
@@ -422,6 +436,31 @@ class CudaModel:
                                           None if es is None else _p(es, C.c_uint8), t, int(mode), _p(vt, C.c_float),
                                           _p(nb, C.c_float)), "forward_uni_step")
         self.cand_S = S   # task 00127: these windows replace the policy pass's
+        return dict(values_t=vt, next_body=nb)
+
+    def forward_uni_draw(self, images, drives, actions, ep_start, t, u, temp=1.0, peak=False):
+        """As forward_uni_step, with step t's values drawn (task 00138): every value picks one of the humps of its
+        predicted chances by the dice u [S, ntok, V] in [0, 1) and takes the sharp value at that hump's peak (pair's at
+        the most probable bin). A hump's weight is its chance, the sum of its bins' (peak False), or its tallest bin's
+        (peak True: how pair ranks values), raised to 1 / temp (temp <= 0: the heaviest hump; with peak that is pair).
+        A value with one hump is pair's, whatever the dice. The next bodies are the expected ones."""
+        if not hasattr(lib(), "vmc_forward_uni_draw"):
+            raise RuntimeError("libvmcuda.so has no vmc_forward_uni_draw: build it again (make libvmcuda.so)")
+        img = np.ascontiguousarray(images, np.uint8)
+        S, T = img.shape[:2]
+        c = self.config
+        nt, V = agent_lib.uni_layout(c)["nt"], c["patch"] ** 2 * (1 if c.get("gray") else 3)
+        dice = np.ascontiguousarray(u, np.float32)
+        if dice.shape != (S, nt, V) or not ((dice >= 0).all() and (dice < 1).all()):
+            raise ValueError("forward_uni_draw: the dice must be [%d, %d, %d] numbers in [0, 1)" % (S, nt, V))
+        vt, nb = np.empty((S, nt, V), np.float32), np.empty((S, T, 2 + int(c.get("body_label", 0))), np.float32)
+        es = None if ep_start is None else np.ascontiguousarray(ep_start, np.uint8)
+        _check(lib().vmc_forward_uni_draw(self.handle, S, T, _p(img, C.c_uint8),
+                                          _p(np.ascontiguousarray(drives, np.float32), C.c_float),
+                                          _p(np.ascontiguousarray(actions, np.float32), C.c_float),
+                                          None if es is None else _p(es, C.c_uint8), t, float(temp), int(bool(peak)),
+                                          _p(dice, C.c_float), _p(vt, C.c_float), _p(nb, C.c_float)), "forward_uni_draw")
+        self.cand_S = S
         return dict(values_t=vt, next_body=nb)
 
     @property

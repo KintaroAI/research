@@ -338,7 +338,7 @@ A row is a curve. OD, SD3, OB and SB3 are vm-00122's lives, MD and MB vm-00123's
 
 For the owner's word (mine):
 
-- **A dream that draws.** The test above says what a serve needs: a dream that draws one of the futures the model holds possible, in place of each pixel's most probable value (a sampled decoding). It is not built. It needs no new life to try: the 60k checkpoints of the five court lives are there.
+- **A dream that draws.** The test above says what a serve needs: a dream that draws one of the futures the model holds possible, in place of each pixel's most probable value (a sampled decoding). It is not built. It needs no new life to try: the 60k checkpoints of the five court lives are there. (Done as vm-00125, 2026-11-27: a dream that rolls dice serves; [its report](../00125-dream-dice/README.md).)
 - **Where a mix is used, .5 with no random grey.** Neither make is worth a longer run as it stands. One point is open: the court life with random grey was still climbing at 60k.
 - **Standing from vm-00122 and vm-00123:** the disc world with variety (discs and dots replaced now and then), where every result so far says the life learns its own four discs by heart; and up to 3 dreamed steps (self-forcing) as the watching model's standard setting: it gives the court's dream as much as the best mix and does not harm the disc world's.
 - **A measure of the long dream.** The counts and the test above are scratch scripts (kept beside the outputs, `exp_00124/scratch/`); as parts of `wm_measures.py` they would let the long dream be read like the rest.

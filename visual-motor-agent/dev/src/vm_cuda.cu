@@ -1202,6 +1202,7 @@ struct Model {
     Buf c_hot;                // bin-embedding input: the two-hot inputs of the batch and of the candidates
     Buf u_ce;                        // and each token's cross-entropy in the last update (S x T x ntok, its shape)
     Buf u_mode;                      // vmc_forward_uni_step's most probable values
+    Buf u_dice;                      // vmc_forward_uni_draw's dice (task 00138)
                         // the age key (task 00062): the gradient at the scores, summed by age
     std::map<std::array<long, 9>, const float* const*> hptr;   // gemm_heads' device arrays of pointers, by bases and strides
     std::deque<Buf> hpool;
@@ -2165,6 +2166,68 @@ __global__ void k_uni_mode_step(const float* prob, float* out, int S, int T, int
     }
 }
 
+// Task 00138 ("draw"): one value drawn from its predicted chances p [K], K <= DRAW_K. Every bin belongs to the hump it
+// climbs to (from a bin to its more probable neighbour while there is one). A hump's weight is its chance, the sum of
+// its bins' (peak = 0), or its tallest bin's chance (peak = 1: how mode 2 ranks values, so that with inv_temp <= 0 the
+// value is mode 2's). u in [0, 1) picks a hump by the weights raised to inv_temp (1: as they are; <= 0: the heaviest
+// hump, as is every raised weight of 0). The value is the sharp one at the hump's peak, as mode 2 decodes it at the
+// most probable bin: the peak and its more probable neighbour, weighted. One hump: mode 2's value, whatever u.
+#define DRAW_K 64
+__device__ inline float draw_value(const float* p, int K, float u, float inv_temp, int peak) {
+    float mass[DRAW_K];
+    for (int b = 0; b < K; b++) mass[b] = 0.f;
+    for (int b = 0; b < K; b++) {
+        int a = b;
+        for (;;) {
+            int n = a;
+            if (a > 0 && p[a - 1] > p[n]) n = a - 1;
+            if (a < K - 1 && p[a + 1] > p[n]) n = a + 1;
+            if (n == a) break;
+            a = n;
+        }
+        mass[a] += p[b];
+    }
+    if (peak)   // a hump's weight is its tallest bin: the peak itself (bins that are no peak stay 0)
+        for (int b = 0; b < K; b++) if (mass[b] > 0.f) mass[b] = p[b];
+    int pick = -1;
+    if (inv_temp > 0.f) {
+        float total = 0.f;
+        for (int b = 0; b < K; b++)
+            if (mass[b] > 0.f) total += inv_temp == 1.f ? mass[b] : powf(mass[b], inv_temp);
+        if (total > 0.f) {
+            const float target = u * total;
+            float acc = 0.f;
+            for (int b = 0; b < K; b++) {
+                if (!(mass[b] > 0.f)) continue;
+                acc += inv_temp == 1.f ? mass[b] : powf(mass[b], inv_temp);
+                pick = b;
+                if (acc > target) break;
+            }
+        }
+    }
+    if (pick < 0) {
+        pick = 0;
+        for (int b = 1; b < K; b++) if (mass[b] > mass[pick]) pick = b;
+    }
+    const int nb = pick == 0 ? 1 : pick == K - 1 ? K - 2 : (p[pick + 1] > p[pick - 1] ? pick + 1 : pick - 1);
+    const float w = p[pick] + p[nb];
+    return w > 0.f ? (p[pick] * pick + p[nb] * nb) / (w * (K - 1)) : (float)pick / (K - 1);
+}
+// Step t's values of S sequences of T frames, drawn: prob as k_uni_mode_step's, u [S, ntV] the dice -> out [S, ntV].
+__global__ void k_uni_draw_step(const float* prob, const float* u, float* out, int S, int T, int t, int ntV, int K,
+                                float inv_temp, int peak) {
+    const long n = (long)S * ntV;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) {
+        const long s = i / ntV, j = i % ntV;
+        out[i] = draw_value(prob + ((s * T + t) * (long)ntV + j) * K, K, u[i], inv_temp, peak);
+    }
+}
+// The rule on given chances prob [n, K] and dice u [n] -> out [n] (the tests' way to the device function).
+__global__ void k_draw_values(const float* prob, const float* u, float* out, long n, int K, float inv_temp, int peak) {
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x)
+        out[i] = draw_value(prob + i * K, K, u[i], inv_temp, peak);
+}
+
 // Task 00104: the write tokens' expected values, out [B, V]: per frame b and value j the softmax of the head's logits
 // lc [b, OV] at value j's bins (the patch channel: positions j * K ..), and its expectation over the bin centres.
 __global__ void k_uni_wvals(const float* lc, float* out, int B, int V, int OV, int K) {
@@ -2716,6 +2779,49 @@ int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const flo
     if (next_body)   // task 00109: with the label, 3 values
         CK(cudaMemcpy2D(next_body, (2 + D.bl) * sizeof(float), M->u_val.p + (size_t)(nt - 1) * V, row, (2 + D.bl) * sizeof(float), B,
                         cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+// Task 00138: as vmc_forward_uni_step, with step t's values drawn (draw_value) by the dice u [S, ntok, V] in [0, 1)
+// at the temperature temp (1: the weights as they are; <= 0: every value's heaviest hump), a hump weighed by its
+// chance (peak = 0) or by its tallest bin (peak = 1; with temp <= 0 that is mode 2). The next bodies are the expected
+// ones, as always.
+int vmc_forward_uni_draw(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                         const uint8_t* ep_start, int t, float temp, int peak, const float* u, float* values_t,
+                         float* next_body) {
+    Model* M = (Model*)h;
+    const Dims& D = M->D;
+    if (!D.uni || t < 0 || t >= T || !u || D.nbin < 2 || D.nbin > DRAW_K) return -1;
+    std::vector<float> zero((size_t)S * T, 0.f);
+    if (upload_inputs(M, S, T, images, drives, actions, zero.data(), ep_start, actions)) return -1;
+    if (run_uni(M, nullptr, false, true)) return -1;
+    const int nt = D.ntok, V = D.V, B = M->B;
+    const size_t row = (size_t)nt * V * sizeof(float);
+    float* du = M->u_dice.get((size_t)S * nt * V);
+    CK(cudaMemcpy(du, u, (size_t)S * row, cudaMemcpyHostToDevice));
+    float* mv = M->u_mode.get((size_t)S * nt * V);
+    k_uni_draw_step<<<GRID((long)S * nt * V)>>>(M->u_log.p, du, mv, S, T, t, nt * V, D.nbin, temp > 0.f ? 1.f / temp : 0.f,
+                                                peak ? 1 : 0);
+    CK(cudaGetLastError());
+    CK(cudaMemcpy(values_t, mv, (size_t)S * row, cudaMemcpyDeviceToHost));
+    if (next_body)
+        CK(cudaMemcpy2D(next_body, (2 + D.bl) * sizeof(float), M->u_val.p + (size_t)(nt - 1) * V, row, (2 + D.bl) * sizeof(float), B,
+                        cudaMemcpyDeviceToHost));
+    return 0;
+}
+
+// Task 00138: the drawing rule on given chances, prob [n, K] and dice u [n] -> out [n] (no model: for the tests).
+int vmc_draw_values(const float* prob, const float* u, long n, int K, float temp, int peak, float* out) {
+    if (!prob || !u || !out || n < 1 || K < 2 || K > DRAW_K) return -1;
+    Buf dp, du, dout;
+    float* p = dp.get((size_t)n * K);
+    float* q = du.get((size_t)n);
+    float* o = dout.get((size_t)n);
+    CK(cudaMemcpy(p, prob, (size_t)n * K * sizeof(float), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(q, u, (size_t)n * sizeof(float), cudaMemcpyHostToDevice));
+    k_draw_values<<<GRID(n)>>>(p, q, o, n, K, temp > 0.f ? 1.f / temp : 0.f, peak ? 1 : 0);
+    CK(cudaGetLastError());
+    CK(cudaMemcpy(out, o, (size_t)n * sizeof(float), cudaMemcpyDeviceToHost));
     return 0;
 }
 

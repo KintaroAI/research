@@ -77,6 +77,16 @@ int vmc_uni_ring_skip(void* h, int n);
 // most probable bin's centre; 2: the most probable bin and its more probable neighbour, weighted: task 00038), and the expected next bodies [S, T, 2] (the instinct's lookahead, task 00029).
 int vmc_forward_uni_step(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
                          const uint8_t* ep_start, int t, int mode, float* values_t, float* next_body);
+// Task 00138 ("draw"): as vmc_forward_uni_step, with step t's values drawn: every value picks one of the humps of its
+// predicted chances by the dice u [S, ntok, V] in [0, 1) and takes the sharp value at that hump's peak (mode 2's at the
+// most probable bin). A hump's weight is its chance, the sum of its bins' (peak = 0), or its tallest bin's (peak = 1:
+// mode 2's ranking), raised to 1 / temp (temp <= 0: the heaviest hump; with peak = 1 that is mode 2). The bodies stay
+// the expected ones.
+int vmc_forward_uni_draw(void* h, int S, int T, const uint8_t* images, const float* drives, const float* actions,
+                         const uint8_t* ep_start, int t, float temp, int peak, const float* u, float* values_t,
+                         float* next_body);
+// The same rule on given chances prob [n, K] (K at most 64) and dice u [n] -> out [n], without a model (the tests).
+int vmc_draw_values(const float* prob, const float* u, long n, int K, float temp, int peak, float* out);
 // The universal model's last update: each token's cross-entropy (its mean over the used values of the token it
 // predicts) at the last step of the first S0 sequences, out [S0, ntok] (the gate's surprise, task 00028).
 int vmc_uni_token_ce(void* h, int S0, float* out);

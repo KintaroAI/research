@@ -36,6 +36,13 @@ Added after the first lives were scored (vm-00119): the decoders instinct and in
 zone (zone_counts), the straight lines through the frames as seen (seen_things), the dream after a short warm-up
 (the part warmdream), the discs read at tick 4 by whether they turned (after_a_turn).
 
+A dream that rolls dice (task 00138, vm-00125): --decode draw, draw0.7, drawp, drawp0.5 (Pieces, draw_values). Every
+pixel picks one of the humps of its predicted chances, a hump weighed by its chance (draw) or by its tallest bin as
+pair ranks values (drawp), raised to 1 / the temperature after the name; where the model is sure the frame is pair's.
+--dice N: the dice's number; --out DIR: the summaries' folder, if not RUN/wm. The free part counts the court's balls
+(court_balls: a ball in the court by tick, the balls served, those back elsewhere, the stray pixels). A dream with
+dice is one of the futures the model holds possible: against the world's own continuation it scores below pair.
+
 Usage (from dev/, on a GPU):
     ./venv/bin/python wm_measures.py score RUN --step 60000 [--decode pair] [--set work] [--parts regular events warm]
     ./venv/bin/python wm_measures.py anchors configs/W_discs.json -o OUT        (no GPU: the floors and the ceilings)
@@ -69,6 +76,9 @@ REACH, HOLD = 8, 2.0                    # the reader looks this far (px); a thin
 WARM_K = (1, 2, 3, 4, 6, 8, 16)
 HOME_SKIP = 60000
 FREE_TICKS, FREE_PER_COPY = 200, 2
+BALL_GAP, BALL_STAY, SERVE_ROWS = 3, 3, 8   # the court's balls in a long dream (task 00138): a ball is back after this
+#                                         many ticks without one if it then stays this many; served if it is back within
+#                                         this many rows under the top wall, where the world serves
 LEARN_TICKS = 8                         # the learning curve's dreams at every checkpoint
 SEAM, SEAM_TICKS = 4, 8                 # the seam part: px on each side of a quarter's border; dreamed ticks
 COURSE_TICKS, COURSE_SPEED, COURSE_EPS = 16, 0.1, 1e-3   # the course part: dreamed ticks; a thing slower than this (px a
@@ -440,6 +450,67 @@ class OtherDice:
         return fd, bd
 
 
+def draw_values(p, u, temp=1.0, peak=False):
+    """Task 00138, the decoding `draw`: values [n] in [0, 1] drawn from chances p [n, K] over K bins by the dice u [n]
+    in [0, 1). The rule's reference in numpy; the device computes the same (cuda_lib.draw_values, forward_uni_draw).
+
+    1. Every bin belongs to the hump it climbs to: from a bin to its more probable neighbour while there is one (of two
+       more probable neighbours the more probable, the lower one if they are equal).
+    2. A hump's weight is its chance, the sum of its bins' chances; or, peak, the chance of its tallest bin, which is
+       how `pair` ranks values (a grey level that sits on a bin has all its chance in that bin, one between two bins
+       has it split, so `pair` favours the first: in the court the ball's white over the background).
+    3. The dice pick a hump by the weights raised to 1 / temp: the first hump, in the order of the bins, at which the
+       running sum passes u times the whole. temp 1: the weights as they are; below 1 the heavy hump more often;
+       temp <= 0, or every raised weight 0: the heaviest hump (with peak that is `pair`).
+    4. The value is the sharp one at the hump's peak, as `pair` decodes at the most probable bin: the peak and its more
+       probable neighbour, weighted by their chances.
+
+    A value with one hump is `pair`'s, whatever the dice."""
+    p, u = np.asarray(p, np.float32), np.asarray(u, np.float32)
+    n, K = p.shape
+    out = np.zeros(n, np.float32)
+    inv = np.float32(1.0 / temp) if temp > 0 else np.float32(0.0)
+    for i in range(n):
+        q = p[i]
+        mass = np.zeros(K, np.float32)
+        for b in range(K):
+            a = b
+            while True:
+                m = a
+                if a > 0 and q[a - 1] > q[m]:
+                    m = a - 1
+                if a < K - 1 and q[a + 1] > q[m]:
+                    m = a + 1
+                if m == a:
+                    break
+                a = m
+            mass[a] += q[b]
+        if peak:
+            mass = np.where(mass > 0, q, np.float32(0.0)).astype(np.float32)
+        pick = -1
+        if inv > 0:
+            w = mass if inv == 1 else np.power(mass, inv, dtype=np.float32)
+            total = np.float32(0.0)
+            for b in range(K):
+                if mass[b] > 0:
+                    total += w[b]
+            if total > 0:
+                target, acc = u[i] * total, np.float32(0.0)
+                for b in range(K):
+                    if not mass[b] > 0:
+                        continue
+                    acc += w[b]
+                    pick = b
+                    if acc > target:
+                        break
+        if pick < 0:
+            pick = int(np.argmax(mass))
+        nb = 1 if pick == 0 else K - 2 if pick == K - 1 else (pick + 1 if q[pick + 1] > q[pick - 1] else pick - 1)
+        ww = q[pick] + q[nb]
+        out[i] = (q[pick] * np.float32(pick) + q[nb] * np.float32(nb)) / (ww * np.float32(K - 1)) if ww > 0 else np.float32(pick) / np.float32(K - 1)
+    return out
+
+
 class Pieces:
     """The universal model of a run's checkpoint through the contract: one transformer, or the pieces of
     online.pieces. The window is the last ctx real ticks. A dreamed tick: its body is the mean of the pieces' expected
@@ -456,9 +527,17 @@ class Pieces:
 
     lived (task 00136, a run with online.mix): the real ticks are shown as the life saw frames, each with the model's
     own prediction of it mixed in (online.mix_inputs, the life's own function; the masks from a generator fixed by the
-    number of windows, so a scoring repeats). Without it the real ticks are shown whole, as to every other model."""
+    number of windows, so a scoring repeats). Without it the real ticks are shown whole, as to every other model.
 
-    def __init__(self, run, step, decode="pair", lived=False):
+    decode 'draw', 'draw0.7', 'drawp', 'drawp0.5' (task 00138; one transformer): the dream rolls dice. Every pixel
+    picks one of the humps of its predicted chances and takes the sharp value at that hump (draw_values). 'draw': a
+    hump is weighed by its chance; 'drawp': by its tallest bin, as `pair` ranks values. The number after the name is
+    the temperature (none: 1); 'drawp0' is `pair`, 'draw0' every pixel's likeliest value. Where the model is sure the
+    frame is `pair`'s. The dice of a dreamed tick are thrown once and kept through its decoding passes, so the decoding
+    settles and is the same as drawing token by token. dice: the generator's number; the same dice and the same calls
+    give the same dreams. The bodies stay the expected ones."""
+
+    def __init__(self, run, step, decode="pair", lived=False, dice=0):
         import agent_lib
         import cuda_lib
         from lifetime import ckpt_name
@@ -474,7 +553,17 @@ class Pieces:
         self.models = [cuda_lib.CudaModel(a) for a in self.agents]
         self.alone = decode in ("instinct", "instinct_pair")
         self.name, self._frame = "%s %s" % (os.path.basename(run.rstrip("/")), decode), uni_frame
-        self.mode = DECODE[dict(instinct="mean", instinct_pair="pair").get(decode, decode)]
+        self.temp = None                                  # task 00138: the temperature of the dice ('draw'), or none
+        if decode.startswith("draw"):
+            if self.S != 1:
+                raise ValueError("draw: one transformer (a piece's dice would have to follow its own tokens)")
+            self.peak = decode.startswith("drawp")
+            rest = decode[5 if self.peak else 4:]
+            self.temp = float(rest) if rest else 1.0
+            c0 = self.models[0].config
+            self.dice, self.draws, self.u = int(dice), np.random.default_rng([0x0138, int(dice)]), None
+            self.dice_shape = (agent_lib.uni_layout(c0)["nt"], c0["patch"] ** 2 * (1 if c0.get("gray") else 3))
+        self.mode = DECODE["pair" if self.temp is not None else dict(instinct="mean", instinct_pair="pair").get(decode, decode)]
         self.L = self.models[0].config["ctx"]
         self.blocks, patches = [], 0
         for m in self.models:
@@ -510,6 +599,11 @@ class Pieces:
         self.fr.append(frame), self.bd.append(body), self.mv.append(move)
         del self.fr[:-self.L], self.bd[:-self.L], self.mv[:-self.L]
 
+    def _roll(self, n):
+        """Task 00138: the dice of one dreamed tick, a number a value of a token, kept through its decoding passes."""
+        if self.temp is not None:
+            self.u = self.draws.random((n,) + self.dice_shape, dtype=np.float32)
+
     def _pass(self, wi, wd, wa):
         """One pass of every piece on windows [n, T, ...]: the last tick's frame as the pieces predict it from the
         window as it is, and the next body."""
@@ -518,8 +612,12 @@ class Pieces:
         new, nb = wi[:, -1].copy(), np.zeros((n, 2), np.float64)
         for m, (rs, cs, grid, pp) in zip(self.models, self.blocks):
             for i in range(0, n, CHUNK):
-                o = m.forward_uni_step(wi[i:i + CHUNK], wd[i:i + CHUNK], wa[i:i + CHUNK], we[i:i + CHUNK], T - 1,
-                                       mode=self.mode)
+                if self.temp is not None:   # task 00138: the frame drawn by this tick's dice
+                    o = m.forward_uni_draw(wi[i:i + CHUNK], wd[i:i + CHUNK], wa[i:i + CHUNK], we[i:i + CHUNK], T - 1,
+                                           self.u[i:i + CHUNK], self.temp, self.peak)
+                else:
+                    o = m.forward_uni_step(wi[i:i + CHUNK], wd[i:i + CHUNK], wa[i:i + CHUNK], we[i:i + CHUNK], T - 1,
+                                           mode=self.mode)
                 new[i:i + CHUNK, rs, cs] = self._frame(m.config, o["values_t"][:, pp], grid)
                 nb[i:i + CHUNK] += o["next_body"][:, T - 1, :2]
         return new, np.clip(nb / len(self.models), 0.0, 1.0).astype(np.float32)
@@ -561,6 +659,7 @@ class Pieces:
         mv = np.zeros((n, H, 3), np.float32) if moves is None else np.asarray(moves, np.float32)
         if self.alone:
             return self._dream_alone(wi, wd, wa, mv, H)
+        self._roll(n)
         nb = self._pass(wi, wd, wa)[1]
         fd = np.zeros((n, H) + wi.shape[2:4], np.uint8)
         bd = np.zeros((n, H, 2), np.float32)
@@ -572,6 +671,7 @@ class Pieces:
             wi = np.concatenate([wi, first], 1)[:, -L:]                     # the new tick's frame starts as the last one
             wd = np.concatenate([wd, nb[:, None]], 1)[:, -L:]
             wa = np.concatenate([wa, mv[:, h:h + 1]], 1)[:, -L:]
+            self._roll(n)                                   # task 00138: this tick's dice, the same in every pass
             k, same = 0, np.zeros(n, bool)
             while k < self.max_passes and not same.all():   # the whole batch every pass: a batch that shrank as its
                 new, nb = self._pass(wi, wd, wa)            # windows settled would not repeat the same last bits, and
@@ -984,9 +1084,71 @@ def course_part(model, exam, H=COURSE_TICKS, fd=None):
     return out
 
 
+def court_balls(exam, f):
+    """Task 00138, the court: the balls of long dreams' frames f [M, H, S, S] (or of the world's own continuation).
+
+    A ball is a blob: a window one pixel wider than the ball (3 x 3) that holds all but one of a ball's pixels or more
+    (3 bright pixels of the ball's zone), so that a ball drawn a pixel short or long is one and a stray pixel is none.
+    ball [H]: the share of the dreams with a ball, by tick; whole [H]: with a ball as the world draws it (a block of
+    2 x 2); any [H]: with any bright pixel of the zone.
+    A ball is back at a tick with a ball after BALL_GAP ticks or more without one, if balls follow for BALL_STAY ticks
+    in all: `served` if it is back within SERVE_ROWS rows under the top wall (the world serves there), `back`
+    elsewhere; counts over all dreams (served_by_dream [M]). last [M]: the tick of each dream's last ball (0: none).
+    specks: the bright pixels of the zone that are in no ball, a frame; specks_top: those in the serving rows, a frame
+    without a ball (nan: no such frame)."""
+    c = exam.cfg
+    mask, lv = {n: (m, lv) for n, m, lv in exam.zones()}["court"]
+    b, S = int(c.ball), exam.S
+    bright = (np.asarray(f) > lv) & mask                                # [M, H, S, S]
+    M, H = bright.shape[:2]
+
+    def windows(k):
+        """[M, H, S - k + 1, S - k + 1]: the bright pixels in the window of k x k with its corner there."""
+        n = np.zeros((M, H, S - k + 1, S - k + 1), np.int16)
+        for dy in range(k):
+            for dx in range(k):
+                n += bright[:, :, dy:dy + S - k + 1, dx:dx + S - k + 1]
+        return n
+
+    blob = windows(b + 1) >= b * b - 1
+    ball, whole = blob.any((-2, -1)), (windows(b) == b * b).any((-2, -1))
+    inball = np.zeros_like(bright)
+    for dy in range(b + 1):
+        for dx in range(b + 1):
+            inball[:, :, dy:dy + S - b, dx:dx + S - b] |= blob
+    speck = bright & ~inball
+    row = blob.any(-1).argmax(-1)                                       # the top row of a frame's first blob window
+    served, back, last = np.zeros(M, int), np.zeros(M, int), np.zeros(M, int)
+    for k in range(M):
+        w, t = ball[k], 0
+        if w.any():
+            last[k] = int(np.flatnonzero(w)[-1]) + 1
+        while t < H:
+            if w[t]:
+                t += 1
+                continue
+            u = t
+            while u < H and not w[u]:
+                u += 1
+            if u - t >= BALL_GAP and u + BALL_STAY <= H and w[u:u + BALL_STAY].all():
+                if row[k, u] <= c.wall + SERVE_ROWS:
+                    served[k] += 1
+                else:
+                    back[k] += 1
+            t = u
+    top = np.zeros((S, S), bool)
+    top[:c.wall + 1 + SERVE_ROWS] = True
+    empty = ~ball
+    return dict(ball=ball.mean(0).tolist(), whole=whole.mean(0).tolist(), any=bright.any((-2, -1)).mean(0).tolist(),
+                served=int(served.sum()), back=int(back.sum()), served_by_dream=served.tolist(), last=last.tolist(),
+                specks=float(speck.sum((-2, -1)).mean()),
+                specks_top=float((speck & top).sum((-2, -1))[empty].mean()) if empty.any() else float("nan"))
+
+
 def free_part(model, exam):
     """Measure 6: a dream of FREE_TICKS ticks from the first FREE_PER_COPY regular starts of every copy: the first
-    tick with an invalid frame (FREE_TICKS + 1: none), its median; the share of valid frames by tick."""
+    tick with an invalid frame (FREE_TICKS + 1: none), its median; the share of valid frames by tick. The court (task
+    00138): its balls in the dreams and in the world's own continuation (court_balls)."""
     e, s = exam.regular()
     keep = np.tile(np.arange(len(exam.starts)) < FREE_PER_COPY, exam.E)
     e, s = e[keep], s[keep]
@@ -994,8 +1156,11 @@ def free_part(model, exam):
     fr, _ = real(exam, e, s, FREE_TICKS)
     ok = exam.valid(fd, e)
     first = np.where(ok.all(1), FREE_TICKS + 1, (~ok).argmax(1) + 1)
-    return dict(starts=len(e), first_invalid=float(np.median(first)), valid=ok.mean(0).tolist(),
-                zones=zone_counts(exam, e, fd, fr))   # by zone: what the dream keeps (the ball is the court's zone)
+    res = dict(starts=len(e), first_invalid=float(np.median(first)), valid=ok.mean(0).tolist(),
+               zones=zone_counts(exam, e, fd, fr))   # by zone: what the dream keeps (the ball is the court's zone)
+    if exam.kind == "breakout":
+        res["balls"], res["balls_real"] = court_balls(exam, fd), court_balls(exam, fr)
+    return res
 
 
 def home_skip(info, later=None):
@@ -1009,13 +1174,15 @@ def home_skip(info, later=None):
 
 
 def score(run, step, decode="pair", which="work", parts=("regular", "events", "warm"), H=HORIZON, out_dir=None, exam=None,
-          name=None, home_starts=None, lived=False, home_from=None):
+          name=None, home_starts=None, lived=False, home_from=None, dice=0):
     """The measures of one checkpoint on one exam set. Writes (and adds to) RUN/wm/step_<step>_<decode>_<which>.json and
     .npz; returns the summary. exam: a ready one (a test's small one). name: the set's name in the file, if not `which`
     (the learning curve's shorter run on the working set is kept apart as 'learn'). home_starts: the home set with
     that many regular starts in place of its 16 (a longer stretch of the life's own world; give it a name of its own).
     lived (task 00136, a run with online.mix): the real ticks shown as the life saw frames (Pieces); the summary says so
-    (lived: true), and it needs a name of its own. home_from: the home set from that tick on (home_skip)."""
+    (lived: true), and it needs a name of its own. home_from: the home set from that tick on (home_skip). decode
+    'draw' or 'draw0.7' (task 00138): the dream rolls dice at that temperature (Pieces); dice: the generator's number;
+    the summary names both (temp, dice)."""
     if lived and not name:
         raise ValueError("a scoring with frames as lived needs a name of its own (--name lived)")
     info = json.load(open(os.path.join(run, "info.json")))
@@ -1032,7 +1199,7 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
     else:
         exam = Exam(env, seed=dict(work=WORK_SEED, final=FINAL_SEED)[which])
     t_exam = time.time() - t0
-    model = Pieces(run, step, decode, lived=lived)
+    model = Pieces(run, step, decode, lived=lived, dice=dice)
     out_dir = out_dir or os.path.join(run, "wm")
     os.makedirs(out_dir, exist_ok=True)
     base = os.path.join(out_dir, "step_%08d_%s_%s" % (step, decode, name or which))
@@ -1041,6 +1208,8 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
                world=exam.kind, params=model.params, pieces=model.S, chunk=CHUNK)
     if lived:   # task 00136: said in the file, so that a number shown mixed frames is never taken for one shown whole frames
         res["lived"] = True
+    if model.temp is not None:   # task 00138: a dream with dice says its temperature and its dice
+        res["temp"], res["dice"], res["peak"] = model.temp, model.dice, bool(model.peak)
     reg, regfd, sec = None, None, res.setdefault("seconds", {})
     sec["exam"] = round(t_exam, 1)
     un = res["unsettled"] = res["unsettled"] if isinstance(res.get("unsettled"), dict) else {}
@@ -1749,6 +1918,8 @@ def main():
     a.add_argument("--home-starts", type=int, default=None, help="the home set with this many regular starts in place of 16 (with --name)")
     a.add_argument("--lived", action="store_true", help="a run with online.mix: show the real ticks as the life saw frames (with --name)")
     a.add_argument("--home-from", type=int, default=None, help="the home set from this tick on (not before the life's end): the stretch a longer life was scored on")
+    a.add_argument("--dice", type=int, default=0, help="--decode draw or draw0.7 (the dream rolls dice at that temperature): the dice's number")
+    a.add_argument("--out", default=None, help="the folder of the summaries, if not RUN/wm (a checkpoint of another experiment scored into this one's)")
     a = sub.add_parser("anchors")
     a.add_argument("config")
     a.add_argument("-o", "--out", required=True)
@@ -1803,9 +1974,9 @@ def main():
             for dec in args.decode:
                 for which in args.which:
                     r = score(args.run, st, dec, which, args.parts, args.horizon, name=args.name, home_starts=args.home_starts,
-                              lived=args.lived, home_from=args.home_from)
+                              lived=args.lived, home_from=args.home_from, dice=args.dice, out_dir=args.out)
                     g = r.get("regular", {})
-                    print("%-10s %6d %-5s %-5s  next-frame skill %s  horizon %s  passes %s  seconds %s" % (
+                    print("%-10s %6d %-7s %-5s  next-frame skill %s  horizon %s  passes %s  seconds %s" % (
                         r["run"], st, dec, which, "%.3f" % g["next"]["skill"] if g else "-",
                         g["curve"]["horizon"] if g else "-", "%.1f" % g["passes"] if g else "-", r["seconds"]), flush=True)
     elif args.cmd == "anchors":

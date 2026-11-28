@@ -17,6 +17,8 @@ ticks and then dream 1000 ticks") is --real 20 --warm 20 --dream 1000: the exam 
 dream, its first ticks the same. --outline N: the true places outlined on the first N dreamed ticks only (a long dream
 and the world part ways, and the outlines then say nothing). --lived (task 00136): a run with online.mix watches the
 real ticks as it lived, its own prediction mixed into each (the panels still show the real ticks).
+RUN@DECODE:LABEL (task 00138): that run's dream decoded another way than `pair`, so that one life's dreams stand side by
+side: RUN@drawp0.5:LABEL rolls dice at temperature .5 (wm_measures.Pieces); --dice N: the dice's number.
 """
 import argparse
 import itertools
@@ -138,7 +140,7 @@ def write_mp4(path, images, fps):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("runs", nargs="+", help="RUN:LABEL")
+    ap.add_argument("runs", nargs="+", help="RUN:LABEL or RUN@DECODE:LABEL")
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--set", dest="which", default="work", choices=["work", "home"])
     ap.add_argument("--starts", type=int, default=4)
@@ -152,9 +154,14 @@ def main():
     ap.add_argument("--step", type=int, default=60000)
     ap.add_argument("--chunk", type=int, default=64)
     ap.add_argument("--title", default="")
+    ap.add_argument("--dice", type=int, default=0, help="RUN@draw..: the dice's number")
     a = ap.parse_args()
     W.CHUNK = a.chunk
-    runs = [(r.rsplit(":", 1) + [None])[:2] for r in a.runs]
+    runs, decodes = [], []
+    for r in a.runs:
+        spec, label = (r.rsplit(":", 1) + [None])[:2]
+        run, decode = (spec.rsplit("@", 1) + ["pair"])[:2]                # task 00138: a decoding a run
+        runs.append((run, label)), decodes.append(decode)
     infos = [json.load(open(os.path.join(r, "info.json"))) for r, _ in runs]
     env = infos[0]["config"]["env"]
     if any(i["config"]["env"] != env for i in infos):
@@ -170,8 +177,8 @@ def main():
     if s.min() - max(a.real, a.warm) + 1 < 0 or s.max() + a.dream >= exam.T:
         raise SystemExit("a stretch does not fit the exam: %d ticks before a start, %d after it" % (max(a.real, a.warm), a.dream))
     dreamed = []
-    for (run, label), info in zip(runs, infos):
-        m = W.Pieces(run, a.step, "pair", lived=a.lived and bool(info["config"].get("online", {}).get("mix")))   # task 00136
+    for (run, label), info, decode in zip(runs, infos, decodes):
+        m = W.Pieces(run, a.step, decode, lived=a.lived and bool(info["config"].get("online", {}).get("mix")), dice=a.dice)   # task 00136
         name = label or info["config"].get("name", os.path.basename(run))
         dreamed.append(("dream: " + name, W.dreams(m, exam, e, s, a.dream, warm=a.warm)[0]))
         print("%s: %.1f passes a dreamed tick, %d frames of %d not settled" % (name, float(np.mean(m.passes)), m.unsettled, len(e) * a.dream))
