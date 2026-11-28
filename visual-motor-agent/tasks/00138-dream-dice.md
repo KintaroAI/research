@@ -1,7 +1,7 @@
 # Task 00138: A Dream That Rolls Dice (experiment vm-00125)
 
 **Date:** 2026-11-27
-**Status:** Complete (2026-11-27), pending tag `exp/vm-00125` (the owner's word: "yes - lets do that. can temperature help?"): a dream that rolls dice serves, and a temperature below 1 keeps most of that at a small cost for the lives that lived with the mix. No new life, one throw of the dice: a look.
+**Status:** Complete, tagged `exp/vm-00125` (2026-11-27; the owner's word: "yes - lets do that. can temperature help?"): a dream that rolls dice serves, and a temperature below 1 keeps most of that at a small cost for the lives that lived with the mix. No new life, one throw of the dice: a look.
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-27
 **Status:** Complete (no new life; one throw of the dice a cell, a second for the main ones: a look, not a measurement)
-**Source:** `dev/` (pending tag `exp/vm-00125`)
+**Source:** `exp/vm-00125` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00125/`
 **Task plan:** [`../tasks/00138-dream-dice.md`](../tasks/00138-dream-dice.md)
 
