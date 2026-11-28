@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-27
 **Status:** Complete (one seed an arm: a look, not a measurement)
-**Source:** `dev/` (pending tag `exp/vm-00123`)
+**Source:** `exp/vm-00123` (code: `visual-motor-agent/dev/`)
 **Outputs:** `~/data/research/visual-motor-agent/exp_00123/`
 **Task plan:** [`../tasks/00136-mixed-frames.md`](../tasks/00136-mixed-frames.md)
 

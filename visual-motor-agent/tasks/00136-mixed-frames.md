@@ -1,7 +1,7 @@
 # Task 00136: The Model Sees Its Own Prediction Mixed into Every Frame (experiment vm-00123)
 
 **Date:** 2026-11-27
-**Status:** Complete (2026-11-27), pending tag `exp/vm-00123` (the owner's word: "lets do the next experiment"): the mix gives the court's dream what self-forcing gives it, harms the disc world's, and does not mend a long dream. One seed an arm: a look.
+**Status:** Complete, tagged `exp/vm-00123` (2026-11-27; the owner's word: "lets do the next experiment"): the mix gives the court's dream what self-forcing gives it, harms the disc world's, and does not mend a long dream. One seed an arm: a look.
 
 ## Context
 
