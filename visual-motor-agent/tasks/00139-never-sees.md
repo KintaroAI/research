@@ -1,7 +1,7 @@
 # Task 00139: A Life That Never Sees (experiment vm-00126)
 
 **Date:** 2026-11-27
-**Status:** Complete (2026-11-28), pending tag `exp/vm-00126` (the owner's word of 2026-11-27): a model that is never given a frame paints the scenery, and without replay the court's paddle near its place; no ball, no disc. One seed an arm: a look.
+**Status:** Complete, tagged `exp/vm-00126` (2026-11-28; the owner's word of 2026-11-27): a model that is never given a frame paints the scenery, and without replay the court's paddle near its place; no ball, no disc. One seed an arm: a look.
 
 ## Context
 
