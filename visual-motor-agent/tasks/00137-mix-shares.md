@@ -1,7 +1,7 @@
 # Task 00137: What the Mix Is Made of: More Prediction, and Random Grey (experiment vm-00124)
 
 **Date:** 2026-11-27
-**Status:** Complete (2026-11-27), pending tag `exp/vm-00124` (the owner's word, given while vm-00123 ran): neither make does better than the half-and-half mix, and both pay more. One seed an arm: a look.
+**Status:** Complete, tagged `exp/vm-00124` (2026-11-27; the owner's word, given while vm-00123 ran): neither make does better than the half-and-half mix, and both pay more. One seed an arm: a look.
 
 ## Context
 
