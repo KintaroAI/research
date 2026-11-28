@@ -28,6 +28,7 @@ World schedule (online.env_sched, task 00094): world settings changed at given t
 env.reconfigure, before that tick's move; only keys the world lists in RUNTIME (CircleWorld: food_show, inertia, inertia_drag). The
 metrics carry env_<key>. The frozen tests and videos take inertia and inertia_drag at their last scheduled value (env_at_end).
 Input noise (online.noise_in = q, task 00088): the model acts and trains on frames noised as env.noise does, one draw for all transformers; the world, memory and targets stay clean.
+Its own prediction mixed in (online.mix = q, task 00136): each pixel of every frame the model sees comes from its own prediction of that frame with probability q; the targets and memory are the real frames, and the mix is made again at every update. online.mix_noise = r (task 00137): besides, a share r of the pixels is a random grey.
 Clogged channels (online.clog = p, task 00085): about p of the patches of each step are damaged in each transformer's input, its own damage, drawn fresh each time a
 window is used, some for the whole window and some for one step, black or speckled, while the target stays clean. Memory and acting stay clean.
 
@@ -76,7 +77,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agent_lib  # noqa: E402
 from evaluate import executed_action  # noqa: E402
-from online import (STAT_KEYS, ClogStream, GapTeacher, GatedMemory, blind_frames, clog_frames, delay_targets, dream_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
+from online import (STAT_KEYS, ClogStream, GapTeacher, GatedMemory, blind_frames, clog_frames, delay_targets, dream_inputs, mix_inputs, noise_frames, fill_rollout, load_config, sample_moves,  # noqa: E402
                     DECODE, NEED_FLOOR, UNI_CHUNK, MealMonitor, meal_target, panel_targets, thought_dream, uni_act, uni_frame)
 from output_name import next_output  # noqa: E402
 from train import git_hash  # noqa: E402
@@ -461,6 +462,20 @@ def main():
     mem_on = bool(on["mem_score"]) and bool(getattr(env_cfg, "view", 0))   # task 00105: memory measured in life
     if on["mem_score"] and not mem_on:
         raise ValueError("online.mem_score needs a world larger than the view (env.view)")
+    q_mix = float(on["mix"] or 0.0)   # task 00136: the model's own prediction of every frame mixed into what it sees of it
+    q_noise = float(on["mix_noise"] or 0.0)   # task 00137: and a share of its pixels a random grey
+    if q_noise and not q_mix:
+        raise ValueError("online.mix_noise is a part of the mix: it needs online.mix")
+    if q_mix:
+        if not 0.0 < q_mix <= 1.0 or int(on["mix_jacobi"]) < 1 or q_noise < 0.0 or q_mix + q_noise > 1.0 + 1e-9:
+            raise ValueError("online.mix is a share of the pixels in (0, 1], online.mix_jacobi at least 1, and online.mix "
+                             "and online.mix_noise add to at most 1")
+        if (not uni or on["device"] != "cuda" or not on["ring"] or S > 1 or N0 > 1 or q_in or clog or q_off or delayed or blind
+                or panels or state or fast or tok_sur or refresh or lref or on["instinct_h"] > 1 or hasattr(env, "think")
+                or on["pred_record"]):
+            raise ValueError("online.mix needs one universal transformer on the GPU with the ring and one body, without noise_in, "
+                             "clog, off, env.delays, blind, panels, model.state, fast, surprise gating, a refreshed value or label, "
+                             "a lookahead (instinct_h above 1), env.thought or pred_record")
     sched = env_schedule(env, env_cfg, on.get("env_sched"), on["steps"])   # task 00094: {tick: {key: value}}
     off_rng = np.random.default_rng([args.seed, 0x0FF])   # its own: off = 0 draws nothing
     is_off, missed = np.zeros(S, bool), np.zeros(S, int)
@@ -484,6 +499,8 @@ def main():
     rng = np.random.default_rng(args.seed)
     clog_rng = np.random.default_rng([args.seed, 0xC106])   # its own, so that clog = 0 draws what it always drew
     in_rng, act_rng = np.random.default_rng([args.seed, 0x0154]), np.random.default_rng([args.seed, 0x0155])   # task 00088
+    mix_rng, mix_act = np.random.default_rng([args.seed, 0x0136]), np.random.default_rng([args.seed, 0x0137])   # task 00136: the updates' masks, the life's
+    seen_buf, mix_rec = [], dict(tick=[], real=[], pred=[], mask=[], seen=[])   # the last L - 1 frames as body 0 saw them; online.mix_record
     noised = lambda r: ((noise_frames(r["img"], in_rng, q_in), r["drv"]) if q_in   # noqa: E731
                         else (blind_frames(r["img"], blind), r["drv"]) if blind else None)   # task 00118: the blind spot, the same for every piece
     damaged = lambda r: (clog_frames(r["img"], clog_rng, agent.config["patch"], clog, on["clog_long"]), r["drv"]) if clog else None   # noqa: E731
@@ -587,6 +604,7 @@ def main():
                     body_steps=0, babbled=0, poison=0, all_poison=0, override=0.0, gain=0.0, sf=0, t=time.time(), vh=0.0, vlab=0.0, vlab_n=0, vboot=0.0, vboot_n=0,
                     prop=np.zeros((S, 2)), agree=np.zeros(S), won=np.zeros((S, 2)), stats_k=[[] for _ in range(S)],
                     smooth=0.0, t_window=0.0, t_act=0.0, t_world=0.0, t_memory=0.0, t_batch=0.0, t_update=0.0, t_think=0.0,
+                    t_mix=0.0, mix_px=0, mix_n=0, mix_wrong=0, mix_abs=0.0, mix_grey=0,
                     on_k=np.zeros(S), st_n=0, st_sum=0.0, st_sq=0.0, pg_pos=0.0, pg_abs=0.0, move_ent=0.0, held=0)
     win = new_window()
     t0 = time.time()
@@ -619,6 +637,30 @@ def main():
                        ("cmd", cmd[:, None]), ("es", ep_start[:N, None]), ("act", np.zeros((N, 1, 3), np.float32)))]
         win["t_window"] += time.time() - t_
         t_ = time.time()
+        if q_mix:   # task 00136: the model's own prediction of this frame mixed into it; the ring holds the mix, memory the real frame
+            t_m = time.time()
+            kk, st_ = len(seen_buf), gms[0].stm
+            ix = st_.last(kk)
+            w_img = np.concatenate([np.stack(seen_buf), obs["image"][:1]] if kk else [obs["image"][:1]])[None]
+            w_drv = np.concatenate([st_.drv[ix], obs["drives"][:1]])[None].astype(np.float32)
+            w_act = np.concatenate([st_.act[ix], np.zeros((1, 3), np.float32)])[None].astype(np.float32)
+            w_es = np.concatenate([st_.es[ix], ep_start[:1]])[None].astype(np.uint8)
+            xi, hit_, pr_ = mix_inputs(gpu, w_img, w_drv, w_act, w_es, mix_act, q_mix, int(on["mix_jacobi"]), given=kk, noise=q_noise)
+            seen, m_, p_ = xi[0, -1], hit_[0, -1], pr_[0, -1]      # m_: 0 the real pixel, 1 the prediction's, 2 a random grey
+            off_ = np.abs(p_[..., 0].astype(np.int16) - obs["image"][0, ..., 0].astype(np.int16))[m_ == 1]
+            win["mix_px"] += m_.size
+            win["mix_n"] += int((m_ == 1).sum())
+            win["mix_grey"] += int((m_ == 2).sum())
+            win["mix_wrong"] += int((off_ > 0).sum())      # the pixels taken from the prediction that are not the real ones
+            win["mix_abs"] += float(off_.sum())
+            if tick <= on["mix_record"] or tick > on["steps"] - on["mix_record"]:
+                for key, v_ in (("tick", tick), ("real", obs["image"][0, ..., 0].copy()), ("pred", p_[..., 0].copy()), ("mask", m_.copy()),
+                                ("seen", seen[..., 0].copy())):
+                    mix_rec[key].append(v_)
+            seen_buf.append(seen)
+            del seen_buf[:-(L - 1)]
+            win_in[0] = seen[None, None]
+            win["t_mix"] += time.time() - t_m
         if q_in:   # task 00088: one noisy view for every transformer; the ring holds it, memory gets the clean frame
             win_in[0] = noise_frames(win_in[0], act_rng, q_in)
         if blind:   # task 00118: the blind spot in what every transformer sees; memory gets the whole frame
@@ -921,13 +963,19 @@ def main():
                         win["stats_k"][k].append(s_)
             elif gpu:
                 inputs = seen_in if seen_in is not None else noised(rows) if q_in or blind else damaged(rows)
+                if q_mix:   # task 00136: every window's mix made again from its first frame on, with the model as it is now
+                    t_m = time.time()
+                    inputs = (mix_inputs(gpu, rows["img"], rows["drv"], rows["act"], rows["es"], mix_rng, q_mix, int(on["mix_jacobi"]),
+                                         noise=q_noise)[0], rows["drv"])
+                    win["t_mix"] += time.time() - t_m
+                    t_ += time.time() - t_m   # its time is its own, not the update's
                 if on["sf_windows"]:   # self-forcing (task 00039): replayed windows only, none with an episode start
                     ok = np.flatnonzero(~rows["es"][:, 1:].any(1))
                     ok = ok[ok >= ce_n]
                     idx = rng.choice(ok, min(on["sf_windows"], len(ok)), replace=False)
                     k = rng.integers(1, on["sf_steps"] + 1, len(idx))
-                    inputs = dream_inputs(gpu, rows["img"], rows["drv"], rows["act"], rows["es"], idx, k,
-                                          on["sf_jacobi"])
+                    inputs = dream_inputs(gpu, inputs[0] if q_mix else rows["img"], rows["drv"], rows["act"], rows["es"], idx, k,
+                                          on["sf_jacobi"])   # with the mix: the dreamed steps start from the frames as seen
                     win["sf"] += len(idx)
                 st = gpu.update_rollout(ro, ppo, agent, sync=False, stats=tick % on["stats_every"] == 0,
                                         inputs=inputs, move_weight=pg_weight(rows["adv"][:, :, 0], N) if pg else None)
@@ -987,6 +1035,12 @@ def main():
                 row.update(pg_scale=pg_scale(), pg_pos=win["pg_pos"] / bs, pg_abs=win["pg_abs"] / bs, move_ent=win["move_ent"] / bs)
             if act_every > 1:   # task 00131: the share of body-ticks whose move was a held one
                 row.update(held=win["held"] / bs)
+            if q_mix:   # task 00136: the share of the pixels seen that came from the prediction; of those, the share that
+                # are not the real pixel, and their mean distance from it in grey levels (body 0, the life's own ticks)
+                row.update(mix_share=win["mix_n"] / max(1, win["mix_px"]), mix_wrong=win["mix_wrong"] / max(1, win["mix_n"]),
+                           mix_err=win["mix_abs"] / max(1, win["mix_n"]))
+                if q_noise:   # task 00137: the share of the pixels seen that were a random grey
+                    row.update(noise_share=win["mix_grey"] / max(1, win["mix_px"]))
             if fast:   # task 00105: |F| / |S| over all parameters, and the largest by tensor, the mean over transformers
                 rat, worst = [], []
                 lay = agent.param_layout()
@@ -1044,6 +1098,8 @@ def main():
             if fast:   # task 00105: F alone, so that S = the checkpoint - F can be recovered
                 np.save(os.path.join(out_dir, ckpt_name("final", k, S).replace(".bin", "_fast.npy")), g.fast(0))
         ag.save(os.path.join(out_dir, ckpt_name("final", k, S)), with_optimizer=g is None)
+    if q_mix and mix_rec["tick"]:   # task 00136: what body 0 was shown at the life's first and last ticks
+        np.savez_compressed(os.path.join(out_dir, "mix_frames.npz"), **{key: np.array(v_) for key, v_ in mix_rec.items()})
     mf.close()
 
 

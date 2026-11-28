@@ -730,6 +730,13 @@ The skill of a prediction is 1 − its error ÷ the copy's error, both summed ov
 - **Self-forcing keeps its gain in the court** (+10 ticks of the ball's horizon at 200k, +6 at 60k): about 65k ticks with it do what 200k do without. On the life's own discs the life without it catches up slowly.
 - **One life is a look.** Two runs of the same seed differ at 60k by up to 2 ticks of the ball's horizon and .06 of the food held at tick 8, and seed 1 is the disc world's best seed of vm-00121's six: that self-forcing is ahead on new discs in this seed is not evidence.
 
+**Its own prediction mixed into every frame (vm-00123, 2026-11-27; the owner's idea; a look on one seed an arm).** The owner, after the long dream that lost its ball: noise in what the model sees, so that it learns to recover. Each pixel of every frame the model is shown comes from its own sharp one-step prediction of that frame with probability .5, from the real frame otherwise; the targets are real, and the mix is made again at every update (`online.mix`).
+
+- **In the court it does what self-forcing does.** The ball is held for 15 dreamed ticks at 60k, against 9 and 9 without self-forcing and 15 and 17 with it; the next frame pays a little (.742 against .750 and .775).
+- **In the disc world it harms.** The food is held at tick 4 in .555 of the dreams on the life's own discs against .781, and in .564 against .711 on new ones. Its prediction stays wrong at the rims and in the checker, and mixed with the real frame that scrambles what says where a disc is (my reading, not tested).
+- **It does not mend a long dream.** In the free dream of 200 ticks the court life with the mix has a ball left in about one dream in eight at tick 200, the others in about one in two, and no dream serves a new ball. The mix trains the model to mend a frame of which half is given; a dream gives it none.
+- **The noise is the model's own error.** Where the model predicts well it goes away: in the court 0.05% of the lent pixels are wrong at 60k. Noise that does not shrink (a random grey) and a larger share are vm-00124.
+
 **The order of work.**
 1. The worlds to watch and the watching option: built and tested on 2026-11-26 (task 00132, `tests/test_watch.py`).
 2. The contract, the exam and the measures, with the adapter for the four transformers and the floors: built on 2026-11-26 (`dev/wm_measures.py`, `tests/test_wm_measures.py`). DreamerV3's adapter is not written.

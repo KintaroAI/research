@@ -370,6 +370,9 @@ def test_home_is_after_the_life(monkeypatch):
     life = lambda n: dict(config=dict(online=dict(steps=n)))            # noqa: E731
     assert W.home_skip(life(60000)) == 60000 and W.home_skip(life(200000)) == 200000 and W.home_skip(life(8)) == 60000
     assert W.home_skip(dict(config={})) == 60000
+    assert W.home_skip(life(60000), 200000) == 200000 and W.home_skip(life(60000), 60000) == 60000   # task 00136: a later tick asked for
+    with pytest.raises(ValueError):
+        W.home_skip(life(200000), 60000)                               # never ticks the life has lived
     monkeypatch.setattr(W, "HOME_SKIP", 40)
     assert W.home_skip(life(8)) == 40 and W.home_skip(life(100)) == 100
 

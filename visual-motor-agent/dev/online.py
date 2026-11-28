@@ -173,6 +173,15 @@ DEFAULT_ONLINE = dict(steps=200_000, batch=8, replay=100_000, explore_gain=0.02,
                       # windows per update (0: off) get their last 1..sf_steps steps' inputs (frame, body) from the
                       # model's own predictions (sf_jacobi Jacobi iterations per frame, pair decoding); targets stay real
                       sf_windows=0, sf_steps=3, sf_jacobi=2,
+                      # task 00136 (lifetime.py, one universal transformer on the GPU with the ring, one body): each pixel of
+                      # every frame the model sees is taken from its own prediction of that frame with probability mix
+                      # (0: off), from the real frame otherwise (mix_inputs: mix_jacobi passes a frame, pair decoding). The
+                      # targets are real; memory keeps real frames, and the mix is made again at every update with the model
+                      # as it is then. mix_record: body 0's first and last so many ticks, as real, predicted, mask and seen
+                      # (mix_frames.npz). mix_noise (task 00137): besides, this share of the pixels is a random grey, drawn
+                      # anew whenever the mix is made (a pixel is the prediction's, a random grey, or the real one: three
+                      # shares that add to 1)
+                      mix=0.0, mix_jacobi=2, mix_record=0, mix_noise=0.0,
                       # task 00059 (lifetime.py, the universal model with model.band_n = S): 1 = all S pieces in one
                       # lifetime, one world and one body; each piece its own weights; the body's move from theirs by
                       # piece_rule: mean, max (per axis the proposal of the largest magnitude) or gain (the move of the
@@ -1123,6 +1132,57 @@ def dream_inputs(model, img, drv, act, es, idx, k, J=2, decode="pair"):
             wi[on, s] = uni_frame(c, o["values_t"][on][:, pp])
     im[idx], dv[idx] = wi, wd
     return im, dv
+
+
+def mix_inputs(model, img, drv, act, es, rng, q, J=2, given=0, decode="pair", noise=0.0):
+    """Task 00136 (the owner: "50% of pixels in current image comes from dream"): the frames a model sees when its own
+    prediction of every frame is mixed into it. img [N, T, H, W, 3] u8: real frames; the first `given` steps are frames
+    as seen already and are kept as they are. Every step s from `given` on, in order:
+      the prediction: the model's dream of frame s from the steps before it as seen (their frames, bodies and moves): J
+        passes of forward_uni_step starting from the frame before as seen, values decoded `decode`. The body it is made
+        with is the model's own prediction of it (the move token's of step s - 1), read in the first pass and used from
+        the second; the first pass uses the body of step s - 1;
+      nothing before it (step 0, or an episode starting at s): the passes start from an empty (black) frame with the
+        real body, so the prediction is what the model expects of a frame it knows nothing about;
+      the frame as seen: each pixel from the prediction with probability q, a random grey (0 to 255, the same in
+        every channel) with probability `noise` (task 00137; 0: none, and no draw for it), from the real frame
+        otherwise. The draws are made for all N x T frames whatever `given` is, so a window made in parts has the
+        masks and the greys of one made whole.
+    Neither the real frame of step s nor anything after it enters the prediction of step s; the frames as seen before
+    it do, their random greys included. The bodies shown stay the real ones. model: a CudaModel. Returns the frames as
+    seen u8 [N, T, H, W, 3], what each pixel is, u8 [N, T, H, W] (0 the real one, 1 the prediction's, 2 a random grey;
+    0 at the given steps) and the predictions u8 [N, T, H, W, 3] (at the given steps: as given)."""
+    c = model.config
+    pp = agent_lib.uni_layout(c)["patch"] - 1
+    N, T = img.shape[:2]
+    if not 0 <= given <= T or J < 1 or noise < 0 or q + noise > 1.0 + 1e-9:
+        raise ValueError("mix_inputs: given steps 0 .. T, at least one pass, shares that add to at most 1")
+    im, dv = np.array(img, np.uint8), np.array(drv, np.float32)        # copies: img and drv stay as they are
+    wa, we = np.ascontiguousarray(act, np.float32), np.ascontiguousarray(es, np.uint8)
+    u = rng.random((N, T) + im.shape[2:4], dtype=np.float32)
+    hit = (u < q).astype(np.uint8)
+    if noise:   # drawn after the masks and only then, so that without it every draw is as it was
+        hit[(u >= q) & (u < q + noise)] = 2
+        grey = rng.integers(0, 256, hit.shape, dtype=np.uint8)
+    hit[:, :given] = 0
+    pred = im.copy()
+    for s in range(given, T):
+        cold = np.ones(N, bool) if s == 0 else we[:, s].astype(bool)
+        real, body = im[:, s].copy(), dv[:, s].copy()
+        if s:
+            im[:, s], dv[:, s] = im[:, s - 1], dv[:, s - 1]
+        im[cold, s], dv[cold, s] = 0, body[cold]
+        for j in range(J):
+            o = model.forward_uni_step(im[:, :s + 1], dv[:, :s + 1], wa[:, :s + 1], we[:, :s + 1], s, mode=DECODE[decode])
+            im[:, s] = uni_frame(c, o["values_t"][:, pp])
+            if s and j == 0:   # the move token of the step before: the body this frame comes with, as the model expects it
+                dv[~cold, s] = np.clip(o["next_body"][~cold, s - 1, :2], 0.0, 1.0)
+        pred[:, s] = im[:, s]
+        im[:, s] = np.where((hit[:, s] == 1)[..., None], pred[:, s], real)
+        if noise:
+            im[:, s] = np.where((hit[:, s] == 2)[..., None], grey[:, s, ..., None], im[:, s])
+        dv[:, s] = body
+    return im, hit, pred
 
 
 def uni_act(model, img, drv, act, es, bins, rng, m=0, tol=0.005, horizon=1, jacobi=2, decode="mean", per_body=False,

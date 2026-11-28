@@ -64,6 +64,10 @@ def test_a_number_by_tick(lives):
 
 def test_the_names_and_the_signs():
     assert C.name_of("OD") == "no self-forcing" and C.name_of("SB3") == "up to 3 dreamed steps" and C.name_of("WD") == "WD"
+    assert C.name_of("MB") == "its own prediction mixed in (.5)" and C.name_of("MSD3") == "the mix with up to 3 dreamed steps"   # task 00136
+    assert C.name_of("M7B") == ".7 its own prediction" and C.name_of("../x/MND") == ".5 its own prediction, .2 random grey"   # task 00137
+    assert C.short("../exp_00122/OB") == "OB" and C.name_of("../exp_00122/SB3") == "up to 3 dreamed steps"
+    assert [C.kind_of(a) for a in ("SB3", "../x/OB", "MB", "MSB3", "M7D", "MNB")] == [0, 1, 2, 3, 4, 5]
     assert C.signed(C.f3, .0916) == "+.092" and C.signed(C.f3, -.016) == "−.016" and C.signed(C.f3, .0001) == ".000"
     assert C.signed(C.f1, 6.0) == "+6.0" and C.signed(C.f1, 0.0) == "0.0" and C.signed(C.f3, float("nan")) == "–"
 
@@ -106,3 +110,20 @@ def test_the_picture_and_the_command(lives, tmp_path, monkeypatch, capsys):
     C.main()
     said = capsys.readouterr().out
     assert "### The court, the exam" in said and "| Next-frame skill | OB: no self-forcing | .600 | .750 |" in said and "moving discs" not in said
+
+
+def test_arms_of_another_output_folder(lives, tmp_path):
+    """Task 00136: a new arm beside the lives of an earlier experiment, which are named by their path from the folder."""
+    new = tmp_path / "new"
+    put(new, "MB", 1, 20000, "work", summary("breakout", .64, .80, 12, .93))
+    put(new, "MB", 1, 40000, "work", summary("breakout", .70, .85, 14, .94))
+    arms = ["../exp/OB", "../exp/SB3", "MB"]
+    assert C.worlds(str(new), arms, [1], STEPS) == dict(breakout=arms)
+    text = C.tables(str(new), arms, [1], STEPS)
+    assert "| Next-frame skill | OB: no self-forcing | .600 | .750 |" in text and "| Next-frame skill | MB: its own prediction mixed in (.5) | .640 | .700 |" in text
+    assert " − " not in text                                                  # three arms: no difference row
+    two = C.tables(str(new), ["../exp/OB", "MB"], [1], STEPS)
+    assert "| Horizon of the ball, ticks | MB − OB | +6.0 | +5.0 |" in two
+    png = str(tmp_path / "three.png")
+    C.figure(str(new), arms, [1], STEPS, png)
+    assert Image.open(png).width <= 960 and os.path.getsize(png) <= 200 * 1024

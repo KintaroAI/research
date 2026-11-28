@@ -6,6 +6,9 @@ measure and arm, a column a tick, so a row reads as a curve; under two arms thei
 first). With several seeds a cell is their mean. -o writes a picture of the main curves instead.
 
     ./venv/bin/python wm_curves.py OUT [--arms OD SD3 OB SB3] [--seeds 1] [--steps 20000 40000 ...] [-o PNG]
+
+An arm of another output folder is named by its path from OUT (task 00136: --arms ../exp_00122/OB ../exp_00122/SB3 MB):
+it is shown under its own name.
 """
 import argparse
 import json
@@ -31,9 +34,40 @@ WORLD = dict(watch="The moving discs", breakout="The court")
 SETS = (("work", "the exam"), ("home64", "the life's own world, after its end"))
 
 
+def short(arm):
+    """An arm's own name: OB of ../exp_00122/OB."""
+    return os.path.basename(arm)
+
+
 def name_of(arm):
-    """OD, OB: no self-forcing; SD3, SB7: up to 3, up to 7 dreamed steps."""
-    return "no self-forcing" if arm.startswith("O") else "up to %s dreamed steps" % arm[2:] if arm.startswith("S") and arm[2:].isdigit() else arm
+    """OD, OB: no self-forcing; SD3, SB7: up to 3, up to 7 dreamed steps; MD, MB: its own prediction mixed in (task
+    00136, a share of .5); MSD3: the mix with up to 3 dreamed steps; M7D, M7B: .7 its own prediction, MND, MNB: .5 with
+    .2 random grey (task 00137)."""
+    a = short(arm)
+    if a.startswith("O"):
+        return "no self-forcing"
+    if a.startswith("S") and a[2:].isdigit():
+        return "up to %s dreamed steps" % a[2:]
+    if a.startswith("MS") and a[3:].isdigit():
+        return "the mix with up to %s dreamed steps" % a[3:]
+    if a.startswith("MN") and len(a) == 3:
+        return ".5 its own prediction, .2 random grey"
+    if a.startswith("M") and len(a) == 3 and a[1].isdigit():
+        return ".%s its own prediction" % a[1]
+    if a.startswith("M") and len(a) == 2:
+        return "its own prediction mixed in (.5)"
+    return a
+
+
+def kind_of(arm):
+    """The picture's colour by what an arm is: 0 self-forcing, 1 none, 2 the mix (.5), 3 the mix with self-forcing,
+    4 another share of the mix, 5 the mix with random grey."""
+    a = short(arm)
+    if a.startswith("O"):
+        return 1
+    if not a.startswith("M"):
+        return 0
+    return 3 if a.startswith("MS") else 5 if a.startswith("MN") else 4 if len(a) == 3 and a[1].isdigit() else 2
 
 
 def series(out, arm, seeds, steps, which, path):
@@ -77,10 +111,10 @@ def tables(out, arms, seeds, steps):
             text += ["### %s, %s\n" % (WORLD[world], label),
                      "| Measure | Arm | " + " | ".join("%dk" % (steps[i] // 1000) for i in cols) + " |", "|---|---|" + "---|" * len(cols)]
             for title, _, fmt in MEASURES[world]:
-                rows = [("%s: %s" % (a, name_of(a)), [fmt(got[a][title][i]) for i in cols]) for a in its if any(x == x for x in got[a][title])]
+                rows = [("%s: %s" % (short(a), name_of(a)), [fmt(got[a][title][i]) for i in cols]) for a in its if any(x == x for x in got[a][title])]
                 if len(its) == 2 and len(rows) == 2:
                     a, b = its
-                    rows.append(("%s − %s" % (b, a), [signed(fmt, got[b][title][i] - got[a][title][i]) for i in cols]))
+                    rows.append(("%s − %s" % (short(b), short(a)), [signed(fmt, got[b][title][i] - got[a][title][i]) for i in cols]))
                 text += ["| %s | %s | " % (title, name) + " | ".join(cells) + " |" for name, cells in rows]
             text.append("")
     return "\n".join(text)
@@ -102,6 +136,7 @@ def figure(out, arms, seeds, steps, path):
     order = [w for w in ("breakout", "watch") if w in ws]
     fig, axs = plt.subplots(len(order), 3, figsize=(9.4, 3.1 * len(order)), dpi=100, facecolor=SURFACE, squeeze=False)
     x = np.array(steps) / 1000.0
+    marked = False      # a mark is named in the legend only if one is drawn
     for row, world in zip(axs, order):
         anchors = None
         p = os.path.join(out, "anchors_%s_work.json" % world)
@@ -109,7 +144,7 @@ def figure(out, arms, seeds, steps, path):
             anchors = json.load(open(p))["copy"]
         for ax, (title, pth, mark) in zip(row, panels[world]):
             for a in ws[world]:
-                col = COLORS[1] if a.startswith("O") else COLORS[0]
+                col = COLORS[kind_of(a)]
                 for which, ls in (("work", "-"), ("home64", (0, (4, 2)))):
                     v = np.array(series(out, a, seeds, steps, which, pth))
                     ok = v == v
@@ -119,6 +154,7 @@ def figure(out, arms, seeds, steps, path):
                 m = W._get(anchors, *mark)
                 if m == m:      # named in the legend only: a label on the line sits on the curves that cross it
                     ax.axhline(m, color=MUTED_INK, lw=1.2, ls=(0, (1, 2)))
+                    marked = True
             ax.set_title("%s\n%s" % (WORLD[world], title), fontsize=9.5, color=INK, loc="left")   # two lines: one would run into the next panel
             ax.set_facecolor(SURFACE)
             ax.grid(axis="y", color=GRID, lw=1)
@@ -130,14 +166,21 @@ def figure(out, arms, seeds, steps, path):
     from matplotlib.lines import Line2D
     used = [a for w in order for a in ws[w]]
     handles = []
-    if any(a.startswith("S") for a in used):
-        handles.append(Line2D([], [], color=COLORS[0], lw=2, label=name_of(next(a for a in used if a.startswith("S")))))
-    if any(a.startswith("O") for a in used):
-        handles.append(Line2D([], [], color=COLORS[1], lw=2, label="no self-forcing"))
-    handles += [Line2D([], [], color=MUTED_INK, lw=2, label="the exam"), Line2D([], [], color=MUTED_INK, lw=2, ls=(0, (4, 2)), label="the life's own world"),
-                Line2D([], [], color=MUTED_INK, lw=1.2, ls=(0, (1, 2)), label="a straight line through the frames as seen")]
-    fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
-    fig.tight_layout(rect=(0, 0.07 if len(order) == 1 else 0.045, 1, 1))
+    for kind in (2, 4, 5, 3, 0, 1):   # one entry a kind of arm, the newest kinds first
+        of = [a for a in used if kind_of(a) == kind]
+        if of:
+            handles.append(Line2D([], [], color=COLORS[kind], lw=2, label=name_of(of[0])))
+    marks = [Line2D([], [], color=MUTED_INK, lw=2, label="the exam"), Line2D([], [], color=MUTED_INK, lw=2, ls=(0, (4, 2)), label="the life's own world")]
+    if marked:
+        marks.append(Line2D([], [], color=MUTED_INK, lw=1.2, ls=(0, (1, 2)), label="a straight line through the frames as seen"))
+    two = len(handles) > 2      # more than two kinds of arm: the arms in a row of their own
+    if two:
+        fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.035), ncol=len(handles), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
+        fig.legend(handles=marks, loc="lower center", bbox_to_anchor=(0.5, 0.0), ncol=len(marks), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
+    else:
+        fig.legend(handles=handles + marks, loc="lower center", ncol=len(handles) + len(marks), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
+    low = (0.07 if len(order) == 1 else 0.045) + (0.05 if two else 0.0)
+    fig.tight_layout(rect=(0, low, 1, 1))
     save(fig, path)
     return path
 

@@ -452,15 +452,24 @@ class Pieces:
     decode 'instinct' (added after the first results) is the way the agent's instinct and vm-00114's lookahead dream
     (online.uni_lookahead): the expected value, 2 passes and no more, and each piece alone: it replaces its own block
     and sees the rest of the frame as the last real one for the whole dream. The frame given back is the pieces' own
-    blocks put together. 'instinct_pair' is the same way with pair (online.instinct_decode = pair)."""
+    blocks put together. 'instinct_pair' is the same way with pair (online.instinct_decode = pair).
 
-    def __init__(self, run, step, decode="pair"):
+    lived (task 00136, a run with online.mix): the real ticks are shown as the life saw frames, each with the model's
+    own prediction of it mixed in (online.mix_inputs, the life's own function; the masks from a generator fixed by the
+    number of windows, so a scoring repeats). Without it the real ticks are shown whole, as to every other model."""
+
+    def __init__(self, run, step, decode="pair", lived=False):
         import agent_lib
         import cuda_lib
         from lifetime import ckpt_name
         from online import DECODE, uni_frame
         info = json.load(open(os.path.join(run, "info.json")))
         self.S = int(info.get("pieces", 1))
+        on = info["config"].get("online", {})
+        self.mix, self.mix_jacobi = (float(on.get("mix") or 0.0), int(on.get("mix_jacobi", 2))) if lived else (0.0, 2)
+        self.mix_noise = float(on.get("mix_noise") or 0.0) if lived else 0.0   # task 00137: the life's random greys too
+        if lived and (not self.mix or self.S != 1):
+            raise ValueError("lived: the run must have online.mix and one transformer")
         self.agents = [agent_lib.Agent.load(os.path.join(run, ckpt_name(step, k, self.S))) for k in range(self.S)]
         self.models = [cuda_lib.CudaModel(a) for a in self.agents]
         self.alone = decode in ("instinct", "instinct_pair")
@@ -486,10 +495,19 @@ class Pieces:
 
     def reset(self, n):
         self.n, self.fr, self.bd, self.mv = int(n), [], [], []
+        self.mix_rng = np.random.default_rng([0x0136, self.n])
 
     def observe(self, frame, body, move):
-        self.fr.append(np.asarray(frame, np.uint8)), self.bd.append(np.asarray(body, np.float32))
-        self.mv.append(np.asarray(move, np.float32))
+        frame, body, move = np.asarray(frame, np.uint8), np.asarray(body, np.float32), np.asarray(move, np.float32)
+        if self.mix:   # task 00136: as in the life: the model's own prediction of this frame mixed into what it sees of it
+            from online import mix_inputs
+            k = min(len(self.fr), self.L - 1)
+            past = lambda x: x[len(x) - k:]                                       # noqa: E731
+            wi = np.repeat(np.stack(past(self.fr) + [frame], 1)[..., None], 3, -1)
+            wd, wa = np.stack(past(self.bd) + [body], 1), np.stack(past(self.mv) + [np.zeros_like(move)], 1)
+            frame = mix_inputs(self.models[0], wi, wd, wa, np.zeros(wi.shape[:2], np.uint8), self.mix_rng, self.mix,
+                               self.mix_jacobi, given=k, noise=self.mix_noise)[0][:, -1, ..., 0]
+        self.fr.append(frame), self.bd.append(body), self.mv.append(move)
         del self.fr[:-self.L], self.bd[:-self.L], self.mv[:-self.L]
 
     def _pass(self, wi, wd, wa):
@@ -980,18 +998,26 @@ def free_part(model, exam):
                 zones=zone_counts(exam, e, fd, fr))   # by zone: what the dream keeps (the ball is the court's zone)
 
 
-def home_skip(info):
+def home_skip(info, later=None):
     """The tick from which a life's own world is its home set: after its last tick (60,000 for the lives of vm-00119
-    to vm-00121; a longer life, task 00135, must not be examined on ticks it has lived)."""
-    return max(HOME_SKIP, int(info["config"].get("online", {}).get("steps", 0)))
+    to vm-00121; a longer life, task 00135, must not be examined on ticks it has lived). later (task 00136): a later
+    tick asked for, so that a shorter life is examined on the stretch a longer one was; never an earlier one."""
+    skip = max(HOME_SKIP, int(info["config"].get("online", {}).get("steps", 0)))
+    if later is not None and int(later) < skip:
+        raise ValueError("the home set cannot start at tick %d: the life has lived to tick %d" % (int(later), skip))
+    return skip if later is None else int(later)
 
 
 def score(run, step, decode="pair", which="work", parts=("regular", "events", "warm"), H=HORIZON, out_dir=None, exam=None,
-          name=None, home_starts=None):
+          name=None, home_starts=None, lived=False, home_from=None):
     """The measures of one checkpoint on one exam set. Writes (and adds to) RUN/wm/step_<step>_<decode>_<which>.json and
     .npz; returns the summary. exam: a ready one (a test's small one). name: the set's name in the file, if not `which`
     (the learning curve's shorter run on the working set is kept apart as 'learn'). home_starts: the home set with
-    that many regular starts in place of its 16 (a longer stretch of the life's own world; give it a name of its own)."""
+    that many regular starts in place of its 16 (a longer stretch of the life's own world; give it a name of its own).
+    lived (task 00136, a run with online.mix): the real ticks shown as the life saw frames (Pieces); the summary says so
+    (lived: true), and it needs a name of its own. home_from: the home set from that tick on (home_skip)."""
+    if lived and not name:
+        raise ValueError("a scoring with frames as lived needs a name of its own (--name lived)")
     info = json.load(open(os.path.join(run, "info.json")))
     env = info["config"]["env"]
     t0 = time.time()
@@ -1002,17 +1028,19 @@ def score(run, step, decode="pair", which="work", parts=("regular", "events", "w
         if home_starts:
             st = tuple(range(STARTS[0], STARTS[0] + 125 * int(home_starts), 125))
             more = dict(starts=st, ticks=st[-1] + TICKS - STARTS[-1])
-        exam = Exam(env, seed=info["seed"], copies=1, skip=home_skip(info), **more)
+        exam = Exam(env, seed=info["seed"], copies=1, skip=home_skip(info, home_from), **more)
     else:
         exam = Exam(env, seed=dict(work=WORK_SEED, final=FINAL_SEED)[which])
     t_exam = time.time() - t0
-    model = Pieces(run, step, decode)
+    model = Pieces(run, step, decode, lived=lived)
     out_dir = out_dir or os.path.join(run, "wm")
     os.makedirs(out_dir, exist_ok=True)
     base = os.path.join(out_dir, "step_%08d_%s_%s" % (step, decode, name or which))
     res = json.load(open(base + ".json")) if os.path.exists(base + ".json") else {}
     res.update(run=os.path.basename(run.rstrip("/")), seed=info["seed"], step=step, decode=decode, set=which,
                world=exam.kind, params=model.params, pieces=model.S, chunk=CHUNK)
+    if lived:   # task 00136: said in the file, so that a number shown mixed frames is never taken for one shown whole frames
+        res["lived"] = True
     reg, regfd, sec = None, None, res.setdefault("seconds", {})
     sec["exam"] = round(t_exam, 1)
     un = res["unsettled"] = res["unsettled"] if isinstance(res.get("unsettled"), dict) else {}
@@ -1719,6 +1747,8 @@ def main():
     a.add_argument("--name", default=None, help="the set's name in the file (learn: the checkpoints' shorter run)")
     a.add_argument("--chunk", type=int, default=CHUNK, help="windows a pass (one transformer on the whole frame: 64)")
     a.add_argument("--home-starts", type=int, default=None, help="the home set with this many regular starts in place of 16 (with --name)")
+    a.add_argument("--lived", action="store_true", help="a run with online.mix: show the real ticks as the life saw frames (with --name)")
+    a.add_argument("--home-from", type=int, default=None, help="the home set from this tick on (not before the life's end): the stretch a longer life was scored on")
     a = sub.add_parser("anchors")
     a.add_argument("config")
     a.add_argument("-o", "--out", required=True)
@@ -1772,7 +1802,8 @@ def main():
         for st in args.step:
             for dec in args.decode:
                 for which in args.which:
-                    r = score(args.run, st, dec, which, args.parts, args.horizon, name=args.name, home_starts=args.home_starts)
+                    r = score(args.run, st, dec, which, args.parts, args.horizon, name=args.name, home_starts=args.home_starts,
+                              lived=args.lived, home_from=args.home_from)
                     g = r.get("regular", {})
                     print("%-10s %6d %-5s %-5s  next-frame skill %s  horizon %s  passes %s  seconds %s" % (
                         r["run"], st, dec, which, "%.3f" % g["next"]["skill"] if g else "-",

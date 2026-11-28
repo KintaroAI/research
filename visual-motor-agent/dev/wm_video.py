@@ -15,7 +15,8 @@ The stretches are fixed by the number asked for, not chosen by looking: copies s
 the exam's regular starts; the model's window is its last 8). A long dream (the owner, task 00135: "it starts for 20
 ticks and then dream 1000 ticks") is --real 20 --warm 20 --dream 1000: the exam is then made as much longer as the
 dream, its first ticks the same. --outline N: the true places outlined on the first N dreamed ticks only (a long dream
-and the world part ways, and the outlines then say nothing).
+and the world part ways, and the outlines then say nothing). --lived (task 00136): a run with online.mix watches the
+real ticks as it lived, its own prediction mixed into each (the panels still show the real ticks).
 """
 import argparse
 import itertools
@@ -145,6 +146,7 @@ def main():
     ap.add_argument("--warm", type=int, default=W.WARM, help="real ticks the model is given before it dreams")
     ap.add_argument("--dream", type=int, default=32)
     ap.add_argument("--outline", type=int, default=None, help="outline the true places on the first N dreamed ticks only (0: never)")
+    ap.add_argument("--lived", action="store_true", help="runs with online.mix watch the real ticks as they lived: their own prediction mixed in")
     ap.add_argument("--scale", type=int, default=4)
     ap.add_argument("--fps", type=int, default=6)
     ap.add_argument("--step", type=int, default=60000)
@@ -169,7 +171,7 @@ def main():
         raise SystemExit("a stretch does not fit the exam: %d ticks before a start, %d after it" % (max(a.real, a.warm), a.dream))
     dreamed = []
     for (run, label), info in zip(runs, infos):
-        m = W.Pieces(run, a.step, "pair")
+        m = W.Pieces(run, a.step, "pair", lived=a.lived and bool(info["config"].get("online", {}).get("mix")))   # task 00136
         name = label or info["config"].get("name", os.path.basename(run))
         dreamed.append(("dream: " + name, W.dreams(m, exam, e, s, a.dream, warm=a.warm)[0]))
         print("%s: %.1f passes a dreamed tick, %d frames of %d not settled" % (name, float(np.mean(m.passes)), m.unsettled, len(e) * a.dream))
