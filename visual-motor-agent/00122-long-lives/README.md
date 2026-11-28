@@ -123,7 +123,7 @@ What the videos show, by eye and by a scratch count over their four stretches a 
 - **The discs' dream goes on to the end.** At ticks 901 to 1,000 as many pixels change a tick as in the world (134 to 181 against 153 to 177), and the discs stay discs: every one of the 16 dreams still shows its solid discs (two in 15, three in one) and 14 show a checkered one.
 - **The dots are gone within about 100 ticks,** on the life's own world too (about 5 separate dots at the first dreamed tick, .5 or fewer at tick 100). On the exam, whose dots are new, only about 2 are drawn at the first dreamed tick.
 - **Started from new discs, the dream grows them.** The pixels that are not background rise from the exam's 685 to about 800 within 100 ticks; the life's own world has about 825. My reading: the dream replaces discs it does not know by the ones it knows.
-- **Why no ball is served** (my reading, not tested): after a miss the window holds 8 empty frames, which look the same one tick before the serve and nine. Where the new ball will be is then uncertain pixel by pixel, and the sharp decoding takes each pixel's most probable value: empty.
+- **Why no ball is served** (my reading, not tested): after a miss the window holds 8 empty frames, which look the same one tick before the serve and nine. Where the new ball will be is then uncertain pixel by pixel, and the sharp decoding takes each pixel's most probable value: empty. (Tested in vm-00124, 2026-11-27: the second half holds and the first does not. The model expects the serve when it is due and does not know where; [its report](../00124-mix-shares/README.md), section 4.)
 
 ### The numbers by tick
 

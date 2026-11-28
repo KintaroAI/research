@@ -9,6 +9,9 @@ first). With several seeds a cell is their mean. -o writes a picture of the main
 
 An arm of another output folder is named by its path from OUT (task 00136: --arms ../exp_00122/OB ../exp_00122/SB3 MB):
 it is shown under its own name.
+
+The picture (task 00137): a colour is what an arm does (self-forcing, none, the mix), so the makes of the mix share one
+and differ by a marker and a label at the line's end; a world with more than three arms has a row a set.
 """
 import argparse
 import json
@@ -32,6 +35,13 @@ MEASURES = dict(
               ("The ball's way gone at tick 8", ("course", "ball", "travel", 7), f3)])
 WORLD = dict(watch="The moving discs", breakout="The court")
 SETS = (("work", "the exam"), ("home64", "the life's own world, after its end"))
+# The picture's colour is what an arm does (readme_images.COLORS by kind_of): every make of the mix is the mix's green.
+# Five hues in one panel of crossing curves cannot all be told apart (the palette's blue from its purple, its pink from
+# its orange and, without red and green, from its green), so the makes differ by their marker and by a label at the
+# line's end, never by colour alone.
+HUE = (0, 1, 2, 3, 2, 2)
+MARKER = {4: ("s", 6.0), 5: ("^", 6.5)}    # kind -> an open marker and its size; every other kind a small dot
+SPLIT = 3                                    # more arms than this in a world: a row a set, every curve solid
 
 
 def short(arm):
@@ -68,6 +78,30 @@ def kind_of(arm):
     if not a.startswith("M"):
         return 0
     return 3 if a.startswith("MS") else 5 if a.startswith("MN") else 4 if len(a) == 3 and a[1].isdigit() else 2
+
+
+def tag_of(arm):
+    """The label at the end of a curve whose colour another arm of the panel shares: .5, .7, grey."""
+    a, k = short(arm), kind_of(arm)
+    return ".5" if k == 2 else "grey" if k == 5 else "." + a[1] if k == 4 else a
+
+
+def spread(ys, gap):
+    """Heights (in points) moved apart until no two are closer than `gap`, as little as that takes; the order kept."""
+    order = sorted(range(len(ys)), key=lambda i: ys[i])
+    y = [float(ys[i]) for i in order]
+    for _ in range(100):
+        moved = False
+        for i in range(len(y) - 1):
+            d = gap - (y[i + 1] - y[i])
+            if d > 1e-9:
+                y[i], y[i + 1], moved = y[i] - d / 2, y[i + 1] + d / 2, True
+        if not moved:
+            break
+    res = [0.0] * len(ys)
+    for i, v in zip(order, y):
+        res[i] = v
+    return res
 
 
 def series(out, arm, seeds, steps, which, path):
@@ -121,7 +155,9 @@ def tables(out, arms, seeds, steps):
 
 
 def figure(out, arms, seeds, steps, path):
-    """A picture of the curves: a row a world; the exam solid, the life's own world dashed; the marks dotted."""
+    """A picture of the curves: a row a world, the exam solid and the life's own world dashed; a world with more than
+    SPLIT arms has a row a set and every curve solid. The marks dotted. Arms that share a colour (the makes of the mix)
+    have each a marker of their own and a label at the line's end."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -134,28 +170,45 @@ def figure(out, arms, seeds, steps, path):
                          ("The poison's way gone at tick 4", ("course", "poison", "travel", 3), None),
                          ("Next-frame skill", G + ("next", "skill"), None)])
     order = [w for w in ("breakout", "watch") if w in ws]
-    fig, axs = plt.subplots(len(order), 3, figsize=(9.4, 3.1 * len(order)), dpi=100, facecolor=SURFACE, squeeze=False)
+    dash = (0, (4, 2))
+    rows = []       # (world, the sets drawn with their line styles, the row's name)
+    for w in order:
+        home = any(x == x for a in ws[w] for x in series(out, a, seeds, steps, "home64", panels[w][0][1]))
+        if len(ws[w]) > SPLIT and home:
+            rows += [(w, (("work", "-"),), WORLD[w] + ", the exam"), (w, (("home64", "-"),), WORLD[w] + ", the life's own world")]
+        else:
+            rows.append((w, (("work", "-"), ("home64", dash)), WORLD[w]))
+    fig, axs = plt.subplots(len(rows), 3, figsize=(9.4, 3.1 * len(rows)), dpi=100, facecolor=SURFACE, squeeze=False)
     x = np.array(steps) / 1000.0
-    marked = False      # a mark is named in the legend only if one is drawn
-    for row, world in zip(axs, order):
+    marked = dashed = False      # a mark, and the two sets, are named in the legend only if drawn
+    ends = []                    # (axes, x, y, label): the ends of the curves whose colour another arm shares
+    for row, (world, sets, name) in zip(axs, rows):
         anchors = None
         p = os.path.join(out, "anchors_%s_work.json" % world)
         if os.path.exists(p):
             anchors = json.load(open(p))["copy"]
+        shared = {a for a in ws[world] if sum(HUE[kind_of(b)] == HUE[kind_of(a)] for b in ws[world]) > 1}
         for ax, (title, pth, mark) in zip(row, panels[world]):
             for a in ws[world]:
-                col = COLORS[kind_of(a)]
-                for which, ls in (("work", "-"), ("home64", (0, (4, 2)))):
+                col = COLORS[HUE[kind_of(a)]]
+                mk, ms = MARKER.get(kind_of(a), ("o", 3.5))
+                face = dict(mfc=SURFACE, mec=col, mew=1.6) if kind_of(a) in MARKER else {}
+                for which, ls in sets:
                     v = np.array(series(out, a, seeds, steps, which, pth))
                     ok = v == v
                     if ok.any():
-                        ax.plot(x[ok], v[ok], color=col, lw=2, ls=ls, marker="o", ms=3.5, solid_capstyle="round")
-            if mark and anchors is not None:
+                        ax.plot(x[ok], v[ok], color=col, lw=2, ls=ls, marker=mk, ms=ms, solid_capstyle="round", **face)
+                        dashed = dashed or ls != "-"
+                        if a in shared:
+                            ends.append((ax, x[ok][-1], v[ok][-1], tag_of(a)))
+            if mark and anchors is not None and any(which == "work" for which, _ in sets):
                 m = W._get(anchors, *mark)
                 if m == m:      # named in the legend only: a label on the line sits on the curves that cross it
                     ax.axhline(m, color=MUTED_INK, lw=1.2, ls=(0, (1, 2)))
                     marked = True
-            ax.set_title("%s\n%s" % (WORLD[world], title), fontsize=9.5, color=INK, loc="left")   # two lines: one would run into the next panel
+            if shared:          # room for the labels at the lines' ends
+                ax.set_xlim(x.min() - 0.05 * np.ptp(x), x.max() + 0.17 * np.ptp(x))
+            ax.set_title("%s\n%s" % (name, title), fontsize=9.5, color=INK, loc="left")   # two lines: one would run into the next panel
             ax.set_facecolor(SURFACE)
             ax.grid(axis="y", color=GRID, lw=1)
             ax.set_axisbelow(True)
@@ -169,18 +222,36 @@ def figure(out, arms, seeds, steps, path):
     for kind in (2, 4, 5, 3, 0, 1):   # one entry a kind of arm, the newest kinds first
         of = [a for a in used if kind_of(a) == kind]
         if of:
-            handles.append(Line2D([], [], color=COLORS[kind], lw=2, label=name_of(of[0])))
-    marks = [Line2D([], [], color=MUTED_INK, lw=2, label="the exam"), Line2D([], [], color=MUTED_INK, lw=2, ls=(0, (4, 2)), label="the life's own world")]
+            col = COLORS[HUE[kind]]
+            mk, ms = MARKER.get(kind, ("o", 3.5))
+            face = dict(mfc=SURFACE, mec=col, mew=1.6) if kind in MARKER else {}
+            handles.append(Line2D([], [], color=col, lw=2, marker=mk if ends else None, ms=ms, label=name_of(of[0]), **face))
+    marks = []
+    if dashed or not ends:      # the two sets by their line (as before); not where every row holds one set
+        marks += [Line2D([], [], color=MUTED_INK, lw=2, label="the exam"), Line2D([], [], color=MUTED_INK, lw=2, ls=dash, label="the life's own world")]
     if marked:
         marks.append(Line2D([], [], color=MUTED_INK, lw=1.2, ls=(0, (1, 2)), label="a straight line through the frames as seen"))
-    two = len(handles) > 2      # more than two kinds of arm: the arms in a row of their own
+    two = len(handles) > 2      # more than two kinds of arm: the arms in rows of their own, three a row
+    more = 0
+    tall = 2.0 / max(2, len(rows))      # the legend keeps its height in inches when the picture has more than two rows
     if two:
-        fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, 0.035), ncol=len(handles), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
-        fig.legend(handles=marks, loc="lower center", bbox_to_anchor=(0.5, 0.0), ncol=len(marks), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
+        ncol = min(len(handles), 3)
+        more = -(-len(handles) // ncol) - 1
+        fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, (0.035 if marks else 0.0) * tall), ncol=ncol, frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
+        if marks:
+            fig.legend(handles=marks, loc="lower center", bbox_to_anchor=(0.5, 0.0), ncol=len(marks), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
     else:
         fig.legend(handles=handles + marks, loc="lower center", ncol=len(handles) + len(marks), frameon=False, fontsize=8.5, labelcolor=MUTED_INK)
-    low = (0.07 if len(order) == 1 else 0.045) + (0.05 if two else 0.0)
+    low = ((0.07 if len(rows) == 1 else 0.045) + (0.05 if two and marks else 0.015 if two else 0.0) + 0.035 * more) * tall
     fig.tight_layout(rect=(0, low, 1, 1))
+    if ends:                    # the labels, after the layout: in each panel no two closer than a line of text
+        fig.canvas.draw()
+        for ax in {e[0] for e in ends}:
+            its = [e for e in ends if e[0] is ax]
+            pts = [ax.transData.transform((e[1], e[2]))[1] * 72.0 / fig.dpi for e in its]
+            for (_, xe, ye, text), y0, y1 in zip(its, pts, spread(pts, 9.0)):
+                ax.annotate(text, xy=(xe, ye), xytext=(7, y1 - y0), textcoords="offset points", va="center", ha="left", fontsize=8, color=MUTED_INK,
+                            bbox=dict(fc=SURFACE, ec="none", pad=0.8))      # on the surface: no grid line or mark through the letters
     save(fig, path)
     return path
 

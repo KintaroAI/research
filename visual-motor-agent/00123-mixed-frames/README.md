@@ -281,7 +281,7 @@ A row is a curve. OD, SD3, OB and SB3 are vm-00122's lives at the same ticks.
 
 ## Next
 
-- **vm-00124, running by the owner's word:** the same mix with .7 of the pixels from the prediction, and with .5 from the prediction and .2 a random grey.
+- **vm-00124, by the owner's word (done 2026-11-27, [its report](../00124-mix-shares/README.md)):** the same mix with .7 of the pixels from the prediction, and with .5 from the prediction and .2 a random grey. Neither does better than .5.
 - **For the owner's word, mine:** in the court the mix together with self-forcing (in the code and tested, not run): the two reach the same dream by different means, and self-forcing alone trains what a dream needs, frames with no real pixel. In the disc world nothing of this kind before the world has variety (vm-00122).
 
 ## Files

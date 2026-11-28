@@ -127,3 +127,54 @@ def test_arms_of_another_output_folder(lives, tmp_path):
     png = str(tmp_path / "three.png")
     C.figure(str(new), arms, [1], STEPS, png)
     assert Image.open(png).width <= 960 and os.path.getsize(png) <= 200 * 1024
+
+
+def test_the_makes_of_the_mix_in_one_picture(tmp_path, monkeypatch):
+    """Task 00137: five arms a world. The makes of the mix share the mix's colour and are told apart by a marker and a
+    label at the line's end; the disc world, with a home set and more than three arms, has a row a set."""
+    import readme_images as R
+    assert C.HUE[2] == C.HUE[4] == C.HUE[5] and len({C.HUE[0], C.HUE[1], C.HUE[2], C.HUE[3]}) == 4
+    assert [C.tag_of(a) for a in ("MB", "../x/M7D", "MNB", "M3B")] == [".5", ".7", "grey", ".3"]
+    y = C.spread([10.0, 12.0, 40.0, 11.0], 9.0)
+    assert sorted(range(4), key=lambda i: y[i]) == [0, 3, 1, 2] and y[2] == 40.0             # the order kept, the far one left
+    assert all(b - a >= 9.0 - 1e-6 for a, b in zip(sorted(y), sorted(y)[1:])) and sum(y[:2] + y[3:]) == pytest.approx(33.0)
+    assert C.spread([5.0, 30.0], 9.0) == [5.0, 30.0] and C.spread([], 9.0) == []
+    out = tmp_path / "exp"
+    for i, arm in enumerate(("OB", "SB3", "MB", "M7B", "MNB")):
+        for st in (20000, 40000):
+            put(out, arm, 1, st, "work", summary("breakout", .50 + .05 * i, .40 + .05 * i, 6 + i, .90))
+    for i, arm in enumerate(("OD", "SD3", "MD", "M7D", "MND")):
+        for st in (20000, 40000):
+            put(out, arm, 1, st, "work", summary("watch", .30 + .05 * i, .50 + .05 * i, 4 + i, .70))
+            put(out, arm, 1, st, "home64", summary("watch", .60 + .05 * i, .70 + .05 * i, 6 + i, .80))
+    figs = []
+    save = R.save
+    monkeypatch.setattr(R, "save", lambda fig, path: (figs.append(fig), save(fig, path))[1])
+    arms = ["OD", "SD3", "MD", "M7D", "MND", "OB", "SB3", "MB", "M7B", "MNB"]
+    png = str(tmp_path / "five.png")
+    C.figure(str(out), arms, [1], STEPS, png)
+    im = Image.open(png)
+    assert im.width <= 960 and os.path.getsize(png) <= 200 * 1024
+    fig = figs[-1]
+    assert len(fig.axes) == 9                                                # the court, new discs, the life's own discs
+    titles = [ax.get_title(loc="left").split("\n")[0] for ax in fig.axes]
+    assert titles[0] == "The court" and titles[3] == "The moving discs, the exam" and titles[6] == "The moving discs, the life's own world"
+    for ax in fig.axes:
+        lines = [ln for ln in ax.get_lines() if ln.get_marker() in ("o", "s", "^")]          # the curves (a mark has no marker)
+        assert len(lines) == 5 and all(ln.get_linestyle() == "-" for ln in lines)             # a row a set: nothing dashed
+        green = [ln for ln in lines if ln.get_color() == R.COLORS[C.HUE[2]]]
+        assert sorted(ln.get_marker() for ln in green) == ["^", "o", "s"]                     # one colour, three markers
+        assert len({ln.get_color() for ln in lines}) == 3
+        assert sorted(t.get_text() for t in ax.texts) == [".5", ".7", "grey"]               # and a label at each end
+    said = [t.get_text() for lg in fig.legends for t in lg.get_texts()]
+    assert "the life's own world" not in said and ".7 its own prediction" in said and len(said) == 5
+    # three arms a world, one make of the mix: a row a world, the two sets by their line, no labels (as vm-00123's picture)
+    C.figure(str(out), ["OD", "SD3", "MD", "OB", "SB3", "MB"], [1], STEPS, str(tmp_path / "three.png"))
+    fig = figs[-1]
+    assert len(fig.axes) == 6 and not any(ax.texts for ax in fig.axes)
+    assert any(ln.get_linestyle() != "-" for ln in fig.axes[3].get_lines())
+    assert "the life's own world" in [t.get_text() for lg in fig.legends for t in lg.get_texts()]
+    # two makes of the mix among three arms: not split, and the two are labelled on both sets' curves
+    C.figure(str(out), ["OD", "MD", "M7D"], [1], STEPS, str(tmp_path / "two.png"))
+    fig = figs[-1]
+    assert len(fig.axes) == 3 and sorted(t.get_text() for t in fig.axes[0].texts) == [".5", ".5", ".7", ".7"]

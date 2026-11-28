@@ -18,7 +18,7 @@
 #   make free CARD=1                               — the free dream of 200 ticks
 #   make curves                                    — the numbers by tick beside vm-00123's and vm-00122's lives (no GPU)
 #   make images                                    — images/curves.png, images/seen_<arm>.png
-#   make videos-long CARD=1                        — 20 watched ticks, then a dream of 1,000
+#   make videos-long CARD=1                        — 20 watched ticks, then a dream of 1,000 (video-court, video-discs: one world)
 #   Options: MPS= (no MPS daemon), SEEDS (1), TICKS (60000)
 
 DEV = ../dev
@@ -44,7 +44,7 @@ MIX_MND = --set online.mix=0.5 --set online.mix_noise=0.2
 MIX_MNB = --set online.mix=0.5 --set online.mix_noise=0.2
 WM = env $(G) CUDA_VISIBLE_DEVICES=$(CARD) $(PY) wm_measures.py score
 
-.PHONY: runs anchors score home lived free curves images videos-long
+.PHONY: runs anchors score home lived free curves images videos-long video-court video-discs
 
 # the lives named in ARMS, all at once on one card
 runs:
@@ -101,10 +101,16 @@ images:
 VID = env $(G) CUDA_VISIBLE_DEVICES=$(CARD) $(PY) wm_video.py
 LV = --step $(TICKS) --real 20 --warm 20 --dream 1000 --outline 32 --fps 12 --lived
 MIXED = $(D)/exp_00123
-videos-long:
+videos-long: video-court video-discs
+
+video-court:
 	cd $(DEV) && for s in $(SEEDS); do \
 	  $(VID) $(MIXED)/MB_s$$s:".5 own prediction" $(OUT)/M7B_s$$s:".7 own prediction" $(OUT)/MNB_s$$s:".5 own, .2 random grey" -o $(OUT)/videos/court_long_seed$$s.mp4 $(LV) \
-	    --title "The court after $(TICKS) ticks of life: 20 watched ticks, then a dream of 1000 (vm-00124, seed $$s)" && \
+	    --title "The court after $(TICKS) ticks of life: 20 watched ticks, then a dream of 1000 (vm-00124, seed $$s)" || exit 1; \
+	done
+
+video-discs:
+	cd $(DEV) && for s in $(SEEDS); do \
 	  $(VID) $(MIXED)/MD_s$$s:".5 own prediction" $(OUT)/M7D_s$$s:".7 own prediction" $(OUT)/MND_s$$s:".5 own, .2 random grey" -o $(OUT)/videos/discs_new_long_seed$$s.mp4 $(LV) \
 	    --title "New discs after $(TICKS) ticks of life: 20 watched ticks, then a dream of 1000 (vm-00124, seed $$s)" || exit 1; \
 	done

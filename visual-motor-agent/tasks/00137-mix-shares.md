@@ -1,7 +1,7 @@
 # Task 00137: What the Mix Is Made of: More Prediction, and Random Grey (experiment vm-00124)
 
 **Date:** 2026-11-27
-**Status:** Running (the owner's word of 2026-11-27, while vm-00123 ran; the court lives started at 17:40, the disc lives follow as the cards come free).
+**Status:** Complete (2026-11-27), pending tag `exp/vm-00124` (the owner's word, given while vm-00123 ran): neither make does better than the half-and-half mix, and both pay more. One seed an arm: a look.
 
 ## Context
 
@@ -49,14 +49,26 @@ One seed an arm: a look. A difference counts only if it is outside what two runs
 - Random grey: next-frame skill shown whole frames clearly lower than without it (a fifth of every input pixel carries nothing); the dream no better than at .5. A random grey is not an error the model makes, so learning to see through it does not teach it to mend its own dream.
 - Neither serves a ball in the long dream.
 
+## Results (2026-11-27)
+
+Four lives of 60k ticks, one seed an arm (a look). The README has the tables, the pictures and the readings one by one.
+
+- **1. More prediction (.7 against .5):** the things are held less long, not longer. The court's ball 12 dreamed ticks against 15 at 60k (held at tick 16 in .306 of the dreams against .492); the food at tick 4 on own discs .516 against .555, on new discs .514 against .564 (inside the yardstick, the same way at every tick). The next frame pays more: the court .696 against .742, new discs .055 against .166.
+- **2. Random grey (.5 with .2 grey against .5):** worse on both questions. The court's ball 11 ticks (no ball in its dream at 20k, 3 ticks at 40k: still climbing at the end), next-frame skill .656; own discs: the food at tick 4 .367, next-frame skill .445 against .639. On new discs its next frame is level with .5 (.151 against .166) and is the only mix's that rises through the life. Noise that does not shrink does not do more than noise that does.
+- **3. Whole frames or frames as lived:** whole frames, for the next frame in every life and for the court's ball (the court's next-frame skill .656 whole against .466 as lived with random grey, .696 against .511 at .7). The model that lived with random grey does not need its grey.
+- **4. The long dream:** not mended. The ball pixels left at tick 200 of the free dream (a ball is 4): 0.00 with random grey, 1.34 at .7, 0.47 at .5, 2.03 and 1.78 without a mix. No dream serves a new ball (the world serves 11 times in the same 32 stretches; a scratch count of mine). Why, by a scratch test on the 60k checkpoints: every life expects the serve when it is due (its expected next frame holds a band worth 0.6 to 1.2 ball pixels in the court's top rows in the last two ticks before a serve) and not where, and `pair` draws each pixel's most probable value, which is empty. This corrects my reading in vm-00122, which blamed the window as well. By the same count the noisier makes sometimes draw a ball again that was gone for 3 to 5 ticks (twice in 32 dreams at .7, 4 times with random grey, never at .5).
+- **What I expected:** wrong for .7's dream (I had it a little better; it is worse) and for the size of what its next frame pays; right for random grey (the next frame clearly lower, the dream no better) and for the missing serve. Not expected: how late the life with random grey learns to see, and the balls drawn again.
+- **Changed on the way: the picture.** The plan gave each make a colour of its own. Five hues in one panel cannot all be told apart (a palette check of every pair), so the makes of the mix share the mix's green and differ by a marker and a label at the line's end, and a world with more than three arms has a row a set (`wm_curves.py`; vm-00122's and vm-00123's pictures come out as they were, pixel for pixel).
+
 ## To build
 
 - `online.mix_noise` in `online.mix_inputs`, `lifetime.py` (the metric `noise_share`) and `wm_measures.Pieces` (`--lived` draws the greys too); `tests/test_mix.py`.
-- `wm_curves.py`: the new arms' names and colours.
+- `wm_curves.py`: the new arms' names and colours (as built: one colour for every make of the mix, a marker and a label each; see Results).
 - `00124-mix-shares/`: README, Makefile.
 
 ## Verification
 
-- `tests/test_mix.py`; the whole dev suite.
+- `tests/test_mix.py` (24); `tests/test_wm_curves.py` (6, one new); the whole dev suite: 2,161 passed, 34 skipped (2026-11-27, after the last change to `wm_curves.py`).
 - Every life: 7 checkpoints and the final one, the last log line at tick 60,000, no error; `mix_share` .7 or .5 and, for MND and MNB, `noise_share` .2 in every row.
 - Every scored file names its life, one transformer, 64 windows a pass, `pair`, nothing unsettled; the files scored as lived say so.
+- Done: 373 checks over the four lives' files, 0 failed (the points above, each life's settings against the plain life of the same seed, the record of what it was shown, the exam's floors against the anchors', the home stretch against vm-00122's).
